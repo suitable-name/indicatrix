@@ -69,17 +69,17 @@ export component ResultCard inherits Rectangle {
             spacing: 8px;
 
             // Keep checkbox for saving, with a larger hit area than the box
-            Rectangle {
+            rectangle-result := Rectangle {
                 width: 22px;
                 height: 22px;
 
                 accessible-role: AccessibleRole.checkbox;
-                accessible-label: "Keep result " + root.result.rank + " for saving";
+                accessible-label: "Keep Result "+ root.result.rank + " for saving";
                 accessible-checkable: true;
                 accessible-checked: root.result.keep;
                 accessible-action-default => { RoughPlanModel.toggle_keep(root.rank_index); }
 
-                Tooltip { text: @markdown("Keep this layout for saving. Save selected saves every layout whose box is ticked."); }
+                Tooltip { text: @markdown("Keep this layout for saving. Save Selected saves every layout whose box is ticked."); }
 
                 keep_focus := FocusScope {
                     key-pressed(event) => {
@@ -156,7 +156,7 @@ export component ResultCard inherits Rectangle {
                 border-color: Theme.accent-cyan-hover;
 
                 accessible-role: AccessibleRole.button;
-                accessible-label: "Cut plan";
+                accessible-label: "Cut Plan";
                 accessible-description: "Show or hide the written cutting steps of this layout.";
                 accessible-expandable: true;
                 accessible-expanded: root.is_expanded;
@@ -185,7 +185,7 @@ export component ResultCard inherits Rectangle {
                     }
 
                     Text {
-                        text: "Cut plan";
+                        text: "Cut Plan";
                         font-size: 11px;
                         color: root.is_expanded ? Theme.accent-cyan : (cp_touch.has-hover ? Theme.text-primary : Theme.text-secondary);
                         vertical-alignment: center;
@@ -228,7 +228,7 @@ export component ResultCard inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 RoughPill {
-                    text: "Result in library";
+                    text: "Result in Library";
                     hint: RoughPlanModel.links_enabled
                         ? "Show the designs of this layout in the library list."
                         : "Switch to the local library first: the results link to designs there.";
@@ -267,7 +267,7 @@ export component ResultCard inherits Rectangle {
                 min-width: 0px;
                 spacing: 4px;
 
-                for group[g_idx] in root.result.groups: DesignGroupRow {
+                for group[g_idx] in root.result.groups: design-group-row-l270 := DesignGroupRow {
                     group: group;
                     show_thumbnails: root.show_thumbnails;
                     is_selected: root.is_selected && RoughPlanModel.selected_group == g_idx;
@@ -275,6 +275,7 @@ export component ResultCard inherits Rectangle {
                         RoughPlanModel.select_result(root.rank_index);
                         RoughPlanModel.select_group(root.rank_index, g_idx);
                     }
+                    open_in_editor => { RoughPlanModel.open_in_editor(root.rank_index, g_idx); }
                     adopt => { Zoning.adopt_colour(root.rank_index, g_idx); }
                 }
             }

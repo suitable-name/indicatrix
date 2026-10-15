@@ -14,6 +14,10 @@ use glam::DVec3;
 /// `None` for total internal reflection (only possible when `n_from > n_to`). Equal indices
 /// return the incident direction unchanged, bit for bit after normalising.
 #[must_use]
+#[expect(
+    clippy::float_cmp,
+    reason = "equal indices are an exact input case that must return the incident direction unchanged"
+)]
 pub fn refract(incident: DVec3, normal: DVec3, n_from: f64, n_to: f64) -> Option<DVec3> {
     let dir = incident.normalize();
     let mut facing = normal.normalize();

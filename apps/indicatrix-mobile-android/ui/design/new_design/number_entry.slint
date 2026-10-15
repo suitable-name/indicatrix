@@ -1,0 +1,115 @@
+// A tap-to-edit number field for the New Design form: the value in a bordered box, and the
+// app's own keypad opening inline below it (the form lives on a scrolling page, so no sheet
+// is needed). The typed text is kept by Rust through `PropsModel.number-begin` and
+// `number-key-pressed` (`KeypadState`); "OK" copies it into `text`.
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { StateLayer } from "../../shell/state_layer.slint";
+import { IconButton } from "../../shell/icon_button.slint";
+import { Keypad } from "../../shell/keypad.slint";
+import { PropsModel } from "../props/props_model.slint";
+
+export component NumberEntry inherits VerticalLayout {
+    in-out property <string> text;
+    in property <string> placeholder: "";
+    // The keypad's caption.
+    in property <string> caption: "";
+    in property <string> unit: "";
+    // Whether a "clear" button appears while the field holds a value.
+    in property <bool> clearable: false;
+
+    property <bool> editing: false;
+
+    spacing: Theme.space-sm;
+
+    HorizontalLayout {
+        height: Theme.row-height;
+        spacing: Theme.space-xs;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: root.editing ? Theme.primary : Theme.outline;
+            accessible-role: AccessibleRole.button;
+            accessible-label: (root.caption != "" ? root.caption : root.placeholder) + ", " + (root.text != "" ? root.text : "not set");
+            accessible-action-default => {
+                root.toggle();
+            }
+
+            StateLayer {
+                pressed: touch.pressed;
+                hovered: touch.has-hover;
+                border-radius: parent.border-radius;
+            }
+
+            HorizontalLayout {
+                padding-left: Theme.space-md;
+                padding-right: Theme.space-md;
+                spacing: Theme.space-sm;
+
+                Text {
+                    text: root.text != "" ? root.text : root.placeholder;
+                    color: root.text != "" ? Theme.on-surface : Theme.on-surface-variant;
+                    font-size: Theme.text-body-large;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                if root.unit != "": Text {
+                    text: root.unit;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-body-large;
+                    vertical-alignment: center;
+                }
+            }
+
+            touch := TouchArea {
+                clicked => {
+                    root.toggle();
+                }
+            }
+        }
+
+        if root.clearable && root.text != "": IconButton {
+            icon: Icons.close;
+            label: "Clear " + root.caption;
+            clicked => {
+                root.text = "";
+                root.editing = false;
+            }
+        }
+    }
+
+    if root.editing: HorizontalLayout {
+        alignment: center;
+
+        Keypad {
+            max-width: 400px;
+            horizontal-stretch: 1;
+            caption: root.caption;
+            readout: PropsModel.number-readout;
+            unit: PropsModel.number-typing ? "" : root.unit;
+            typing: PropsModel.number-typing;
+            key(id) => {
+                PropsModel.number-key-pressed(id);
+            }
+            ok => {
+                if (PropsModel.number-text != "") {
+                    root.text = PropsModel.number-text;
+                }
+                root.editing = false;
+            }
+        }
+    }
+
+    function toggle() {
+        if (root.editing) {
+            root.editing = false;
+        } else {
+            PropsModel.number-begin(root.text);
+            root.editing = true;
+        }
+    }
+}

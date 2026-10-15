@@ -1,0 +1,458 @@
+import { ComboBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { SettingsModel } from "../../models/settings.slint";
+import { ViewportModel } from "../../models/viewport.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { BodyColorEditorModel } from "../../models/body_color_editor.slint";
+import { PhysicscolorModel } from "../../models/physics_color.slint";
+import { CrystalAxisSection } from "../settings_dialog/crystal_axis_section.slint";
+import { SettingLabel } from "../settings_dialog/setting_label.slint";
+import { ToggleRow } from "../toggle_switch.slint";
+import { TipButton } from "../compact_controls.slint";
+import { AdvancedNote } from "../advanced_note.slint";
+import { MaterialGuessBadge } from "../material_guess.slint";
+import { LchEditor } from "../material_editor/lch_editor.slint";
+import { RenderColorControl } from "../gem_viewport/render_color_picker.slint";
+import { PreviewBadge } from "../material_chip.slint";
+import { GroupHeader, SliderRow } from "parts.slint";
+
+// The Parameters dock's Stone tab: everything about the stone itself, in one place. The design
+// is the single source of truth.
+//
+//  * Material: the design's material, refractive index, body colour (one control each; they
+//    are undoable design edits and apply at once). "Preview as..." is the only way to look at
+//    another material: it is view-only, never starts by itself, shows an amber badge here, in
+//    both viewport toolbars and in the export dialogs, and "Back to design" ends it.
+//  * Size: one "Stone width (mm)" field, the design's girdle diameter (the Preform tab's
+//    Girdle Diameter is the same value).
+//  * Material effects: inclusion haze, crystal axis, frosted girdle and edge rounding are stored
+//    in the design (`Edit::SetRenderEffects`); a drag is shown at once and written to the design
+//    when it pauses (`gui::editor::callbacks::tier_actions::viewport_material`).
+//
+// A library design showing in Live Render is not editable, so there is no design material to
+// change. The tab then offers a view-only choice instead: "Library design: shown as <material>",
+// a material and a colour to look at it in (remembered as the app preference, never saved with
+// the design) and view-only effects that start from the defaults and are not saved either. The
+// "Previewing" badge does not appear, because there is no design material to differ from. As soon
+// as the design is opened in the Edit tab, the design's own values apply.
+export component StoneTab inherits VerticalLayout {
+    // The open design is what the viewport shows, so its controls apply.
+    property <bool> design_shown: EditorModel.enabled && EditorModel.has_design && ViewportModel.shows_editor_design;
+    // A library design is what the viewport shows: view-only choices.
+    property <bool> library_shown: !ViewportModel.shows_editor_design;
+    // The worked-example guide can lock the design's material controls.
+    property <bool> unlocked: GuideModel.allows_design_settings();
+    property <bool> advanced: GuideModel.shows_advanced();
+    // The inline colour editor under the body-colour combo ("Custom...").
+    property <bool> color_picker_open: false;
+    // The closing sentence of the effect hints: where the value lives.
+    property <string> saved_note: root.library_shown
+        ? " Not saved: view only for a library design."
+        : " Saved in the design.";
+
+    spacing: 14px;
+
+    if !root.design_shown && !root.library_shown: Text {
+        text: "Open or create a design to set its material, size and effects.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
+    }
+
+    // A library design: a view-only material and colour, no design to edit.
+    if root.library_shown: VerticalLayout {
+        spacing: 14px;
+
+        GroupHeader { text: "Material"; }
+
+        Rectangle {
+            height: 34px;
+            background: Theme.hint-surface;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-medium;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Library design: shown as " + ViewportModel.traced_material_name;
+            Text {
+                x: 10px;
+                width: parent.width - 20px;
+                height: parent.height;
+                text: "Library design: shown as " + ViewportModel.traced_material_name;
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 3px;
+            SettingLabel {
+                text: "Material";
+                hint: "The material to look at this library design in. It is a view only: the library design is not changed and nothing is saved with it. Your choice is remembered for next time. To give a design its own material, open it in the Edit tab.";
+            }
+            ComboBox {
+                model: ViewportModel.material_options;
+                current-index <=> ViewportModel.selected_material_index;
+                accessible-label: "Show the Library Design As";
+                accessible-description: "View only. The library design is not changed. Your choice is remembered as the material library designs are shown in.";
+                selected(val) => { ViewportModel.library_material_chosen(val); }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 3px;
+            SettingLabel {
+                text: "Color";
+                hint: "Look at this library design in another color of the same material. Only the picture changes; the library design is not touched. Your choice is remembered for next time.";
+            }
+            HorizontalLayout {
+                render-color-control-l113 := RenderColorControl { }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        Text {
+            text: "View only: nothing here is saved with the library design. Open it in the Edit tab to give it its own material, color and width.";
+            font-size: 10px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+        }
+
+        GroupHeader { text: "Size"; }
+
+        Text {
+            text: "Library designs are shown at the default width of 7 mm. Open the design in the Edit tab to set its width.";
+            font-size: 10px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+        }
+    }
+
+    if root.design_shown: VerticalLayout {
+        spacing: 14px;
+
+        GroupHeader { text: "Material"; }
+
+        if ViewportModel.previewing: PreviewBadge { row_height: 36px; }
+
+        // The design's material.
+        VerticalLayout {
+            spacing: 3px;
+            SettingLabel {
+                text: "Material";
+                hint: "The design's material: built-ins first, then your own custom materials, then \"Custom RI...\" for a refractive index you type. It sets the critical angle, the optimizer's targets, the tilt curves and the picture. Changing it is one step you can undo.";
+            }
+            ComboBox {
+                enabled: root.unlocked;
+                model: EditorModel.material_combo_options;
+                current-index <=> EditorModel.material_combo_index;
+                accessible-label: "Material";
+                accessible-description: "The design's material. Changing it applies at once and can be undone.";
+                selected => {
+                    EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_color_index);
+                }
+            }
+        }
+
+        if root.advanced: VerticalLayout {
+            spacing: 3px;
+            SettingLabel {
+                text: "RI Override";
+                hint: "Refractive index (RI): how strongly the stone bends light. Leave this blank to use the material's own value, or type your own (above 1, for example 1.76). Press Enter to apply. It moves the critical angle. See the glossary.";
+            }
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> EditorModel.ri_override_text;
+                placeholder-text: "auto";
+                accessible-label: "Refractive Index Override";
+                accessible-description: "Blank uses the material's own refractive index. Press Enter to apply.";
+                accepted => {
+                    EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_color_index);
+                }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+        }
+        if !root.advanced && EditorModel.ri_override_text != "": AdvancedNote { }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                width: ri_row.preferred-width;
+                height: ri_row.preferred-height;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Effective Refractive Index " + (EditorModel.effective_ri_text == "" ? "not known" : EditorModel.effective_ri_text);
+                Tooltip { text: @markdown("Effective refractive index (RI) in use, after any override. See the glossary."); }
+                ri_row := HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                    Text { text: "Eff. RI:"; font-size: 11px; color: Theme.text-muted; }
+                    Text { text: EditorModel.effective_ri_text == "" ? "-" : EditorModel.effective_ri_text; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                }
+            }
+            Rectangle {
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                width: crit_row.preferred-width;
+                height: crit_row.preferred-height;
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Critical Angle " + (EditorModel.critical_angle_text == "" ? "not known" : EditorModel.critical_angle_text);
+                Tooltip { text: @markdown("Critical angle: below this angle light leaks out of a pavilion facet instead of bouncing back (see the tier list's MARGIN column). It follows from the refractive index. See the glossary."); }
+                crit_row := HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                    Text { text: "Crit.:"; font-size: 11px; color: Theme.text-muted; }
+                    Text { text: EditorModel.critical_angle_text == "" ? "-" : EditorModel.critical_angle_text; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        TipButton {
+            enabled: root.unlocked;
+            text: "New/Edit Material...";
+            hint: "Open the material editor to make your own material (a name, a refractive index and optionally color and dispersion) or change one you made.";
+            clicked => { ViewportModel.material_editor_open = true; }
+        }
+
+        // The inferred-material guess badge (nothing while the design names its material).
+        MaterialGuessBadge { }
+
+        // Body colour of the design.
+        VerticalLayout {
+            spacing: 3px;
+            SettingLabel {
+                text: "Body Color";
+                hint: "Show this design in a different color of the same material, for example a yellow instead of a blue sapphire, without making a custom material. \"Custom...\" opens an editor for any tone, saturation and hue; the color depends on the size of the stone, and the closest color the material model can reach is used. The material's own color shading by direction (pleochroism) is not modelled while a color is set. Changing it is one step you can undo.";
+            }
+            ComboBox {
+                // Greyed out for a physics-color material: the override would replace the
+                // physical color.
+                enabled: root.unlocked && !EditorModel.design_material_is_physics && !EditorModel.design_material_is_zoned;
+                model: EditorModel.body_color_options;
+                current-index <=> EditorModel.body_color_index;
+                accessible-label: "Body Color";
+                accessible-description: "The color this design is shown in. The last entry, Custom, opens an editor for tone, saturation and hue.";
+                selected => {
+                    if self.current-index == EditorModel.body_color_options.length - 1 {
+                        root.color_picker_open = true;
+                        BodyColorEditorModel.target = 0;
+                        BodyColorEditorModel.open_requested();
+                    } else {
+                        root.color_picker_open = false;
+                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_color_index);
+                    }
+                }
+            }
+            if EditorModel.body_color_index == EditorModel.body_color_options.length - 1 && !root.color_picker_open: tip-button-busy := TipButton {
+                enabled: root.unlocked && !EditorModel.design_material_is_physics && !EditorModel.design_material_is_zoned;
+                text: BodyColorEditorModel.busy ? "Matching..." : "Choose Color...";
+                hint: "Open the color editor to choose the tone, saturation and hue of this design's color.";
+                clicked => {
+                    root.color_picker_open = true;
+                    BodyColorEditorModel.target = 0;
+                    BodyColorEditorModel.open_requested();
+                }
+            }
+            if root.color_picker_open: VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: "Tone, saturation and hue of the color. It depends on the size of the stone. The closest color the material model can reach is used. It changes this design and you can undo it.";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                }
+                LchEditor {
+                    enabled: root.unlocked && !EditorModel.design_material_is_physics && !EditorModel.design_material_is_zoned;
+                    applied => { root.color_picker_open = false; }
+                    cancelled => { root.color_picker_open = false; }
+                }
+            }
+            // The zoned-material note: its colour is its zones, so the override is unavailable.
+            if EditorModel.design_material_is_zoned: HorizontalLayout {
+                spacing: 4px;
+                Text {
+                    text: "This material's color comes from its zones. Edit the base zone in the material editor.";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                }
+            }
+            // The physics-colour indicator: this material brings its own colour.
+            if EditorModel.design_material_is_physics: HorizontalLayout {
+                spacing: 4px;
+                Text {
+                    text: EditorModel.physics_override_conflict
+                        ? (PhysicscolorModel.ui_enabled
+                            ? "A color override is set and replaces this material's physical color. Choose \"Material default\" to restore it."
+                            : "A color override is set and replaces this material's own color. Choose \"Material default\" to restore it.")
+                        : (PhysicscolorModel.ui_enabled
+                            ? "This material has a physical color. A color override would replace it, so it is unavailable."
+                            : "This material defines its own color.");
+                    font-size: 10px;
+                    color: EditorModel.physics_override_conflict ? Theme.accent-amber : Theme.text-muted;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                }
+            }
+        }
+
+        // Preview as another material (view only).
+        VerticalLayout {
+            spacing: 3px;
+            SettingLabel {
+                text: "Preview As...";
+                hint: "Look at this stone in another material without changing the design. While you preview, the picture, exports and tilt videos use that material, and a banner stays on until you press Back to design. It never starts by itself.";
+            }
+            ComboBox {
+                enabled: root.unlocked;
+                model: ViewportModel.material_options;
+                current-index <=> ViewportModel.selected_material_index;
+                accessible-label: "Preview as Another Material";
+                accessible-description: "View only. The design keeps its own material. Back to design returns.";
+                selected(val) => { ViewportModel.preview_material_chosen(val); }
+            }
+            Text {
+                text: ViewportModel.previewing
+                    ? "Previewing: the design keeps its own material."
+                    : "View only: the design keeps its own material.";
+                font-size: 10px;
+                color: ViewportModel.previewing ? Theme.accent-amber : Theme.text-muted;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+            }
+            if ViewportModel.previewing: VerticalLayout {
+                spacing: 3px;
+                SettingLabel {
+                    text: "Preview Color";
+                    hint: "Try another color on the preview material. Only this view changes; the design is not touched. Back to Design clears it.";
+                }
+                HorizontalLayout {
+                    render-color-control-l344 := RenderColorControl { }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+
+        GroupHeader { text: "Size"; }
+
+        // One stone width: the design's girdle diameter. Typing sets it in the design (one undo
+        // step); the Preform tab's Girdle Diameter is the same value.
+        VerticalLayout {
+            spacing: 3px;
+            SettingLabel {
+                text: "Stone Width (mm)";
+                hint: "The width of the stone across the girdle in millimetres. A bigger stone is physically deeper in color (twice the width, twice the optical density); the built-in colors are tuned for about 7 mm. It is saved in the design, you can undo it, and it is the same value as the Girdle Diameter in the Preform tab. You can type arithmetic, for example 6.5+0.25. Press Enter to apply; blank clears it.";
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                LineEdit {
+                    enabled: root.unlocked;
+                    horizontal-stretch: 1;
+                    text <=> EditorModel.girdle_diameter_mm;
+                    placeholder-text: "not set";
+                    accessible-label: "Stone Width in Millimetres";
+                    accessible-description: "The design's girdle diameter. Press Enter to apply.";
+                    accepted => { EditorModel.apply_stone_width(EditorModel.girdle_diameter_mm); }
+                    changed has-focus => {
+                        EditorModel.text_focus = self.has-focus;
+                        if !self.has-focus {
+                            EditorModel.apply_stone_width(EditorModel.girdle_diameter_mm);
+                        }
+                    }
+                }
+                Text { text: "mm"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
+            }
+            Text {
+                // Reads the design's own value (pushed from Rust), never the scratch text, which
+                // the Preform tab can also hold unapplied.
+                // A committed width re-seeds the scratch with the design's text; "7" against
+                // "7.0000" is the same value.
+                text: (EditorModel.girdle_diameter_mm != EditorModel.design_girdle_diameter_text
+                        && (EditorModel.girdle_diameter_mm == "" || EditorModel.design_girdle_diameter_text == ""
+                            || EditorModel.girdle_diameter_mm.to-float() != EditorModel.design_girdle_diameter_text.to-float()))
+                    ?"Not applied yet: press Enter to set it in the design."
+                    : (EditorModel.design_girdle_diameter_text == ""
+                        ? "Not set in the design: colors are shown for 7 mm. Type a width to set it."
+                        : "Saved in the design: " + EditorModel.design_girdle_diameter_text + " mm.");
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+            }
+        }
+    }
+
+    // The effects: the open design's (saved in it), or a library design's view-only values.
+    if root.design_shown || root.library_shown: VerticalLayout {
+        spacing: 14px;
+
+        GroupHeader { text: "Material Effects"; }
+
+        if root.library_shown: VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: "Not Saved (View Only)";
+                font-size: 11px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+                accessible-role: AccessibleRole.text;
+            }
+            Text {
+                text: "These effects are for looking only. They start from the defaults for every library design and are lost when you open another design. Open the design in the Edit tab to save effects with it.";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+            }
+        }
+
+        // Inclusion Haze. The slider drags a position (0-1) and the coefficient is
+        // 2 * position^2 (`render_setup::inclusion_scale`): finer at the clean end.
+        SliderRow {
+            text: "Inclusion Haze";
+            hint: "Inclusion Haze: a milky veil inside the stone, from 0 (clean) to 2 (milky), as tiny inclusions scatter the light. The slider is finer at the clean end: a quarter of the way is a light silk." + root.saved_note;
+            value_text: SettingsModel.inclusion_sigma_s <= 0.0 ? "Off" : Math.round(SettingsModel.inclusion_sigma_s * 100.0) / 100.0 + "";
+            minimum: 0.0;
+            maximum: 1.0;
+            value <=> SettingsModel.inclusion_position;
+            edited(val) => { SettingsModel.stone_inclusion_edited(val); }
+        }
+
+        // Crystal Axis Orientation (off, "As Cut", by default; disabled for an isotropic material).
+        CrystalAxisSection { }
+
+        ToggleRow {
+            text: "Frosted Girdle";
+            hint: "Frosted Girdle: draw the girdle band ground (matt) instead of polished." + root.saved_note;
+            checked: SettingsModel.girdle_frosted;
+            toggled => {
+                SettingsModel.girdle_frosted = !SettingsModel.girdle_frosted;
+                SettingsModel.girdle_frosted_changed(SettingsModel.girdle_frosted);
+            }
+        }
+
+        SliderRow {
+            text: "Edge Rounding";
+            hint: "Edge Rounding: soften the edges between facets from perfectly sharp toward a faint rounded glint, as on a real polished stone." + root.saved_note;
+            value_text: SettingsModel.edge_rounding_radius <= 0.0 ? "Off" : Math.round(SettingsModel.edge_rounding_radius * 1000.0) / 1000.0 + "";
+            minimum: 0.0;
+            maximum: 0.03;
+            value <=> SettingsModel.edge_rounding_radius;
+            edited(val) => { SettingsModel.edge_rounding_changed(val); }
+        }
+    }
+}

@@ -254,6 +254,11 @@ impl ColorSpace {
         };
 
         let tf = self.transfer_function();
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the encoded value is clamped to 0..=1, so encoded * 255 + 0.5 lies in 0.5..=255.5 and truncates to 0..=255"
+        )]
         let encode_channel = |c: f32| -> u8 {
             let linear = if c.is_finite() {
                 c.clamp(0.0, 1.0)

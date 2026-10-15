@@ -1,0 +1,139 @@
+import { TrainerTheme } from "../theme.slint";
+import { ChartData } from "../models.slint";
+
+// A line chart over a ChartData: title and latest value, y-axis min / max, x-axis first / last,
+// grid, optional goal line, and an honest empty state.
+export component Chart inherits Rectangle {
+    in property <ChartData> data;
+    in property <color> line: TrainerTheme.accent-cyan;
+
+    min-height: 150px;
+    background: TrainerTheme.bg-card;
+    border-radius: TrainerTheme.radius;
+    border-width: 1px;
+    border-color: ta.has-hover ? TrainerTheme.border-medium : TrainerTheme.border-subtle;
+
+    accessible-role: text;
+    accessible-label: root.data.title + (root.data.has_data ? ", latest " + root.data.latest + " " + root.data.unit : ", no data yet");
+    accessible-description: root.data.help;
+
+    VerticalLayout {
+        padding: 10px;
+        padding-top: 8px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.data.title;
+                color: TrainerTheme.text-primary;
+                font-size: 12px;
+                font-weight: 700;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.data.has_data && root.data.reference_label != "": Text {
+                text: root.data.reference_label;
+                color: TrainerTheme.accent-amber;
+                font-size: 11px;
+            }
+            if root.data.has_data: Text {
+                text: root.data.latest + (root.data.unit != "" ? " " + root.data.unit : "");
+                color: root.line;
+                font-size: 12px;
+                font-weight: 700;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            // Y axis labels
+            Rectangle {
+                width: 46px;
+                Text {
+                    y: 0;
+                    width: parent.width;
+                    text: root.data.has_data ? root.data.y_max : "";
+                    color: TrainerTheme.text-muted;
+                    font-size: 10px;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                }
+                Text {
+                    y: parent.height - self.height;
+                    width: parent.width;
+                    text: root.data.has_data ? root.data.y_min : "";
+                    color: TrainerTheme.text-muted;
+                    font-size: 10px;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                }
+            }
+            // Plot area
+            Rectangle {
+                background: TrainerTheme.bg-input;
+                border-radius: 4px;
+                clip: true;
+
+                for f in [0.0, 0.5, 1.0]: Rectangle {
+                    y: (parent.height - 1px) * f;
+                    height: 1px;
+                    background: TrainerTheme.border-subtle;
+                }
+                if root.data.has_data && root.data.reference != "": Path {
+                    width: parent.width;
+                    height: parent.height;
+                    viewbox-width: 1000;
+                    viewbox-height: 400;
+                    commands: root.data.reference;
+                    stroke: TrainerTheme.accent-amber;
+                    stroke-width: 1px;
+                    opacity: 0.8;
+                }
+                if root.data.has_data: Path {
+                    width: parent.width;
+                    height: parent.height;
+                    viewbox-width: 1000;
+                    viewbox-height: 400;
+                    commands: root.data.commands;
+                    stroke: root.line;
+                    stroke-width: 2px;
+                    stroke-line-join: round;
+                    fill: transparent;
+                }
+                if !root.data.has_data: Text {
+                    text: root.data.empty_text != "" ? root.data.empty_text : "No data yet";
+                    color: TrainerTheme.text-muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width - 24px;
+                    x: 12px;
+                    height: parent.height;
+                }
+            }
+        }
+
+        // X axis labels
+        HorizontalLayout {
+            padding-left: 52px;
+            Text {
+                text: root.data.has_data ? "iteration " + root.data.x_first : " ";
+                color: TrainerTheme.text-muted;
+                font-size: 10px;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.data.has_data ? root.data.x_last : " ";
+                color: TrainerTheme.text-muted;
+                font-size: 10px;
+                horizontal-alignment: right;
+            }
+        }
+    }
+    ta := TouchArea { mouse-cursor: MouseCursor.default; }
+    if root.data.help != "": Tooltip {
+        text: @markdown("\{root.data.help}");
+    }
+}

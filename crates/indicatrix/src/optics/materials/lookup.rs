@@ -1,5 +1,5 @@
 //! Name-based lookup ([`GemMaterial::by_name`]) and the built-in convenience
-//! accessors (`diamond`/`ruby`/`sapphire`/`emerald`).
+//! accessors (`diamond`/`ruby`/`sapphire`/`emerald`, and `ametrine`).
 
 use super::GemMaterial;
 
@@ -67,5 +67,17 @@ impl GemMaterial {
     #[must_use]
     pub fn emerald() -> Self {
         Self::by_name("Emerald").expect("\"Emerald\" must be present in all_materials()")
+    }
+
+    /// Convenience accessor for the built-in Ametrine material (bicolour quartz with colour
+    /// zones).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `"Ametrine"` is ever removed from the built-in list returned by
+    /// [`all_materials`](Self::all_materials) -- see [`diamond`](Self::diamond) for why.
+    #[must_use]
+    pub fn ametrine() -> Self {
+        Self::by_name("Ametrine").expect("\"Ametrine\" must be present in all_materials()")
     }
 }

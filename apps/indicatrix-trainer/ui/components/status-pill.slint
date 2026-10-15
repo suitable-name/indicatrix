@@ -1,0 +1,49 @@
+import { TrainerTheme } from "../theme.slint";
+
+// Run state: Idle / Training / Paused / Stopping / Stopped, each with its own color.
+export component StatusPill inherits Rectangle {
+    in property <string> status;
+    in property <string> tip;
+
+    private property <color> tone: TrainerTheme.status-color(root.status);
+
+    min-width: 96px;
+    max-width: 120px;
+    height: 28px;
+    border-radius: 14px;
+    background: root.tone.with-alpha(0.16);
+    border-width: 1px;
+    border-color: root.tone.with-alpha(0.7);
+
+    accessible-role: text;
+    accessible-label: "Run state: " + root.status;
+    accessible-description: root.tip;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: center;
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.tone;
+            }
+        }
+        Text {
+            text: root.status;
+            color: TrainerTheme.text-primary;
+            font-size: 12px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea { mouse-cursor: MouseCursor.default; }
+    if root.tip != "": Tooltip {
+        text: @markdown("\{root.tip}");
+    }
+}

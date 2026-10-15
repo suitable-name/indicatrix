@@ -368,13 +368,24 @@ impl EnvironmentMap {
         let tx = fx - x0;
         let ty = fy - y0;
 
-        let wrap_x = |x: i64| -> usize { x.rem_euclid(self.width as i64) as usize };
-        let clamp_y = |y: i64| -> usize { y.clamp(0, self.height as i64 - 1) as usize };
+        let width_i = i64::try_from(self.width).expect("the texture width fits i64");
+        let height_i = i64::try_from(self.height).expect("the texture height fits i64");
+        let wrap_x = |x: i64| -> usize {
+            usize::try_from(x.rem_euclid(width_i)).expect("rem_euclid by the width is in 0..width")
+        };
+        let clamp_y = |y: i64| -> usize {
+            usize::try_from(y.clamp(0, height_i - 1)).expect("the row is clamped to 0..height")
+        };
 
-        let x0i = wrap_x(x0 as i64);
-        let x1i = wrap_x(x0 as i64 + 1);
-        let y0i = clamp_y(y0 as i64);
-        let y1i = clamp_y(y0 as i64 + 1);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "x0 and y0 are floors of finite texel coordinates within about +-width/height"
+        )]
+        let (x0_cell, y0_cell) = (x0 as i64, y0 as i64);
+        let x0i = wrap_x(x0_cell);
+        let x1i = wrap_x(x0_cell + 1);
+        let y0i = clamp_y(y0_cell);
+        let y1i = clamp_y(y0_cell + 1);
 
         let p00 = self.texel(x0i, y0i);
         let p10 = self.texel(x1i, y0i);
@@ -621,8 +632,18 @@ mod pole_numerics_tests {
     fn pdf_uv_f64(map: &EnvironmentMap, weighted: &[f64], total: f64, u: f64, v: f64) -> f64 {
         let width = map.width;
         let height = map.height;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the clamped fraction times the height is non-negative and below the height"
+        )]
         let row = (v.clamp(0.0, 0.999_999_94) * height as f64) as usize;
         let row = row.min(height - 1);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the clamped fraction times the width is non-negative and below the width"
+        )]
         let col = (u.clamp(0.0, 0.999_999_94) * width as f64) as usize;
         let col = col.min(width - 1);
         weighted[row * width + col] * width as f64 * height as f64 / total
@@ -704,6 +725,10 @@ mod pole_numerics_tests {
                     let (sin_theta, cos_theta) = theta.sin_cos();
                     let (sin_phi, cos_phi) = phi.sin_cos();
                     let dir_f64 = (sin_theta * sin_phi, cos_theta, sin_theta * cos_phi);
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "the production pdf takes an f32 direction; components are within -1..=1"
+                    )]
                     let dir_f32 = Vec3::new(dir_f64.0 as f32, dir_f64.1 as f32, dir_f64.2 as f32);
 
                     let u_exact = (phi / (2.0 * PI64)).rem_euclid(1.0);

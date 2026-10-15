@@ -7,7 +7,7 @@
 use crate::optics::materials::{CrystalSystem, GemMaterial};
 
 use super::{SHADER_SRC, renderer::GpuFrameRenderer};
-use crate::renderer::gpu::compute;
+use crate::renderer::gpu::{compute, pipeline_cache};
 
 /// The values `spectral_transport.wgsl`'s `MATERIAL_CLASS` pipeline-overridable
 /// constant accepts -- see that override's own doc comment. `pub(crate)` rather than
@@ -93,6 +93,12 @@ impl GpuFrameRenderer {
                 "transport_main",
                 &[("MATERIAL_CLASS", f64::from(class))],
             ));
+            // Persist right after the expensive compile so the next process start loads
+            // it (GPU-1); a no-op without a configured directory, a Vulkan cache, or on
+            // wasm32.
+            if let Some(cache) = self.pipeline_cache.as_ref() {
+                pipeline_cache::persist(cache, &self.ctx.adapter.get_info());
+            }
         }
     }
 

@@ -50,12 +50,16 @@ export component SweepDialog inherits Rectangle {
                 alignment: space-between;
                 HorizontalLayout {
                     spacing: 8px;
-                    Image {
-                        source: @image-url("../icons/bar-chart.svg");
-                        colorize: Theme.text-primary;
-                        width: 15px;
-                        height: 15px;
-                        vertical-alignment: center;
+                    // Centred by a layout of its own: a fixed-size Image in the row sits at the
+                    // top of its cell.
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../icons/bar-chart.svg");
+                            colorize: Theme.text-primary;
+                            width: 15px;
+                            height: 15px;
+                        }
                     }
                     Text {
                         text: "Angle Sweep";
@@ -111,7 +115,7 @@ export component SweepDialog inherits Rectangle {
                     height: 100%;
                     text: SweepModel.running
                         ? "Working..."
-                        : "Pick a tier and a range, then press Run sweep. Each angle is solved and scored on a copy of the design, so your design is not changed. When the sweep is done, select the angle you like and press Use this angle.";
+                        : "Pick a tier and a range, then press Run Sweep. Each angle is solved and scored on a copy of the design, so your design is not changed. When the sweep is done, select the angle you like and press Use This Angle.";
                     font-size: 12px;
                     color: Theme.text-muted;
                     wrap: word-wrap;
@@ -133,7 +137,7 @@ export component SweepDialog inherits Rectangle {
                     overflow: elide;
                     vertical-alignment: center;
                 }
-                SweepButton {
+                sweep-button-use-label := SweepButton {
                     text: SweepModel.use_label;
                     hint: SweepModel.selected_usable && !SweepModel.running
                         ? "Make the selected angle the tier's angle. It is one change, and Undo takes it back."

@@ -35,6 +35,16 @@ pub fn working_position(fx: f32, fy: f32, width: usize, height: usize) -> Option
     ])
 }
 
+/// A whole-number pixel coordinate as an index: negative values become 0 and NaN maps to 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to >= 0 first; `as` saturates for huge values and maps NaN to 0"
+)]
+const fn pixel_index(v: f64) -> usize {
+    v.max(0.0) as usize
+}
+
 /// Applies one click at working position `centre` with `radius_px` (clamped to
 /// `0.5..=MAX_BRUSH_RADIUS_PX`). A pixel is in the patch when its centre is within the
 /// radius.
@@ -50,10 +60,10 @@ pub fn apply(mask: &mut PixelMask, centre: [f64; 2], radius_px: f64, mode: Brush
     if width == 0 || height == 0 {
         return 0;
     }
-    let x_lo = (centre[0] - radius).floor().max(0.0) as usize;
-    let y_lo = (centre[1] - radius).floor().max(0.0) as usize;
-    let x_hi = ((centre[0] + radius).ceil().max(0.0) as usize).min(width - 1);
-    let y_hi = ((centre[1] + radius).ceil().max(0.0) as usize).min(height - 1);
+    let x_lo = pixel_index((centre[0] - radius).floor());
+    let y_lo = pixel_index((centre[1] - radius).floor());
+    let x_hi = pixel_index((centre[0] + radius).ceil()).min(width - 1);
+    let y_hi = pixel_index((centre[1] + radius).ceil()).min(height - 1);
     let mut changed = 0;
     for y in y_lo..=y_hi {
         for x in x_lo..=x_hi {
@@ -158,7 +168,7 @@ mod tests {
     fn the_radius_is_clamped() {
         let mut mask = PixelMask::new(200, 200);
         let big = apply(&mut mask, [100.0, 100.0], 1.0e9, BrushMode::Exclude);
-        let limit = (std::f64::consts::PI * MAX_BRUSH_RADIUS_PX * MAX_BRUSH_RADIUS_PX) as usize;
+        let limit = pixel_index(std::f64::consts::PI * MAX_BRUSH_RADIUS_PX * MAX_BRUSH_RADIUS_PX);
         assert!(big <= limit + 200, "{big} vs {limit}");
         let mut other = PixelMask::new(20, 20);
         let tiny = apply(&mut other, [10.5, 10.5], f64::NAN, BrushMode::Exclude);

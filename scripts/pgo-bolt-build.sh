@@ -89,7 +89,7 @@
 #      full stage-by-stage coverage table.
 #   2. `indicatrix-cut-core`'s OWN `pgo_train_cutcore` example (cut target only) -- the
 #      editor-core layer built on top of `indicatrix`: `Design::solve`, `.asc` export,
-#      the native `.indicatrix.toml` save/load round trip, `resolve_after_edit`, and
+#      the `.isdd` design file save/load round trip, `resolve_after_edit`, and
 #      `optimize_design`'s search loop, run against every built-in template plus the
 #      crate's own CrackOtto-Step fixture. It is built in the SAME `cargo build`
 #      invocation as everything else for the `cut` target (`pgo_packages` includes
@@ -115,10 +115,16 @@
 #      describes;
 #      the post-build "hash mismatch"/"no profile data available" scan below is what
 #      catches it if it ever matters in practice.
-# Every `.profraw` from all three binaries is merged into one `.profdata` per combination.
+#   4. `indicatrix-net`'s `pgo_codecs` example (own `cargo build`, same `--features render`
+#      as step 3) -- the payload codecs: byte shuffle, zstd and LZ4 encode/decode of
+#      1080p sparse and dense frames plus one 4K frame, every round trip checked.
+# `pgo_train` itself runs twice per tier build when the host's native SIMD tier outranks
+# the build's cap (`--print-simd-tier`, see `simd_training_caps`): once with
+# `INDICATRIX_SIMD` unset (what the shipped binary does) and once capped.
+# Every `.profraw` from all binaries and runs is merged into one `.profdata` per combination.
 #
-# Training coverage is a known limitation, not a complete picture. None of the three
-# training binaries exercises the radiance (HDR) image codecs, the solid rasterizer,
+# Training coverage is a known limitation, not a complete picture. None of the training
+# binaries exercises the radiance (HDR) image FILE codecs, the solid rasterizer,
 # `guide_pass`, the `indicatrix-vault` database, the desktop editor's event loops and GUI
 # code, or the `GpuBackend` type; those paths are optimised as cold code. The `gpu` tier's
 # `train_gpu` stage trains `render_hybrid`, which no app calls today. Two more limits:
@@ -654,6 +660,50 @@ no_pgo_notice() {
         "$target" "$combo" "$HOST_TARGET"
 }
 
+# The `INDICATRIX_SIMD` values `pgo_train` is run with for one tier build (BLD-1), one per
+# output line (an empty line = variable unset). The shipped binary runs with the variable
+# UNSET and dispatches at run time to the host's best kernels (`simd::simd_level`), so a
+# tier build trained only under its own cap leaves the higher tier's kernels (the AVX-512
+# variants in an `avx2` build) with zero counts. When the host's native tier outranks the
+# cap this prints an empty line (host-native dispatch) AND the cap, so both kernel sets are
+# profiled and both runs' `.profraw` files merge into the tier's one `.profdata`. The host
+# tier comes from the instrumented training binary itself (`--print-simd-tier`), never
+# from CPUID tools. A native build (empty cap) gets the single unset run. Reads `runner`
+# and `train_env` from the calling build_combination (bash dynamic scope); the probe also
+# writes a near-empty `probe-*.profraw`, which is harmless in the merge.
+simd_training_caps() {
+    local exe="$1" cap="$2" rawdir="$3"
+    if [ -z "$cap" ]; then
+        printf '\n'
+        return 0
+    fi
+    local host_tier
+    host_tier="$(
+        cd "$rawdir" && \
+        env -u INDICATRIX_SIMD LLVM_PROFILE_FILE="probe-%p-%m.profraw" \
+        ${train_env[@]+"${train_env[@]}"} \
+        ${runner[@]+"${runner[@]}"} \
+        "$exe" --print-simd-tier | head -n1 | tr -d '[:space:]'
+    )" || { printf 'error: %s --print-simd-tier failed\n' "$exe" >&2; return 1; }
+    local host_rank cap_rank
+    case "$host_tier" in
+        scalar) host_rank=0 ;;
+        avx2)   host_rank=1 ;;
+        avx512) host_rank=2 ;;
+        *) printf "error: unexpected --print-simd-tier output '%s' from %s\n" "$host_tier" "$exe" >&2; return 1 ;;
+    esac
+    case "$cap" in
+        scalar) cap_rank=0 ;;
+        avx2)   cap_rank=1 ;;
+        *)      cap_rank=2 ;;
+    esac
+    if [ "$host_rank" -gt "$cap_rank" ]; then
+        printf '\n%s\n' "$cap"
+    else
+        printf '%s\n' "$cap"
+    fi
+}
+
 # ---------------------------------------------------------------------------------
 # Combination worker
 # ---------------------------------------------------------------------------------
@@ -786,16 +836,27 @@ build_combination() {
         # bare file name resolves against the (Wine-mapped) working directory either
         # way. Native and cross runs share this one code path. Executable paths stay
         # absolute; `${arr[@]+"${arr[@]}"}` keeps empty arrays safe under `set -u`.
-        step "[$target][$current_os-$name][train] Running workload (${simd_cap:+INDICATRIX_SIMD=$simd_cap, }INDICATRIX_SAMPLES=$SAMPLES${runner[0]:+; runner: ${runner[*]}})"
-        (
-            cd "$rawdir"
-            env LLVM_PROFILE_FILE="train-%p-%m.profraw" \
-            ${train_env[@]+"${train_env[@]}"} \
-            ${simd_cap:+INDICATRIX_SIMD="$simd_cap"} \
-            INDICATRIX_SAMPLES="$SAMPLES" \
-            ${runner[@]+"${runner[@]}"} \
-            "$bdir/$rust_target/release/examples/pgo_train$target_exe"
-        ) 2>&1 | tee -a "$logfile"
+        # Two-run tier training (BLD-1): see simd_training_caps. The shipped binary runs
+        # with INDICATRIX_SIMD unset, so when the host's native tier outranks this
+        # build's cap, train once unset (host kernels) AND once capped; both runs'
+        # `.profraw` files land in $rawdir and merge into the tier's one profile.
+        local train_exe="$bdir/$rust_target/release/examples/pgo_train$target_exe"
+        local -a run_caps=()
+        mapfile -t run_caps < <(simd_training_caps "$train_exe" "$simd_cap" "$rawdir")
+        [ "${#run_caps[@]}" -gt 0 ] || die "[$target][$current_os-$name][train] could not determine the SIMD training runs (see the --print-simd-tier error above)"
+        local run_cap
+        for run_cap in "${run_caps[@]}"; do
+            step "[$target][$current_os-$name][train] Running workload (INDICATRIX_SIMD='${run_cap}', INDICATRIX_SAMPLES=$SAMPLES${runner[0]:+; runner: ${runner[*]}})"
+            (
+                cd "$rawdir"
+                env -u INDICATRIX_SIMD LLVM_PROFILE_FILE="train-%p-%m.profraw" \
+                ${train_env[@]+"${train_env[@]}"} \
+                ${run_cap:+INDICATRIX_SIMD="$run_cap"} \
+                INDICATRIX_SAMPLES="$SAMPLES" \
+                ${runner[@]+"${runner[@]}"} \
+                "$train_exe"
+            ) 2>&1 | tee -a "$logfile"
+        done
 
         # `indicatrix-cut-core`'s OWN training binary (cut target only), built by the
         # invocation above (see the header comment, step 2).
@@ -832,6 +893,25 @@ build_combination() {
             ${train_env[@]+"${train_env[@]}"} \
             ${runner[@]+"${runner[@]}"} \
             "$net_test_exe" --test-threads=1
+        ) 2>&1 | tee -a "$logfile"
+
+        # indicatrix-net's payload codecs (byte shuffle + zstd + LZ4 encode/decode, 1080p
+        # and one 4K frame): the `indicatrix` pgo_train example cannot link
+        # `indicatrix-net`, so they get their own example, built with the same --features
+        # as the scene_roundtrip test build above.
+        step "[$target][$current_os-$name][train] Building instrumented indicatrix-net payload codec example (pgo_codecs)"
+        CARGO_PROFILE_RELEASE_STRIP="$release_strip" \
+        CARGO_ENCODED_RUSTFLAGS="-C${US}target-cpu=$target_cpu${US}-C${US}profile-generate=$rawdir" \
+        cargo build --release --target "$rust_target" --target-dir "$bdir" \
+        -p indicatrix-net --features render --example pgo_codecs 2>&1 | tee -a "$logfile"
+
+        step "[$target][$current_os-$name][train] Running indicatrix-net payload codec training (pgo_codecs)"
+        (
+            cd "$rawdir"
+            env LLVM_PROFILE_FILE="codecs-%p-%m.profraw" \
+            ${train_env[@]+"${train_env[@]}"} \
+            ${runner[@]+"${runner[@]}"} \
+            "$bdir/$rust_target/release/examples/pgo_codecs$target_exe"
         ) 2>&1 | tee -a "$logfile"
 
         shopt -s nullglob

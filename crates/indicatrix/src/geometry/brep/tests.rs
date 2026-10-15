@@ -61,7 +61,7 @@ fn output_hash(hull: &GemPolyhedron) -> u64 {
             .flat_map(|v| v.to_array().map(f32::to_bits)),
     );
     for poly in &hull.facet_polygons {
-        words.push(poly.len() as u32);
+        words.push(u32::try_from(poly.len()).expect("a facet polygon is tiny"));
         words.extend_from_slice(poly);
     }
     words.extend_from_slice(&hull.triangle_indices);

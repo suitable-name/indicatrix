@@ -201,8 +201,17 @@ const fn space_description(color_space: ColorSpace) -> &'static str {
 /// Encodes `v` as an ICC `s15Fixed16Number`: a signed 16.16 fixed-point value,
 /// big-endian.
 fn encode_s15_fixed16(v: f32) -> [u8; 4] {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the saturating float-to-int cast is the intent; ICC XYZ values are far inside the s15Fixed16 range"
+    )]
     let fixed = (v * 65536.0).round() as i32;
     fixed.to_be_bytes()
+}
+
+/// A size or count as the `u32` the ICC format stores; a profile is a few kilobytes.
+fn icc_u32(n: usize) -> u32 {
+    u32::try_from(n).expect("an ICC profile size or count fits u32")
 }
 
 /// Builds an ICC `textDescriptionType` (`desc`) tag body (ICC.1:2001-04 §6.5.17) --
@@ -213,7 +222,7 @@ fn encode_s15_fixed16(v: f32) -> [u8; 4] {
 fn text_description_tag(desc: &str) -> Vec<u8> {
     let ascii = desc.as_bytes();
     // +1 for the ASCII NUL terminator the count must include.
-    let ascii_count = ascii.len() as u32 + 1;
+    let ascii_count = icc_u32(ascii.len()) + 1;
 
     let mut out = Vec::new();
     out.extend_from_slice(b"desc");
@@ -267,11 +276,17 @@ fn curve_tag(tf: TransferFunction) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"curv");
     out.extend_from_slice(&[0u8; 4]); // reserved
-    out.extend_from_slice(&(CURVE_SAMPLES as u32).to_be_bytes());
+    out.extend_from_slice(&icc_u32(CURVE_SAMPLES).to_be_bytes());
     for i in 0..CURVE_SAMPLES {
         let x = i as f32 / (CURVE_SAMPLES - 1) as f32;
         let y = tf.decode(x).clamp(0.0, 1.0);
-        out.extend_from_slice(&((y * 65535.0).round() as u16).to_be_bytes());
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "y is clamped to 0..=1 above, so the rounded value is 0..=65535"
+        )]
+        let code = (y * 65535.0).round() as u16;
+        out.extend_from_slice(&code.to_be_bytes());
     }
     out
 }
@@ -320,19 +335,19 @@ impl ProfileBuilder {
         let mut offset = HEADER_LEN + tag_table_len;
         let mut offsets = Vec::with_capacity(self.blocks.len());
         for block in &self.blocks {
-            offsets.push(offset as u32);
+            offsets.push(icc_u32(offset));
             offset += block.len();
             offset = offset.div_ceil(4) * 4;
         }
-        let total_size = offset as u32;
+        let total_size = icc_u32(offset);
 
         let mut out = Vec::with_capacity(offset);
         out.extend_from_slice(&build_header(total_size));
-        out.extend_from_slice(&(self.tags.len() as u32).to_be_bytes());
+        out.extend_from_slice(&icc_u32(self.tags.len()).to_be_bytes());
         for (sig, block_idx) in &self.tags {
             out.extend_from_slice(sig);
             out.extend_from_slice(&offsets[*block_idx].to_be_bytes());
-            out.extend_from_slice(&(self.blocks[*block_idx].len() as u32).to_be_bytes());
+            out.extend_from_slice(&icc_u32(self.blocks[*block_idx].len()).to_be_bytes());
         }
         for block in &self.blocks {
             out.extend_from_slice(block);

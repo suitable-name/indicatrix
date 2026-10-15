@@ -72,7 +72,7 @@ fn record() -> FullDiagramRecord {
                 content: b"GemCad 5.0\n".to_vec(),
             },
             AttachedFile {
-                name: "capps.indicatrix".to_string(),
+                name: "capps.isdd".to_string(),
                 url: String::new(),
                 content: b"older copy of the design file".to_vec(),
             },
@@ -236,7 +236,12 @@ fn oversize_attachments_are_refused_with_a_message_instead_of_dropped() {
     let big = AttachmentBlob::new(
         "big.bin",
         AttachmentRole::Other,
-        vec![0u8; MAX_ATTACHMENT_BYTES as usize + 1],
+        vec![
+            0u8;
+            usize::try_from(MAX_ATTACHMENT_BYTES)
+                .expect("the attachment limit fits the address space")
+                + 1
+        ],
     );
     let message = check_attachment_budget(std::slice::from_ref(&big)).expect_err("over the limit");
     assert!(message.contains("MiB"), "message: {message}");
@@ -312,7 +317,7 @@ fn a_saved_file_imports_back_into_a_row_with_its_marks_and_every_attachment() {
         attachments: &prepared.attachments,
         ..DesignExtras::default()
     });
-    let imported = import_native_design("capps.indicatrix", text.as_bytes()).expect("imports");
+    let imported = import_native_design("capps.isdd", text.as_bytes()).expect("imports");
     assert_eq!(imported.entry.title, "Capps Brilliant");
     assert_eq!(imported.detail.designer.as_deref(), Some("Capps, Jerry"));
     assert_eq!(imported.detail.shape.as_deref(), Some("Round"));

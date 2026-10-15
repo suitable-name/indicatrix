@@ -1,4 +1,4 @@
-//! Rough colour and colour zoning, application side (`zoning` feature only).
+//! Rough colour and colour zoning, application side.
 //!
 //! * [`store`]: THE storage API. Every function the Rough colour UI (lane U1) calls to save,
 //!   load and delete a plan's rough colour, its cached photos, its pose choices, a material's
@@ -8,12 +8,10 @@
 //!   `indicatrix_cut_core::rough_plan::zoned_plan`'s.
 //!
 //! * [`preview`], [`adopt_link`]: what the Rough Planner shows and does with a plan's colour (the
-//!   coloured previews, the "Stone orientation" option, "Use colour");
+//!   coloured previews, the "Stone orientation" option, "Use Color");
 //! * [`handles`], [`mesh_paint`], [`zone_link`]: the 3D zone handles and the polished-window brush
 //!   in the planner's rough view, and the wizard's side of them;
 //! * [`material_zones`]: the "Zones..." list and the base-colour write-back of the material editor.
-//!
-//! Nothing here is reachable from a default build.
 //!
 //! # Flows
 //!
@@ -24,10 +22,12 @@
 //! non-canonical choices; [`store::posed_stone_pose`] reads one back. `PlacedStone` and the saved
 //! plan are unchanged.
 //!
-//! **Adopt.** [`store::adopt_stone`] creates the custom material "<rough name> colour" (its row
-//! holds the BASE zone, so a default build renders it) and its `material_zoning` row (the zones
-//! in the stone frame, in mm), and returns the render-ready material plus the real stone width
-//! the editor should be set to. The stone is rendered at that size; no slider is involved.
+//! **Adopt.** [`store::adopt_stone`] creates the custom material "<plan> - <design> color" (its
+//! row holds the BASE zone, so a build that ignores zones still renders it) and its `material_zoning` row (the
+//! zones in the stone frame, in mm), and returns the render-ready material plus the real stone
+//! width the editor should be set to. The stone is rendered at that size; no slider is involved.
+//! The planner's "Use Color" and "Open in Editor" both hand the result to the design they were
+//! computed for (`gui::editor::planned_stone`), loading it first.
 //!
 //! **Material resolution.** [`store::attach_zoning`] / [`store::with_stored_zoning`] put the
 //! stored zones back on a material resolved from a custom row. They are called wherever the

@@ -1,5 +1,15 @@
 import { WorkerItem } from "../types.slint";
 
+// What the app knows about the remote -- the Slint face of `settings::model::RemoteAvailability`,
+// the one replacement of the former live / export / tilt-video flags. Each surface reads the
+// half it needs: pickers that only need a target to exist (live compute, the tilt-video
+// pills) read `configured`; the still export, which probes before it starts, reads
+// `reachable_render_capable` (always `false` while nothing is configured).
+export struct RemoteAvailabilityItem {
+    configured: bool,
+    reachable_render_capable: bool,
+}
+
 // The one remote endpoint (a coordinator, rendering itself when started with
 // `--render`) -- `RemoteWorkerDialog`'s "Remote coordinator" form, plus the "served by"
 // indicator, the library switch and the pull-mirror state.
@@ -7,7 +17,19 @@ export global RemoteWorkerModel {
     // Whether a remote is configured; `endpoint` holds its settings (defaults when not).
     in property <bool> configured: false;
     in property <WorkerItem> endpoint;
-    out property <bool> live_remote_available: root.configured;
+    // The one remote-availability value (see `RemoteAvailabilityItem`). Rust publishes it
+    // when the endpoint changes and when the export dialog's probe reports back.
+    in property <RemoteAvailabilityItem> availability: { configured: false, reachable_render_capable: false };
+    // Why the remote choices of a surface that does not probe are greyed out (empty while
+    // a remote is configured): the text of `RemoteAvailability::disabled_reason`.
+    in property <string> availability_reason: "";
+    // Opens the Remote Coordinator dialog (the header's "Remote" popup). The popup belongs to
+    // the header, which watches `open_requests` and shows it; any surface calls `open_dialog()`
+    // (the Render & Output tab's read-only live transfer links here).
+    in-out property <int> open_requests: 0;
+    public function open_dialog() {
+        open_requests += 1;
+    }
     in-out property <bool> denoise_enabled: true;
     // How many pictures a catalogue preview or tilt batch keeps in flight on the remote
     // at once (`AppSettings::remote_batch_lanes`, 1..=32). The dialog's spin box edits it

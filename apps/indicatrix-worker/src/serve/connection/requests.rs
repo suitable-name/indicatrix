@@ -143,7 +143,7 @@ pub fn serve_requests<S: Read + Write + TimeoutRead + TimeoutWrite>(
         // A coordinator does not forward zones to its joined workers and never advertises the
         // zoning capability; a payload that arrives anyway is refused, not dropped silently
         // (the picture would render as its base zone).
-        #[cfg(feature = "zoning")]
+        #[cfg(feature = "worker")]
         if ctx.session.is_some() && refuse_zoning_through_coordinator(stream, &next)? {
             continue;
         }
@@ -204,10 +204,10 @@ pub fn serve_requests<S: Read + Write + TimeoutRead + TimeoutWrite>(
     }
 }
 
-/// `zoning` builds: refuses `next` with `UNSUPPORTED_REQUEST` when the viewer sent a
+/// Refuses `next` with `UNSUPPORTED_REQUEST` when the viewer sent a
 /// `ZoningPayload` for it on a coordinator connection. `Ok(true)` means the request was
 /// refused and must not be served.
-#[cfg(feature = "zoning")]
+#[cfg(feature = "worker")]
 fn refuse_zoning_through_coordinator<S: Write>(
     stream: &mut S,
     next: &NextRequest,
@@ -260,9 +260,9 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
         return Ok(None);
     }
 
-    // `zoning` builds: re-attach the zones the viewer sent ahead of this request (they are
+    // Re-attach the zones the viewer sent ahead of this request (they are
     // `serde(skip)` in the scene). A payload that does not fit refuses the request.
-    #[cfg(feature = "zoning")]
+    #[cfg(feature = "worker")]
     if let Err(message) =
         crate::serve::zoning::attach_to_render(request.request_id, &mut request.scene)
     {
@@ -551,8 +551,8 @@ fn read_next_message<S: Read + Write + TimeoutRead>(
             }
             ClientMessage::BatchRenderRequest(r) => return Ok(Some(NextRequest::Batch(*r))),
             ClientMessage::Ping { nonce } => write_pong(stream, nonce)?,
-            // The zones of the request that follows (`zoning` builds): kept for it.
-            #[cfg(feature = "zoning")]
+            // The zones of the request that follows: kept for it.
+            #[cfg(feature = "worker")]
             ClientMessage::ZoningPayload(payload) => crate::serve::zoning::stash(*payload),
             // An asset nobody asked for: consume its payload frame.
             ClientMessage::Asset(header) => assets::discard_asset(stream, &header)?,
@@ -565,5 +565,54 @@ fn read_next_message<S: Read + Write + TimeoutRead>(
                 handle_non_render_message(stream, &other, db)?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod zoning_tests {
+    use super::*;
+    use crate::serve::zoning::{ConnectionGuard, stash};
+    use indicatrix_net::messages::{BatchReply, ZoningPayload};
+
+    const fn batch(request_id: u32) -> NextRequest {
+        NextRequest::Batch(BatchRenderRequest {
+            request_id,
+            reply: BatchReply::FinalPng,
+            items: Vec::new(),
+        })
+    }
+
+    /// A payload that reaches a coordinator session is answered with `UNSUPPORTED_REQUEST`
+    /// naming the request, and its stash slot is consumed; a request without a payload is
+    /// left alone and nothing is written.
+    #[test]
+    fn a_payload_through_a_coordinator_is_refused_loudly() {
+        let _guard = ConnectionGuard::new();
+        stash(ZoningPayload {
+            request_id: 12,
+            materials: Vec::new(),
+        });
+        let mut out = Vec::new();
+        assert!(refuse_zoning_through_coordinator(&mut out, &batch(12)).unwrap());
+        let (event, _) =
+            indicatrix_net::messages::read_stream_event(&mut std::io::Cursor::new(out)).unwrap();
+        let StreamEvent::Error(error) = event else {
+            panic!("expected an error, got {event:?}");
+        };
+        assert_eq!(error.code, error_codes::UNSUPPORTED_REQUEST);
+        assert_eq!(error.request_id, Some(12));
+        assert!(error.message.contains("coordinator"), "{}", error.message);
+        // The payload was consumed: asking again finds nothing.
+        let mut again = Vec::new();
+        assert!(!refuse_zoning_through_coordinator(&mut again, &batch(12)).unwrap());
+        assert_eq!(again.len(), 0);
+    }
+
+    #[test]
+    fn a_request_without_a_payload_passes_a_coordinator_untouched() {
+        let _guard = ConnectionGuard::new();
+        let mut out = Vec::new();
+        assert!(!refuse_zoning_through_coordinator(&mut out, &batch(3)).unwrap());
+        assert_eq!(out.len(), 0);
     }
 }

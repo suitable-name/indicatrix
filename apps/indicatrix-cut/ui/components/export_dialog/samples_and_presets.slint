@@ -1,6 +1,7 @@
 import { Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { ExportModel } from "../../models/export.slint";
+import { SettingsModel } from "../../models/settings.slint";
 import { GuideModel } from "../../models/guide.slint";
 import { TipBox } from "../tip_box.slint";
 
@@ -31,7 +32,7 @@ component PresetRow inherits Rectangle {
     }
 
     Tooltip {
-        text: @markdown("Also render the stone with the \{root.name} lighting preset. It makes one more file next to the current view.");
+        text: @markdown("Also render the stone with the \{root.name} saved lighting. It makes one more file next to the current view.");
     }
 
     row_focus := FocusScope {
@@ -70,8 +71,8 @@ component PresetRow inherits Rectangle {
                 colorize: Theme.text-on-accent;
                 width: 9px;
                 height: 9px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
             }
         }
 
@@ -125,7 +126,7 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
             height: samples_caption.preferred-height;
             Tooltip { text: @markdown("How many light rays are traced for every pixel of the picture. More rays give a smoother picture and take longer."); }
             samples_caption := Text {
-                text: "Sample Count (higher = slower, smoother)";
+                text: "Sample Count (Higher = Slower, Smoother)";
                 font-size: 11px;
                 font-weight: 600;
                 color: Theme.text-secondary;
@@ -135,23 +136,23 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
 
         HorizontalLayout {
             alignment: space-between;
-            Text { text: "Samples per pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
+            Text { text: "Samples per Pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
             Text { text: root.effective_samples; font-size: 13px; font-weight: 700; color: Theme.accent-cyan; accessible-role: AccessibleRole.text; }
         }
 
         TipBox {
             hint: "Drag to choose the sample count. Each step doubles it, and doubles the time too.";
             Slider {
-                minimum: 3;
-                maximum: 15;
+                minimum: SettingsModel.export_samples_min_exponent;
+                maximum: SettingsModel.export_samples_max_exponent;
                 step: 1;
                 value <=> ExportModel.sample_exponent_raw;
                 enabled: !ExportModel.is_exporting;
-                accessible-label: "Samples per pixel (each step doubles it)";
+                accessible-label: "Samples per Pixel (Each Step Doubles It)";
             }
         }
 
-        if root.sample_exponent >= 14: Text {
+        if root.sample_exponent >= SettingsModel.export_samples_max_exponent - 1: Text {
             text: "Very high sample counts can take hours to render, especially at large output sizes.";
             font-size: 11px;
             color: Theme.text-muted;
@@ -161,17 +162,17 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
     }
 
     // 3b. Preset fan-out -- only shown when at least one preset is
-    // export-usable; an empty list here means nobody has checked "usable for
-    // export" on any preset yet (`settings_dialog.slint`'s own checkbox), so
+    // export-usable; an empty list here means nobody has marked a saved lighting "usable for
+    // export" yet (the Lighting & Environment tab's Saved lighting list), so
     // there is nothing to fan out and showing an empty section would just be
     // clutter. Advanced mode only.
     if GuideModel.shows_advanced() && ExportModel.fanout_presets.length > 0: VerticalLayout {
         spacing: 6px;
         Rectangle {
             height: presets_caption.preferred-height;
-            Tooltip { text: @markdown("Render the stone again with other lighting presets. Each ticked preset makes one more file next to the current view."); }
+            Tooltip { text: @markdown("Render the stone again with other saved lighting. Each ticked lighting makes one more file next to the current view."); }
             presets_caption := Text {
-                text: "Also Render With These Presets";
+                text: "Also Render With Saved Lighting";
                 font-size: 11px;
                 font-weight: 600;
                 color: Theme.text-secondary;
@@ -179,14 +180,14 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
             }
         }
         Text {
-            text: "Each checked preset produces an ADDITIONAL file alongside the current view -- export time multiplies linearly with how many are selected.";
+            text: "Each checked lighting produces an ADDITIONAL file alongside the current view -- export time multiplies linearly with how many are selected.";
             font-size: 11px;
             color: Theme.text-muted;
             wrap: word-wrap;
             accessible-role: AccessibleRole.text;
         }
 
-        for preset[idx] in ExportModel.fanout_presets: PresetRow {
+        for preset[idx] in ExportModel.fanout_presets: preset-row-name := PresetRow {
             name: preset.name;
             checked: preset.selected;
             has_env_map: preset.has_env_map;

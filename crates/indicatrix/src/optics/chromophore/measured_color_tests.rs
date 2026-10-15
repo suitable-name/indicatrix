@@ -60,6 +60,10 @@ fn recipe(host: &str, entries: &[(&str, f64)], treatments: &[&str]) -> ColorReci
 
 /// color of one mode of `t` (`"o"`, `"e"`, `"b"`), or the mean of the named modes' transmittances.
 fn lab_of_modes(t: &AbsorptionTensor, modes: &str, path_cm: f64, ill: Illuminant) -> [f64; 3] {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Band::evaluate takes f32 nanometres; l is a wavelength in 380..=780"
+    )]
     let alpha = |m: char, l: f64| -> f64 {
         let bands = match m {
             'o' => &t.o_ray,
@@ -243,6 +247,10 @@ fn v_corundum_report_table_follows_the_paper_text_not_the_xlsx() {
 #[test]
 fn alexandrite_table_rays_disagree_with_the_caltech_u_over_y_ratio() {
     let tab = fixture("alexandrite_natural_russian");
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "lo and hi are whole-nanometre bounds in 380..=780; truncation to i32 is exact"
+    )]
     let peak = |s: &Spectrum, col: &str, lo: f64, hi: f64| {
         (lo as i32..=hi as i32)
             .map(|nm| s.alpha(col, f64::from(nm), true))
@@ -257,6 +265,10 @@ fn alexandrite_table_rays_disagree_with_the_caltech_u_over_y_ratio() {
     let mut r = ColorRecipe::new("chrysoberyl", cat().data_version);
     assert!(r.set_amount("Cr", 1.0));
     let t = tensor(&r);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Band::evaluate takes f32 nanometres; nm is a wavelength in 380..=780"
+    )]
     let at = |ray: char, nm: f64| match ray {
         'b' => t.beta_ray.as_ref().map_or(0.0, |b| {
             f64::from(b.iter().map(|x| x.evaluate(nm as f32)).sum::<f32>())

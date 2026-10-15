@@ -136,16 +136,25 @@ pub fn target_for(
     // The facet map places a facet at `2 pi (index + reference) / teeth`: the frame needs the
     // design's gear reference angle too, or its handles sit on a different azimuth than the
     // facet (the same rule as the Diagram view's `diagram2d::facet_frame`).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the reference angle is narrowed to f32 first, as facet_map does"
+    )]
+    let reference_angle = design.meta.gear_reference_angle as f32;
     let frame = FacetFrame::from_tier_with_reference(
         tier_data,
         f64::from(map.index_on_gear(facet_id as usize)),
-        design.meta.gear_reference_angle as f32,
+        reference_angle,
         design.meta.gear_teeth_abs(),
         centroid,
     );
     let pose = geometry.camera;
     let camera = Camera::new(pose.yaw, pose.pitch, pose.distance, CAMERA_FOV_DEG);
     let size = ScreenSize::new(geometry.size.0 as f32, geometry.size.1 as f32);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "handle length in model units is a small positive value; the layout takes f32"
+    )]
     let length = (HANDLE_LENGTH_FRACTION * geometry.bounding_radius) as f32;
     let layout = handle_layout(&frame, &camera, size, length)?;
     Some(HandleTarget {

@@ -17,19 +17,26 @@
 
 use std::sync::atomic::AtomicBool;
 
-use indicatrix::optics::absorption::BODY_COLOR_BASIS_NM;
+use indicatrix::{
+    color::body_color::{body_color, delta_e_2000},
+    optics::{
+        absorption::{AbsorptionTensor, BODY_COLOR_BASIS_NM},
+        zoning::ZoneAbsorption,
+    },
+};
 
 use super::{
     FitConfig, FitError, FitProgress, FitStage, ObservedView,
     diagnostics::{SUGGEST_MORAN, SUGGEST_RMS, lovo, structure},
+    extremes::{ExtremeInput, constrained_extremes},
     linalg::{inverse_spd_ridged, trace_product},
     lm::{LmOutcome, LmSettings, bounds, run_lm},
     models::{ChromophoreModel, FitModel, PriorContext, SmoothBasisModel},
     output::{
         BIRGE_THRESHOLD, ColourFit, FIT_VERSION, FitWarning, ModelFit, ModelKind, WarningKind,
     },
-    par::par_map,
-    predict::{candidate_point, metamer_steps, predictions},
+    par::{inner_threads, par_map_progress},
+    predict::{candidate_point, face_up_path_mm, metamer_steps, predictions, zone_lab},
     problem::{Normal, Problem},
     select::{Candidate, compare},
 };
@@ -40,6 +47,10 @@ pub(super) struct Fitted {
     pub x: Vec<f64>,
     pub normal: Normal,
     pub iterations: usize,
+    /// The iterations of each stage on its own: the multi-start's first stage (absent when a
+    /// structured start won), the three staged runs of the winner and one entry per reweighted L1
+    /// round (one entry for a warm start).
+    pub iterations_per_stage: Vec<usize>,
     pub converged: bool,
     pub seed_costs: Vec<f64>,
     pub l1: Vec<f64>,
@@ -64,7 +75,23 @@ fn collect_ok<T>(results: Vec<Option<Result<T, FitError>>>) -> Result<Vec<T>, Fi
 /// 3. the common mode freed too (skipped when `config.fix_common_gain` already pins it).
 ///
 /// Each stage starts from the previous result and gets `config.max_iterations` (the first one
-/// `stage_one_budget`). The returned outcome is the last stage's, with the iterations summed.
+/// `stage_one_budget`). The returned outcome is the last stage's, with the iterations summed;
+/// `stages` holds the iterations of every stage on its own (so that a stage that hit its cap is
+/// not hidden in the sum).
+struct Staged {
+    out: LmOutcome,
+    stages: Vec<usize>,
+}
+
+/// The first-stage iteration budget of [`run_staged`] and the threads of its pixel passes.
+#[derive(Clone, Copy)]
+struct StageLimits {
+    /// Iterations of stage 1.
+    stage_one_budget: usize,
+    /// Threads per normal-equation pixel pass (`par::inner_threads` of the running phase).
+    inner_threads: usize,
+}
+
 fn run_staged(
     problem: &Problem<'_>,
     model: &dyn FitModel,
@@ -72,15 +99,20 @@ fn run_staged(
     ctx: &PriorContext<'_>,
     config: &FitConfig,
     cancel: &AtomicBool,
-    stage_one_budget: usize,
-) -> Result<LmOutcome, FitError> {
+    limits: StageLimits,
+) -> Result<Staged, FitError> {
     let np = model.n_params();
     let active = vec![true; problem.view_count()];
+    let StageLimits {
+        stage_one_budget,
+        inner_threads,
+    } = limits;
     let settings = |max_iterations: usize, freeze_gains: bool, pin_common_gain: bool| LmSettings {
         max_iterations,
         rel_tol: config.rel_cost_tol,
         freeze_gains,
         pin_common_gain,
+        inner_threads,
     };
     let mut start = x0.to_vec();
     for gain in &mut start[np..] {
@@ -95,7 +127,7 @@ fn run_staged(
         &settings(stage_one_budget.max(1), true, false),
         cancel,
     )?;
-    let mut iterations = out.iterations;
+    let mut stages = vec![out.iterations];
     out = run_lm(
         problem,
         model,
@@ -105,7 +137,7 @@ fn run_staged(
         &settings(config.max_iterations, false, true),
         cancel,
     )?;
-    iterations += out.iterations;
+    stages.push(out.iterations);
     if !config.fix_common_gain {
         out = run_lm(
             problem,
@@ -116,10 +148,10 @@ fn run_staged(
             &settings(config.max_iterations, false, false),
             cancel,
         )?;
-        iterations += out.iterations;
+        stages.push(out.iterations);
     }
-    out.iterations = iterations;
-    Ok(out)
+    out.iterations = stages.iter().sum();
+    Ok(Staged { out, stages })
 }
 
 /// The deterministic multi-start of a cold fit (round 3, D1):
@@ -132,14 +164,20 @@ fn run_staged(
 ///   same stages from gains of 1;
 /// * the lowest TOTAL objective (data plus priors) wins, ties by start order.
 ///
-/// Returns the winner and the seeds' objectives after the first stage, in seed order.
+/// Returns the winner, the seeds' objectives after the first stage (in seed order) and the
+/// iterations of each of the winner's stages. `progress` gets the finished share in `0.0..=1.0`
+/// (first stage 30 %, the finalists 40 %, the structured starts 30 %).
 fn multi_start(
     problem: &Problem<'_>,
     model: &dyn FitModel,
     config: &FitConfig,
     cancel: &AtomicBool,
     ctx: &PriorContext<'_>,
-) -> Result<(LmOutcome, Vec<f64>), FitError> {
+    progress: &mut dyn FnMut(f32),
+) -> Result<(LmOutcome, Vec<f64>, Vec<usize>), FitError> {
+    let share = |from: f32, to: f32, finished: usize, count: usize| -> f32 {
+        from + (to - from) * (finished as f32 / count.max(1) as f32)
+    };
     let nv = problem.view_count();
     let np = model.n_params();
     let active = vec![true; nv];
@@ -155,6 +193,7 @@ fn multi_start(
         rel_tol: config.rel_cost_tol,
         freeze_gains: true,
         pin_common_gain: false,
+        inner_threads: inner_threads(config.threads, starts.len()),
     };
     let stage_one = {
         let work = |i: usize| -> Result<LmOutcome, FitError> {
@@ -169,7 +208,14 @@ fn multi_start(
                 cancel,
             )
         };
-        collect_ok(par_map(starts.len(), config.threads, cancel, &work))?
+        let count = starts.len();
+        collect_ok(par_map_progress(
+            count,
+            config.threads,
+            cancel,
+            &work,
+            &mut |finished| progress(share(0.0, 0.3, finished, count)),
+        ))?
     };
     let seed_costs: Vec<f64> = stage_one.iter().map(|o| o.normal.cost).collect();
 
@@ -178,27 +224,47 @@ fn multi_start(
     let finalists: Vec<usize> = order.into_iter().take(config.finalists.max(1)).collect();
 
     let staged = {
-        let work = |i: usize| -> Result<LmOutcome, FitError> {
+        let finalist_inner = inner_threads(config.threads, finalists.len());
+        let work = |i: usize| -> Result<Staged, FitError> {
             let copy = model.duplicate();
             let start = &stage_one[finalists[i]];
             let done = start.iterations;
             let budget = config.max_iterations.saturating_sub(done).max(1);
-            let mut out = run_staged(problem, &*copy, &start.x, ctx, config, cancel, budget)?;
-            out.iterations += done;
-            Ok(out)
+            let limits = StageLimits {
+                stage_one_budget: budget,
+                inner_threads: finalist_inner,
+            };
+            let mut staged = run_staged(problem, &*copy, &start.x, ctx, config, cancel, limits)?;
+            staged.out.iterations += done;
+            // The multi-start's own first stage comes first.
+            staged.stages.insert(0, done);
+            Ok(staged)
         };
-        collect_ok(par_map(finalists.len(), config.threads, cancel, &work))?
+        let count = finalists.len();
+        collect_ok(par_map_progress(
+            count,
+            config.threads,
+            cancel,
+            &work,
+            &mut |finished| progress(share(0.3, 0.7, finished, count)),
+        ))?
     };
 
     // Structured starts from the best finalist.
     let leader = staged
         .iter()
         .enumerate()
-        .min_by(|(ia, a), (ib, b)| a.normal.cost.total_cmp(&b.normal.cost).then(ia.cmp(ib)))
+        .min_by(|(ia, a), (ib, b)| {
+            a.out
+                .normal
+                .cost
+                .total_cmp(&b.out.normal.cost)
+                .then(ia.cmp(ib))
+        })
         .map(|(i, _)| i)
         .ok_or(FitError::Numerical("no start produced a fit"))?;
     let extra_starts: Vec<Vec<f64>> = model
-        .structured_starts(&staged[leader].x[..np])
+        .structured_starts(&staged[leader].out.x[..np])
         .into_iter()
         .map(|mut x| {
             x.extend(std::iter::repeat_n(0.0, nv));
@@ -206,7 +272,11 @@ fn multi_start(
         })
         .collect();
     let extras = {
-        let work = |i: usize| -> Result<LmOutcome, FitError> {
+        let limits = StageLimits {
+            stage_one_budget: config.max_iterations,
+            inner_threads: inner_threads(config.threads, extra_starts.len()),
+        };
+        let work = |i: usize| -> Result<Staged, FitError> {
             let copy = model.duplicate();
             run_staged(
                 problem,
@@ -215,20 +285,34 @@ fn multi_start(
                 ctx,
                 config,
                 cancel,
-                config.max_iterations,
+                limits,
             )
         };
-        collect_ok(par_map(extra_starts.len(), config.threads, cancel, &work))?
+        let count = extra_starts.len();
+        collect_ok(par_map_progress(
+            count,
+            config.threads,
+            cancel,
+            &work,
+            &mut |finished| progress(share(0.7, 1.0, finished, count)),
+        ))?
     };
 
     let best = staged
         .into_iter()
         .chain(extras)
         .enumerate()
-        .min_by(|(ia, a), (ib, b)| a.normal.cost.total_cmp(&b.normal.cost).then(ia.cmp(ib)))
-        .map(|(_, o)| o)
+        .min_by(|(ia, a), (ib, b)| {
+            a.out
+                .normal
+                .cost
+                .total_cmp(&b.out.normal.cost)
+                .then(ia.cmp(ib))
+        })
+        .map(|(_, s)| s)
         .ok_or(FitError::Numerical("no start produced a fit"))?;
-    Ok((best, seed_costs))
+    progress(1.0);
+    Ok((best.out, seed_costs, best.stages))
 }
 
 /// Fits `model`: the staged multi-start of [`multi_start`] (or one warm start with every
@@ -240,6 +324,19 @@ pub(super) fn fit_model(
     cancel: &AtomicBool,
     warm: Option<&[f64]>,
 ) -> Result<Fitted, FitError> {
+    fit_model_reporting(problem, model, config, cancel, warm, &mut |_| {})
+}
+
+/// [`fit_model`] with a progress hook: `progress` gets the finished share of the fit in
+/// `0.0..=1.0`, non-decreasing (the multi-start reports as its starts finish).
+pub(super) fn fit_model_reporting(
+    problem: &Problem<'_>,
+    model: &dyn FitModel,
+    config: &FitConfig,
+    cancel: &AtomicBool,
+    warm: Option<&[f64]>,
+    progress: &mut dyn FnMut(f32),
+) -> Result<Fitted, FitError> {
     let nv = problem.view_count();
     let np = model.n_params();
     let active = vec![true; nv];
@@ -248,16 +345,21 @@ pub(super) fn fit_model(
         config,
         l1_weights: &ones,
         pin_common_gain: false,
+        model_priors: true,
     };
-    let full = LmSettings::new(config.max_iterations, config.rel_cost_tol);
+    // One run at a time here (warm start, L1 rounds): the pixel pass may use the whole width.
+    let full = LmSettings::new(config.max_iterations, config.rel_cost_tol)
+        .with_inner_threads(inner_threads(config.threads, 1));
 
-    let (mut best, seed_costs) = match warm {
+    let (mut best, seed_costs, mut stages) = match warm {
         Some(x) => {
             let outcome = run_lm(problem, model, x, &active, &ctx, &full, cancel)?;
             let cost = outcome.normal.cost;
-            (outcome, vec![cost])
+            progress(1.0);
+            let stages = vec![outcome.iterations];
+            (outcome, vec![cost], stages)
         }
-        None => multi_start(problem, model, config, cancel, &ctx)?,
+        None => multi_start(problem, model, config, cancel, &ctx, progress)?,
     };
 
     let mut l1 = vec![1.0; np];
@@ -268,8 +370,10 @@ pub(super) fn fit_model(
                 config,
                 l1_weights: &weights,
                 pin_common_gain: false,
+                model_priors: true,
             };
             best = run_lm(problem, model, &best.x, &active, &round_ctx, &full, cancel)?;
+            stages.push(best.iterations);
             l1 = weights;
         }
     }
@@ -277,95 +381,100 @@ pub(super) fn fit_model(
         x: best.x,
         normal: best.normal,
         iterations: best.iterations,
+        iterations_per_stage: stages,
         converged: best.converged,
         seed_costs,
         l1,
     })
 }
 
-/// How many times a failing metamer candidate is halved towards the optimum (resolution
-/// `1 / 2^METAMER_BISECTIONS` of the step).
-const METAMER_BISECTIONS: usize = 6;
+/// The face-up colour difference (CIEDE2000) from which the refit of the exported spectrum is
+/// reported as a warning.
+const EXPORT_DELTA_E_NOTICE: f64 = 0.5;
 
-/// Whether the absorption of every zone is non-negative at the basis centres and on a 5 nm grid
-/// from 400 to 700 nm (round 3, D3).
-fn absorption_is_physical(model: &dyn FitModel, params: &[f64]) -> bool {
-    let mut wavelengths: Vec<f64> = BODY_COLOR_BASIS_NM
-        .iter()
-        .map(|&(centre, _)| f64::from(centre))
-        .collect();
-    wavelengths.extend((0..=60).map(|i| 400.0 + 5.0 * f64::from(i)));
-    (0..model.zone_count()).all(|zone| {
-        wavelengths
-            .iter()
-            .all(|&lambda| model.alpha(zone, lambda, params) >= -1e-9)
-    })
+/// `erf(x)` for `x >= 0` (Abramowitz and Stegun 7.1.26, absolute error below 1.5e-7).
+fn erf(x: f64) -> f64 {
+    let t = 1.0 / (1.0 + 0.327_591_1 * x);
+    let poly = t
+        * (0.254_829_592
+            + t * (-0.284_496_736
+                + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
+    1.0 - poly * (-x * x).exp()
 }
 
-/// Verifies the metamer candidates (round 3, D3): each `steps[i]` is applied to `x` at the full
-/// size, and a candidate that fails is halved by bisection (`METAMER_BISECTIONS` times) until it
-/// passes. A candidate passes when its absorption is non-negative (see
-/// [`absorption_is_physical`]) and its NONLINEAR data chi-square is at most `threshold` above
-/// `baseline_chi2`. A step that passes nowhere is dropped (it would sit on the optimum, spread 0).
-/// The result is in step order and does not depend on the thread count.
-fn verify_metamers(
-    problem: &Problem<'_>,
+/// The expectation of the Huber-weighted square `min(u^2, k |u|)` of a standard normal `u`:
+/// `erf(k / sqrt 2)`. The Birge ratio of a Huber fit divides by it, so that it is 1 for honest
+/// noise.
+fn huber_expectation(k: f64) -> f64 {
+    erf(k / std::f64::consts::SQRT_2)
+}
+
+/// The largest absorption difference (per mm, 5 nm grid from 400 to 700 nm) and the largest
+/// face-up CIEDE2000 (every zone, size and illuminant of the prediction settings) between the
+/// fitted spectra of `model` at `params` and the exported `tensors`.
+fn export_misfit(
     model: &dyn FitModel,
-    x: &[f64],
-    steps: &[Vec<f64>],
-    baseline_chi2: f64,
-    threshold: f64,
-    threads: usize,
-    lo: &[f64],
-    hi: &[f64],
-) -> Vec<Vec<f64>> {
-    let np = model.n_params();
-    let never = AtomicBool::new(false);
-    let work = |i: usize| -> Option<Vec<f64>> {
-        let copy = model.duplicate();
-        let passes = |point: &[f64]| -> bool {
-            absorption_is_physical(&*copy, &point[..np])
-                && problem
-                    .data_chi2(&*copy, point)
-                    .is_ok_and(|chi2| chi2 - baseline_chi2 <= threshold)
-        };
-        let full = candidate_point(x, &steps[i], 1.0, lo, hi);
-        if passes(&full) {
-            return Some(full);
+    params: &[f64],
+    tensors: &[AbsorptionTensor],
+    config: &FitConfig,
+) -> (f64, f64) {
+    let (mut worst_alpha, mut worst_de) = (0.0_f64, 0.0_f64);
+    for (zone, tensor) in tensors.iter().enumerate() {
+        let exported = ZoneAbsorption::per_mm(tensor.clone());
+        for i in 0..=60 {
+            let lambda = 400.0 + 5.0 * f64::from(i);
+            let difference =
+                (model.alpha(zone, lambda, params) - exported.alpha(lambda, None)).abs();
+            worst_alpha = worst_alpha.max(difference);
         }
-        let (mut passing, mut failing) = (0.0_f64, 1.0_f64);
-        let mut best = None;
-        for _ in 0..METAMER_BISECTIONS {
-            let middle = f64::midpoint(passing, failing);
-            let point = candidate_point(x, &steps[i], middle, lo, hi);
-            if passes(&point) {
-                best = Some(point);
-                passing = middle;
-            } else {
-                failing = middle;
+        for size_mm in config.prediction.sizes() {
+            let path_mm = face_up_path_mm(size_mm, config.prediction.model_width_units);
+            for &illuminant in &config.prediction.illuminants {
+                let fitted = zone_lab(model.as_spectral(), zone, params, path_mm, illuminant);
+                let refit = body_color(
+                    |lambda| exported.alpha(lambda, None).max(0.0),
+                    path_mm,
+                    illuminant,
+                )
+                .lab;
+                let de = delta_e_2000(fitted, refit);
+                if de.is_finite() {
+                    worst_de = worst_de.max(de);
+                }
             }
         }
-        best
-    };
-    par_map(steps.len(), threads, &never, &work)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .collect()
+    }
+    (worst_alpha, worst_de)
 }
 
-/// The report of one fitted model (the information criterion is filled in by the comparison).
+/// The report of one fitted model (the information criterion is filled in by the comparison),
+/// and the warnings that belong to it.
 ///
-/// Round 3: the Birge ratio `R = chi2 / (n_data - effective_params)` inflates the covariance by
-/// `R` when it exceeds [`BIRGE_THRESHOLD`] (the noise model was too small; protects real photos
-/// too), and the metamer candidates are verified (see [`verify_metamers`]) with the threshold
-/// `Delta chi2 <= max(1, R)` in that case.
+/// * The Birge ratio `R = chi2_robust / (erf(k / sqrt 2) (n_data - effective_params))` (round 5,
+///   ZC-18: the Huber-weighted chi-square, so that a few outliers the loss already down-weights
+///   do not widen the covariance) inflates the covariance by `R` when it exceeds
+///   [`BIRGE_THRESHOLD`] (the noise model was too small; protects real photos too).
+/// * The metamer spread comes from the constrained extremisation of `extremes` with
+///   `Delta = max(1, R)`.
+/// * The exported tensors may differ from the fitted spectrum (the smooth basis is refitted onto
+///   seven bands); a face-up colour change of [`EXPORT_DELTA_E_NOTICE`] or more is a
+///   [`WarningKind::ExportRefit`] warning.
+///
+/// `progress` gets the finished share of the constrained search in `0.0..=1.0` (the search is
+/// the long part of this function).
+///
+/// # Errors
+///
+/// [`FitError::Cancelled`] and the forward evaluator's errors (the constrained search evaluates
+/// the data term).
 pub(super) fn build_model_fit(
     problem: &Problem<'_>,
     model: &dyn FitModel,
     fitted: &Fitted,
     config: &FitConfig,
-) -> ModelFit {
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(f32),
+) -> Result<(ModelFit, Vec<FitWarning>), FitError> {
     let np = model.n_params();
     let nv = problem.view_count();
     let n = np + nv;
@@ -379,7 +488,7 @@ pub(super) fn build_model_fit(
         .collect();
     let effective_params = trace_product(&covariance, &data_h, n);
     let dof = (fitted.normal.n_data as f64 - effective_params).max(1.0);
-    let birge_ratio = fitted.normal.chi2 / dof;
+    let birge_ratio = fitted.normal.chi2_robust / (huber_expectation(config.huber_k) * dof);
     let inflate = birge_ratio.is_finite() && birge_ratio > BIRGE_THRESHOLD;
     if inflate {
         for value in &mut covariance {
@@ -387,8 +496,8 @@ pub(super) fn build_model_fit(
         }
     }
     let threshold = if inflate { birge_ratio } else { 1.0 };
-    // The metric of the metamer search: the data alone plus the gain prior (calibration
-    // knowledge), without the model's smoothness and magnitude priors.
+    // The metric of the unverified (ellipsoid) figure: the data alone plus the gain prior
+    // (calibration knowledge), without the model's smoothness and magnitude priors.
     let gain_h = problem.gain_prior_hessian(np);
     let metric: Vec<f64> = data_h.iter().zip(&gain_h).map(|(d, g)| d + g).collect();
     let names = model.param_names();
@@ -404,25 +513,43 @@ pub(super) fn build_model_fit(
         .iter()
         .map(|step| candidate_point(&fitted.x, step, 1.0, &lo, &hi))
         .collect();
-    let verified = verify_metamers(
-        problem,
-        model,
-        &fitted.x,
-        &steps,
-        fitted.normal.chi2,
-        threshold,
-        config.threads,
-        &lo,
-        &hi,
-    );
-    ModelFit {
+    let verified = constrained_extremes(
+        &ExtremeInput {
+            problem,
+            model,
+            fit: &fitted.x,
+            delta: threshold,
+            // The semi-axes of the data ellipsoid point along the weakest data directions,
+            // which is where the metamers are (round 6, R3).
+            extra_starts: &unverified,
+            config,
+            cancel,
+        },
+        progress,
+    )?;
+    let zone_tensors = model.tensors(&fitted.x[..np]);
+    let mut warnings = Vec::new();
+    let (alpha_error, delta_e) = export_misfit(model, &fitted.x[..np], &zone_tensors, config);
+    if delta_e >= EXPORT_DELTA_E_NOTICE {
+        warnings.push(FitWarning {
+            kind: WarningKind::ExportRefit,
+            message: format!(
+                "the {} model's spectrum was refitted onto the {}-band renderer basis: the \
+                 refit changes a face-up color by up to {delta_e:.2} CIEDE2000 (absorption by up \
+                 to {alpha_error:.4} per mm)",
+                model.kind().name(),
+                BODY_COLOR_BASIS_NM.len(),
+            ),
+        });
+    }
+    let fit = ModelFit {
         kind: model.kind(),
         host_id: model.host().map(str::to_owned),
         param_names: names,
         params: fitted.x[..np].to_vec(),
         view_ids: problem.views.iter().map(|v| v.view).collect(),
         log_gains: fitted.x[np..].to_vec(),
-        zone_tensors: model.tensors(&fitted.x[..np]),
+        zone_tensors,
         cost: fitted.normal.cost,
         data_cost: fitted.normal.data_cost,
         prior_terms: fitted.normal.prior.named(),
@@ -432,6 +559,7 @@ pub(super) fn build_model_fit(
         effective_params,
         aic: 0.0,
         iterations: fitted.iterations,
+        iterations_per_stage: fitted.iterations_per_stage.clone(),
         converged: fitted.converged,
         seed_costs: fitted.seed_costs.clone(),
         at_bound,
@@ -445,7 +573,8 @@ pub(super) fn build_model_fit(
             &unverified,
         ),
         covariance,
-    }
+    };
+    Ok((fit, warnings))
 }
 
 /// Fits every available model to the records and the observations, compares them, and validates
@@ -481,14 +610,28 @@ pub fn fit_records(
     models.push(Box::new(SmoothBasisModel::new(zones)));
 
     let mut fits: Vec<ModelFit> = Vec::new();
+    let mut fit_warnings: Vec<FitWarning> = Vec::new();
     let mut fitted_all: Vec<Fitted> = Vec::new();
     for (i, model) in models.iter().enumerate() {
-        progress(FitProgress {
-            stage: FitStage::Fitting,
-            fraction: i as f32 / models.len() as f32,
-        });
-        let fitted = fit_model(&problem, &**model, config, cancel, None)?;
-        fits.push(build_model_fit(&problem, &**model, &fitted, config));
+        // Within the model's slot: the multi-start is the first half, the constrained spread
+        // search the second.
+        let count = models.len() as f32;
+        let mut report = |within: f32| {
+            progress(FitProgress {
+                stage: FitStage::Fitting,
+                fraction: (i as f32 + within.clamp(0.0, 1.0)) / count,
+            });
+        };
+        report(0.0);
+        let fitted = fit_model_reporting(&problem, &**model, config, cancel, None, &mut |p| {
+            report(0.5 * p);
+        })?;
+        let (fit, warnings) =
+            build_model_fit(&problem, &**model, &fitted, config, cancel, &mut |q| {
+                report(0.5 + 0.5 * q);
+            })?;
+        fits.push(fit);
+        fit_warnings.extend(warnings);
         fitted_all.push(fitted);
     }
 
@@ -510,7 +653,7 @@ pub fn fit_records(
         fit.aic = score.aic;
     }
 
-    let mut warnings = Vec::new();
+    let mut warnings = fit_warnings;
     if let Some(kind) = config.preferred_model
         && !fits.iter().any(|f| f.kind == kind)
     {
@@ -651,11 +794,19 @@ fn collect_warnings(
     }
     for fit in fits {
         if !fit.converged {
+            // The last stage is the one that stopped on its cap; the sum over the stages is
+            // not a cap.
+            let last = fit
+                .iterations_per_stage
+                .last()
+                .copied()
+                .unwrap_or(fit.iterations);
             warnings.push(FitWarning {
                 kind: WarningKind::NotConverged,
                 message: format!(
-                    "the {} model stopped at the iteration limit after {} iterations without \
-                     converging; the colours may not be the best fit",
+                    "the {} model's last stage stopped at the iteration limit after {last} \
+                     iterations without converging ({} in all stages); the colors may not be \
+                     the best fit",
                     fit.kind.name(),
                     fit.iterations
                 ),

@@ -19,6 +19,11 @@ mod photo;
 mod rig_window;
 mod window;
 
+#[cfg(feature = "ui-harness")]
+pub use rig_window::harness_window as harness_rig_window;
+#[cfg(feature = "ui-harness")]
+pub use window::harness_window as harness_locate_window;
+
 use super::host::Host;
 use crate::{RoughPlanModel, locate_io::rig_form::default_stone_n, settings::SettingsPersister};
 use indicatrix_cut_core::rough_plan::locate::RigProfile;
@@ -30,9 +35,8 @@ pub(super) fn open_locate(planner: &Rc<Host>) {
     window::open(planner);
 }
 
-/// The locate window's alignment and photos (`zoning` feature: the Rough colour wizard reads
+/// The locate window's alignment and photos (the Rough colour wizard reads
 /// them), or `None` when the window was never opened or nothing is aligned.
-#[cfg(feature = "zoning")]
 pub(super) fn alignment_snapshot()
 -> Option<crate::gui::rough_colour::wizard::context::AlignmentSnapshot> {
     window::alignment_snapshot()

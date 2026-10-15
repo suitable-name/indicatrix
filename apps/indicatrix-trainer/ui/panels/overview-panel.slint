@@ -1,0 +1,197 @@
+import { ScrollView } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController, StoneMetrics } from "../models.slint";
+import { UiState } from "../state.slint";
+import { KpiCard } from "../components/kpi-card.slint";
+import { Chart } from "../components/chart.slint";
+
+// One optics row: baseline -> current with a bar. `lower_better` flips good and bad.
+component MetricRow inherits Rectangle {
+    in property <string> label;
+    in property <float> baseline;
+    in property <float> current;
+    in property <bool> lower_better: false;
+    in property <bool> available: TrainingController.has_optics;
+
+    private property <bool> improved: root.lower_better ? root.current <= root.baseline : root.current >= root.baseline;
+
+    private property <string> tip: root.label + ": the unchanged design against the design with the model's angles. " + (root.lower_better ? "Lower is better." : "Higher is better.");
+
+    height: 52px;
+    background: ta.has-hover ? TrainerTheme.bg-card-hover : TrainerTheme.bg-card;
+    border-radius: TrainerTheme.radius-small;
+    border-width: 1px;
+    border-color: TrainerTheme.border-subtle;
+    accessible-role: text;
+    accessible-label: root.label + (root.available ? ": " + root.baseline.to-fixed(1) + " percent before, " + root.current.to-fixed(1) + " percent now" : ": not measured yet");
+
+    VerticalLayout {
+        padding: 8px;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 5px;
+        HorizontalLayout {
+            Text {
+                text: root.label;
+                color: TrainerTheme.text-secondary;
+                font-size: 12px;
+                font-weight: 600;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.available ? root.baseline.to-fixed(1) + "%  →  " + root.current.to-fixed(1) + "%" : "—";
+                color: !root.available ? TrainerTheme.text-muted : root.improved ? TrainerTheme.accent-green : TrainerTheme.accent-ruby;
+                font-size: 12px;
+                font-weight: 700;
+            }
+        }
+        Rectangle {
+            height: 6px;
+            background: TrainerTheme.bg-input;
+            border-radius: 3px;
+            Rectangle {
+                x: 0;
+                width: root.available ? parent.width * (Math.min(100.0, Math.max(0.0, root.current)) / 100.0) : 0px;
+                height: parent.height;
+                border-radius: 3px;
+                background: root.improved ? TrainerTheme.accent-green : TrainerTheme.accent-amber;
+            }
+        }
+    }
+    ta := TouchArea { mouse-cursor: MouseCursor.default; }
+    Tooltip { text: @markdown("\{root.tip}"); }
+}
+
+export component OverviewPanel inherits ScrollView {
+    horizontal-scrollbar-policy: always-off;
+
+    VerticalLayout {
+        width: root.visible-width;
+        padding-right: 8px;
+        spacing: 10px;
+
+        GridLayout {
+            spacing: 8px;
+            Row {
+                KpiCard {
+                    title: "ITERATION";
+                    value: TrainingController.has_metrics ? UiState.count(TrainingController.iteration) : "—";
+                    subtitle: TrainingController.has_metrics ? "episode " + UiState.count(TrainingController.episode) : "";
+                    tip: "Completed training iterations (rollout plus update) of this run.";
+                }
+                KpiCard {
+                    title: "STEPS PER SECOND";
+                    value: TrainingController.has_metrics ? TrainingController.steps_per_sec.to-fixed(1) : "—";
+                    subtitle: TrainingController.has_metrics ? UiState.count(TrainingController.total_steps) + " steps total" : "";
+                    tip: "Environment steps per second over the last rollout. Higher is faster.";
+                    accent: TrainerTheme.accent-primary;
+                }
+                KpiCard {
+                    title: "EVALUATIONS PER SECOND";
+                    value: UiState.figure(TrainingController.has_evals_per_sec, TrainingController.evals_per_sec, 1);
+                    tip: "Candidate stones solved, meshed and traced per second. The environment is the bottleneck, not the GPU.";
+                    accent: TrainerTheme.accent-primary;
+                }
+            }
+            Row {
+                KpiCard {
+                    title: "BEST SCORE";
+                    value: UiState.figure(TrainingController.has_best, TrainingController.best_score, 2);
+                    tip: "The largest score improvement any episode reached so far. Higher is better.";
+                    accent: TrainerTheme.accent-amber;
+                }
+                KpiCard {
+                    title: "IMITATION LOSS";
+                    value: UiState.figure(TrainingController.has_loss, TrainingController.imitation_loss, 4);
+                    subtitle: TrainingController.labelled_samples > 0 ? UiState.count(TrainingController.labelled_samples) + " labels" : "";
+                    tip: "Error of the network against the oracle's labels. Falling is good.";
+                }
+                KpiCard {
+                    title: "DIRECTION COSINE";
+                    value: UiState.figure(TrainingController.has_cosine, TrainingController.train_cosine, 3);
+                    subtitle: "goal above 0.7";
+                    tip: "How well the predicted move points the same way as the oracle's. 1 is perfect; above 0.7 within 50 rounds is the goal.";
+                    accent: TrainingController.has_cosine && TrainingController.train_cosine >= 0.7 ? TrainerTheme.accent-green : TrainerTheme.accent-cyan;
+                }
+            }
+            Row {
+                KpiCard {
+                    title: "MODEL / ORACLE RATIO";
+                    value: UiState.figure(TrainingController.has_ratio, TrainingController.val_oracle_ratio, 2);
+                    subtitle: "goal above " + TrainingController.ratio_goal.to-fixed(2);
+                    tip: "Validation drop achieved by the model divided by the oracle's drop. This is the figure of merit; above the goal means the model is nearly as good as the search.";
+                    accent: TrainingController.has_ratio && TrainingController.val_oracle_ratio >= TrainingController.ratio_goal ? TrainerTheme.accent-green : TrainerTheme.sev-validation;
+                }
+                KpiCard {
+                    title: "VALIDATION SCORE";
+                    value: UiState.figure(TrainingController.has_validation, TrainingController.val_score, 2);
+                    subtitle: TrainingController.has_validation ? "brilliance " + TrainingController.val_brilliance.to-fixed(1) + "% · windowing " + TrainingController.val_windowing.to-fixed(1) + "%" : "";
+                    tip: "Mean score on designs the model never trained on. Higher is better.";
+                    accent: TrainerTheme.sev-validation;
+                }
+                KpiCard {
+                    title: "GENERALIZATION GAP";
+                    value: UiState.figure(TrainingController.has_gap, TrainingController.generalization_gap, 2);
+                    subtitle: TrainingController.has_gap ? (TrainingController.generalization_gap > TrainingController.gap_warn_threshold ? "overfitting" : "healthy") : "needs 8 validated designs";
+                    tip: "Training score minus validation score. A gap above " + TrainingController.gap_warn_threshold.to-fixed(1) + " reads as overfitting.";
+                    accent: TrainingController.has_gap && TrainingController.generalization_gap > TrainingController.gap_warn_threshold ? TrainerTheme.sev-warning : TrainerTheme.accent-green;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+            Chart {
+                data: TrainingController.reward_chart;
+                line: TrainerTheme.accent-green;
+                min-height: 230px;
+                horizontal-stretch: 3;
+            }
+            VerticalLayout {
+                spacing: 6px;
+                horizontal-stretch: 2;
+                min-width: 250px;
+                alignment: start;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: TrainingController.display_design_title == "" ? "OPTICS" : "OPTICS · " + TrainingController.display_design_title;
+                        color: TrainerTheme.accent-cyan;
+                        font-size: 11px;
+                        font-weight: 800;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if TrainingController.has_optics: Rectangle {
+                        width: 74px;
+                        height: 18px;
+                        border-radius: 9px;
+                        background: (TrainingController.solid_closed ? TrainerTheme.accent-green : TrainerTheme.accent-ruby).with-alpha(0.18);
+                        border-width: 1px;
+                        border-color: (TrainingController.solid_closed ? TrainerTheme.accent-green : TrainerTheme.accent-ruby).with-alpha(0.7);
+                        accessible-role: text;
+                        accessible-label: "Solid " + (TrainingController.solid_closed ? "closed" : "open");
+                        Text {
+                            text: TrainingController.solid_closed ? "Solid Closed" : "Solid Open";
+                            color: TrainerTheme.text-primary;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        Tooltip { text: @markdown("Whether the facets close into a watertight solid. An open solid makes the optics figures unreliable."); }
+                    }
+                }
+                MetricRow { label: "Brilliance"; baseline: TrainingController.baseline_metrics.brilliance; current: TrainingController.current_metrics.brilliance; }
+                MetricRow { label: "Windowing"; baseline: TrainingController.baseline_metrics.windowing; current: TrainingController.current_metrics.windowing; lower_better: true; }
+                MetricRow { label: "Extinction"; baseline: TrainingController.baseline_metrics.extinction; current: TrainingController.current_metrics.extinction; lower_better: true; }
+                MetricRow { label: "Yield"; baseline: TrainingController.baseline_metrics.yield_pct; current: TrainingController.current_metrics.yield_pct; }
+                if !TrainingController.has_optics: Text {
+                    text: "The optics appear after the first iteration.";
+                    color: TrainerTheme.text-muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

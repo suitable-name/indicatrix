@@ -79,7 +79,7 @@ export component SweepChart inherits VerticalLayout {
             color: Theme.text-muted;
             vertical-alignment: center;
         }
-        for column in SweepModel.columns: SeriesPill {
+        for column in SweepModel.columns: series-pill-title := SeriesPill {
             text: column.title;
             tone: SweepStyle.series_color(column.series);
             shown: column.shown;
@@ -112,7 +112,7 @@ export component SweepChart inherits VerticalLayout {
         if SweepModel.current_x >= 0: Text {
             x: min(plot.width * SweepModel.current_x / 100 + 4px, plot.width - self.width - 2px);
             y: 2px;
-            text: "current";
+            text: "Current";
             font-size: 9px;
             color: Theme.text-muted;
         }
@@ -160,7 +160,7 @@ export component SweepChart inherits VerticalLayout {
         // table and the readout follow, exactly as for a click.
         plot_focus := FocusScope {
             accessible-role: AccessibleRole.slider;
-            accessible-label: "Angle on the chart";
+            accessible-label: "Angle on the Chart";
             accessible-description: "Left and Right choose the previous or next angle. The table and the readout below follow.";
             accessible-value: SweepModel.selected_row < 0 ? "none chosen" : "" + (SweepModel.selected_row + 1) + " of " + SweepModel.rows.length;
             accessible-value-minimum: 0;
@@ -239,7 +239,7 @@ export component SweepChart inherits VerticalLayout {
         Text { text: SweepModel.axis_low; font-size: 9px; color: Theme.text-muted; }
         Text {
             horizontal-stretch: 1;
-            text: "angle (degrees)";
+            text: "Angle (Degrees)";
             font-size: 9px;
             color: Theme.text-muted;
             horizontal-alignment: center;

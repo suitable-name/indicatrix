@@ -17,7 +17,8 @@ use super::{
 use crate::{
     design::Design,
     manufacturability::{
-        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, ManufacturabilityWarning, check_manufacturability,
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, ManufacturabilityWarning,
+        check_manufacturability_with_geometry,
     },
 };
 use glam::DVec3;
@@ -45,9 +46,29 @@ use indicatrix::{
 /// Takes the finished solid already measured (`measure_solid` of the finished planes), so a
 /// caller that also needs the stone's shape figures measures once.
 pub(super) fn yield_loss_pct(design: &Design, finished: Option<&SolidMetrics>) -> f32 {
-    let preform = measure_solid(&design.preform.planes());
-    let yield_fraction = match (finished, &preform) {
-        (Some(f), Some(p)) => crate::yield_metrics::volumetric_yield(f.volume, p.volume),
+    yield_loss_pct_with_preform(preform_volume(design), finished)
+}
+
+/// The volume of `design`'s preform, `None` when it does not measure.
+///
+/// A pure function of `design.preform`, which the optimiser never writes (it moves only
+/// `angle_deg` and `constraint`), so [`super::optimize_design`] measures it once per run
+/// and carries it in the [`SearchContext`] instead of once per candidate.
+pub(super) fn preform_volume(design: &Design) -> Option<f64> {
+    measure_solid(&design.preform.planes()).map(|metrics| metrics.volume)
+}
+
+/// [`yield_loss_pct`] with the preform's volume ([`preform_volume`]) already measured.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a yield loss percentage lies in 0..=100; f32 is the report precision"
+)]
+pub(super) fn yield_loss_pct_with_preform(
+    preform_volume: Option<f64>,
+    finished: Option<&SolidMetrics>,
+) -> f32 {
+    let yield_fraction = match (finished, preform_volume) {
+        (Some(f), Some(p)) => crate::yield_metrics::volumetric_yield(f.volume, p),
         _ => None,
     };
     yield_fraction.map_or(0.0, |y| 100.0_f64.mul_add(-y, 100.0) as f32)
@@ -297,6 +318,14 @@ pub(super) enum CandidateOutcome {
 /// `baseline_warnings`, and (only if all pass) scores it at
 /// [`ObjectiveFidelity::Fast`] under `lighting` -- the one function
 /// [`super::optimize_design`]'s search loop calls for every candidate.
+///
+/// The candidate's plane list, mesh and solid measurement are built once and shared by the
+/// guard, the manufacturability gate, the score and the shape penalty; `preform_volume` is
+/// [`preform_volume`] of `design`, measured once per run by the caller.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every input is a fixed search setting or the candidate; bundling them is SearchContext, which the tests deliberately bypass"
+)]
 pub(super) fn evaluate_candidate(
     design: &Design,
     material: &GemMaterial,
@@ -305,6 +334,7 @@ pub(super) fn evaluate_candidate(
     lighting: LightingPreset,
     guard: Option<&ShapeGuard>,
     shape_target: Option<ShapeTarget>,
+    preform_volume: Option<f64>,
 ) -> CandidateOutcome {
     let Ok(solved) = design.solve() else {
         return CandidateOutcome::Rejected;
@@ -313,12 +343,19 @@ pub(super) fn evaluate_candidate(
     let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) else {
         return CandidateOutcome::Rejected;
     };
+    let metrics = measure_solid(&planes);
     if let Some(guard) = guard
-        && !guard.admits(design, &solved, &planes, &mesh)
+        && !guard.admits(design, &solved, &planes, &mesh, metrics.as_ref())
     {
         return CandidateOutcome::Rejected;
     }
-    let warnings = check_manufacturability(design, &solved, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2);
+    let warnings = check_manufacturability_with_geometry(
+        design,
+        &solved,
+        Some(&mesh),
+        metrics.as_ref(),
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+    );
     if manufacturability_regressed(baseline_warnings, &warnings) {
         return CandidateOutcome::Rejected;
     }
@@ -330,10 +367,9 @@ pub(super) fn evaluate_candidate(
         ObjectiveFidelity::Fast,
         lighting,
     );
-    let metrics = measure_solid(&planes);
     let mut score = weights.score_with_tone(
         &components,
-        yield_loss_pct(design, metrics.as_ref()),
+        yield_loss_pct_with_preform(preform_volume, metrics.as_ref()),
         tone_loss,
     );
     if shape_target.is_some() {
@@ -352,6 +388,7 @@ pub(super) fn evaluate_in_context(design: &Design, ctx: &SearchContext) -> Candi
         ctx.lighting,
         ctx.guard,
         ctx.shape_target,
+        ctx.preform_volume,
     )
 }
 
@@ -422,6 +459,9 @@ pub(super) struct SearchContext<'a> {
     /// The table size and ratio every score is penalised for drifting from, when the
     /// request asked for it.
     pub(super) shape_target: Option<ShapeTarget>,
+    /// The starting design's preform volume ([`preform_volume`]), measured once per run: the
+    /// search never writes `design.preform`, so every candidate shares it.
+    pub(super) preform_volume: Option<f64>,
 }
 
 /// Builds the surviving `original_deg + step_deg` / `original_deg - step_deg`
@@ -452,7 +492,9 @@ pub(super) fn select_candidate_directions(
             && candidate_deg.to_bits() == original_deg.to_bits();
         if clamped_in_place
             || !candidate_angle_is_safe(original_deg, candidate_deg)
-            || survivors.iter().any(|(deg, _)| *deg == candidate_deg)
+            || survivors
+                .iter()
+                .any(|(deg, _)| is_same_angle(*deg, candidate_deg))
         {
             continue;
         }
@@ -462,6 +504,16 @@ pub(super) fn select_candidate_directions(
         }
     }
     survivors
+}
+
+/// Whether two candidate angles are the identical value: the dedup of both directions clamping to
+/// the same bound is meant to be exact.
+#[expect(
+    clippy::float_cmp,
+    reason = "candidates that clamp to the same bound are bit-identical; near-equal angles are distinct"
+)]
+const fn is_same_angle(a_deg: f64, b_deg: f64) -> bool {
+    a_deg == b_deg
 }
 
 /// Evaluates both surviving candidates from [`select_candidate_directions`]'s

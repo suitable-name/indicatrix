@@ -1,16 +1,16 @@
 # 6. Adapting a Design for Another Material
 
-## What you will do
+## What You Will Do
 
 This chapter is about a question every cutter eventually asks: "I like this
 cut, but I want to cut it in a different gem material -- what do I need to
 change?" It covers the built-in material list, building your own custom
-material, the Design Settings panel's Material and RI Override controls,
+material, the Stone tab's Material and RI Override controls,
 how a material actually reaches the optimizer/tilt curve/viewport/export,
 and **Retarget**, the command bar's automated proposal for re-angling a
 design for a different material.
 
-## What refractive index is, briefly
+## What Refractive Index Is, Briefly
 
 **Refractive index (RI)** measures how strongly a material bends light. It
 determines a stone's **critical angle** -- the angle, measured from a
@@ -33,9 +33,9 @@ necessarily perform well in another -- a design cut for diamond (RI about
 2.417) at a given pavilion angle may window badly if cut in quartz (RI
 about 1.54) at the same angle, because quartz's critical angle is larger.
 
-## The built-in material list
+## The Built-In Material List
 
-The renderer ships 33 built-in materials, used both by the Live Render
+The renderer ships 34 built-in materials (including the zoned Ametrine), used both by the Live Render
 viewport and as starting templates in the Material Editor. Full dispersion
 and color detail for every one is in Appendix C; the figures that matter
 for cutting -- refractive index, birefringence, and whether the material
@@ -62,6 +62,7 @@ cutting) -- are:
 | Chrysoberyl (Yellow) | 1.746 | +0.0090 | Biaxial (+) | Yes |
 | Amethyst | 1.544 | +0.0091 | Uniaxial (+) | Yes |
 | Citrine | 1.544 | +0.0091 | Uniaxial (+) | Yes |
+| Ametrine | 1.544 | +0.0091 | Uniaxial (+) | Yes (two color zones) |
 | Pyrope Garnet | 1.714 | — | Isotropic | Yes |
 | Almandine Garnet | 1.790 | — | Isotropic | Yes |
 | Spessartine Garnet | 1.800 | — | Isotropic | Yes |
@@ -81,27 +82,44 @@ cutting) -- are:
 (Sphene/titanite is deliberately not included -- see the Troubleshooting
 chapter's Known Limitations.)
 
-## The single material catalogue
+## The Single Material Catalogue
 
-Every material picker in the app -- the Design Settings panel's Material
-combo, the New Design dialog's Starting Material combo, and the Live
-Render viewport's Render Material dropdown -- shares one list: all 33
-built-in materials above, in that order, followed by every custom material
+Every material picker in the app -- the Stone tab's Material and Preview as
+combos, the New Design dialog's Starting Material combo, the Retarget target,
+the Rough Planner's material and the material editor -- shares one list: all 34
+built-in materials (Ametrine included)
+above, in that order, followed by every custom material
 you have saved, sorted alphabetically. Whichever picker you open, you see
 the same materials in the same relative order (built-ins first, then your own).
 
+## Where the Stone's Material Lives: The Stone Tab
+
+The design's material, refractive-index override and body color are set in one place,
+the **Stone** tab of the Parameters dock (Chapter 2), reachable from the Live Render
+view and the Edit view alike (the View menu, the toolbar's Parameters buttons, or
+Ctrl+Alt+1). Each change is an edit of the design and one undo step. The Edit view's
+Design Settings panel keeps the geometry and the metadata (gear, symmetry, mirror,
+title, header lines, footnotes, reference angle, printed proportions) and shows the
+material as a compact read-only chip -- material, color swatch and refractive index --
+with an **Edit in Stone Tab** link.
+
+To see the stone in another material without changing it, use **Preview As...** in the
+Stone tab (next section). The old "Linked to design" toggle is gone: nothing can leave
+the picture on a different material from the design's without a visible amber badge.
+
 ## Custom materials
 
-Click the pencil button next to the Live Render viewport's Render Material
-dropdown (Chapter 2) to open the **Material Editor**. In the Edit tab, the
-**New/Edit material...** button next to the Design Settings material combo
-opens the same editor, so you do not have to switch tabs. Its fields are:
+![The Gem Material Editor.](../../../../assets/material_editor.png)
+
+Press **New/Edit Material...** in the Stone tab (Chapter 2) to open the **Material
+Editor**. The pencil buttons in the material lists open it too, so you do not have to
+switch tabs. Its fields are:
 
 | Field | Control | Notes |
 |---|---|---|
 | Load Preset Template | combo | Starts you from Custom, or from one of eleven built-ins (Diamond, Sapphire, Ruby, Emerald, Tanzanite, Synthetic Moissanite, Zircon, Topaz, Spinel, Quartz, Cubic Zirconia) as a base to tweak. |
 | Material Name | text field | Rejected with a warning if it matches a built-in material's own name. |
-| Refractive index curve | switch: **Simple** / **Coefficients** | **Simple** uses the two sliders below. **Coefficients** types the curve as a Sellmeier or Cauchy fit and hides those two sliders -- see "Dispersion coefficients" below. |
+| Refractive Index Curve | switch: **Simple** / **Coefficients** | **Simple** uses the two sliders below. **Coefficients** types the curve as a Sellmeier or Cauchy fit and hides those two sliders -- see "Dispersion coefficients" below. |
 | Refractive Index (nd) | slider, 1.30–3.20 | Simple mode. |
 | Dispersion (Fire ΔnF-C) | slider, 0.000–0.210 | Simple mode. |
 | Specific Gravity | slider, 0.0–7.0 | Shows "not recorded" at 0 -- leave it there if you don't know the figure. |
@@ -109,32 +127,33 @@ opens the same editor, so you do not have to switch tabs. Its fields are:
 | Crystal System | combo | Cubic, Tetragonal, Hexagonal, Trigonal, Orthorhombic, Monoclinic, Triclinic. |
 | Optical Character | combo | Isotropic, Uniaxial (+), Uniaxial (−), Biaxial (+), Biaxial (−). |
 | Biaxial nβ − nα | slider | Only shown when Optical Character is one of the two Biaxial choices. |
-| Color Mode | radio toggle | **Fantasy** (unconstrained colors) or **Physics** (mineralogical host crystal + real chromophores). Only in builds with the `physical-color` feature -- see "Physics color mode" below. |
-| Gem Body Color (Fantasy) | swatches + Pick... | Clear, Blue, Red, Green, Violet, Yellow, Pink, Teal, Amber, a custom kept color, or a free choice: **Pick...** opens the Tone / Saturation / Hue colour editor (see "Body Color" below) and the material keeps the full colour. |
+| Color Mode | radio toggle | **Fantasy** (unconstrained colors) or **Physics** (mineralogical host crystal + real chromophores). Only in builds with the `physical-color` feature -- see "Physics Color Mode" below. |
+| Gem Body Color (Fantasy) | swatches + Pick... | Clear, Blue, Red, Green, Violet, Yellow, Pink, Teal, Amber, a custom kept color, or a free choice: **Pick...** opens the Tone / Saturation / Hue color editor (see "Body Color" below) and the material keeps the full color. |
 | Chromophore Recipe (Physics) | controls & swatches | Only in builds with the `physical-color` feature. Host crystal, element rows with log sliders, locks, sources, strength + fractions or absolute view, treatments, equivalent path, D65 / 3200 K swatches, color picker with the inverse solver, and Undo. |
 
 Buttons: **Delete**, **Cancel**, **Save**, and **Save & Apply** (saves, then
-also selects it as the current render material).
+makes it the design's material as one undo step; it ends a running preview, and for a
+library row it becomes the material that row is shown as).
 
-### Dispersion coefficients (Sellmeier and Cauchy)
+### Dispersion Coefficients (Sellmeier and Cauchy)
 
 The two sliders describe a material's refractive-index curve with just two
 numbers: the index at the yellow sodium line (nd) and the spread between the
 blue and red lines (ΔnF−C). The program builds a smooth Cauchy curve through
 them. That is enough for most gems. When you have a published fit instead --
 a glass data sheet, or a paper on a synthetic crystal -- switch **Refractive
-index curve** to **Coefficients** and type the fit itself. The stone is then
+Index Curve** to **Coefficients** and type the fit itself. The stone is then
 traced with exactly that curve, on the graphics card and on the processor
 alike.
 
 **Model.** Pick the equation your source uses. The wavelength λ is always in
 micrometres (µm), so 589 nm is 0.589.
 
-- **Sellmeier, 3 terms:** n² = 1 + B1·λ²/(λ² − C1) + B2·λ²/(λ² − C2) +
+- **Sellmeier, 3 Terms:** n² = 1 + B1·λ²/(λ² − C1) + B2·λ²/(λ² − C2) +
   B3·λ²/(λ² − C3). Fields B1, B2, B3, C1, C2, C3. This is the form glass
   catalogues print, and what the built-in Diamond, Sapphire and glass entries
   use.
-- **Sellmeier, 1 term:** n² = 1 + B1·λ²/(λ² − C1). Fields B1 and C1. If your
+- **Sellmeier, 1 Term:** n² = 1 + B1·λ²/(λ² − C1). Fields B1 and C1. If your
   source gives two terms, use the 3-term model and enter 0 for the unused B
   and C.
 - **Cauchy:** n = A + B/λ² + C/λ^4 (λ to the fourth power). Fields A, B (µm²)
@@ -145,7 +164,7 @@ squared, in µm². So C = 0.01 means a resonance at 0.1 µm = 100 nm, deep in
 the ultraviolet. A typical glass has C values like 0.006 and 0.02 (resonances
 at 77 nm and 141 nm) and one large C (about 103, an infrared resonance).
 
-**Copy from.** For the Sellmeier 3-term and Cauchy models, the **Copy from**
+**Copy From.** For the Sellmeier 3-term and Cauchy models, the **Copy From**
 combo fills the fields with the coefficients of a built-in material of that
 model (Glass (N-BK7), Diamond, Sapphire, ...). It is the quickest way to a
 sensible starting point: copy, then change one number and watch the readout.
@@ -201,13 +220,13 @@ usually a typing slip:
 
 **What is stored, and what else uses it.** The coefficients are stored with the
 material in your catalogue and, when a design uses that material, in the
-design's `.indicatrix` file next to the plain nd and ΔnF−C numbers. Those two
+design's `.isdd` file next to the plain nd and ΔnF−C numbers. Those two
 numbers are always the curve's own, so the Effective RI chip and the
 cutting-sheet export agree with the readout on nd. Live Render traces with the
 full curve, on the graphics card and on the processor alike. So does a remote
 worker: every render request carries the whole material, including its Sellmeier
 or Cauchy coefficients, so a high-resolution export, the share of a live picture
-and the frames of a tilt video that a remote traces show the same colour play as
+and the frames of a tilt video that a remote traces show the same color play as
 your own computer. Nothing has to be installed on the worker for that. Three
 things to know:
 
@@ -223,7 +242,7 @@ things to know:
   coefficients. They show the material with a Cauchy curve built from nd and
   ΔnF−C instead (close, but not the identical curve).
 
-### Physics color mode
+### Physics Color Mode
 
 Available in builds with the `physical-color` feature. Other builds keep and
 render physics colors but do not show the editor.
@@ -240,9 +259,9 @@ you do. Open it and Save without touching the color, and nothing changes: the
 stored mode and recipe are written back as they were. Pick a swatch (or load a
 preset template, which brings its own color) and the material becomes a
 fixed-color material; the recipe is still saved inside it, so a build with the
-feature can switch back to it. Such a build also never asks the "color changed
-by an older version" question when you open a file (it keeps the saved recipe
-and says so in the open message) and does not show the "Color data updated"
+feature can switch back to it. Such a build also never asks the "Color Changed
+by an Older Version" question when you open a file (it keeps the saved recipe
+and says so in the open message) and does not show the "Color Data Updated"
 badge.
 
 The rest of this section describes the editor in a build with the feature.
@@ -256,22 +275,22 @@ not delete it. A fantasy color that was still "Clear" is seeded from the
 physics color on the first switch back.
 
 In **Fantasy** mode the nine swatches are joined by **Pick...**, which opens
-the same Tone / Saturation / Hue colour editor as the design settings' Body
+the same Tone / Saturation / Hue color editor as the design settings' Body
 Color (see "Body Color" under the design settings below): sliders, the optional
-hue/saturation/brightness picker (**Use picker...**), the four size swatches
-and the reachability badge. **Apply colour** makes the colour the material's
-colour (the swatch row then shows the nearest swatch, or "Custom (keep)") and
+hue/saturation/brightness picker (**Use Picker...**), the four size swatches
+and the reachability badge. **Apply Color** makes the color the material's
+color (the swatch row then shows the nearest swatch, or "Custom (keep)") and
 **Save** writes it to the library: a custom material keeps its seven-band
-colour, so the same material looks deeper in a larger stone. Picking one of the
+color, so the same material looks deeper in a larger stone. Picking one of the
 nine swatches afterwards replaces it. The material also stores the closest
-three-band colour next to it, which is what an older version of the program
-shows. A material that uses the Physics colour keeps its recipe's colour; the
-editor is for Fantasy colours. A library database from an older version opens
-unchanged: its materials simply have no seven-band colour.
+three-band color next to it, which is what an older version of the program
+shows. A material that uses the Physics color keeps its recipe's color; the
+editor is for Fantasy colors. A library database from an older version opens
+unchanged: its materials simply have no seven-band color.
 
 In **Physics** mode the body color comes from absorption spectroscopy:
 
-- **Host crystal.** The list is the color data's own host list (corundum,
+- **Host Crystal.** The list is the color data's own host list (corundum,
   beryl, chrysoberyl, spinel, quartz, topaz, tourmaline, zircon, garnets,
   peridot, diamond, and so on). Choosing a host fixes the crystal system and
   optical character (those combos are greyed out) and prefills refractive
@@ -292,9 +311,9 @@ In **Physics** mode the body color comes from absorption spectroscopy:
   required or excluding chromophore, a centre that only a treatment creates)
   are greyed with the reason. Garnet and olivine items are mole fractions that
   add up to at most 100 % with a colorless remainder.
-- **Two views.** *Strength + fractions* shows each item's share and one
+- **Two views.** *Strength + Fractions* shows each item's share and one
   **Strength** slider (a multiplier on every item's absorption, so the hue
-  does not change); *Absolute amounts* shows the amounts themselves.
+  does not change); *Absolute Amounts* shows the amounts themselves.
 - **Treatments.** Only the treatments the data define for the host, and only
   when their required elements are present.
 - **Equivalent path.** The reference light path in millimetres. It defaults to
@@ -322,7 +341,7 @@ from the selected material (nothing carries over from a previous open).
 recipe together with its *resolved bands* and the color-data version. Rendering
 always uses the stored resolved bands: if a later release recalibrates the
 color data, the material keeps its color, the Live Render toolbar shows a
-"Color data updated" badge for it, and the editor offers **Update to current data**
+"Color Data Updated" badge for it, and the editor offers **Update to Current Data**
 (undoable, never automatic). The top-level color written next to a recipe is the
 nearest legacy color, so an older version of Indicatrix Cut that does not know
 physics color still shows an approximate color (within dE 15 for the reference
@@ -335,20 +354,22 @@ the design has no size, so its color depth is not rendered at model scale.
 whole absorption, i.e. the physical color, so it is greyed out for a physics
 material ("replaces the physical color"); if an override was already set when
 the material was selected, a warning says it still wins until set back to
-"Material default". In a build without the `physical-color` feature the same
+"Material Default". In a build without the `physical-color` feature the same
 notes avoid the word "physical": the combo is greyed out with "This material
 defines its own color.", and an already-set override is reported as replacing
 "this material's own color".
 
-**How colours relate to Stone Size.** The built-in colours, the colour presets and
+**How colors relate to the stone width.** The built-in colors, the color presets and
 the nine Fantasy swatches are shown as they look face-up in a stone of 7 mm: the
-swatch, the colour control's dot and the render agree, and with no Stone Size set
-the stone is rendered as a 7 mm one. Setting a Stone Size in the rendering
-settings scales the colour physically from there: a bigger stone is darker and
+swatch, the color control's dot and the render agree, and with no stone width set
+the stone is rendered as a 7 mm one. Setting the **Stone Width (mm)** in the Stone tab
+(the design's girdle diameter, the same value as the Preform tab's Girdle Diameter)
+scales the color physically from there: a bigger stone is darker and
 more saturated (a 10.87 mm green cubic zirconia stays green, only deeper), a
-smaller one paler. Colours made with the L*C*h editor, the library band rows
-and Physics recipes are per millimetre and follow the Stone Size the same way,
-with 7 mm assumed when none is set.
+smaller one paler. Colors made with the L*C*h editor, the library band rows
+and Physics recipes are per millimetre and follow the stone width the same way,
+with 7 mm assumed when none is set. There is only this one width: it is saved in the
+design, it is undoable, and the old per-app "Stone Size" setting no longer exists.
 
 **Where a custom material lives.** Saving writes it to your catalogue's own
 database -- this is the copy every material picker across the app actually
@@ -358,7 +379,7 @@ Material is set to a custom material, saving that design with **Save**
 also writes a small snapshot of that material's numbers
 (`CustomMaterialSnapshot`: RI, dispersion, birefringence, specific gravity
 if set, crystal system, optical character, and the Sellmeier or Cauchy
-coefficients if you typed them) into the design's own `.indicatrix` file. This snapshot exists purely so the design
+coefficients if you typed them) into the design's own `.isdd` file. This snapshot exists purely so the design
 still opens with its real optics if it is ever loaded on a machine whose
 catalogue database has no row for that material name -- without it, a design
 would silently reload as plain Diamond. You never edit this snapshot directly;
@@ -367,7 +388,8 @@ it is written and read automatically alongside Save and Open
 
 ## RI Override vs. Material
 
-Above the tier list, the Edit tab's Design Settings panel shows:
+The Stone tab (Parameters dock; the Design Settings panel above the tier list shows
+the same material as a read-only chip with an **Edit in Stone Tab** link) holds:
 
 - **Material** -- the combo described above: `(none)`, every built-in, your
   own custom materials, and a final `Custom RI...` entry. Picking a name
@@ -382,44 +404,44 @@ Above the tier list, the Edit tab's Design Settings panel shows:
   RI (built-in **or custom catalogue material**), else the schedule's
   legacy recorded value. Critical Angle is `arcsin(1 / effective RI)` in
   degrees.
-- **Body Color** -- the design's own colour override: *Material default* (the
-  material's own colour), a short list of presets (Clear, Blue, Red and so on)
-  and a final **Custom...** entry. Choosing **Custom...** opens the colour
+- **Body Color** -- the design's own color override: *Material Default* (the
+  material's own color), a short list of presets (Clear, Blue, Red and so on)
+  and a final **Custom...** entry. Choosing **Custom...** opens the color
   editor under the box with three sliders: **Tone** (how light or dark, 0 black
-  to 100 white), **Saturation** (how rich, 0 grey) and **Hue** (the basic colour
-  in degrees around the colour wheel). **Use picker...** offers the
+  to 100 white), **Saturation** (how rich, 0 grey) and **Hue** (the basic color
+  in degrees around the color wheel). **Use Picker...** offers the
   hue/saturation/brightness picker instead; the sliders then show the picked
-  colour's tone, saturation and hue. Press **Apply colour** to use it (one step
+  color's tone, saturation and hue. Press **Apply Color** to use it (one step
   you can undo); **Cancel** changes nothing. The girdle diameter also sizes the
-  face-up colour the Optimize tab predicts (Chapter 8).
-  The colour of a gem depends on its size: the same absorption looks deeper in a
-  larger stone. The editor therefore shows the colour you chose as four swatches,
+  face-up color the Optimize tab predicts (Chapter 8).
+  The color of a gem depends on its size: the same absorption looks deeper in a
+  larger stone. The editor therefore shows the color you chose as four swatches,
   at 3 mm, 5 mm, 10 mm and **This stone** (the design's own size: its girdle
   width times 1.5, or 5 mm while no girdle diameter is set). The design keeps
-  the colour as an absorption spectrum per millimetre, so a larger stone in the
+  the color as an absorption spectrum per millimetre, so a larger stone in the
   same design is rendered deeper and a smaller one lighter.
-  Under the swatches a badge says **Reachable** with the colour difference
-  (Delta E) from what you asked for, or, in amber, that the colour is **not fully
-  reachable** at this size and how far the closest reachable colour is. Very
-  rich or very light-and-rich colours are not all reachable; lower the
+  Under the swatches a badge says **Reachable** with the color difference
+  (Delta E) from what you asked for, or, in amber, that the color is **not fully
+  reachable** at this size and how far the closest reachable color is. Very
+  rich or very light-and-rich colors are not all reachable; lower the
   saturation or change the tone. The presets above are unchanged and still apply
   at the size of the design.
-  The same entry shows when the design holds a colour that is not one of the
-  presets (one set from the Live Render toolbar or read from a file). Applying
-  the settings keeps a Custom colour exactly as it is, even when you change the
-  species in the same step; choosing a preset or *Material default* replaces it.
-  Older versions of the program show a close three-colour version of a colour
+  The same entry shows when the design holds a color that is not one of the
+  presets (one read from a file or made in the color editor). Changing the
+  material keeps a Custom color exactly as it is; choosing a preset or *Material
+  Default* replaces it.
+  Older versions of the program show a close three-color version of a color
   made here. The web app has the same editor, solves in its background worker
-  and renders the full colour in its 3D view.
+  and renders the full color in its 3D view.
   The same editor opens from two more places: **Pick...** in the Gem Material
-  Editor (Fantasy colour; Save keeps the colour in the material) and **Custom
-  colour...** in the Live Render toolbar's Color popup. In the toolbar it
-  changes the open design (one undo step) while the view is linked to the
-  design; otherwise it changes only the view and stores the closest three-band
-  colour, as the toolbar's other colours do.
+  Editor (Fantasy color; Save keeps the color in the material) and **Custom
+  Color...** in the color control of **Preview Color** (while previewing) and of a
+  library row. Those two change only the view and store the closest three-band
+  color; the Stone tab's Body Color is the one that changes the design (one undo step).
 
-**Simple and Advanced.** The Simple interface (Chapter 17) leaves out the panel's
-RI Override, Symmetry Order, Mirror and Apply Symmetry controls, the Extra Header
+**Simple and Advanced.** The Simple interface (Chapter 17) leaves out the Stone tab's
+RI Override (which shows its own "Some advanced settings are in use" note when it holds
+a value) and the Design Settings panel's Symmetry Order, Mirror and Apply Symmetry controls, the Extra Header
 Lines and Footnotes boxes, Gear Ref. Angle, and the printed-proportions row.
 Hidden controls still apply: when one of them holds something other than its
 default (an RI override, extra header lines, footnotes, a printed proportion, a
@@ -442,7 +464,7 @@ hatch may briefly disagree with the MARGIN badge and Live Render view. Setting
 an explicit RI Override matching the custom material's own value keeps every
 view in agreement.
 
-## Inferred material: a guess, never a fact
+## Inferred Material: A Guess, Never a Fact
 
 An imported `.asc` file carries only an `I` line -- a bare refractive index,
 never a species name. So when a design's Material is unset (`(none)`), the
@@ -450,10 +472,10 @@ app looks for the nearest built-in preset within 0.02 of the design's own
 effective RI and shows it as a labelled **guess**, never as though it were a
 recorded fact:
 
-> **Sapphire? (from RI 1.76)** — with a **Set material** button next to it.
+> **Sapphire? (from RI 1.76)** — with a **Set Material** button next to it.
 
-You'll see this badge in three places, always the same wording: the Design
-Settings panel (next to the Material combo), the inspector's Yield tab
+You'll see this badge in three places, always the same wording: the Stone
+tab (under the Material combo), the inspector's Yield tab
 (next to the Eff. RI line), and the catalogue detail card for a design with
 no material name of its own. The printed cutting sheet's header shows the
 same guess text in its "Material" row for an unnamed design, so a printed
@@ -462,15 +484,15 @@ at.
 
 Hovering the badge lists any OTHER built-in presets within the same 0.02
 tolerance, so you can see what else was close before trusting the nearest
-one. Clicking **Set material** writes the shown name into the design's
+one. Clicking **Set Material** writes the shown name into the design's
 Material as an ordinary, undoable edit (Ctrl+Z reverts it like any other
 change) -- once a name is set, the guess badge disappears everywhere at
 once (there is nothing left to guess), and the name reaches the saved
-`.indicatrix` file and Export Edited .asc the normal way. If nothing built in
+`.isdd` file and Export Edited .asc the normal way. If nothing built in
 is within tolerance, no badge is shown at all -- the app never forces a
 guess onto a material it cannot place.
 
-## The tier list's MARGIN column
+## The Tier List's MARGIN Column
 
 Each pavilion tier (a tier whose C/P/G column reads P) shows how many degrees
 its authored angle sits above the design's own effective critical angle,
@@ -499,21 +521,35 @@ to the Angle field itself, updating as you type -- so a pavilion angle you
 are about to save shows red, with its margin and a one-line reason,
 *before* you leave the field or click Save Tier.
 
-## The "Linked to design" checkbox
+## Preview As...: Looking at Another Material
 
-A **"Linked to design"** toggle, on by default, appears next to the Render
-Material control both in the Live Render viewport's own toolbar (Chapter 2)
-and, on an `editor`-enabled build, in the Edit tab's Design Settings panel
-itself. Both copies control the same underlying setting. While it is on,
-the Render Material dropdown follows the design's own Material
-automatically -- pick a new material in Design Settings, and the viewport
-(and the optimizer, and the tilt curve cache) all update to match, so what
-you render is always what you are editing. Turn it off to pick an
-independent render material without touching the design at all; while off,
-further design edits leave your independently-chosen render material alone
-rather than snapping it back.
+The picture always shows the design's own material. When you want to see the same
+stone in another material (a sapphire as a ruby, say) without changing the design, use
+**Preview As...** in the Stone tab. It replaces the older "Linked to design" toggle and
+works differently in three ways:
 
-## Which RI each part of the app actually uses
+- **It is explicit.** A preview starts only when you pick a material in **Preview As...**.
+  Choosing a material in the Stone tab's Material combo, the Design Settings panel or
+  anywhere else edits the design (one undo step) and never leaves a hidden preview behind.
+- **It is visible.** While it is on, an amber badge, **Previewing <material>: not the
+  design's material**, shows in the Stone tab, in the Live Render and Edit toolbars, in
+  the Design Settings panel and in the Export and Tilt Video dialogs (which also state
+  which material they will use). The picture, exports and tilt videos use the preview
+  material; the tier list and the optimizer keep using the design's own material.
+- **It ends with one button.** **Back to Design** returns to the design's material and
+  clears any preview color. **Save & Apply** in the material editor and a color
+  taken from the Rough Planner also end it, because they change the design's material.
+  While a preview is on, edits to the design (including its material) still go to the
+  design; the preview material stays as it is until you press Back to Design.
+
+A **library row** you are only browsing has no design material to preview against. The
+Stone tab shows **Library design: shown as <material>** with a view-only **Material** and
+**Color**; the choice is remembered as the app's preference for library rows and is
+never saved with the catalogue entry. The row starts out in the material its design file
+names, when it names one (with the file's refractive index and body color), else in the
+material its previews were drawn in, else in the one its refractive index points to.
+
+## Which RI Each Part of the App Actually Uses
 
 | Consumer | RI source |
 |---|---|
@@ -526,7 +562,7 @@ rather than snapping it back.
 | Retarget dialog | Catalogue-aware |
 | Solid-view facet-map hatch overlay | Catalogue-aware (built-in, custom, or override) |
 
-## Loading a design: the material suggestion
+## Loading a Design: The Material Suggestion
 
 Loading a catalogue design never changes the schedule's own recorded RI on
 its own. If the schedule's RI is within 0.01 of a built-in preset's own n_D,
@@ -539,7 +575,7 @@ first, so accepting the suggestion never silently changes what a
 subsequent export writes. Dismissing it ("No Thanks") leaves the design
 exactly as loaded, with no material name set at all.
 
-## Retarget: an automated proposal
+## Retarget: An Automated Proposal
 
 Click **Retarget...** on the command bar's second row (Chapter 3) to open
 a dialog that proposes new pavilion and crown angles for a different
@@ -559,14 +595,14 @@ material, for you to review before anything is applied.
     target material. It runs only when you press **Search**, in the
     background, and offers up to three valid options to pick from.
 - **Crown Handling** (Advanced) -- how the crown tiers follow the
-  pavilion. There are three rules. **Crown follows the pavilion** is the
+  pavilion. There are three rules. **Crown Follows the Pavilion** is the
   default: a steeper or shallower pavilion makes the stone deeper or
   shallower, and every crown angle is scaled by the same vertical stretch,
   so the stone keeps its silhouette (the crown height against the pavilion
-  depth) and its table size. Switch it off to use a **Fraction of shift**
+  depth) and its table size. Switch it off to use a **Fraction of Shift**
   slider instead (the crown moves by that share of the pavilion's change in
-  critical angle; 0% leaves the crown untouched). **Scale crown by ratio
-  instead** scales every crown tier's own angle by the ratio of the two
+  critical angle; 0% leaves the crown untouched). **Scale Crown by Ratio
+  Instead** scales every crown tier's own angle by the ratio of the two
   materials' critical angles; it wins over the other two rules.
 - **The proposal table** -- one row per crown and pavilion tier: its
   block, name, old angle, new angle, margin, and risk badge, so you can see
@@ -605,7 +641,7 @@ does, so they keep their size. A pavilion angle never drops below the target's
 critical angle plus the margin the design has now (at most 2 degrees of it), so
 the search cannot buy brilliance with a window.
 
-*Keep the design's look.* In Advanced mode the Optimize settings have a switch,
+*Keep the Design's Look.* In Advanced mode the Optimize settings have a switch,
 on by default. While it is on, every option (and the Shift start it is compared
 with) is scored with a penalty for drifting from the table size and the
 crown-to-pavilion ratio the design has now, so the search prefers options that
@@ -614,7 +650,7 @@ crown-to-pavilion ratio next to the old ones. Switch it off and the options are
 ranked by the optical score and the yield alone.
 
 *Allow a thicker girdle.* In Advanced mode the dialog has a switch, **Allow a
-thicker girdle (up to +10 %)**, on by default. When the new angles would pinch
+Thicker Girdle (up to +10 %)**, on by default. When the new angles would pinch
 the girdle at its corners, Retarget thickens the girdle band by 5 % and then by
 10 % (never thinner) before giving up, so a change that was **Not valid** only
 because of the girdle can become valid. It is only tried after a girdle
@@ -647,8 +683,8 @@ same options every time.
 
 *The options.* When the search ends, up to three options are listed, best
 score first (lower is better). Each shows its score, windowing, brilliance,
-extinction, the share of the rough the finished stone gives up (**yield
-loss**), and **Valid**. Only valid options are listed: every result of the
+extinction, the share of the rough the finished stone gives up (**Yield
+Loss**), and **Valid**. Only valid options are listed: every result of the
 search goes through the same checks as a Shift result (see "The verdict"
 below) against the design as it is now, and a result that fails is dropped. A
 note under the summary says how many were dropped and why. If the Shift result
@@ -662,7 +698,7 @@ comparison and the comparison pane all switch to it, so you can look before you
 decide. Nothing is applied by searching or by picking. **Apply stays disabled
 until an option is picked**, and then commits that option as one undo step.
 
-### What Retarget changes, and what it never touches
+### What Retarget Changes, and What It Never Touches
 
 - **The table and the culet never change.** A flat facet has no slope, so
   there is nothing for a critical angle to say about it; tilting one is
@@ -673,8 +709,8 @@ until an option is picked**, and then commits that option as one undo step.
 - **The girdle is not listed at all.** Its facets are vertical and
   structural, not optical.
 - **A tier that follows a relation is never changed on its own.** If a tier's
-  angle is set by a relation such as `P1 - 2` (Chapter 4, "Relations between
-  tiers"), its row reads **Follows** and the relation where the margin goes.
+  angle is set by a relation such as `P1 - 2` (Chapter 4, "Relations Between
+  Tiers"), its row reads **Follows** and the relation where the margin goes.
   It moves exactly as far as the tiers it reads, in both modes: Shift works
   out the new angle from the relation after the others have moved, and
   Optimize leaves it out of the search and works it out again for every
@@ -687,7 +723,7 @@ until an option is picked**, and then commits that option as one undo step.
   is held at the limit, shows **(held)** after its new angle, and a note
   under the table says which row and why.
 
-### How the facets move: they turn about the girdle
+### How the Facets Move: They Turn About the Girdle
 
 Changing a facet's angle alone is not enough: every facet is also cut to a
 height (its mast), and leaving the height alone while the angle changes
@@ -705,7 +741,7 @@ The line under the verdict says how the heights were chosen. Only the
 heights change this way; every angle is exactly the one in the table you
 reviewed.
 
-### The verdict: Valid or Not valid
+### The Verdict: Valid or Not Valid
 
 Under the table the dialog judges the retargeted stone and says so in one
 line, for example **Valid: girdle 2.1 % (was 2.3 %), thinnest point 0.40 %
@@ -740,7 +776,7 @@ design itself does not solve, the check cannot compare anything: the dialog
 says **Could not check this change**, and Apply stays available with the plain
 angle change, as it always did.
 
-### The Risk column and its margin
+### The Risk Column and Its Margin
 
 The margin is measured in degrees on the safe side of the target material's
 critical angle, and it means different things per block (hover the **Margin**
@@ -752,7 +788,7 @@ header for a reminder):
 - **Crown rows** show an estimate, suffixed **est.**, of the same margin for
   light entering through that crown facet, read against the main pavilion
   angle of the *retargeted* design (the same estimate the tier list shows,
-  see "The tier list's MARGIN column" above). A crown facet is never judged
+  see "The Tier List's MARGIN Column" above). A crown facet is never judged
   with the pavilion formula, which is what used to flag every crown row as
   Windows. The estimate follows a single ray through that crown facet and onto
   the main pavilion facet on the same side of the stone, and nothing else:
@@ -763,7 +799,7 @@ header for a reminder):
   nothing to measure against (a crown row in a design with no pavilion) shows
   a dash.
 
-### The optical comparison
+### The Optical Comparison
 
 Below the verdict a small table compares three stones on the same three
 numbers (windowing, brilliance and extinction, each a percentage of the light,
@@ -776,7 +812,7 @@ with each other, not a replacement for a full tilt sweep (Chapter 8). A column
 that cannot be measured reads **n/a** (for example the first one when the
 design names no material).
 
-### Errors that stop a proposal, and Apply
+### Errors That Stop a Proposal, and Apply
 
 A design that does not close cannot be retargeted at all: the table is replaced
 by **"Design does not solve: ..."**, and a search says it needs a design that
@@ -790,7 +826,7 @@ together, so a single Undo reverts all of it at once (the history entry
 reads "Retarget for" and the material's name). In Optimize mode that is the
 option you picked. Applying re-solves the design; check the status strip
 afterward the same as any other edit. The Return key and the compare
-window's **Keep after** obey the same rules as the button: a change that is
+window's **Keep After** obey the same rules as the button: a change that is
 still being checked, or is not valid, or an Optimize mode with no option
 picked, is refused with a message.
 
@@ -799,7 +835,7 @@ command bar: **Snapshot Design** / **Compare to Snapshot**, for diffing
 your current angles against an earlier point in the same session, and the
 tilt-curve persistence rule for a design that is not yet in your catalogue.
 
-## Doing it by hand
+## Doing It by Hand
 
 Retarget's Shift mode already automates the mechanical part of this, but
 understanding the reasoning is worth knowing, and Design Settings' MARGIN
@@ -810,7 +846,7 @@ column is what you would watch either way:
 2. Work out the critical angle for the target material (critical angle =
    arcsin(1 / RI), measured from the facet's normal). A higher RI gives a
    smaller critical angle; a lower RI gives a larger one.
-3. Set the Design Settings panel's Material combo to the target material
+3. Set the Stone tab's Material combo to the target material
    (or type a Custom RI). Watch the tier list's MARGIN column: any pavilion
    tier that turns red windows at the new RI.
 4. On the inspector's Tier tab (Chapter 4), select each red or amber
@@ -818,8 +854,8 @@ column is what you would watch either way:
    column reads green again, then **Save Tier**.
 5. Click **Solve** (Chapter 5) and check the status strip still reads
    "Closed solid."
-6. With "Linked to design" on, the Live Render viewport already shows your
-   target material -- check the **windowing** and **extinction** readouts
+6. The Live Render viewport already shows your
+   target material (unless you are in a Preview As... session; press Back to Design) -- check the **windowing** and **extinction** readouts
    (Chapter 2) at a range of tilt angles using the tilt-performance graph.
    Iterate on the crown and pavilion angles until performance looks right.
 7. Optionally, once at least one tier is a free (meet-based) tier rather
@@ -830,18 +866,18 @@ column is what you would watch either way:
    curve use, so there is no separate "which material did Optimize actually
    score against" question.
 
-## Authored versus effective refractive index
+## Authored Versus Effective Refractive Index
 
 The app keeps two distinct notions of "the design's RI": the AUTHORED
 value (the legacy `.asc` `I` line as last imported, before any material
 selection or override) and the EFFECTIVE value (override, else a resolved
 material's own n_D, else the authored value as a last resort —
 `Design::effective_refractive_index`). Every scoring, rendering and export
-path uses the effective value. The `.indicatrix` design file keeps
+path uses the effective value. The `.isdd` design file keeps
 the authored value separate, so it survives a Save / reopen round trip
 on its own, with no `.asc` beside it (see Chapter 11).
 
-## Next steps
+## Next Steps
 
 Continue to Chapter 7 for a full worked example of building a design from
 nothing, using the New Design dialog and putting the tier form, constraints,

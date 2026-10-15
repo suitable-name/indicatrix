@@ -1,0 +1,106 @@
+// More > Preferences. Every control reads its value from `Prefs` and reports a change
+// through a callback; Rust stores it in the settings and pushes the result back.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell, Prefs } from "../models.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { Segmented } from "../shell/chips.slint";
+import { Toggle } from "../shell/toggle.slint";
+import { InfoButton } from "../shell/info.slint";
+
+export component PreferencesPage inherits Rectangle {
+    VerticalLayout {
+        TopBar {
+            title: "Preferences";
+            show-back: true;
+            back-clicked => {
+                Shell.handle-back();
+            }
+        }
+
+        PageScroll {
+            // Theme.
+            VerticalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                padding-top: Theme.space-sm;
+                padding-bottom: Theme.space-md;
+                spacing: Theme.space-md;
+
+                Text {
+                    text: "Theme";
+                    color: Theme.on-surface;
+                    font-size: Theme.text-body-large;
+                }
+
+                Segmented {
+                    options: ["System", "Dark", "Light"];
+                    current: Prefs.theme;
+                    selected(index) => {
+                        Prefs.set-theme(index);
+                    }
+                }
+            }
+
+            ListRow {
+                icon: Icons.settings;
+                title: "Larger Handles";
+                supporting: "Bigger touch handles when dragging tiers and faces";
+                clicked => {
+                    Prefs.set-large-handles(!Prefs.large-handles);
+                }
+
+                Toggle {
+                    checked: Prefs.large-handles;
+                    toggled(value) => {
+                        Prefs.set-large-handles(value);
+                    }
+                }
+            }
+
+            ListRow {
+                icon: Icons.settings;
+                title: "Snap to Gear";
+                supporting: "Snap dragged angles to the index gear's teeth";
+                clicked => {
+                    Prefs.set-snap-to-gear(!Prefs.snap-to-gear);
+                }
+
+                InfoButton {
+                    info-title: "Snap to Gear";
+                    info-body: "When on, an angle you drag jumps to the nearest position your index gear can reach. Turn it off to drag freely and let the solver pick the index afterwards.";
+                }
+
+                Toggle {
+                    checked: Prefs.snap-to-gear;
+                    toggled(value) => {
+                        Prefs.set-snap-to-gear(value);
+                    }
+                }
+            }
+
+            ListRow {
+                icon: Icons.settings;
+                title: "Battery Saver";
+                supporting: "Lower render quality and fewer threads";
+                clicked => {
+                    Prefs.set-battery-saver(!Prefs.battery-saver);
+                }
+
+                InfoButton {
+                    info-title: "Battery Saver";
+                    info-body: "Renders at Draft quality with two worker threads, which keeps the phone cooler and the battery lasting longer. Previews are noisier and take longer to settle.";
+                }
+
+                Toggle {
+                    checked: Prefs.battery-saver;
+                    toggled(value) => {
+                        Prefs.set-battery-saver(value);
+                    }
+                }
+            }
+        }
+    }
+}

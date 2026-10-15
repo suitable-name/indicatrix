@@ -42,7 +42,7 @@
 //! -- Slint has no way to await a value-returning callback, so neither could
 //! move here while their own signatures stayed value-returning. Both callbacks
 //! are void now (`ui/models/settings.slint`/`ui/models/remote_worker.slint`), and each
-//! dialog (`settings_dialog.slint`'s `env_map_path`,
+//! dialog (the Parameters panel's `env_map_path`,
 //! `remote_worker_dialog.slint`'s `form_cert_dir` via a new
 //! `RemoteWorkerModel.picked_cert_dir` property and `changed` handler) is
 //! filled from the completion continuation this module hands back on the UI
@@ -146,6 +146,23 @@ thread_local! {
     static NEXT_PICK_KEY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Forgets the picker continuations a previous main window left parked (each closes over that
+/// window's state, often the design library handle). A picker dialog still open then finds
+/// nothing to answer. The test answer is left alone. See `gui::window_release`.
+pub(super) fn release_window_state() {
+    let pending = PENDING_PICKS.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    drop(pending);
+}
+
+/// Names this module's holder in `out` while it is still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(super) fn note_holders(out: &mut Vec<&'static str>) {
+    if PENDING_PICKS.with(|cell| !cell.borrow().is_empty()) {
+        out.push("pickers PENDING_PICKS (parked continuations)");
+    }
+}
+
 /// Test-only: see [`TEST_PICK_ANSWER`]'s own doc comment.
 #[cfg(test)]
 pub(super) fn set_test_pick_answer(answer: Option<PathBuf>) {
@@ -158,6 +175,40 @@ pub(super) fn set_test_pick_answer(answer: Option<PathBuf>) {
 /// picker" path).
 fn take_test_pick_answer() -> Option<TestPickAnswer> {
     TEST_PICK_ANSWER.with(|cell| cell.borrow_mut().take())
+}
+
+/// Short name of a picker kind, for the UI harness's "unexpected file dialog" report.
+#[cfg(feature = "ui-harness")]
+const fn kind_label(kind: &PickerKind) -> &'static str {
+    match kind {
+        PickerKind::OpenFile => "open file",
+        PickerKind::SaveFile => "save file",
+        PickerKind::PickFolder => "pick folder",
+    }
+}
+
+/// The `ui-harness` feature's replacement for the native dialog: the next queued answer of
+/// `crate::harness_support` (an empty queue records an "unexpected file dialog" failure and
+/// answers "cancelled"). `Some(answer)` means "answered, do not open anything"; the outer
+/// `Option` exists so the feature-off twin below can return `None` and fall through to `rfd`.
+#[cfg(feature = "ui-harness")]
+#[allow(clippy::unnecessary_wraps)]
+fn harness_answer(request: &PickerRequest) -> Option<TestPickAnswer> {
+    let title = request.title.as_deref().unwrap_or("<untitled>");
+    let detail = format!(
+        "{title} ({}, suggested name {:?})",
+        kind_label(&request.kind),
+        request.default_file_name
+    );
+    Some(TestPickAnswer(crate::harness_support::next_picker_answer(
+        &detail,
+    )))
+}
+
+/// Feature-off twin of [`harness_answer`]: never answers, so [`pick`] shows the real dialog.
+#[cfg(not(feature = "ui-harness"))]
+const fn harness_answer(_request: &PickerRequest) -> Option<TestPickAnswer> {
+    None
 }
 
 /// Turns a [`PickerRequest`] into a real `rfd::FileDialog` and shows it,
@@ -201,6 +252,11 @@ pub(super) fn pick(
     on_done: impl FnOnce(&MainWindow, Option<PathBuf>) + 'static,
 ) {
     if let Some(TestPickAnswer(answer)) = take_test_pick_answer() {
+        on_done(ui, answer);
+        return;
+    }
+    // `ui-harness` builds: answered from the harness's queue, no OS dialog, no thread.
+    if let Some(TestPickAnswer(answer)) = harness_answer(&request) {
         on_done(ui, answer);
         return;
     }

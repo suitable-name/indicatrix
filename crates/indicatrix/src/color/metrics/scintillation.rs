@@ -9,6 +9,7 @@ use super::{
     visibility::ray_is_visibly_returned,
 };
 use crate::optics::raytracer::Ray;
+use glam::Vec3;
 
 /// Small camera-yaw offsets (degrees), sampled around the primary viewing azimuth, used
 /// to measure Scintillation's TEMPORAL component: how much a given grid cell's light
@@ -33,12 +34,37 @@ const SCINT_TEMPORAL_WEIGHT: f32 = 0.4;
 pub(super) struct TemporalPoseContext<'a> {
     pub(super) stone: StoneArena<'a>,
     pub(super) nd: f32,
-    pub(super) cam_yaw: f32,
-    pub(super) cam_pitch: f32,
+    /// The camera frame `(forward, right, up)` at each of the
+    /// [`SCINT_TEMPORAL_YAW_OFFSETS_DEG`] yaws, built once per pose instead of once per
+    /// cell and offset (5 distinct frames against 900 `Camera::new` calls per evaluation).
+    bases: [(Vec3, Vec3, Vec3); 5],
     /// Where the fan's rays start, scaled to the stone.
     pub(super) fan: FanGeometry,
-    /// The illumination an exit direction is judged against.
-    pub(super) lighting: ExitLighting<'a>,
+    /// The illumination an exit direction is judged against, shared by every pose.
+    pub(super) lighting: &'a ExitLighting<'a>,
+}
+
+impl<'a> TemporalPoseContext<'a> {
+    /// The context for the pose `(cam_yaw, cam_pitch)`; the five offset frames use the
+    /// very expression the per-ray code used, so the hoist changes no bit.
+    pub(super) fn new(
+        stone: StoneArena<'a>,
+        nd: f32,
+        cam_yaw: f32,
+        cam_pitch: f32,
+        fan: FanGeometry,
+        lighting: &'a ExitLighting<'a>,
+    ) -> Self {
+        let bases = SCINT_TEMPORAL_YAW_OFFSETS_DEG
+            .map(|offset_deg| camera_view_basis(cam_yaw + offset_deg.to_radians(), cam_pitch));
+        Self {
+            stone,
+            nd,
+            bases,
+            fan,
+            lighting,
+        }
+    }
 }
 
 /// Fires a single, non-jittered ray at grid cell `(u, v)` (same screen-space coordinates
@@ -58,12 +84,11 @@ pub(super) struct TemporalPoseContext<'a> {
 #[must_use]
 fn cell_returned_at_yaw_offset(
     ctx: &TemporalPoseContext,
-    yaw_offset_deg: f32,
+    offset_index: usize,
     u: f32,
     v: f32,
 ) -> bool {
-    let (forward, right, up) =
-        camera_view_basis(ctx.cam_yaw + yaw_offset_deg.to_radians(), ctx.cam_pitch);
+    let (forward, right, up) = ctx.bases[offset_index];
     let ray = Ray {
         origin: ctx.fan.origin(forward, right, up, u, v),
         dir: forward,
@@ -76,7 +101,7 @@ fn cell_returned_at_yaw_offset(
     let cos_i = (-ray.dir).dot(n_entry).clamp(0.0, 1.0);
 
     match trace_wavelength(hit_point, ray.dir, n_entry, cos_i, ctx.stone, ctx.nd) {
-        RayFate::ExitedUpward(exit) => ray_is_visibly_returned(exit.dir, forward, &ctx.lighting),
+        RayFate::ExitedUpward(exit) => ray_is_visibly_returned(exit.dir, forward, ctx.lighting),
         RayFate::EntryBlocked | RayFate::Leaked | RayFate::Absorbed => false,
     }
 }
@@ -90,8 +115,8 @@ fn cell_returned_at_yaw_offset(
 #[must_use]
 pub(super) fn cell_temporal_variance(ctx: &TemporalPoseContext, u: f32, v: f32) -> f32 {
     let mut temporal_returned = 0u32;
-    for &yaw_offset_deg in &SCINT_TEMPORAL_YAW_OFFSETS_DEG {
-        if cell_returned_at_yaw_offset(ctx, yaw_offset_deg, u, v) {
+    for offset_index in 0..SCINT_TEMPORAL_YAW_OFFSETS_DEG.len() {
+        if cell_returned_at_yaw_offset(ctx, offset_index, u, v) {
             temporal_returned += 1;
         }
     }

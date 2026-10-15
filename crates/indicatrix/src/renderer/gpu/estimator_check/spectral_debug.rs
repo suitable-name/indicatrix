@@ -211,7 +211,7 @@ fn accumulate_spectral_debug_case(
             .iter_mut()
             .zip(&dispatch.compat[idx * 8..idx * 8 + 8])
         {
-            *c = raw as u8;
+            *c = u8::try_from(raw).expect("the kernel's compat flags are small bit sets");
         }
 
         // `dispatch.xyz` already has the kernel's own `params.white_balance` applied

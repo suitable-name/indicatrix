@@ -1,0 +1,77 @@
+// The full-screen New Design page: the Empty Design card (which expands into a short
+// form) and a grid of template cards. Tapping a template creates the design; creating
+// either way closes the page (Rust sets `DocumentModel.gallery-open` to false). The back
+// arrow closes it too, and so does Back through `DocumentModel.handle-back`.
+//
+// Show it while `DocumentModel.gallery-open` is true, as the last child of the area it
+// should cover (it fills its parent and swallows touches).
+import { Theme } from "../theme.slint";
+import { Shell } from "../models.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { DocumentModel } from "document_model.slint";
+import { EmptyDesignCard } from "new_design/empty_form.slint";
+import { TemplateCardTile } from "new_design/template_card.slint";
+
+export component NewDesignPage inherits Rectangle {
+    background: Theme.surface;
+
+    // Nothing below the page reacts to a tap on its background.
+    TouchArea { }
+
+    VerticalLayout {
+        TopBar {
+            title: "New Design";
+            show-back: true;
+            back-clicked => {
+                DocumentModel.gallery-open = false;
+            }
+        }
+
+        PageScroll {
+            VerticalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                padding-top: Theme.space-sm;
+                padding-bottom: Theme.space-xl;
+                spacing: Theme.space-lg;
+
+                EmptyDesignCard { }
+
+                Text {
+                    text: "Start From a Template";
+                    color: Theme.on-surface;
+                    font-size: Theme.text-title;
+                    font-weight: 500;
+                }
+
+                grid := Rectangle {
+                    // 2 columns on a phone, 3 on a medium window, 4 on an expanded one.
+                    property <int> cols: Shell.window-class == 0 ? 2 : (Shell.window-class == 1 ? 3 : 4);
+                    property <length> gap: Theme.space-md;
+                    property <length> card-w: (self.width - (self.cols - 1) * self.gap) / self.cols;
+                    property <length> card-h: 164px;
+                    property <int> rows: Math.ceil(DocumentModel.cards.length / self.cols);
+
+                    height: self.rows * self.card-h + max(self.rows - 1, 0) * self.gap;
+
+                    for card[index] in DocumentModel.cards: TemplateCardTile {
+                        property <int> grid-row: Math.floor(index / grid.cols);
+
+                        x: (index - self.grid-row * grid.cols) * (grid.card-w + grid.gap);
+                        y: self.grid-row * (grid.card-h + grid.gap);
+                        width: grid.card-w;
+                        height: grid.card-h;
+                        name: card.name;
+                        description: card.description;
+                        detail: card.detail;
+                        facets: card.facets;
+                        clicked => {
+                            DocumentModel.create-template(card.index);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

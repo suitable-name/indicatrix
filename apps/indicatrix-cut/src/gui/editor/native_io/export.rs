@@ -441,7 +441,7 @@ fn export_edited_schedule(
                             );
                             ask_write_confirm(
                                 ui,
-                                "This design is not a closed solid",
+                                "This Design Is Not a Closed Solid",
                                 heading_message,
                                 "Export Anyway",
                                 Some(confirm_keys::NOT_CLOSED_SOLID),
@@ -497,7 +497,7 @@ fn finish_export_after_notice(
         None => finish_export_schedule(ui, &schedule, default_file_name, format),
         Some(notice) => ask_write_confirm(
             ui,
-            "Concave tiers are not part of this format",
+            "Concave Tiers Are Not Part of This Format",
             format!("{notice}\n\nExport anyway?"),
             "Export Anyway",
             None,

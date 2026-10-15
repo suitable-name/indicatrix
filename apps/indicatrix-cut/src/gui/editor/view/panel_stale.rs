@@ -17,6 +17,7 @@ use crate::{
     gui::editor::{auto_solve, stale},
 };
 use indicatrix_cut_core::PreformShape;
+use indicatrix_editor::loading::preform_source_note;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{
     cell::Cell,
@@ -294,11 +295,15 @@ fn push_stale_warnings(ui: &crate::MainWindow, state: &EditorState) {
 fn push_stale_preform_and_yield(ui: &crate::MainWindow, state: &EditorState, delta: &ScratchDelta) {
     if delta.preform {
         let preform = &state.design.preform;
+        // A planned piece shows its bounding box in the Block form; the note under the shape
+        // says where it came from (empty for a block or cylinder).
         ui.global::<EditorModel>()
             .set_preform_shape_index(match preform.shape {
-                PreformShape::Block => 0,
+                PreformShape::Block | PreformShape::Planes(_) => 0,
                 PreformShape::Cylinder { .. } => 1,
             });
+        ui.global::<EditorModel>()
+            .set_preform_source_note(preform_source_note(preform).into());
         ui.global::<EditorModel>()
             .set_preform_half_width(format!("{:.4}", preform.half_width).into());
         ui.global::<EditorModel>()

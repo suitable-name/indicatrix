@@ -346,6 +346,9 @@ fn save_then_load_round_trips_settings_and_presets() {
             camera_pitch: None,
             env_map_path: None,
             export_usable: false,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         })
         .unwrap();
 

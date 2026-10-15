@@ -104,6 +104,11 @@ static REGISTRY: Mutex<Vec<(Weak<EnvironmentMap>, Arc<HdrAsset>)>> = Mutex::new(
 ///
 /// A human-readable message when the file cannot be read or does not decode (malformed,
 /// or over `HdrLimits::DEFAULT`).
+///
+/// # Panics
+///
+/// Never in practice: a decoded map is bounded by `HdrLimits::DEFAULT`, far below `u32::MAX`
+/// pixels per edge.
 pub fn load_hdr_file(path: &Path) -> Result<(Arc<EnvironmentMap>, Arc<HdrAsset>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("failed to decode HDR image: {e}"))?;
     let map = Arc::new(
@@ -111,8 +116,8 @@ pub fn load_hdr_file(path: &Path) -> Result<(Arc<EnvironmentMap>, Arc<HdrAsset>)
     );
     let asset = Arc::new(HdrAsset {
         content_hash: content_hash(&bytes),
-        width: map.width() as u32,
-        height: map.height() as u32,
+        width: u32::try_from(map.width()).expect("HDR width is bounded by HdrLimits"),
+        height: u32::try_from(map.height()).expect("HDR height is bounded by HdrLimits"),
         path: path.to_path_buf(),
         len: bytes.len(),
         bytes: (bytes.len() <= KEEP_IN_MEMORY_MAX).then(|| Arc::from(bytes)),
@@ -166,6 +171,11 @@ pub fn asset_by_hash(hash: &ContentHash) -> Option<Arc<HdrAsset>> {
 /// all-zero hash no server can resolve: such a scene must be refused before dispatch
 /// (`super::guard::remote_can_render`), and if it ever reaches a server the request
 /// fails with `ASSET_FAILED` -- never renders with the studio rig in its place.
+///
+/// # Panics
+///
+/// Never in practice: a loaded map is bounded by `HdrLimits::DEFAULT`, far below `u32::MAX`
+/// pixels per edge.
 #[must_use]
 pub fn scene_environment(env_map: Option<&Arc<EnvironmentMap>>) -> SceneEnvironment {
     let Some(map) = env_map else {
@@ -174,8 +184,8 @@ pub fn scene_environment(env_map: Option<&Arc<EnvironmentMap>>) -> SceneEnvironm
     SceneEnvironment::Hdr(asset_for(map).map_or_else(
         || HdrEnvironment {
             content_hash: [0; 32],
-            width: map.width() as u32,
-            height: map.height() as u32,
+            width: u32::try_from(map.width()).expect("HDR width is bounded by HdrLimits"),
+            height: u32::try_from(map.height()).expect("HDR height is bounded by HdrLimits"),
         },
         |asset| asset.environment(),
     ))

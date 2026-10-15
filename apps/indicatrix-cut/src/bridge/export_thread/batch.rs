@@ -168,6 +168,11 @@ pub(super) fn hybrid_batch(
     } else {
         gpu_frac.unwrap_or(0.0)
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "frac is in 0..=1 so the rounded share is within 0..=this_batch"
+    )]
     let gpu_share = (f64::from(this_batch) * frac).round() as u32;
     let gpu_share = gpu_share.min(this_batch);
     let cpu_share = this_batch - gpu_share;
@@ -370,6 +375,33 @@ pub fn render_batch(
     accum: &mut [Vec3],
 ) {
     let num_threads = thread::available_parallelism().map_or(8, std::num::NonZero::get);
+    render_batch_with_threads(
+        (width, height),
+        batch_spp,
+        samples_already_done,
+        camera,
+        scene,
+        accum,
+        num_threads,
+    );
+}
+
+/// [`render_batch`] on exactly `num_threads` scoped threads (clamped to at least one).
+///
+/// The batch preview lanes pass their share of a process-wide permit pool
+/// (`preview_render::cpu_permits`) so concurrent CPU fallbacks divide the cores instead of
+/// each spawning all of them. Rows are claimed from one atomic counter and every pixel's
+/// sum depends only on its index, so the result is bit-identical for any `num_threads`.
+pub fn render_batch_with_threads(
+    (width, height): (u32, u32),
+    batch_spp: u32,
+    samples_already_done: u32,
+    camera: &Camera,
+    scene: &SceneSnapshot,
+    accum: &mut [Vec3],
+    num_threads: usize,
+) {
+    let num_threads = num_threads.max(1);
     let width_usize = width as usize;
 
     let rows: Vec<Option<&mut [Vec3]>> = accum.chunks_mut(width_usize).map(Some).collect();
@@ -421,7 +453,8 @@ pub fn render_batch(
                         .expect("each row index is claimed by exactly one thread via fetch_add");
 
                     for (x, pixel) in row.iter_mut().enumerate() {
-                        let global_pixel_idx = (y * width_usize + x) as u32;
+                        let global_pixel_idx = u32::try_from(y * width_usize + x)
+                            .expect("pixel index fits u32: export dimensions are capped");
                         let mut sample_sum = Vec3::ZERO;
 
                         // Per-pixel Cranley-Patterson rotations for the stratified
@@ -432,8 +465,8 @@ pub fn render_batch(
                         let rot = pixel_rotations(global_pixel_idx);
 
                         for s_idx in 0..batch_spp {
-                            let sample_num = samples_already_done + s_idx;
-                            let draws = sample_draws(global_pixel_idx, sample_num, &rot);
+                            let global_sample = samples_already_done + s_idx;
+                            let draws = sample_draws(global_pixel_idx, global_sample, &rot);
 
                             let ray = camera.generate_ray(
                                 x as f32,

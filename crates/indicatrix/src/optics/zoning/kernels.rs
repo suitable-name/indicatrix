@@ -125,6 +125,50 @@ pub(super) fn perp_basis(axis: DVec3) -> (DVec3, DVec3) {
     (u, axis.cross(u))
 }
 
+/// Narrowing from the `f64` zone data to a kernel instantiation's float type: the identity for
+/// the `f64` kernel, the (intended) rounding to `f32` for the single-precision kernel.
+trait FromF64 {
+    fn from_f64(value: f64) -> Self;
+}
+
+impl FromF64 for f64 {
+    fn from_f64(value: f64) -> Self {
+        value
+    }
+}
+
+impl FromF64 for f32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the single-precision kernel mirrors the GPU, which stores zone data as f32"
+    )]
+    fn from_f64(value: f64) -> Self {
+        value as Self
+    }
+}
+
+/// A kernel float at the `f32` precision of the exported GPU zone table: the identity for the
+/// `f32` kernel, the rounding to `f32` for the `f64` kernel.
+trait ToF32 {
+    fn to_f32(self) -> f32;
+}
+
+impl ToF32 for f32 {
+    fn to_f32(self) -> f32 {
+        self
+    }
+}
+
+impl ToF32 for f64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the GPU zone table stores f32; zone data is in the normal float range"
+    )]
+    fn to_f32(self) -> f32 {
+        self as f32
+    }
+}
+
 macro_rules! zone_kernel_impl {
     ($modname:ident, $f:ty, $pi:expr) => {
         #[allow(
@@ -141,8 +185,8 @@ macro_rules! zone_kernel_impl {
         )]
         pub(super) mod $modname {
             use super::{
-                ExportedKernel, ExportedZone, K_CYL, K_HALF, K_NONE, K_PRISM, K_SECTOR, K_SLAB,
-                SOFT_SUBDIV, SPAN_CAP, perp_basis,
+                ExportedKernel, ExportedZone, FromF64, K_CYL, K_HALF, K_NONE, K_PRISM, K_SECTOR,
+                K_SLAB, SOFT_SUBDIV, SPAN_CAP, ToF32, perp_basis,
             };
             use crate::optics::zoning::{MAX_ZONES, ZoneShape, ZonedAbsorption};
             use glam::{DMat3, DVec3};
@@ -178,8 +222,8 @@ macro_rules! zone_kernel_impl {
             const BP_SHARP: usize = 2 + MAX_ZONES * SPAN_CAP * 2;
             const BP_SOFT: usize = 2 + MAX_ZONES * (2 * SPAN_CAP * 2 + 1);
 
-            const fn v3(v: DVec3) -> V3 {
-                [v.x as F, v.y as F, v.z as F]
+            fn v3(v: DVec3) -> V3 {
+                [F::from_f64(v.x), F::from_f64(v.y), F::from_f64(v.z)]
             }
 
             fn dot(a: V3, b: V3) -> F {
@@ -409,7 +453,7 @@ macro_rules! zone_kernel_impl {
                         ZoneShape::HalfSpace { normal, offset } => {
                             z.kind = K_HALF;
                             z.d = v3(*normal);
-                            z.x0 = *offset as F;
+                            z.x0 = F::from_f64(*offset);
                         }
                         ZoneShape::Slab {
                             normal,
@@ -418,8 +462,8 @@ macro_rules! zone_kernel_impl {
                         } => {
                             z.kind = K_SLAB;
                             z.d = v3(*normal);
-                            z.x0 = *offset_min as F;
-                            z.x1 = *offset_max as F;
+                            z.x0 = F::from_f64(*offset_min);
+                            z.x1 = F::from_f64(*offset_max);
                         }
                         ZoneShape::CoaxialCylinder {
                             axis_point,
@@ -429,8 +473,8 @@ macro_rules! zone_kernel_impl {
                         } => {
                             z.kind = K_CYL;
                             z.set_axis(*axis_point, *axis_dir);
-                            z.x0 = *r_in as F;
-                            z.x1 = *r_out as F;
+                            z.x0 = F::from_f64(*r_in);
+                            z.x1 = F::from_f64(*r_out);
                         }
                         ZoneShape::CoaxialPrism {
                             axis_point,
@@ -443,9 +487,9 @@ macro_rules! zone_kernel_impl {
                             z.kind = K_PRISM;
                             z.set_axis(*axis_point, *axis_dir);
                             z.n_sides = *n_sides;
-                            z.x0 = *r_in as F;
-                            z.x1 = *r_out as F;
-                            z.x2 = *phase as F;
+                            z.x0 = F::from_f64(*r_in);
+                            z.x1 = F::from_f64(*r_out);
+                            z.x2 = F::from_f64(*phase);
                         }
                         ZoneShape::Sector {
                             axis_point,
@@ -458,8 +502,8 @@ macro_rules! zone_kernel_impl {
                             let span = *angle_to - *angle_from;
                             z.wide = span > std::f64::consts::PI;
                             z.full = span >= std::f64::consts::TAU - 1e-12;
-                            z.e0 = [angle_from.cos() as F, angle_from.sin() as F];
-                            z.e1 = [angle_to.cos() as F, angle_to.sin() as F];
+                            z.e0 = [F::from_f64(angle_from.cos()), F::from_f64(angle_from.sin())];
+                            z.e1 = [F::from_f64(angle_to.cos()), F::from_f64(angle_to.sin())];
                         }
                         ZoneShape::MeshShell { .. } => {}
                     }
@@ -601,7 +645,7 @@ macro_rules! zone_kernel_impl {
                     Self {
                         zones,
                         count,
-                        softness: f64::from(z.boundary_softness_mm) as F,
+                        softness: F::from_f64(f64::from(z.boundary_softness_mm)),
                         rows: [v3(rot.x_axis), v3(rot.y_axis), v3(rot.z_axis)],
                         origin: v3(z.frame.translation),
                     }
@@ -609,7 +653,7 @@ macro_rules! zone_kernel_impl {
 
                 /// The flattened kernel as plain `f32` data, for the GPU zone table.
                 pub(super) fn export(&self) -> ExportedKernel {
-                    let v = |a: V3| [a[0] as f32, a[1] as f32, a[2] as f32];
+                    let v = |a: V3| [a[0].to_f32(), a[1].to_f32(), a[2].to_f32()];
                     let mut zones = [ExportedZone {
                         kind: K_NONE,
                         n_sides: 0,
@@ -634,15 +678,15 @@ macro_rules! zone_kernel_impl {
                             d: v(z.d),
                             u: v(z.u),
                             v: v(z.v),
-                            x: [z.x0 as f32, z.x1 as f32, z.x2 as f32],
-                            e0: [z.e0[0] as f32, z.e0[1] as f32],
-                            e1: [z.e1[0] as f32, z.e1[1] as f32],
+                            x: [z.x0.to_f32(), z.x1.to_f32(), z.x2.to_f32()],
+                            e0: [z.e0[0].to_f32(), z.e0[1].to_f32()],
+                            e1: [z.e1[0].to_f32(), z.e1[1].to_f32()],
                         };
                     }
                     ExportedKernel {
                         zones,
                         count: self.count,
-                        softness: self.softness as f32,
+                        softness: self.softness.to_f32(),
                         rows: [v(self.rows[0]), v(self.rows[1]), v(self.rows[2])],
                         origin: v(self.origin),
                     }
@@ -671,7 +715,10 @@ macro_rules! zone_kernel_impl {
                 /// The sharp spans of zone `j` (0-based among the shaped zones).
                 pub(super) fn zone_spans_vec(&self, j: usize, p0: V3, dv: V3) -> Vec<(F, F)> {
                     let s = zone_spans(&self.zones[j], p0, dv, 0.0);
-                    s.s[..s.n].iter().map(|&span| <(F, F)>::from(span)).collect()
+                    s.s[..s.n]
+                        .iter()
+                        .map(|&span| <(F, F)>::from(span))
+                        .collect()
                 }
 
                 /// Lengths per zone (index 0 base) of the segment `from` to `to`, outer frame.

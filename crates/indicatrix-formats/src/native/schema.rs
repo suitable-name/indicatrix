@@ -1,65 +1,15 @@
-//! The native document schema itself: [`NativeDesignFile`] and its nested tables --
-//! plain, `serde`-deriving mirrors of an editor's own in-memory types (owned by
-//! `indicatrix-cut-core`, not this crate; converting to and from them is that crate's
-//! job, since only it can see both sides) -- and the plain serialize/parse functions
-//! over them. See the parent module's doc comment for the format choice and the
-//! "Unknown fields" convention every table here follows.
-
-use std::fmt;
+//! The tables of the native design file: plain, `serde`-deriving mirrors of an editor's
+//! own in-memory types (owned by `indicatrix-cut-core`, not this crate; converting to
+//! and from them is that crate's job, since only it can see both sides). The design
+//! file ([`super::design`]) assembles them into the whole document. See the parent
+//! module's doc comment for the format choice and the "Unknown fields" convention
+//! every table here follows.
 
 pub use super::custom_material::CustomMaterialSnapshot;
 
 mod tier;
 
 pub use tier::{ConcaveTierTable, TierTable};
-
-/// This module's own schema version.
-///
-/// Bumped only for a change `serde(default)` on a newly added field can't handle (see
-/// the module doc comment's "Unknown fields" section); expected to stay `1` for a
-/// long time.
-pub const FORMAT_VERSION: u32 = 1;
-
-const fn default_format_version() -> u32 {
-    FORMAT_VERSION
-}
-
-/// Errors from [`to_toml_string`]/[`from_toml_str`], the serialize/parse pair over
-/// [`NativeDesignFile`].
-///
-/// Mirrors this crate's [`crate::asc::AscParseError`] in spirit -- a typed error
-/// rather than a bare `toml::de::Error`/`toml::ser::Error`, so a caller matching on
-/// which direction failed doesn't need this module's TOML dependency in scope at all.
-#[derive(Debug)]
-pub enum NativeFormatError {
-    /// [`to_toml_string`] failed to serialize a [`NativeDesignFile`]. In practice
-    /// unreachable for this module's own named fields, but surfaced rather than
-    /// `.expect()`ed because [`NativeDesignFile::unknown`] (and every nested
-    /// `unknown` table) can hold arbitrary `toml::Value`s carried over from a newer
-    /// file this build doesn't understand.
-    Serialize(toml::ser::Error),
-    /// [`from_toml_str`] failed to parse text into a [`NativeDesignFile`]: not valid
-    /// TOML, or valid TOML that doesn't match this schema.
-    Parse(toml::de::Error),
-}
-
-impl fmt::Display for NativeFormatError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Serialize(e) => write!(f, "cannot serialize the .indicatrix.toml sidecar: {e}"),
-            Self::Parse(e) => write!(f, "the .indicatrix.toml sidecar is not valid: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for NativeFormatError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Serialize(e) => Some(e),
-            Self::Parse(e) => Some(e),
-        }
-    }
-}
 
 /// The on-disk mirror of a tier's authored meet constraint.
 ///
@@ -107,11 +57,22 @@ pub enum NativeTierTarget {
 /// Same lossless round trip as [`NativeMeetConstraint`], for the editor's own
 /// preform-shape type -- kept as a dedicated mirror so this crate's schema never
 /// needs that type (or the crate that owns it) in scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NativePreformShape {
     Block,
-    Cylinder { sides: usize },
+    Cylinder {
+        sides: usize,
+    },
+    /// A convex plane set in model units: `planes` holds `[nx, ny, nz, m]` rows of `n . x <= m`
+    /// in the design's own frame; `source` says where it came from (the Rough Planner's planned
+    /// piece) and may be empty. A build older than 2026-10-12 does not know this kind and refuses
+    /// the file.
+    Planes {
+        planes: Vec<[f64; 4]>,
+        #[serde(default)]
+        source: String,
+    },
 }
 
 /// The `[preform]` table: a TOML mirror of the editor's own preform spec.
@@ -123,7 +84,9 @@ pub enum NativePreformShape {
 pub struct PreformTable {
     /// Shape category of the stone.
     pub shape: NativePreformShape,
-    /// Half the preform width.
+    /// Half the preform width. For a [`NativePreformShape::Planes`] shape this and the next
+    /// two fields describe the set's bounding box and are informational: the planes decide
+    /// the solid.
     pub half_width: f64,
     /// Preform length divided by its width.
     pub length_over_width: f64,
@@ -361,7 +324,7 @@ impl From<MaterialTableWire> for MaterialTable {
 /// building/reading the actual type is `indicatrix-cut-core`'s job (this crate has no
 /// dependency on `indicatrix` at all -- see the crate doc comment's "only pulls in
 /// what it needs" rule), same split as [`PreformTable`]/[`MaterialTable`]. Entirely
-/// optional at the top level ([`NativeDesignFile::source`]): a design that was never
+/// optional at the top level (`DesignFile::source`): a design that was never
 /// loaded from a catalogue row (a brand-new "New Design", or a directly opened
 /// `.asc`) has nothing to record here.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -385,8 +348,7 @@ pub struct SourceTable {
 
 impl SourceTable {
     /// `true` iff every field is `None` -- a table with nothing worth writing at all
-    /// (see [`NativeDesignFile::with_source`]'s own doc comment for why this is
-    /// checked before attaching one).
+    /// (checked before attaching one, see `DesignFile::with_source`).
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.vol_w3.is_none()
@@ -428,211 +390,10 @@ impl HistoryTable {
         }
     }
 
-    /// `true` iff there is nothing worth writing at all -- see
-    /// [`NativeDesignFile::with_history`]'s own doc comment for why this is checked
-    /// before attaching one.
+    /// `true` iff there is nothing worth writing at all (checked before attaching
+    /// one, see `DesignFile::with_history`).
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-}
-
-/// The whole native document -- see the module doc comment for the format, the
-/// fingerprint, and why each field is (or is not) here.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct NativeDesignFile {
-    /// Version of the file format.
-    #[serde(default = "default_format_version")]
-    pub format_version: u32,
-    /// The paired `.asc`'s own bare file name (e.g. `"design.asc"`), never a full
-    /// path: the two files travel together in the same directory (see the module doc
-    /// comment's "Extension and layout" section), and a baked-in path would go stale
-    /// the moment that directory is renamed or moved.
-    pub asc_filename: String,
-    /// SHA-256 (lowercase hex, via [`crate::native::sha256_hex`]) of the paired
-    /// `.asc`'s raw bytes as of this file's last save. See "The fingerprint" section
-    /// of the module doc comment.
-    pub asc_sha256: String,
-    /// Preform description.
-    pub preform: PreformTable,
-    /// Mirrors the editor's own girdle-diameter-in-mm field directly (already an
-    /// `Option<f64>` there, so no separate table needed the way `preform`/`material`
-    /// get one).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub girdle_diameter_mm: Option<f64>,
-    /// Material description.
-    pub material: MaterialTable,
-    /// Tiers of the design in cutting order.
-    pub tiers: Vec<TierTable>,
-    /// `true` iff `design` did not currently solve when this file was saved (see
-    /// `indicatrix_cut_core::native::save_paired`'s own doc comment): `tiers` here then
-    /// carries the FULL tier list (`angle_deg`/`indices` included, not left `None`)
-    /// rather than an overlay on the paired `.asc`, and the paired `.asc` itself is a
-    /// placeholder -- every mast in it is a made-up number, never a real cut
-    /// instruction, and must never be shown to a cutter as one. A loader is expected
-    /// to rebuild its design entirely from `tiers` when this is `true`, ignoring the
-    /// paired `.asc`'s own tier list (its `angle_deg`/`gear`/`symmetry`/`refractive_index`
-    /// header fields are still real, only its per-tier masts are not). This document
-    /// stores no gear of its own: the gear is read from the paired `.asc`, where
-    /// [`crate::asc::parse_asc`] bounds it by [`crate::asc::AscParseError::MAX_GEAR_TEETH`].
-    /// `#[serde(default)]` so a file saved before this field existed loads as `false`
-    /// (never a draft) -- the only meaning an absent flag could have, since a draft
-    /// save did not exist yet either.
-    #[serde(default)]
-    pub draft: bool,
-    /// See [`SourceTable`]'s own doc comment. `#[serde(default)]` so a file saved
-    /// before this field existed still loads, as `None` -- exactly what it should
-    /// mean for a design this build never associated with a catalogue row.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<SourceTable>,
-    /// See [`HistoryTable`]'s own doc comment. `#[serde(default)]` so a file saved
-    /// before this field existed still loads, as `None` -- exactly what it should
-    /// mean for a design this build never recorded a history trail for.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history: Option<HistoryTable>,
-    /// The catalogue row this design was loaded from (or has since saved back to),
-    /// if any -- `[source]` carries a
-    /// catalogue row's PRINTED proportions, but not which row they came from, so a
-    /// reopen can only ever replay the numbers as they were at save time, never
-    /// notice that the row's own figures have since changed. A plain top-level
-    /// field, not nested inside [`SourceTable`]: that struct is built from a raw
-    /// field literal in `indicatrix-cut-core::native::convert` (see this crate's own
-    /// "only pulls in what it needs" boundary note), so adding a field there would
-    /// break that unrelated call site; a new top-level field, defaulted inside
-    /// [`Self::new`] and attached via [`Self::with_catalogue_entry_id`], costs that
-    /// file nothing until it opts in. `#[serde(default)]` so a file saved before
-    /// this field existed loads as `None` -- exactly what it should mean for a
-    /// design never associated with a catalogue row, or saved by a build before this
-    /// one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub catalogue_entry_id: Option<i64>,
-    /// The AUTHORED (legacy schedule) refractive index, as last set directly or
-    /// imported from a `.asc` `I` line the design's material selection did not
-    /// override -- distinct from the EFFECTIVE refractive index (material/
-    /// override resolved) that `.asc` export always writes instead. `.asc`
-    /// has exactly one RI slot and export always
-    /// writes the effective value there, so re-importing that same file
-    /// overwrites the authored figure with whatever the effective one happened to
-    /// be -- this field is the native sidecar's own place to keep the authored
-    /// value distinct from that lossy round trip. `#[serde(default)]` so a file
-    /// saved before this field existed still loads, as `None` -- the loader then
-    /// falls back to whatever the paired `.asc`'s own `I` line says, exactly
-    /// today's (lossy) behavior for such a file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authored_refractive_index: Option<f64>,
-    /// Top-level keys a future build wrote that none of the named fields above claim
-    /// -- see [`PreformTable::unknown`]'s doc comment.
-    #[serde(flatten, default)]
-    pub unknown: toml::Table,
-}
-
-impl NativeDesignFile {
-    /// Builds a fresh document -- `format_version` pinned to [`FORMAT_VERSION`],
-    /// [`Self::draft`] `false`, no unknown/future fields at this level or any nested
-    /// table's, the shape every freshly-authored (never parsed), ordinarily-solvable
-    /// document has. `indicatrix-cut-core`'s `to_native_file` is the higher-level
-    /// function that actually builds `preform`/`material`/`tiers` from a real editor
-    /// design and calls this with the result -- see [`PreformTable::new`]'s own doc
-    /// comment for why building the mirror types themselves is split out that way. A
-    /// caller saving a design that does not currently solve calls [`Self::with_draft`]
-    /// afterward.
-    #[must_use]
-    pub fn new(
-        asc_filename: impl Into<String>,
-        asc_sha256: impl Into<String>,
-        preform: PreformTable,
-        girdle_diameter_mm: Option<f64>,
-        material: MaterialTable,
-        tiers: Vec<TierTable>,
-    ) -> Self {
-        Self {
-            format_version: FORMAT_VERSION,
-            asc_filename: asc_filename.into(),
-            asc_sha256: asc_sha256.into(),
-            preform,
-            girdle_diameter_mm,
-            material,
-            tiers,
-            draft: false,
-            source: None,
-            history: None,
-            catalogue_entry_id: None,
-            authored_refractive_index: None,
-            unknown: toml::Table::new(),
-        }
-    }
-
-    /// Attaches [`Self::authored_refractive_index`] -- see that field's own doc
-    /// comment.
-    #[must_use]
-    pub const fn with_authored_refractive_index(
-        mut self,
-        authored_refractive_index: Option<f64>,
-    ) -> Self {
-        self.authored_refractive_index = authored_refractive_index;
-        self
-    }
-
-    /// Attaches [`Self::draft`] -- see that field's own doc comment.
-    #[must_use]
-    pub const fn with_draft(mut self, draft: bool) -> Self {
-        self.draft = draft;
-        self
-    }
-
-    /// Attaches [`Self::source`] -- `None` when `source.is_empty()` (nothing worth
-    /// writing at all), so an ordinary design with no catalogue provenance never
-    /// grows an all-`None` `[source]` table it would just have to skip reading back.
-    #[must_use]
-    pub fn with_source(mut self, source: SourceTable) -> Self {
-        self.source = (!source.is_empty()).then_some(source);
-        self
-    }
-
-    /// Attaches [`Self::history`] -- `None` when `history.is_empty()` (nothing
-    /// worth writing at all), so a design with no recorded trail never grows an
-    /// empty `[history]` table it would just have to skip reading back. The
-    /// caller (`indicatrix-cut-core`) is responsible for bounding `entries`'
-    /// length before calling this -- this schema does not enforce a bound itself.
-    #[must_use]
-    pub fn with_history(mut self, history: HistoryTable) -> Self {
-        self.history = (!history.is_empty()).then_some(history);
-        self
-    }
-
-    /// Attaches [`Self::catalogue_entry_id`] -- see that field's own doc comment.
-    #[must_use]
-    pub const fn with_catalogue_entry_id(mut self, catalogue_entry_id: Option<i64>) -> Self {
-        self.catalogue_entry_id = catalogue_entry_id;
-        self
-    }
-}
-
-/// Serializes `file` to TOML text.
-///
-/// Pretty-printed (blank lines between tables, `[[tiers]]` array-of-tables rather than
-/// inline) for human readability -- see the module doc comment's "Format: TOML"
-/// section.
-///
-/// # Errors
-///
-/// [`NativeFormatError::Serialize`] -- in practice unreachable for this module's own
-/// types, but surfaced rather than `.expect()`ed because [`NativeDesignFile::unknown`]
-/// can hold arbitrary `toml::Value`s carried over from a newer file this build
-/// doesn't understand.
-pub fn to_toml_string(file: &NativeDesignFile) -> Result<String, NativeFormatError> {
-    toml::to_string_pretty(file).map_err(NativeFormatError::Serialize)
-}
-
-/// Parses a native document's text into a [`NativeDesignFile`].
-///
-/// # Errors
-///
-/// [`NativeFormatError::Parse`] for anything that isn't valid TOML matching this
-/// schema. Every field besides the handful with a real default (`format_version`,
-/// `girdle_diameter_mm`, `detached`, every `unknown` map) must be present, but key
-/// order and extra keys are unconstrained -- see the module doc comment's "Format:
-/// TOML" section.
-pub fn from_toml_str(text: &str) -> Result<NativeDesignFile, NativeFormatError> {
-    toml::from_str(text).map_err(NativeFormatError::Parse)
 }

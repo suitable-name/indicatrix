@@ -130,8 +130,8 @@ fn carved_hull_faces(pts: &[DVec3], eps: f64) -> Option<Vec<Face>> {
             continue;
         }
         let height: Vec<f64> = faces.iter().map(|f| f.n.dot(p) - f.d).collect();
-        let mut seen: Vec<bool> = height.iter().map(|&h| h > eps).collect();
-        if !seen.contains(&true) {
+        let mut visible: Vec<bool> = height.iter().map(|&h| h > eps).collect();
+        if !visible.contains(&true) {
             continue;
         }
         // Each directed edge belongs to one face; the face across it owns the reverse edge.
@@ -140,21 +140,21 @@ fn carved_hull_faces(pts: &[DVec3], eps: f64) -> Option<Vec<Face>> {
             .enumerate()
             .flat_map(|(i, f)| f.edges().into_iter().map(move |edge| (edge, i)))
             .collect();
-        let mut queue: Vec<usize> = (0..faces.len()).filter(|&i| seen[i]).collect();
+        let mut queue: Vec<usize> = (0..faces.len()).filter(|&i| visible[i]).collect();
         while let Some(i) = queue.pop() {
             for (a, b) in faces[i].edges() {
                 if let Some(&j) = owner.get(&(b, a))
-                    && !seen[j]
+                    && !visible[j]
                     && height[j] > -eps
                 {
-                    seen[j] = true;
+                    visible[j] = true;
                     queue.push(j);
                 }
             }
         }
         let (gone, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut faces)
             .into_iter()
-            .zip(seen)
+            .zip(visible)
             .partition(|&(_, s)| s);
         let lit: BTreeSet<(usize, usize)> = gone.iter().flat_map(|(f, _)| f.edges()).collect();
         faces = rest.into_iter().map(|(f, _)| f).collect();

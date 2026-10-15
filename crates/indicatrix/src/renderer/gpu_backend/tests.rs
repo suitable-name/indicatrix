@@ -33,7 +33,7 @@ use crate::{
 };
 
 /// Whether `INDICATRIX_REQUIRE_GPU=1` demands that hardware tests find an adapter.
-fn gpu_required() -> bool {
+pub(super) fn gpu_required() -> bool {
     std::env::var("INDICATRIX_REQUIRE_GPU").is_ok_and(|value| value == "1")
 }
 

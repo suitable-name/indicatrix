@@ -13,8 +13,15 @@ use crate::{
         export_thread::{self, ExportParams, RemoteSelection, SceneSnapshot},
         render_thread::PlanesOwner,
     },
-    gui::progress_eta::EtaEstimator,
-    settings::{ExportTransfer, LightingPreset as SavedLightingPreset, SettingsPersister},
+    gui::{
+        progress_eta::EtaEstimator,
+        remote::{current_availability, publish_availability},
+        render::output_defaults,
+    },
+    settings::{
+        ExportTransfer, LightingPreset as SavedLightingPreset, SettingsPersister,
+        model::RemoteAvailability,
+    },
 };
 use indicatrix::color::ColorSpace;
 use indicatrix_solid::preview::StoneGeometryBuf;
@@ -105,6 +112,13 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                     .settings
                     .contribute_to_final_picture,
             };
+            // "Last used": the dialog opens with these values next time. The transfer only
+            // counts when this run actually sends work to the remote.
+            let uses_remote = remote.worker.is_some()
+                && !matches!(
+                    remote.compute_target,
+                    export_thread::ComputeTarget::LocalOnly
+                );
 
             // ---- Export directory, prompted ONCE ---------------------------------------
             // The folder comes from [`resolve_export_dir_then`] (a native FOLDER picker,
@@ -122,13 +136,15 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                 color_space,
                 remote,
             };
+            let settings_store_remember = settings_store_start.clone();
             resolve_export_dir_then(
                 &ui,
                 &settings_store_start,
                 "Export cancelled.",
                 move |ui, dir| {
-                    // A cancelled picker already wrote its message.
+                    // A cancelled picker already wrote its message and remembers nothing.
                     if let Some(dir) = dir {
+                        output_defaults::remember_still(ui, &settings_store_remember, uses_remote);
                         finish_start_export(ui, dir, context);
                     }
                 },
@@ -186,7 +202,7 @@ pub(in crate::gui) fn resolve_export_dir_then(
         ui,
         crate::gui::pickers::PickerRequest {
             kind: crate::gui::pickers::PickerKind::PickFolder,
-            title: Some("Choose an export folder".to_string()),
+            title: Some("Choose an Export Folder".to_string()),
             filters: Vec::new(),
             default_file_name: None,
             starting_dir: None,
@@ -271,7 +287,7 @@ pub(in crate::gui) fn fan_out_jobs(
     base_scene: &SceneSnapshot,
     mesh_bounding_radius: &Mutex<f64>,
 ) -> VecDeque<ExportJob> {
-    // Only presets BOTH marked `export_usable` (the settings dialog's checkbox)
+    // Only presets BOTH marked `export_usable` (the Parameters panel's checkbox)
     // AND checked in this dialog's own fan-out list -- see
     // `GemViewportView.export_fanout_presets`'s own doc comment for why that's a
     // separate, dialog-scoped list rather than a filtered view of the settings
@@ -470,16 +486,33 @@ fn setup_check_remote_availability_callback(
             let ui_weak_result = ui_weak.clone();
             std::thread::spawn(move || {
                 let result = export_thread::probe_remote(worker.as_ref());
-                let _ = ui_weak_result.upgrade_in_event_loop(move |ui| match result {
-                    Ok(_capability) => {
-                        ui.global::<ExportModel>().set_remote_available(true);
-                        ui.global::<ExportModel>()
-                            .set_remote_unavailable_reason(String::new().into());
-                    }
-                    Err(reason) => {
-                        ui.global::<ExportModel>().set_remote_available(false);
-                        ui.global::<ExportModel>()
-                            .set_remote_unavailable_reason(reason.message().into());
+                let _ = ui_weak_result.upgrade_in_event_loop(move |ui| {
+                    // The probe's answer is the `reachable_render_capable` half of the one
+                    // remote-availability value; `configured` stays what the endpoint says.
+                    let configured = current_availability(&ui).configured;
+                    match result {
+                        Ok(_capability) => {
+                            publish_availability(
+                                &ui,
+                                RemoteAvailability {
+                                    configured,
+                                    reachable_render_capable: configured,
+                                },
+                            );
+                            ui.global::<ExportModel>()
+                                .set_remote_unavailable_reason(String::new().into());
+                        }
+                        Err(reason) => {
+                            publish_availability(
+                                &ui,
+                                RemoteAvailability {
+                                    configured,
+                                    reachable_render_capable: false,
+                                },
+                            );
+                            ui.global::<ExportModel>()
+                                .set_remote_unavailable_reason(reason.message().into());
+                        }
                     }
                 });
             });
@@ -523,17 +556,14 @@ fn setup_populate_export_fanout_presets_callback(
             // directory changed from a different code path, is always reflected rather
             // than whatever was last shown.
             ui.global::<ExportModel>()
-                .set_directory(snapshot.settings.export_directory.into());
+                .set_directory(snapshot.settings.export_directory.clone().into());
             ui.global::<ExportModel>()
-                .set_filename_template(snapshot.settings.export_filename_template.into());
-            // "Transfer" (full data or final picture only): every open starts from the remote
-            // endpoint's own default, like the output location above.
-            ui.global::<ExportModel>().set_transfer_index(
-                snapshot
-                    .settings
-                    .remote
-                    .map_or(0, |r| r.export_transfer.index()),
-            );
+                .set_filename_template(snapshot.settings.export_filename_template.clone().into());
+            // Size, samples, colour space, compute, bounces and "Transfer" (full data or final
+            // picture only): every open starts from the values of the last run
+            // (`AppSettings::output.still`), the transfer from the remote endpoint's own default
+            // until a run made a choice -- see `gui::render::output_defaults`.
+            output_defaults::seed_still_dialog(&ui, &snapshot.settings);
         });
 }
 
@@ -559,7 +589,7 @@ fn setup_export_output_location_callbacks(
             &ui,
             crate::gui::pickers::PickerRequest {
                 kind: crate::gui::pickers::PickerKind::PickFolder,
-                title: Some("Choose an export folder".to_string()),
+                title: Some("Choose an Export Folder".to_string()),
                 filters: Vec::new(),
                 default_file_name: None,
                 starting_dir: (!current.is_empty()).then(|| PathBuf::from(current)),
@@ -667,7 +697,7 @@ fn unknown_placeholders(template: &str) -> String {
 
 /// Flips one row's checkbox in `export_fanout_presets` in place -- `idx` is this list's
 /// OWN index (rebuilt fresh by `setup_populate_export_fanout_presets_callback` above
-/// every time the dialog opens), not the settings dialog's full preset-list index.
+/// every time the dialog opens), not the Parameters panel's full preset-list index.
 fn setup_toggle_export_preset_selected_callback(ui: &MainWindow) {
     let ui_weak = ui.as_weak();
     ui.global::<ExportModel>()

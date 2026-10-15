@@ -84,7 +84,17 @@ fn swatches_for(amplitudes: &[f32; 7], path_mm: f64) -> Vec<[f32; 3]> {
 /// An sRGB swatch (0..1) as the bytes the UI paints.
 #[must_use]
 pub fn swatch_bytes(rgb: [f32; 3]) -> [u8; 3] {
-    rgb.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+    rgb.map(channel_byte)
+}
+
+/// One sRGB channel (0..1, clamped) as a byte.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the channel is clamped to 0..=1, so the rounded byte is in 0..=255"
+)]
+fn channel_byte(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// The captions under the swatches: the fixed paths, then "This stone" with its own path.
@@ -105,7 +115,7 @@ pub fn badge_text(delta_e: f64, reachable: bool) -> String {
         format!("Reachable (Delta E {delta_e:.1})")
     } else {
         format!(
-            "Not fully reachable at this size: the closest colour is Delta E {delta_e:.1} away. Try less saturation or a lighter tone."
+            "Not fully reachable at this size: the closest color is Delta E {delta_e:.1} away. Try less saturation or a lighter tone."
         )
     }
 }

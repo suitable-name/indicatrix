@@ -25,6 +25,8 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 bytemuck = { workspace = true }
 indicatrix-vault = { workspace = true }
+# The new-version check (GitHub releases): consent record, due rule, blocking `check`.
+indicatrix-update = { workspace = true }
 # `hdr` (Radiance `.hdr` decoding, for `EnvironmentMap::from_hdr_file`) is enabled
 # unconditionally rather than behind a feature of this crate's own. It was briefly a
 # feature, but `bridge::render_thread::load_env_map` calls `from_hdr_file` with no
@@ -88,7 +90,7 @@ postcard = { workspace = true }
 # blocks Slint's own event loop. The single exception is
 # `gui::render::camera_lighting`'s HDR-map picker, which a Slint callback still
 # calls synchronously because it RETURNS its result directly into a property
-# binding (`ui/components/settings_dialog.slint`) -- Slint has no way to await a
+# binding (the Lighting & Environment tab's HDR section, `ui/components/settings_dialog/environment_map_section.slint`) -- Slint has no way to await a
 # value-returning callback, so making that one async too needs a `.slint`-side
 # change (see `gui::pickers`'s own module doc comment for why).
 rfd = { workspace = true }
@@ -139,6 +141,9 @@ tracing = { workspace = true }
 # (`windows_subsystem = "windows"`), so without an installed subscriber there is
 # nowhere to show them. `env-filter` is already requested at the workspace level.
 tracing-subscriber = { workspace = true }
+# Test-only seams (file dialogs, clipboard, opener) behind the `ui-harness` feature; see
+# `harness_support`.
+slint-harness-hooks = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -162,25 +167,15 @@ gpu = ["indicatrix/gpu"]
 # default (and left out of the shipped/PGO feature sets) because the physical color mode is
 # out of focus; see `gui::optics::physics_state::PHYSICS_COLOR_UI`.
 physical-color = []
-# Rough colour and colour zoning from rig photos (plan 2026-10-09, section 1a): the Rough
-# colour wizard, the zone panel, the vault side-table storage and the adopt integration.
-# UI switch: `gui::zoning_ui::ZONING_UI`, which sets the Slint global `Zoning.enabled`.
-# Off by default and left out of the shipped/PGO feature sets; a build without it is
-# unchanged. RAW decoding (`rawler`) lives in `indicatrix-cut-core` behind its own `zoning`
-# feature (lane P1), so it is reached through `indicatrix-cut-core/zoning` and this crate
-# declares no `rawler` dependency of its own.
-#
-# Lane I1: `indicatrix-vault/zoning` creates and serves the rough-colour side tables
-# (`gui::rough_colour::store`).
-zoning = [
-    "indicatrix/zoning",
-    "indicatrix-cut-core/zoning",
-    "indicatrix-net/zoning",
-    "indicatrix-vault/zoning",
-]
+# Experimental features bundle: activates the physical-color feature set. (Rough colour and
+# colour zoning from rig photos are always built and shown.)
+experimental = ["physical-color"]
 
-# Experimental features bundle: activates both the zoning and physical-color feature sets.
-experimental = ["zoning", "physical-color"]
+# Test-only UI harness (`tests/ui_harness`): compiles `crate::harness_support` (forwards to
+# `slint-harness-hooks`: the file-picker answer queue that replaces the native `rfd` dialog,
+# the clipboard and opener captures, plus the paths the harness asserts are inside its
+# throw-away profile). Never part of a shipped build.
+ui-harness = ["dep:slint-harness-hooks"]
 
 [build-dependencies]
 slint-build = { workspace = true }
@@ -197,6 +192,39 @@ winresource = { workspace = true }
 # `DesignSummary`/`DesignRecord` version hashes that change exactly when a test wants
 # them to -- see that module's `tests::content_hash`.
 sha2 = { workspace = true }
+# The UI harness drives the real `MainWindow` through Slint's testing backend (accessibility
+# tree queries, mock time, event-loop pumping). `screenshots` adds the software renderer for
+# `ui_screens`; the other targets keep the mock renderer.
+slint-harness = { workspace = true, features = ["screenshots"] }
+
+# The three UI targets run only on command, like the GPU equivalence harness: `test = false`
+# keeps them out of `cargo test` / `--tests` / `--all-targets` (so also out of a workspace
+# clippy run); naming one with `--test` runs it. Aliases in `.cargo/config.toml`:
+# `cargo ui-harness`, `cargo ui-static`, `cargo ui-screens`, `cargo ui-clippy`.
+#
+# `harness = false`: Slint's testing backend may be initialised once per process and wants the
+# main thread, so the harness has its own `main`.
+[[test]]
+name = "ui_harness"
+path = "tests/ui_harness/main.rs"
+harness = false
+test = false
+required-features = ["ui-harness"]
+
+# The static scan of the `.slint` sources (callbacks wired, labels, spelling); plain `#[test]`s.
+[[test]]
+name = "ui_static"
+path = "tests/ui_static.rs"
+test = false
+
+# Rewrites the UI screenshots in the workspace's `assets/` folder (software renderer, isolated
+# profile, a copy of the library named by `INDICATRIX_HARNESS_LIBRARY`).
+[[test]]
+name = "ui_screens"
+path = "tests/ui_screens/main.rs"
+harness = false
+test = false
+required-features = ["ui-harness"]
 
 [lints]
 workspace = true

@@ -179,11 +179,11 @@ impl FixAction {
     #[must_use]
     pub const fn label(&self) -> &'static str {
         match self {
-            Self::SnapToTeeth { .. } => "Snap to teeth",
+            Self::SnapToTeeth { .. } => "Snap to Teeth",
             Self::RemoveVanished { .. } => "Remove",
-            Self::MoveAfter { .. } => "Move later",
+            Self::MoveAfter { .. } => "Move Later",
             Self::SteepenPavilion { .. } => "Steepen",
-            Self::AddTable => "Add a table",
+            Self::AddTable => "Add a Table",
         }
     }
 

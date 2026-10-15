@@ -1,0 +1,65 @@
+import { TrainerTheme } from "../theme.slint";
+
+// One option of a segmented control: hover, pressed, focus ring, keyboard (Space / Enter),
+// tooltip and accessibility.
+export component SegmentButton inherits Rectangle {
+    in property <string> label;
+    in property <string> tip;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback activated();
+
+    min-width: 44px;
+    min-height: 30px;
+    horizontal-stretch: 1;
+    border-radius: TrainerTheme.radius-small;
+    background: !root.enabled ? TrainerTheme.bg-input
+        : root.selected ? TrainerTheme.accent-primary
+        : ta.pressed ? TrainerTheme.bg-card-pressed
+        : ta.has-hover ? TrainerTheme.bg-card-hover
+        : TrainerTheme.bg-card;
+    border-width: fs.has-focus ? 2px : 1px;
+    border-color: fs.has-focus ? TrainerTheme.focus-ring
+        : root.selected ? TrainerTheme.accent-primary : TrainerTheme.border-subtle;
+    opacity: root.enabled ? 1.0 : 0.5;
+
+    accessible-role: radio-button;
+    accessible-label: root.label;
+    accessible-description: root.tip;
+    accessible-checked: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.activated(); } }
+
+    Text {
+        text: root.label;
+        color: root.selected ? TrainerTheme.text-on-accent : TrainerTheme.text-primary;
+        font-size: 12px;
+        font-weight: root.selected ? 700 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == " " || e.text == "\n" {
+                root.activated();
+                return accept;
+            }
+            reject
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { fs.focus(); root.activated(); }
+    }
+    if root.tip != "": Tooltip {
+        text: @markdown("\{root.tip}");
+    }
+}
+
+// A row of segments that share the cell width equally.
+export component SegmentRow inherits HorizontalLayout {
+    spacing: 4px;
+}

@@ -7,7 +7,10 @@
 //! - **Mirror** (`EditorSession::mirror_indices`) mirrors the tier's index-wheel positions
 //!   to the other side of the symmetry axis as one undoable edit.
 
-use super::edit::{Dirty, finish_edit, with_app};
+use super::{
+    edit::{Dirty, finish_edit, with_app},
+    table,
+};
 use crate::{
     TierTableModel,
     app::{
@@ -26,8 +29,10 @@ fn selected_row(ctx: &Ctx) -> i32 {
 }
 
 /// Completes the orbit of tier `index`.
+///
+/// A concave row is refused (see [`table::editable_tier`]).
 pub fn complete_orbit(ctx: &Ctx, index: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     let result = with_app(ctx, |app| {
@@ -50,8 +55,10 @@ pub fn complete_orbit(ctx: &Ctx, index: i32) {
 }
 
 /// Mirrors the index positions of tier `index` to the other side of the symmetry axis.
+///
+/// A concave row is refused (see [`table::editable_tier`]).
 pub fn mirror_indices(ctx: &Ctx, index: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     let result = with_app(ctx, |app| {

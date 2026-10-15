@@ -69,7 +69,7 @@ use indicatrix::geometry::meet_solver::SolvedTier;
 pub use authored_checks::{check_cut_order, check_gear_quantization, check_meet_name_asc_safety};
 pub use mesh_checks::{
     DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_concave_tools, check_manufacturability,
-    concave_tool_warnings, degenerate_suspects,
+    check_manufacturability_with_geometry, concave_tool_warnings, degenerate_suspects,
 };
 pub use warning::ManufacturabilityWarning;
 

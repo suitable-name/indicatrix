@@ -22,6 +22,8 @@
 //!   keyed by the design's UUID rather than by a catalogue entry.
 //! - [`design_side_migrations`]: those three tables on a fresh database, on one that
 //!   lacks them, and across repeated opens.
+//! - [`provenance_migration`]: the `diagram_previews` material size and source columns,
+//!   and the one-off marking of design-file designs' cached results as outdated.
 
 mod connection;
 mod design_side_data;
@@ -34,9 +36,7 @@ mod migrations;
 mod migrations_blob_order;
 mod performance;
 mod planner_exclusions;
+mod provenance_migration;
 mod schema_migrations;
 mod search;
-#[cfg(not(feature = "zoning"))]
-mod zoning_default;
-#[cfg(feature = "zoning")]
 mod zoning_store;

@@ -40,6 +40,10 @@ pub enum TierRowKind {
 /// `ui/types.slint` for how each is displayed); the integer fields keep that type's
 /// `i32` so an adapter is a plain copy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the desktop's Slint EditorTierItem field for field; the flags are independent switches"
+)]
 pub struct TierRow {
     /// The tier's position in `design.tiers`, or in `design.concave_tiers` for a
     /// [`TierRowKind::Concave`] row.

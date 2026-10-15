@@ -5,10 +5,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use indicatrix_editor::view_model::live_margin::angle_live_margin;
-use slint::{ComponentHandle, SharedString};
+use slint::{ComponentHandle, Model, ModelRc, SharedString};
 
 use crate::{
-    EditorModel, MainWindow,
+    EditorModel, EditorTierItem, MainWindow,
     gui::editor::state::{EditorState, tier_matches_filter},
 };
 
@@ -19,6 +19,22 @@ pub(in crate::gui::editor) fn setup_tier_filter_callback(ui: &MainWindow) {
     ui.global::<EditorModel>().on_tier_matches_filter(
         |haystack: SharedString, filter: SharedString| tier_matches_filter(&haystack, &filter),
     );
+    ui.global::<EditorModel>().on_tier_name_taken(
+        |tiers: ModelRc<EditorTierItem>, name: SharedString| tier_name_taken(&tiers, &name),
+    );
+}
+
+/// Whether one of `tiers` is already named `name` (any ASCII case; a `/`-joined tier name holds
+/// several names, each one counts) -- the rule `parse_tier_form` refuses a save by.
+fn tier_name_taken(tiers: &ModelRc<EditorTierItem>, name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && tiers.iter().any(|tier| {
+            tier.name
+                .split('/')
+                .map(str::trim)
+                .any(|existing| existing.eq_ignore_ascii_case(name))
+        })
 }
 
 /// Live critical-angle guidance in the Tier form's Angle field (see

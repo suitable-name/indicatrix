@@ -65,10 +65,10 @@ impl Context {
     pub const fn heading(self) -> &'static str {
         match self {
             Self::Global => "Global",
-            Self::TierList => "The tier list",
-            Self::Viewport => "The Solid viewport",
-            Self::AngleField => "Angle fields",
-            Self::CuttingMode => "Cutting mode",
+            Self::TierList => "The Tier List",
+            Self::Viewport => "The Solid Viewport",
+            Self::AngleField => "Angle Fields",
+            Self::CuttingMode => "Cutting Mode",
         }
     }
 
@@ -139,8 +139,13 @@ pub const SHORTCUTS: &[Shortcut] = &[
         context: Context::Global,
     },
     Shortcut {
+        keys: "Ctrl+Alt+1 / Ctrl+Alt+2 / Ctrl+Alt+3",
+        action: "Open the Parameters panel on its Stone / Lighting & Environment / Render & Output tab, in the Live Render view and in the Edit view. The View menu and the buttons beside the viewport open it too; Esc folds a floating panel away.",
+        context: Context::Global,
+    },
+    Shortcut {
         keys: "1 / 2 / 3 / 4",
-        action: "Solid / Path-traced / Both / Diagram view of the Edit tab's viewport. Only while that viewport is on screen and no text field has focus.",
+        action: "Solid / Path-Traced / Both / Diagram view of the Edit tab's viewport. Only while that viewport is on screen and no text field has focus.",
         context: Context::Global,
     },
     Shortcut {
@@ -310,7 +315,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         keys: "Esc",
-        action: "Leave cutting mode (while the Reset progress question is showing, Esc cancels the question instead)",
+        action: "Leave cutting mode (while the Reset Progress question is showing, Esc cancels the question instead)",
         context: Context::CuttingMode,
     },
 ];

@@ -151,7 +151,12 @@ fn mast_value(start: &DragStart, pointer: ScreenPoint, snap: SnapMode) -> DragVa
 fn index_value(start: &DragStart, pointer: ScreenPoint) -> DragValue {
     let layout = &start.layout;
     let teeth = travel_units(start, pointer, layout.index_dir, layout.pixels_per_tooth);
-    DragValue::IndexTeeth(teeth.round() as i64)
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a whole number of gear teeth from a finite pointer travel; `as` saturates"
+    )]
+    let whole_teeth = teeth.round() as i64;
+    DragValue::IndexTeeth(whole_teeth)
 }
 
 /// The value a drag asks for with the pointer at `pointer`, `snap` applied.

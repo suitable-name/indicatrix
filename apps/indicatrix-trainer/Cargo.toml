@@ -1,0 +1,71 @@
+[package]
+name = "indicatrix-trainer"
+version = "0.7.2"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Suitable-Name"]
+license = "MIT"
+publish = false
+description = "Desktop reinforcement learning trainer GUI for Indicatrix: live training metrics, reward curves, and optical gemstone diagnostics."
+
+[workspace]
+
+# Same lint set as the root `[workspace.lints.clippy]` (this crate is standalone).
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cast_precision_loss = { level = "allow" }
+
+[[bin]]
+name = "indicatrix-trainer"
+path = "src/main.rs"
+
+[[bin]]
+name = "indicatrix-trainer-cli"
+path = "src/cli_main.rs"
+
+[dependencies]
+indicatrix-ai = { path = "../../crates/indicatrix-ai" }
+indicatrix-cut-core = { path = "../../crates/indicatrix-cut-core" }
+indicatrix-formats = { path = "../../crates/indicatrix-formats" }
+# The new-version check (GitHub releases): GUI banner and the CLI's first info line.
+indicatrix-update = { path = "../../crates/indicatrix-update" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Native file dialog of the GUI's "Load Weights" (same version as the workspace).
+rfd = "0.17.2"
+# Clipboard copy of the GUI console (already in the lockfile through Slint's winit backend).
+arboard = { version = "3.6.1", default-features = false }
+# Console width of the CLI progress line (a line that wraps cannot be redrawn in place).
+terminal_size = "0.4.4"
+slint = { version = "1.18.1", default-features = false, features = [
+    "std",
+    "compat-1-18",
+    "backend-default",
+    "renderer-femtovg",
+    "renderer-software",
+    "accessibility",
+] }
+
+[build-dependencies]
+slint-build = "1.18.1"
+
+# Same override as the root workspace's `Cargo.toml` (this crate is standalone, so it does not
+# inherit it), extended to the environment crate: the trainer's tests play environment
+# episodes, and every step solves, meshes and traces the stone in `indicatrix-cut-core` and
+# `indicatrix` and gates, re-anchors and observes it in `indicatrix-ai`. Unoptimised, one step
+# takes about two seconds, and the evaluation test (five 60-step episodes, compiled into both
+# binaries) took 572 s per binary; the two geometry crates alone bring it to 106 s, the
+# environment crate on top to 76-86 s (measured 2026-10-12; what remains is the `Fast` score
+# sweep itself, 0.26 s per step). Only these three crates are optimised, inside the `test`
+# profile alone; debug assertions, overflow checks and debug info stay on. Burn and the rest
+# of the dependency tree are untouched.
+[profile.test.package.indicatrix]
+opt-level = 3
+
+[profile.test.package.indicatrix-cut-core]
+opt-level = 3
+
+[profile.test.package.indicatrix-ai]
+opt-level = 3

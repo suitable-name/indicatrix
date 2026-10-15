@@ -80,7 +80,11 @@ pub(super) fn chunk_sum(values: Values, pixels: usize, range: SampleRange, done:
     let mut sum = vec![Vec3::ZERO; pixels];
     for sample in range.first_sample..range.first_sample + done {
         for (pixel, dst) in sum.iter_mut().enumerate() {
-            *dst += value(values, pixel as u32, sample);
+            *dst += value(
+                values,
+                u32::try_from(pixel).expect("a test pixel index fits u32"),
+                sample,
+            );
         }
     }
     sum

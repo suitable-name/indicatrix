@@ -22,6 +22,10 @@ const MAX_LISTED_WARNINGS: usize = 5;
 
 /// What changed on one paired tier.
 #[derive(Debug, Default, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per kind of change a paired tier can show; the flags are independent"
+)]
 struct TierDiff {
     /// The angle changed and was taken.
     angle: bool,

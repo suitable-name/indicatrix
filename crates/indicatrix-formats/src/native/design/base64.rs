@@ -52,10 +52,11 @@ pub(super) fn decode(text: &str) -> Option<Vec<u8>> {
         for &byte in quad.iter().take(4 - padding) {
             word = (word << 6) | sextet(byte)?;
         }
-        word <<= 6 * padding as u32;
+        let padding_count = u32::try_from(padding).expect("padding is at most 2");
+        word <<= 6 * padding_count;
         // Non-zero bits under the padding would be dropped silently: refuse, so a
         // decoded value always re-encodes to the exact text it came from.
-        if padding > 0 && word & ((1u32 << (8 * padding as u32)) - 1) != 0 {
+        if padding > 0 && word & ((1u32 << (8 * padding_count)) - 1) != 0 {
             return None;
         }
         for shift in [16u32, 8, 0].into_iter().take(3 - padding) {

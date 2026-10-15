@@ -310,7 +310,13 @@ pub(super) fn set_parameter_value(
             if !(0.0..=1000.0).contains(&rounded) {
                 return false;
             }
-            *n_sides = rounded as u32;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "rounded is checked to lie in 0.0..=1000.0 just above"
+            )]
+            let sides = rounded as u32;
+            *n_sides = sides;
         }
         (ZoneShape::Sector { angle_from, .. }, ZoneParameter::AngleFrom) => *angle_from = value,
         (ZoneShape::Sector { angle_to, .. }, ZoneParameter::AngleTo) => *angle_to = value,

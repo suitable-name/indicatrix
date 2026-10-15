@@ -64,6 +64,11 @@ const REMOTE_MAX_REQUEST_SAMPLES: u32 = DEFAULT_MAX_CHUNK_SAMPLES;
 /// size a real request with [`remote_request_samples`], and `SampleCursor::claim`
 /// clamps that to what is left.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "target is finite and >= the u32 minimum chunk size; `as` saturates at u32::MAX for huge rates"
+)]
 pub(in crate::bridge::export_thread) fn remote_chunk_samples(
     rate_samples_per_sec: f64,
     coordinator: bool,

@@ -75,7 +75,7 @@ impl GpuFrameRenderer {
         }
         let info = ctx.adapter.get_info();
         let adapter_label = format!("{} ({:?})", info.name, info.backend);
-        let pipeline_cache = compute::create_pipeline_cache(&ctx.device);
+        let pipeline_cache = compute::create_pipeline_cache(&ctx.device, &info);
         let reduce_pipeline = compute::create_compute_pipeline_cached(
             &ctx.device,
             pipeline_cache.as_ref(),
@@ -102,6 +102,7 @@ impl GpuFrameRenderer {
             xyz_scratch: Vec::new(),
             chunk_budget_bytes: CHUNK_BUDGET_BYTES,
             ns_per_tuple_ema: None,
+            last_scene_key: None,
             pipeline_kind: GpuPipelineKind::default(),
             wavefront_pipelines: None,
             poisoned: false,

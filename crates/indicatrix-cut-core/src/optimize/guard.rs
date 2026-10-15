@@ -25,7 +25,7 @@ use crate::design::{Design, GirdleBand, girdle_band_in, tier_plane_ranges};
 use glam::DVec3;
 use indicatrix::geometry::{
     meet_solver::SolvedTier,
-    stone_metrics::{SolidMesh, measure_solid},
+    stone_metrics::{SolidMesh, SolidMetrics, measure_solid},
 };
 use std::ops::Range;
 
@@ -132,15 +132,17 @@ impl ShapeGuard {
     }
 
     /// Whether a candidate (its solve, planes and closed mesh) keeps the girdle and
-    /// the table facets the starting design had.
+    /// the table facets the starting design had. `metrics` is `measure_solid(planes)`, which
+    /// the caller already holds.
     pub(super) fn admits(
         &self,
         design: &Design,
         solved: &[SolvedTier],
         planes: &[(DVec3, f64)],
         mesh: &SolidMesh,
+        metrics: Option<&SolidMetrics>,
     ) -> bool {
-        let thickness = measure_solid(planes).and_then(|metrics| metrics.girdle_thickness);
+        let thickness = metrics.and_then(|metrics| metrics.girdle_thickness);
         if !girdle_admits(self.baseline_girdle, self.min_girdle_fraction, thickness) {
             return false;
         }

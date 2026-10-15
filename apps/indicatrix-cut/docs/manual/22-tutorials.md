@@ -1,6 +1,6 @@
 # 22. Tutorials and the Welcome Tour
 
-## What you will do
+## What You Will Do
 
 A **tutorial** is a short guided lesson inside the program. A small panel walks you
 through one tool step by step, outlines the control each step is about, and moves on
@@ -8,18 +8,18 @@ by itself when you have done what the step asks. This chapter covers where the
 tutorials are, how to start one, what the panel does, the welcome tour a new user sees
 first, and where progress is kept.
 
-Chapter 7 is the long-form version of one tutorial, the New design walkthrough. Every
+Chapter 7 is the long-form version of one tutorial, the New Design Walkthrough. Every
 other tutorial works the same way.
 
-## Finding the tutorials
+## Finding the Tutorials
 
 There are four ways to open the **tutorial browser**, and they all show the same list:
 
 - Choose **Help → Tutorials...** in the menu bar.
 - Press **Ctrl+K** and type `tutorials` (Chapter 19).
-- Click **Browse all tutorials...** at the bottom of the empty state, the screen shown
+- Click **Browse All Tutorials...** at the bottom of the empty state, the screen shown
   until a design is created, loaded or opened.
-- Click **Start from a library design** in the same empty state if you would rather
+- Click **Start from a Library Design** in the same empty state if you would rather
   begin from a design that already exists. It shows the library and puts the cursor in
   its search box. Pick a design there and use **Load Selected** (Chapter 3).
 
@@ -27,7 +27,7 @@ The browser is a small window over the main window. It shows:
 
 - **Sections.** Tutorials are grouped under headings such as Getting started, Tiers,
   Solving, Optimizing, Viewing, Output, Library and Preferences, and, once you have
-  made one, Built from the library (see "Building a tutorial from a library design"
+  made one, Built from the library (see "Building a Tutorial from a Library Design"
   below). A section with no tutorial left after a search is not shown.
 - **A row for each tutorial:** its name, how many steps it has, a one-line summary of
   what it teaches, and a **Start** button.
@@ -37,7 +37,7 @@ The browser is a small window over the main window. It shows:
   the list when every word appears in its name, its summary or its section name.
   Capitals do not matter. Press **Enter** to start the first tutorial in the list.
 - **A line under the list** saying how many tutorials you have finished.
-- **Reset progress**, which removes every Done mark. It does not touch your designs,
+- **Reset Progress**, which removes every Done mark. It does not touch your designs,
   and the welcome dialog does not come back. The same action is in
   **Edit → Preferences...** (Chapter 17).
 
@@ -45,13 +45,13 @@ Close the browser with **Close**, the cross at its top right, **Esc**, or a clic
 outside it. The list grows as the program does, so this chapter does not name every
 tutorial.
 
-## Starting a tutorial
+## Starting a Tutorial
 
 Click **Start** (or **Restart**). The browser closes and the guide panel opens at the
 first step. What happens before that depends on what the tutorial needs:
 
 - **It works on whatever is open, even nothing.** The panel opens at once. The welcome
-  tour and the New design walkthrough are like this.
+  tour and the New Design Walkthrough are like this.
 - **It needs a design to be open.** If none is, its **Start** button is dim and the row
   says "Open or create a design first." Open or create one, then start it again.
 - **It starts from a new design.** The program makes the new design for you, with 96
@@ -65,18 +65,20 @@ first step. What happens before that depends on what the tutorial needs:
 
 Only one tutorial runs at a time. Starting another one replaces the one on screen.
 
-## Building a tutorial from a library design
+## Building a Tutorial from a Library Design
 
 Any design in the library can become a tutorial that shows how to cut it from
 scratch. The program reads the design, writes a lesson for it and starts the lesson.
 The library design itself is not opened and is never changed: you build in a new design.
+
+![The design card menu with Build This Design highlighted.](../../../../assets/tutorial_from_design.png)
 
 **Starting it.** Select a design in the library, then do one of these:
 
 - Click the **steps button** (a small staircase) in the design header, next to the
   export buttons.
 - Right-click the design's card, or click the three dots on it, and choose
-  **Build this design**.
+  **Build This Design**.
 - Press **Ctrl+K** and choose **Build the Selected Library Design**.
 
 It works for the local library and for a remote one. A toast says the lesson is being
@@ -88,7 +90,9 @@ A lesson cannot be made for every design. The toast says why when the design has
 when the library entry only has an angle table and no cutting file (every depth would be
 zero), or when the design does not solve.
 
-### The steps of a lesson
+### The Steps of a Lesson
+
+![The guide panel at the second step of a lesson, with the tier table beside it.](../../../../assets/tutorial_from_design_3.png)
 
 1. **Start a new design.** The step gives the New Design dialog values: the gear, the
    symmetry order and the mirror setting of the original, and a preform shaped like its
@@ -111,24 +115,24 @@ zero), or when the design does not solve.
 4. **Solve and check.** Solve the design. The step finishes by itself when the result is a
    closed solid.
 5. **Compare with the original.** Click **Compare** on the command bar to list every
-   tier as Same or Changed, and **Compare visually...** to see the original and your stone
+   tier as Same or Changed, and **Compare Visually...** to see the original and your stone
    side by side (Chapter 14). Entering this step holds the original as the snapshot, which
    replaces a snapshot you took earlier in the session, so Compare is ready at once. The step finishes by itself when every tier is cut as in the original and
    every solved depth is within one percent of the original's. **Next** opens the
-   comparison for you; if the stone will not match, **Skip step** then finishes it anyway.
+   comparison for you; if the stone will not match, **Skip Step** then finishes it anyway.
 6. **You rebuilt the design.** A closing step that unlocks everything.
 
-### What Meets says
+### What Meets Says
 
-The first tier of each block (girdle, pavilion, crown) states its depth with **Exact scale
-value**, because the solver needs one such tier in every block. For the other tiers, a
+The first tier of each block (girdle, pavilion, crown) states its depth with **Exact Scale
+Value**, because the solver needs one such tier in every block. For the other tiers, a
 library design imported from a `.asc` file keeps only a rough note of what each tier meets.
 The program therefore tries the lesson before it shows it: it types every tier through the
-tier form, solves the result, and uses **Named facet(s)** or **Unspecified vertex** only for
+tier form, solves the result, and uses **Named Facet(s)** or **Unspecified Vertex** only for
 a tier that lands within 0.4 percent of its original depth. Any other tier states its depth
-with Exact scale value, and the step says so. You never have to guess a depth.
+with Exact Scale Value, and the step says so. You never have to guess a depth.
 
-The Simple interface leaves **Exact scale value** out of the Meets list for a new tier. A
+The Simple interface leaves **Exact Scale Value** out of the Meets list for a new tier. A
 step that asks for it therefore shows the Advanced controls while it is current, the same
 way the other tutorials do, and says so in its explanation. The girdle step also names the
 **Girdle Facet Preset**, which fills in the angle 90 and an exact scale value of 1 in one
@@ -137,20 +141,20 @@ click.
 Tier names that the form would refuse (blank, repeated, or containing a comma or a slash)
 are replaced in the lesson by short names such as P1 and C2.
 
-### Large designs
+### Large Designs
 
 A design of more than 40 flat tiers would be a very long lesson. Consecutive tiers of the
 same kind are then grouped into one step with a checklist of up to six tiers, and the first
 step says how many steps the lesson has. The step finishes when all of its tiers are in.
 
-### Finished lessons
+### Finished Lessons
 
 A finished lesson shows its Done mark under **Built from the library**. The mark is saved
 under the library design's own id, so building the same design's lesson again later shows
 it as done. The lesson itself is listed only while the program runs; build it again to run
 it again.
 
-## The tutorials, area by area
+## The Tutorials, Area by Area
 
 Besides the long lessons above, the browser has a short tutorial for each tool. Each one
 starts from a design that suits it (an empty design, one of the two teaching
@@ -160,7 +164,7 @@ that template's own rough, the same one the New Design dialog gives it, so the s
 first step is the stone the template makes, with nothing clipped at the bottom. The first
 and last steps of many of them only ask you to read.
 
-### Tiers and editing
+### Tiers and Editing
 
 Section **Tiers** in the browser.
 
@@ -204,7 +208,7 @@ Section **Tiers** in the browser.
 - **Concave tiers: sphere, disc and plunge** cuts a dimple and a wheel groove, and switches
   a tool from stroked to plunged.
 
-### Viewing, output, library and the program itself
+### Viewing, Output, Library, and the Program Itself
 
 These tutorials teach what you do around the design: look at it, get it out of the program,
 find one in the library and set the program up. They start from the Rich Teaching Design
@@ -216,7 +220,7 @@ those itself.
 Section **Viewing** in the browser:
 
 - **Picking facets in the Solid view** reads a facet's tier, angle and index under the
-  pointer and selects its tier by clicking, in the Solid, Path-traced and Diagram views.
+  pointer and selects its tier by clicking, in the Solid, Path-Traced and Diagram views.
 - **Drag handles** changes a tier by dragging the angle, depth and index handles on the
   stone, undoes one drag in one step, and turns the Snap pill off and on.
 - **Slice: cut a facet with the mouse** draws a line across the stone, flips it, cuts it in
@@ -225,7 +229,7 @@ Section **Viewing** in the browser:
   handle on the flat diagram and enlarges one panel.
 - **The Cut slider** shows the stone as the rough, after a step, and finished.
 - **Live Render and lighting** opens the traced picture, turns the stone, and chooses a
-  lighting preset.
+  lighting rig.
 - **Lighting for this design** saves the lighting a design should open with, and forgets it.
 - **Custom materials** defines a material with the Material Editor's two sliders.
 - **Materials from coefficients** types a Sellmeier or Cauchy curve and reads its
@@ -253,7 +257,7 @@ Section **Library**:
 Section **Preferences**:
 
 - **Simple or Advanced** switches the interface and back (Chapter 17).
-- **High contrast**, **Interface scale** and **Larger handles** each change one setting in
+- **High Contrast**, **Interface Scale** and **Larger Handles** each change one setting in
   the Preferences dialog.
 
 Section **Getting started**:
@@ -275,7 +279,7 @@ Simple | Advanced switch) shows it even while the program is in Simple mode, so 
 can point at it. The Simple layout is back as soon as the step is over or the tutorial is
 closed.
 
-### Solving, checking, optimizing and comparing
+### Solving, Checking, Optimizing, and Comparing
 
 These tutorials teach how to find out whether a design works, and how to improve it and
 compare versions of it. They start from the Standard Round Brilliant or the Rich Teaching
@@ -327,7 +331,7 @@ window is too narrow to leave room (under about 420 pixels beside the panel), th
 covers the panel and the step that opens it lists everything you need to do in it. A step that waits for something the design does not show, such as
 a search finishing or a compare window opening, finishes when the program notices it.
 
-## The guide panel
+## The Guide Panel
 
 The panel is the same for every tutorial and works as Chapter 7 describes: it sits in
 its own column beside the tier table on a wide Edit tab and floats near the
@@ -346,14 +350,14 @@ presses Add Tier, picks the material and applies it, presses Solve, opens the ta
 view the step names) and then judges the step the usual way: **Done**, then the next
 step. The edit is one Undo step like your own, so **Ctrl+Z** takes it back, and a value
 the form refuses is refused with the same message under its field. If the step is still
-not done after that, the button changes to **Skip step**. Steps the program cannot do
+not done after that, the button changes to **Skip Step**. Steps the program cannot do
 for you, such as ticking rows, a drag in the viewport, or choosing a file, show
-**Skip step** from the start. A step you have already done shows **Done** and moves
+**Skip Step** from the start. A step you have already done shows **Done** and moves
 on by itself, and a reading step always waits for **Next**.
 
 **Back** returns to the previous step and checks it again: if you still have what it
 asked for, it shows **Done** and waits for you to click **Next**, so you can read it
-again without it moving on by itself. Back does not undo anything. **Skip step** moves on
+again without it moving on by itself. Back does not undo anything. **Skip Step** moves on
 without doing the current one, and the cross in the corner closes the tutorial and
 unlocks everything. The small arrow button in the panel's header collapses it to a pill;
 the tutorial keeps running.
@@ -370,23 +374,23 @@ shortcuts do nothing, with a tooltip saying why. That leaves the step's own acti
 the only thing to click. Selecting rows and looking around stay possible, and so does
 the command palette, though a command whose controls are locked says so in its row.
 
-### What counts as finished
+### What Counts as Finished
 
 Reaching the last step and clicking **Finish** counts. Closing the panel part-way does
 not. A finished tutorial is saved with your other settings and shows its Done mark in
 the browser from then on. Starting it again, to the end, changes nothing further.
 
-## The welcome tour
+## The Welcome Tour
 
 The first time you start the program, a **Welcome to Indicatrix Cut** dialog asks how
 you would like to begin. It waits until the program has finished starting and any
 restore question has been answered. It has three buttons:
 
-- **Take the 2-minute tour** starts the welcome tour.
-- **Start with a template** opens the New Design dialog, where the template cards are.
-- **Not now** closes the dialog and does nothing else.
+- **Take the 2-Minute Tour** starts the welcome tour.
+- **Start with a Template** opens the New Design dialog, where the template cards are.
+- **Not Now** closes the dialog and does nothing else.
 
-Esc means **Not now** and Enter means **Take the 2-minute tour**. Any of the three
+Esc means **Not Now** and Enter means **Take the 2-Minute Tour**. Any of the three
 answers counts as having seen the welcome, so the dialog does not return by itself.
 
 The welcome tour is a tutorial of eight reading steps. It locks nothing and needs no
@@ -400,7 +404,7 @@ they are about.
 4. **The tier table.** A design is a list of tiers; each row is one. The table is
    outlined.
 5. **The inspector.** The panel that edits the selected tier. Its Tier tab is outlined.
-6. **The viewport.** Turning the stone, the Solid, Path-traced, Both and Diagram
+6. **The viewport.** Turning the stone, the Solid, Path-Traced, Both and Diagram
    buttons, and the 1, 2, 3 and 4 keys.
 7. **Simple and Advanced.** The one switch in the top bar that sets how many controls
    the whole program shows (Chapter 17).
@@ -410,11 +414,11 @@ they are about.
 The library, the viewport and the Simple/Advanced switch are described in words, not
 outlined. Finishing the tour marks it Done in the browser.
 
-### Showing the welcome again
+### Showing the Welcome Again
 
 Use either of these:
 
-- **Edit → Preferences...**, under Tutorials, **Show the welcome tour again**. The
+- **Edit → Preferences...**, under Tutorials, **Show the Welcome Tour Again**. The
   dialog opens as soon as you close Preferences. If you quit before answering it, it
   opens again the next time the program starts.
 - **Ctrl+K**, then **Welcome Tour**. The dialog opens at once.
@@ -422,13 +426,13 @@ Use either of these:
 The welcome tour is also in the browser, under Getting started, so you can start it
 without the dialog.
 
-## Where progress is kept
+## Where Progress Is Kept
 
 Which tutorials you have finished, and whether the welcome has been seen, live in the
 program's settings file, the same file as the UI scale and the Simple/Advanced choice
 (Chapter 1 says where your settings live). They belong to you, not to a design: opening
-another design or starting a new one does not change them. **Reset progress** (in the
-browser) and **Reset tutorial progress** (in Preferences) clear the Done marks.
+another design or starting a new one does not change them. **Reset Progress** (in the
+browser) and **Reset Tutorial Progress** (in Preferences) clear the Done marks.
 
 ## Limitations
 
@@ -447,8 +451,8 @@ browser) and **Reset tutorial progress** (in Preferences) clear the Done marks.
   panel is open. If you need a locked control, close the tutorial.
 - **A step that never finishes.** If a step cannot be done in your situation, for
   example because the design you opened already has the tier it asks you to add, use
-  **Skip step**. It appears in place of **Next** on a step the program cannot do for you,
+  **Skip Step**. It appears in place of **Next** on a step the program cannot do for you,
   and after **Next** has tried and the step is still open.
 - **Next does not guess.** It types only the values the step lists. A step that leaves a
   value to you (the girdle diameter of your own stone, a file to open, a facet to drag)
-  shows **Skip step** instead.
+  shows **Skip Step** instead.

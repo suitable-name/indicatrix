@@ -785,9 +785,14 @@ fn contain_fit_agrees_with_contain_pixel_and_round_trips() {
                 let (px, py) = fit.to_image(x, y);
                 let inside = px >= 0.0 && py >= 0.0 && px < image_w as f32 && py < image_h as f32;
                 let pixel = view::contain_pixel(x, y, view_w, view_h, image_w, image_h);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "`inside` is only true for non-negative px and py within the image"
+                )]
+                let expected = inside.then(|| (px.floor() as u32, py.floor() as u32));
                 assert_eq!(
-                    pixel,
-                    inside.then(|| (px.floor() as u32, py.floor() as u32)),
+                    pixel, expected,
                     "({x}, {y}) in {view_w}x{view_h} for {image_w}x{image_h}"
                 );
                 let (back_x, back_y) = fit.to_view(px, py);

@@ -216,6 +216,11 @@ impl Reader for BinaryReader<'_> {
 }
 
 /// The non-negative whole number `value` as a `usize`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the guard keeps value a whole number in 0..=u32::MAX, which fits usize"
+)]
 fn whole(value: f64) -> Option<usize> {
     (value >= 0.0 && value <= f64::from(u32::MAX) && value.fract() == 0.0).then_some(value as usize)
 }

@@ -28,7 +28,7 @@ use slint::ComponentHandle;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// The confirmation dialog's heading for a fix that removes facets.
-const CONFIRM_HEADING: &str = "Remove what is cut away?";
+const CONFIRM_HEADING: &str = "Remove What Is Cut Away?";
 
 /// The confirmation dialog's button for it.
 const CONFIRM_BUTTON: &str = "Remove";

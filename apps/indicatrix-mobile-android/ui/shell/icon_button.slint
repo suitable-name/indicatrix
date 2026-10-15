@@ -1,0 +1,47 @@
+// A 48 px round button that shows only an icon. `label` is the accessible name.
+import { Theme } from "../theme.slint";
+import { Icon } from "icon.slint";
+import { StateLayer } from "state_layer.slint";
+
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label: "";
+    in property <color> tint: Theme.on-surface-variant;
+    in property <bool> enabled: true;
+    // The "on" look of a toggle: a secondary-container disc behind the icon.
+    in property <bool> selected: false;
+    callback clicked();
+
+    width: Theme.touch;
+    height: Theme.touch;
+    border-radius: Theme.touch / 2;
+    background: root.selected ? Theme.secondary-container : transparent;
+    opacity: root.enabled ? 1.0 : Theme.disabled-content;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
+    StateLayer {
+        pressed: touch.pressed;
+        hovered: touch.has-hover;
+        enabled: root.enabled;
+        border-radius: root.border-radius;
+    }
+
+    Icon {
+        source: root.icon;
+        tint: root.selected ? Theme.on-secondary-container : root.tint;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}

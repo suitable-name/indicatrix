@@ -26,7 +26,7 @@ fn design_on(spec: &TemplateSpec, preform: PreformSpec) -> Design {
 /// `spec` on its default preform, remapped to `gear` the way the gear-remap panel
 /// does it: one batch of the index remap and the schedule change.
 fn remapped(spec: &TemplateSpec, gear: i32) -> Design {
-    let mut design = design_on(spec, spec.preform);
+    let mut design = design_on(spec, spec.preform.clone());
     design
         .apply_edit(Edit::Batch(vec![
             Edit::RemapIndices {
@@ -120,7 +120,7 @@ fn every_template_solves_and_closes() {
             spec.name
         );
         for (label, preform) in [
-            ("its own preform", spec.preform),
+            ("its own preform", spec.preform.clone()),
             (
                 "the legacy cylinder",
                 PreformSpec::cylinder(spec.gear_teeth.unsigned_abs() as usize, 1.5, 1.0, 1.5),
@@ -144,7 +144,7 @@ fn every_template_solves_and_closes() {
 #[test]
 fn every_template_has_a_girdle_a_table_and_its_intended_outline() {
     for spec in TEMPLATES {
-        let stone = inspect(&design_on(spec, spec.preform), spec.name);
+        let stone = inspect(&design_on(spec, spec.preform.clone()), spec.name);
         let girdle = stone.proportions.girdle_thickness;
         assert!(
             girdle.is_some_and(|g| g > 0.0),
@@ -173,7 +173,7 @@ fn every_template_has_a_girdle_a_table_and_its_intended_outline() {
 #[test]
 fn the_new_shapes_have_no_vanishing_or_undersized_facets() {
     for spec in TEMPLATES.iter().filter(|spec| is_strict(spec)) {
-        let design = design_on(spec, spec.preform);
+        let design = design_on(spec, spec.preform.clone());
         let stone = inspect(&design, spec.name);
         assert_eq!(
             stone.vanishing(),
@@ -218,9 +218,13 @@ fn the_new_shapes_have_no_vanishing_or_undersized_facets() {
 #[test]
 fn featured_shapes_do_not_window_catastrophically_in_their_default_material() {
     for spec in TEMPLATES.iter().filter(|spec| spec.featured) {
-        let stone = inspect(&design_on(spec, spec.preform), spec.name);
+        let stone = inspect(&design_on(spec, spec.preform.clone()), spec.name);
         let gem = GemMaterial::by_name(spec.default_material)
             .unwrap_or_else(|| panic!("{:?}: unknown material", spec.default_material));
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "plane offsets are narrowed to f32 for the raytracer, the GPU/storage precision"
+        )]
         let gpu: Vec<GpuFacetPlane> = stone
             .planes
             .iter()

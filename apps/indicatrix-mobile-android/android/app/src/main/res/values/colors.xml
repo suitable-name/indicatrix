@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window background before Slint draws its first frame. -->
+    <color name="window_background">#FF101419</color>
+    <!-- Launcher icon. -->
+    <color name="ic_launcher_background">#FF0B3C49</color>
+</resources>

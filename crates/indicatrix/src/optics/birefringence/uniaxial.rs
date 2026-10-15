@@ -62,6 +62,10 @@ impl BirefringenceParams {
     /// off by ~1e-5, which turned a no-walk-off direction into a visibly deflected one).
     /// The WGSL twin `walk_off_from_sin_cos` mirrors this expression exactly.
     #[must_use]
+    #[expect(
+        clippy::similar_names,
+        reason = "n_o2/n_e2 are the squared ordinary/extraordinary indices, mirrored by the WGSL twin"
+    )]
     pub fn walk_off_from_sin_cos(n_o: f32, n_e: f32, sin_t: f32, cos_t: f32) -> f32 {
         if (n_o - n_e).abs() < 1e-5 {
             return 0.0;

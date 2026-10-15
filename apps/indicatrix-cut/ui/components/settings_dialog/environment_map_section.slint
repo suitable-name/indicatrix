@@ -1,6 +1,7 @@
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { SettingsModel } from "../../models/settings.slint";
+import { EditorModel } from "../../models/editor.slint";
 import { SettingLabel } from "setting_label.slint";
 
 // One of the three buttons under the environment map's path field. `kind` 0 is a plain button,
@@ -61,19 +62,20 @@ component MapButton inherits Rectangle {
 }
 
 // Environment Map (HDR): loads a Radiance .hdr equirectangular panorama as the
-// render's environment in place of the analytic studio rig (Studio Exposure /
-// Light Azimuth / Light Elevation), superseded while a map is loaded.
+// render's environment in place of the analytic lighting rig (the rig list, the light
+// direction and the exposure above it in the Lighting tab), superseded while a map is loaded.
 export component EnvironmentMapSection inherits VerticalLayout {
     spacing: 4px;
     SettingLabel {
-        text: "Environment Map (HDR)";
-        hint: "Environment Map: a Radiance .hdr panorama that lights the stone instead of the studio lights. Very large maps fall back to the processor, which is slower.";
+        text: "HDR Environment Map";
+        hint: "HDR environment map: a Radiance .hdr panorama that lights the stone instead of the lighting rig. Very large maps fall back to the processor, which is slower.";
     }
 
     LineEdit {
         placeholder-text: "C:\\path\\to\\studio.hdr";
-        accessible-label: "Environment map file path";
+        accessible-label: "Environment Map File Path";
         text <=> SettingsModel.env_map_path;
+        changed has-focus => { EditorModel.text_focus = self.has-focus; }
         accepted => { SettingsModel.load_env_map(SettingsModel.env_map_path); }
     }
 
@@ -113,11 +115,11 @@ export component EnvironmentMapSection inherits VerticalLayout {
         wrap: word-wrap;
     }
 
-    // A loaded environment map replaces the studio-rig controls below, which needs a
+    // A loaded environment map replaces the lighting-rig controls above, which needs a
     // visible explanation. The GPU renders HDR maps directly; only a map too large for
     // the adapter's storage-buffer limit falls back to the slower CPU tracer.
     if SettingsModel.env_map_loaded: Text {
-        text: "Replaces the studio lighting rig, exposure, and light-position controls below. Very large maps fall back to the CPU, which is slower.";
+        text: "Replaces the lighting rig and the light direction above, and the surface glare and head shadow below. Very large maps fall back to the CPU, which is slower.";
         font-size: 11px;
         color: Theme.text-muted;
         wrap: word-wrap;

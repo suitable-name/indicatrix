@@ -12,11 +12,37 @@
 //! closed, finite, renderable solid, so a brand-new design shows something real
 //! from the first frame, and a facet cutting outside the rough becomes a visible
 //! physical fact instead of an abstract validation error.
+//!
+//! A third shape, [`PreformShape::Planes`], carries an arbitrary convex plane set
+//! ([`PlaneSet`]) in the design's own frame. It exists for the Rough Planner, which
+//! hands the editor "the piece of rough this stone comes from" (the sawn piece box,
+//! clipped by the rough's outline and moved into the design's frame) rather than a
+//! prism sized to the finished stone. It is persisted as its planes (the native file
+//! formats store the half-spaces and the source note), and [`PreformSpec::planes`]
+//! returns it unchanged.
 
 use glam::DVec3;
+use indicatrix::geometry::stone_metrics::measure_solid;
+use std::sync::Arc;
+
+/// A convex plane set that is a preform of its own.
+///
+/// It is the piece of rough a planned stone comes from (the Rough Planner's sawn piece box,
+/// clipped by the rough's outline and moved into the design's frame), or any other rough a
+/// caller has as half-spaces.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaneSet {
+    /// The half-spaces `n . x <= m` in model units, in the design's own frame (the same
+    /// convention as [`PreformSpec::planes`]); at least four, closing a finite solid
+    /// ([`PreformSpec::from_planes`] checks).
+    pub planes: Vec<(DVec3, f64)>,
+    /// Where the set came from, for the Preform tab (e.g. "plan 'Aqua pebble', result 3,
+    /// stone 1"); may be empty.
+    pub source: String,
+}
 
 /// The rough's cross-sectional shape, viewed down the vertical (`y`) axis.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PreformShape {
     /// A rectangular block: `2 * half_width` by `2 * half_length` in cross
     /// section (a plain 4-sided prism -- see [`PreformSpec::planes`]).
@@ -31,6 +57,13 @@ pub enum PreformShape {
     /// calling this mid-keystroke (e.g. a "fold count" field being typed) should
     /// never see a crash or an empty viewport.
     Cylinder { sides: usize },
+    /// A convex plane set of its own (the Rough Planner's planned piece of rough, or any
+    /// other half-space rough), in the design's own frame. The three size fields of the
+    /// [`PreformSpec`] then describe the set's bounding box (width along `x`, length along
+    /// `z`, height along `y`, as `measure_solid` reports them) and are informational:
+    /// [`PreformSpec::planes`] returns the set itself, closed already, with no `+Y`/`-Y`
+    /// planes added.
+    Planes(Arc<PlaneSet>),
 }
 
 /// A design's uncut rough, as a small closed plane set.
@@ -40,7 +73,7 @@ pub enum PreformShape {
 /// `crate::design::Design` hands `PreformSpec::planes`'s output to
 /// `indicatrix::geometry::stone_metrics::build_solid_mesh` in exactly that convention, no
 /// rescaling).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreformSpec {
     /// Shape of the rough block.
     pub shape: PreformShape,
@@ -103,6 +136,40 @@ impl PreformSpec {
         )
     }
 
+    /// A preform from a convex plane set in model units (the design's frame). `None` unless the
+    /// set closes into a finite solid of positive volume (`measure_solid`), in which case the
+    /// size fields are its bounding box: `half_width = width_axis / 2`,
+    /// `length_over_width = length_axis / width_axis`, `depth = total_height`.
+    #[must_use]
+    pub fn from_planes(planes: Vec<(DVec3, f64)>, source: String) -> Option<Self> {
+        let metrics = measure_solid(&planes)?;
+        if !(metrics.width_axis.is_finite() && metrics.width_axis > 0.0) {
+            return None;
+        }
+        Some(Self {
+            shape: PreformShape::Planes(Arc::new(PlaneSet { planes, source })),
+            half_width: metrics.width_axis * 0.5,
+            length_over_width: metrics.length_axis / metrics.width_axis,
+            depth: metrics.total_height,
+        })
+    }
+
+    /// Where a [`PreformShape::Planes`] preform came from (its [`PlaneSet::source`], possibly
+    /// empty); `None` for a block or cylinder.
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        match &self.shape {
+            PreformShape::Planes(set) => Some(set.source.as_str()),
+            PreformShape::Block | PreformShape::Cylinder { .. } => None,
+        }
+    }
+
+    /// Whether this preform is a [`PreformShape::Planes`] set rather than a block or cylinder.
+    #[must_use]
+    pub const fn is_plane_set(&self) -> bool {
+        matches!(self.shape, PreformShape::Planes(_))
+    }
+
     /// The preform's own closed half-space plane set, in the `n . x <= m`
     /// convention [`indicatrix::geometry::stone_metrics::measure_solid`] and
     /// [`indicatrix::geometry::stone_metrics::build_solid_mesh`] take.
@@ -110,12 +177,15 @@ impl PreformSpec {
     /// Always a valid, finite, closed solid on its own (at least a
     /// triangular prism, 5 planes) -- this is the property
     /// [`crate::design::Design`] relies on to guarantee a fresh design (no
-    /// facets yet) already renders as a real stone.
+    /// facets yet) already renders as a real stone. A [`PreformShape::Planes`]
+    /// preform returns its set as it is (closed by construction,
+    /// [`Self::from_planes`] checks), with no `+Y`/`-Y` planes added.
     #[must_use]
     pub fn planes(&self) -> Vec<(DVec3, f64)> {
         let half_length = self.half_width * self.length_over_width;
         let half_depth = self.depth * 0.5;
-        let mut planes = match self.shape {
+        let mut planes = match &self.shape {
+            PreformShape::Planes(set) => return set.planes.clone(),
             PreformShape::Block => vec![
                 (DVec3::X, self.half_width),
                 (DVec3::NEG_X, self.half_width),
@@ -123,7 +193,7 @@ impl PreformSpec {
                 (DVec3::NEG_Z, half_length),
             ],
             PreformShape::Cylinder { sides } => {
-                let sides = sides.max(3);
+                let sides = (*sides).max(3);
                 let mut walls = Vec::with_capacity(sides);
                 for i in 0..sides {
                     let phi = std::f64::consts::TAU * (i as f64) / (sides as f64);
@@ -155,6 +225,11 @@ impl PreformSpec {
     /// planes up), `y_offset < 0.0` lowers it, in the same mast-unit
     /// convention [`Self::planes`] uses.
     ///
+    /// A [`PreformShape::Planes`] preform has no `+Y`/`-Y` pair to move; the general
+    /// form applies instead: the whole solid moves up by `y_offset`, so every
+    /// plane's offset becomes `m + y_offset * n.y`. For the two prism shapes that
+    /// is exactly what the index-from-the-end code below does, and they keep it.
+    ///
     /// [`PreformSpec`] itself carries no offset field -- adding one would be a
     /// breaking change to every existing struct-literal construction site
     /// (`crates/indicatrix-cut-core/src/native/convert.rs`'s
@@ -169,6 +244,12 @@ impl PreformSpec {
     pub fn planes_offset(&self, y_offset: f64) -> Vec<(DVec3, f64)> {
         let half_depth = self.depth * 0.5;
         let mut planes = self.planes();
+        if self.is_plane_set() {
+            for (normal, offset) in &mut planes {
+                *offset = y_offset.mul_add(normal.y, *offset);
+            }
+            return planes;
+        }
         // `Self::planes` always pushes the `+Y` plane then the `-Y` plane
         // last, regardless of `shape` -- see its own body. Indexing from the
         // end avoids a float-equality comparison against `DVec3::Y`/`NEG_Y`
@@ -183,7 +264,7 @@ impl PreformSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix::geometry::stone_metrics::{SolidStatus, build_solid_mesh, measure_solid};
+    use indicatrix::geometry::stone_metrics::{SolidStatus, build_solid_mesh};
 
     /// A block preform alone must already be a finite, positive-volume,
     /// closed solid -- exactly `2*half_width x depth x 2*length` in extent.
@@ -264,6 +345,73 @@ mod tests {
         let unshifted_top = measure_solid(&preform.planes()).unwrap().total_height / 2.0;
         assert!((shifted[shifted.len() - 2].1 - (unshifted_top + 0.3)).abs() < 1e-9);
         assert!((shifted[shifted.len() - 1].1 - (unshifted_top - 0.3)).abs() < 1e-9);
+    }
+
+    /// The six planes of a block, given to `from_planes`, must measure the same
+    /// volume and extents as the block and give the same size fields; the set
+    /// is returned as it is (no `+Y`/`-Y` planes added).
+    #[test]
+    fn from_planes_of_a_block_matches_the_block() {
+        let block = PreformSpec::block(1.0, 1.5, 0.8);
+        let set = PreformSpec::from_planes(block.planes(), String::new())
+            .expect("a block's planes close into a solid");
+        assert!(set.is_plane_set());
+        assert!(!block.is_plane_set());
+        assert_eq!(set.planes(), block.planes());
+
+        let expected = measure_solid(&block.planes()).unwrap();
+        let measured = measure_solid(&set.planes()).unwrap();
+        assert!((measured.volume - expected.volume).abs() < 1e-9);
+        assert!((measured.width_axis - expected.width_axis).abs() < 1e-9);
+        assert!((measured.length_axis - expected.length_axis).abs() < 1e-9);
+        assert!((measured.total_height - expected.total_height).abs() < 1e-9);
+
+        assert!((set.half_width - block.half_width).abs() < 1e-9);
+        assert!((set.length_over_width - block.length_over_width).abs() < 1e-9);
+        assert!((set.depth - block.depth).abs() < 1e-9);
+    }
+
+    /// `planes_offset` on a plane set moves the whole solid: the top and bottom
+    /// by the offset, the height unchanged, and the result agrees with the block's
+    /// own index-from-the-end shift.
+    #[test]
+    fn plane_set_planes_offset_moves_the_whole_solid() {
+        let block = PreformSpec::block(1.0, 1.5, 0.8);
+        let set = PreformSpec::from_planes(block.planes(), String::new()).unwrap();
+        let shifted = set.planes_offset(0.3);
+        let metrics = measure_solid(&shifted).expect("a shifted set still closes");
+        assert!((metrics.total_height - 0.8).abs() < 1e-9);
+        assert!((metrics.width_axis - 2.0).abs() < 1e-9);
+        assert!((metrics.length_axis - 3.0).abs() < 1e-9);
+
+        let top = block.depth * 0.5;
+        assert!((shifted[shifted.len() - 2].1 - (top + 0.3)).abs() < 1e-9);
+        assert!((shifted[shifted.len() - 1].1 - (top - 0.3)).abs() < 1e-9);
+
+        let reference = block.planes_offset(0.3);
+        assert_eq!(shifted.len(), reference.len());
+        for (got, want) in shifted.iter().zip(&reference) {
+            assert_eq!(got.0, want.0);
+            assert!((got.1 - want.1).abs() < 1e-12, "{} vs {}", got.1, want.1);
+        }
+        assert_eq!(set.planes_offset(0.0), set.planes());
+    }
+
+    /// Three planes cannot close a finite solid, so there is no preform.
+    #[test]
+    fn a_non_closing_plane_set_is_not_a_preform() {
+        let planes = vec![(DVec3::X, 1.0), (DVec3::NEG_X, 1.0), (DVec3::Z, 1.0)];
+        assert!(PreformSpec::from_planes(planes, String::new()).is_none());
+    }
+
+    /// The set's source reaches the caller through `source()`; blocks and cylinders have none.
+    #[test]
+    fn a_plane_set_reports_its_source() {
+        let block = PreformSpec::block(1.0, 1.0, 1.0);
+        let set = PreformSpec::from_planes(block.planes(), "plan 'x'".to_string()).unwrap();
+        assert_eq!(set.source(), Some("plan 'x'"));
+        assert_eq!(block.source(), None);
+        assert_eq!(PreformSpec::cylinder(8, 1.0, 1.0, 1.0).source(), None);
     }
 
     /// A degenerate side count (0, 1, 2) must be clamped up to a valid

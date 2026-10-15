@@ -1,12 +1,12 @@
 # 1. Getting Started
 
-## What you will do
+## What You Will Do
 
 This chapter introduces the application, its main window, and where it keeps
 your files and settings, so you know your way around before you load your
 first design.
 
-## What the application is
+## What the Application Is
 
 Indicatrix Cut (this manual calls it "the diagram editor" or "the
 app") is a desktop program for lapidaries — gem cutters — that does three
@@ -26,7 +26,7 @@ The window title bar reads "Indicatrix Cut", plus the currently loaded
 design's name once one is open, and the top-left corner of the window
 carries the same "Indicatrix Cut" name next to a small gem icon.
 
-## The main window
+## The Main Window
 
 A **menu bar** (File / Edit / Library / Help) runs above everything else. File
 mirrors the editor's New / Open / Save / Save As / Export Edited .asc,
@@ -40,12 +40,14 @@ has a **Selected Design** submenu with the card actions for the design you
 selected (Chapter 2), and opens the Rough
 Planner (Chapter 15); and Help → User Manual
 opens this manual in a help window of its own, with a chapter list, search, Back and
-Forward (see "Help inside the app" in the manual's `README.md`). Help → **Help for
+Forward (see "Help Inside the App" in the manual's `README.md`). Help → **Help for
 This Screen** (F1) opens the manual at the page for whatever is on screen.
 Appendix B lists the keyboard shortcuts that work alongside it. While the
 Edit tab has unsaved changes, the window title carries a leading "* " so
 you always know at a glance whether the file on disk matches what's on
 screen (Chapter 11).
+
+![The main window with the design library on the left and the path-traced Live Render of the selected design.](../../../../assets/main.png)
 
 Below the menu bar, the window is divided into three areas:
 
@@ -89,7 +91,7 @@ files, Files & Downloads shows "No files or GemCAD data attached to this
 diagram," and notes that anything you do export lands in `./exports/`
 relative to wherever you launched the program.
 
-## Starting from nothing: the empty state
+## Starting from Nothing: The Empty State
 
 Opening the Edit sub-tab (Chapter 3) before any design has been created,
 loaded or opened shows a card grid instead of a blank viewport, with four ways
@@ -100,8 +102,8 @@ with Space or Enter, and the **?** in the corner opens this section:
 
 - **New Design...** opens the New Design dialog (Chapter 3), with a template
   gallery in three sections: **Shapes** (the five everyday outlines: round
-  brilliant, oval, cushion, emerald step cut and princess), **Round variants
-  and teaching designs** (a shallow and a deep round brilliant and two
+  brilliant, oval, cushion, emerald step cut and princess), **Round Variants
+  and Teaching Designs** (a shallow and a deep round brilliant and two
   teaching designs) and **Blank** (the Empty design). Every card with a stone
   shows a small solid picture of it, drawn in the background the first time
   you open the dialog (the picture tile stays empty for a moment until it is
@@ -118,12 +120,12 @@ with Space or Enter, and the **?** in the corner opens this section:
 - **Import a Folder** opens the folder picker straight away: choose a folder
   and every `.asc`, `.gem` and `.gcs` file directly inside it is imported into
   your library, with the same progress and summary as an import started from the
-  Import button in the top toolbar (see "Bringing your own designs in" below).
+  Import button in the top toolbar (see "Bringing Your Own Designs In" below).
   Subfolders are not included from this card; use the Import button's panel and
-  turn on "Include subfolders" first if you want them. It is greyed out while a
+  turn on "Include Subfolders" first if you want them. It is greyed out while a
   guide step has file actions locked.
 
-## The worked-example guide and the keyboard-shortcuts overlay
+## The Worked-Example Guide and the Keyboard-Shortcuts Overlay
 
 Help > **Guide: New Design Walkthrough** (or the empty state's "Open the
 Worked Example" card) opens a step panel beside the Edit tab's tier table
@@ -147,7 +149,7 @@ brilliant in the Shapes section; a trillion (triangular) outline needs facet
 topology the templates do not model yet. A design created from a template
 starts as that template: undoing does not take it back to an empty schedule.
 
-## Whether the editor is available to you
+## Whether the Editor Is Available to You
 
 The cutting-design editor (the Edit sub-tab, and everything in Chapters
 3–8 of this manual) ships in every build of the application, always present.
@@ -158,9 +160,9 @@ single point of control.)
 Similarly, GPU-accelerated rendering (Chapter 2 and `docs/gpu.md`-derived
 material) is **off in an ordinary build** and only present in a build
 compiled with GPU support turned on. If your copy has it, an extra "Local
-Compute" choice appears in Settings; if not, rendering always uses the CPU.
+Compute" choice appears in the Render & Output tab; if not, rendering always uses the CPU.
 
-## The design library and where it lives
+## The Design Library and Where It Lives
 
 The catalogue you browse and search is a local database file,
 `facet_diagrams.sqlite`. It is opened relative to the folder the program is
@@ -180,13 +182,13 @@ Chapter 10. A small badge next to the status line always shows which library
 you are currently browsing ("Local library" or the remote's name), so you can
 tell at a glance.
 
-## Bringing your own designs in
+## Bringing Your Own Designs In
 
 Click **Import** in the top toolbar to open the import panel. From there you
 can:
 
-- Click **Choose file...** to import one `.asc`, `.gem` or `.gcs` file, or
-- Click **Choose folder...** to import every `.asc`, `.gem` and `.gcs` file in
+- Click **Choose File...** to import one `.asc`, `.gem` or `.gcs` file, or
+- Click **Choose Folder...** to import every `.asc`, `.gem` and `.gcs` file in
   a folder.
 
 **GemCAD `.gem` files.** A `.gem` is GemCAD's own binary save file. Import
@@ -212,7 +214,7 @@ XML) is skipped with the reader's own explanation, and the rest of the folder
 still imports.
 
 If you want subfolders included in a folder import, turn on **Include
-subfolders (set this first)** *before* clicking "Choose folder..." — the
+Subfolders (Set This First)** *before* clicking "Choose Folder..." — the
 setting is read at the moment you click, not afterwards, so switching it
 on and then choosing the folder is the only order that works. Cancelling
 either file/folder picker does nothing; the panel just stays open with
@@ -232,12 +234,15 @@ most 8 files in each of those lists before switching to "and N more" — the
 complete list always goes to the app's own log, this is only about keeping the
 popup itself from turning into a wall of file names on a large folder import.
 
-## Settings and where they are stored
+## Settings and Where They Are Stored
 
 Your rendering and remote preferences (sample count, bounce cap,
-exposure, lighting, the remote coordinator, lighting presets, and more — Chapters
+exposure, lighting, the remote coordinator, saved lighting, and more — Chapters
 2, 9, and 10 cover what each one does) are saved automatically to a settings
-file, so they come back the next time you start the app. Its location
+file, so they come back the next time you start the app. (The stone's width and
+material effects are not among them: they are saved in each design, Chapter 2. The
+open Parameters dock tab and the Export and Tilt Video dialogs' last-used settings
+are.) Its location
 depends on your operating system:
 
 | Platform | Settings file |
@@ -256,7 +261,7 @@ renamed aside next to itself first, so it stays on disk to recover by hand
 if you ever need to, instead of being silently overwritten by the next
 save (see [settings.md](../settings.md) for the exact renamed name).
 
-## Next steps
+## Next Steps
 
 Continue to Chapter 2 to search the catalogue and view a design in 3D, or
 jump to Chapter 3 if you already have a design open and want to start

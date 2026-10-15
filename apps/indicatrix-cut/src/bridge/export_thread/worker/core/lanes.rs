@@ -3,8 +3,6 @@
 //! over one shared claim point, and merging each engine's buffer exactly once.
 
 use super::super::types::{Accumulation, AccumulationCarry, AccumulationOutcome};
-#[cfg(feature = "zoning")]
-use crate::bridge::remote::zoned_scene_refusal;
 use crate::{
     bridge::{
         export_thread::{
@@ -22,7 +20,7 @@ use crate::{
             sample_cursor::SampleCursor,
             scene_snapshot::SceneSnapshot,
         },
-        remote::remote_can_render,
+        remote::{remote_can_render, zoned_scene_refusal},
     },
     settings::{LocalComputeTarget, WorkerSettings},
 };
@@ -81,7 +79,7 @@ fn resolve_remote_capability(
                 // outcome below, so the note is not repeated every frame.
                 if matches!(compute_target, ComputeTarget::RemoteOnly) {
                     return Err(format!(
-                        "{} Remote only cannot render this scene; choose Local only or \
+                        "{} Remote Only cannot render this scene; choose Local Only or \
                          Local + Remote.",
                         refusal.export_note()
                     ));
@@ -91,15 +89,14 @@ fn resolve_remote_capability(
                 carry.remote_capability = None;
                 return Ok(None);
             }
-            // `zoning` builds: the same per-capability rule for colour zones. A remote
+            // The same per-capability rule for colour zones. A remote
             // without the zoning capability would render only the base zone and
             // `render_accumulation` sums both halves into one buffer, so a zoned stone keeps
             // the WHOLE render local; `RemoteOnly` fails with the same sentence.
-            #[cfg(feature = "zoning")]
             if let Err(refusal) = zoned_scene_refusal(scene.material.zoning.is_some(), cap.zoning) {
                 if matches!(compute_target, ComputeTarget::RemoteOnly) {
                     return Err(format!(
-                        "{} Remote only cannot render this scene; choose Local only or \
+                        "{} Remote Only cannot render this scene; choose Local Only or \
                          Local + Remote.",
                         refusal.export_note()
                     ));

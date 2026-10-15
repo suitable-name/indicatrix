@@ -125,7 +125,7 @@ component TutorialRow inherits Rectangle {
 
         VerticalLayout {
             alignment: center;
-            TipButton {
+            tip-button-data := TipButton {
                 width: 84px;
                 text: root.data.start_label;
                 reader_label: root.data.start_label + " " + root.data.title;
@@ -207,7 +207,7 @@ export component TutorialBrowser inherits Rectangle {
                 hint: "Type to narrow the list. Enter starts the first tutorial in it.";
                 search := LineEdit {
                     placeholder-text: "Search tutorials";
-                    accessible-label: "Search tutorials";
+                    accessible-label: "Search Tutorials";
                     text <=> TutorialsModel.query;
                     edited => { TutorialsModel.query_changed(self.text); }
                     // Enter starts the first tutorial in the list, when it can start.
@@ -256,7 +256,7 @@ export component TutorialBrowser inherits Rectangle {
                     overflow: elide;
                 }
                 TipButton {
-                    text: "Reset progress";
+                    text: "Reset Progress";
                     hint: "Forget which tutorials you have finished, so every one shows as new again.";
                     clicked => {
                         PreferencesModel.reset_tutorials();

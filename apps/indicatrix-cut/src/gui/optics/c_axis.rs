@@ -1,9 +1,9 @@
-//! Angle <-> vector conversion for the settings dialog's crystal-axis orientation
+//! Angle <-> vector conversion for the Parameters panel's crystal-axis orientation
 //! override.
 //!
 //! `GemMaterial::c_axis` is a raw `Vec3`, but a *direction* only has two degrees of
 //! freedom -- three free `f32` sliders would over-parameterize it and admit invalid
-//! states (zero-length, non-unit). So the settings dialog drags two angles instead,
+//! states (zero-length, non-unit). So the Parameters panel drags two angles instead,
 //! like the light-position controls (`light_yaw_deg`/`light_pitch_deg`):
 //!
 //! - `tilt_deg` (theta): angle from the table normal (`+Y`), 0-90 degrees -- how

@@ -3,7 +3,7 @@
 //!
 //! The desktop keeps custom materials in its database; the browser has none, so a custom
 //! material lives in the page's catalogue (the render and material combos offer it) and in
-//! the design's own `.indicatrix` file (`[material.custom]`), which is how it survives a reload of
+//! the design's own `.isdd` file (`[material.custom]`), which is how it survives a reload of
 //! the tab and a save. The fields are the ones that decide the optics -- refractive index,
 //! dispersion (the F-C spread), birefringence, an optional specific gravity for the carat
 //! estimate and a body color -- and the crystal system and optical character are derived

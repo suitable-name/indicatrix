@@ -18,9 +18,9 @@
 //!
 //! # Transport
 //!
-//! The design travels as a self-contained native file
-//! (`native::save_native_only_toml` / `native::load_native_only`, the desktop's
-//! autosave pair), which carries every tier's angle, indices, constraint, target and id
+//! The design travels as a self-contained design file
+//! (`native::design_to_string` / `native::design_from_str`, the desktop's autosave
+//! pair), which carries every tier's angle, indices, constraint, target and id
 //! plus the schedule metadata. See [`design_to_toml`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +31,7 @@ use indicatrix::{
 };
 use indicatrix_cut_core::{
     Design, DesignSolveError,
-    native::{SaveExtras, load_native_only, save_native_only_toml},
+    native::{DesignExtras, design_from_str, design_to_string},
 };
 use indicatrix_editor::{
     solve_policy::{
@@ -66,10 +66,6 @@ pub use optical::{
     MetricsParams, MetricsResultData, ScoredUnder, TiltAxisData, TiltParams, TiltResultData,
     run_metrics, run_metrics_with_map, run_tilt, sweep_fraction, sweep_status, tilt_lighting_note,
 };
-
-/// The `.asc` file name recorded inside a transport TOML. Never used to find a file:
-/// a self-contained native file has no paired `.asc`.
-pub const TRANSPORT_ASC_NAME: &str = "design.asc";
 
 /// What the solve Worker is asked to do.
 ///
@@ -280,16 +276,15 @@ pub enum SolveResponse {
     BodyColor(BodyColorResultData),
 }
 
-/// Encodes `design` for [`handle_solve`]: the self-contained native file, as the
+/// Encodes `design` for [`handle_solve`]: the self-contained design file, as the
 /// desktop's autosave writes it.
 ///
 /// # Errors
 ///
-/// The native writer's error text (in practice unreachable -- see
-/// `native::save_native_only_toml`).
+/// The design-file writer's error text (in practice unreachable -- see
+/// `native::design_to_string`).
 pub fn design_to_toml(design: &Design) -> Result<String, String> {
-    save_native_only_toml(design, TRANSPORT_ASC_NAME, None, &SaveExtras::default())
-        .map_err(|e| e.to_string())
+    design_to_string(design, None, &DesignExtras::default()).map_err(|e| e.to_string())
 }
 
 /// Loads a design sent through [`design_to_toml`].
@@ -298,7 +293,7 @@ pub fn design_to_toml(design: &Design) -> Result<String, String> {
 ///
 /// The loader's error text.
 pub fn design_from_toml(design_toml: &str) -> Result<Design, String> {
-    load_native_only(design_toml)
+    design_from_str(design_toml)
         .map(|loaded| loaded.design)
         .map_err(|e| e.to_string())
 }
@@ -350,6 +345,10 @@ pub fn handle_solve_with(
 
 /// Solves `design` like the desktop's background solve -- see the module doc comment.
 /// `cancel` is polled by the solver; a set flag returns [`SolveResponse::Cancelled`].
+///
+/// # Panics
+///
+/// Panics if the design has more than `u32::MAX` tiers, which no real design has.
 #[must_use]
 pub fn solve_design(design: &Design, cancel: &AtomicBool) -> SolveResponse {
     let solved = solve_cancellably(design, cancel);
@@ -360,7 +359,7 @@ pub fn solve_design(design: &Design, cancel: &AtomicBool) -> SolveResponse {
     }
     let too_many_planes = solved.as_ref().is_ok_and(|s| likely_hit_plane_cap(s))
         && too_many_planes_message(design).is_some();
-    let tier_count = design.tiers.len() as u32;
+    let tier_count = u32::try_from(design.tiers.len()).expect("a design's tier count fits u32");
     let outcome = match solved {
         Ok(solved) => {
             let (status_text, status_is_problem) =
@@ -397,7 +396,7 @@ fn tag_warnings(pairs: Vec<(usize, String)>) -> Vec<TierWarning> {
     pairs
         .into_iter()
         .map(|(tier_index, text)| TierWarning {
-            tier_index: tier_index as u32,
+            tier_index: u32::try_from(tier_index).expect("a tier index fits u32"),
             text,
         })
         .collect()

@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Which engine(s) the local (non-remote) live render loop uses -- exposed in
-/// `settings_dialog.slint`'s "Local Compute" pill row, shown only on a build compiled
+/// the Parameters panel's "Local Compute" pill row, shown only on a build compiled
 /// with the `gpu` feature; a CPU-only build has no GPU path to choose between, so the
 /// control stays hidden rather than offered and ignored.
 ///

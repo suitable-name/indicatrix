@@ -75,6 +75,10 @@ pub fn still_indicator_text(
     preset_total: i32,
     eta: &str,
 ) -> String {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is clamped to 0..=100 and rounded before the conversion"
+    )]
     let percent = (progress.clamp(0.0, 1.0) * 100.0).round() as i32;
     let mut text = if preset_total > 1 {
         let shown = (preset_index.max(0) + 1).min(preset_total);

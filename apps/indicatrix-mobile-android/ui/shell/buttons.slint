@@ -1,0 +1,84 @@
+// The three text buttons: filled (`PrimaryButton`), tonal (`TonalButton`) and
+// plain (`TextButton`). All are 48 px tall and size to their label inside a layout.
+import { Theme } from "../theme.slint";
+import { Icon } from "icon.slint";
+import { StateLayer } from "state_layer.slint";
+
+// `variant`: 0 filled, 1 tonal, 2 text.
+component BaseButton inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> enabled: true;
+    in property <int> variant: 0;
+    callback clicked();
+
+    height: Theme.touch;
+    min-width: 64px;
+    border-radius: Theme.touch / 2;
+    background: root.variant == 0 ? Theme.primary : (root.variant == 1 ? Theme.secondary-container : transparent);
+    opacity: root.enabled ? 1.0 : Theme.disabled-content;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
+    property <color> content-color: root.variant == 0 ? Theme.on-primary : (root.variant == 1 ? Theme.on-secondary-container : Theme.primary);
+
+    StateLayer {
+        pressed: touch.pressed;
+        hovered: touch.has-hover;
+        enabled: root.enabled;
+        tint: root.content-color;
+        border-radius: root.border-radius;
+    }
+
+    HorizontalLayout {
+        padding-left: root.icon.width > 0 ? 16px : 24px;
+        padding-right: 24px;
+        spacing: Theme.space-sm;
+        alignment: center;
+
+        // A plain Rectangle stretches to the button's height and centers the icon.
+        if root.icon.width > 0: Rectangle {
+            width: 18px;
+
+            Icon {
+                source: root.icon;
+                tint: root.content-color;
+                glyph: 18px;
+            }
+        }
+
+        Text {
+            text: root.text;
+            color: root.content-color;
+            font-size: Theme.text-label-large;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component PrimaryButton inherits BaseButton {
+    variant: 0;
+}
+
+export component TonalButton inherits BaseButton {
+    variant: 1;
+}
+
+export component TextButton inherits BaseButton {
+    variant: 2;
+}

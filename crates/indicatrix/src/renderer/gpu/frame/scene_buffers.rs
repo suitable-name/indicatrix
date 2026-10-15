@@ -42,6 +42,8 @@ pub struct TransportOutputs {
 }
 
 impl TransportOutputs {
+    /// Allocates all five output buffers at `capacity` tuples (the self-test layout, where
+    /// `write_debug_buffers` is on and the shader fills the debug buffers too).
     pub(crate) fn new(device: &wgpu::Device, capacity: usize) -> Self {
         let usage = BufferUsages::STORAGE | BufferUsages::COPY_SRC;
         Self {
@@ -115,22 +117,27 @@ impl TransportOutputs {
         }
     }
 
+    /// The per-tuple XYZ result buffer (`capacity * 3` floats) the chunk readback copies from.
     pub(crate) const fn xyz(&self) -> &wgpu::Buffer {
         &self.xyz
     }
 
+    /// The per-channel radiance debug buffer (`out_radiance`); self-test dispatches only.
     pub(crate) const fn radiance(&self) -> &wgpu::Buffer {
         &self.radiance
     }
 
+    /// The per-channel wavelength debug buffer (`out_lambdas`); self-test dispatches only.
     pub(crate) const fn lambdas(&self) -> &wgpu::Buffer {
         &self.lambdas
     }
 
+    /// The per-channel path-density debug buffer (`out_path_pdf`); self-test dispatches only.
     pub(crate) const fn path_pdf(&self) -> &wgpu::Buffer {
         &self.path_pdf
     }
 
+    /// The per-channel MIS-family mask debug buffer (`out_compat`); self-test dispatches only.
     pub(crate) const fn compat(&self) -> &wgpu::Buffer {
         &self.compat
     }
@@ -432,7 +439,11 @@ pub struct WavefrontRayBuffers {
 }
 
 impl WavefrontRayBuffers {
+    /// Allocates (zeroed) every per-ray wavefront buffer for `tuples` rays, plus the
+    /// per-workgroup compaction buffers sized to `tuples.div_ceil(WORKGROUP_SIZE)`.
     pub(crate) fn new(device: &wgpu::Device, tuples: usize) -> Self {
+        use compute::zeroed_buffer as zeroed;
+
         let storage_rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         // `block_alive_count` additionally needs `COPY_SRC`: the host reads it back
         // every bounce round (see `dispatch_chunk_wavefront`).
@@ -440,72 +451,37 @@ impl WavefrontRayBuffers {
 
         let workgroups = tuples.div_ceil(super::WORKGROUP_SIZE);
         Self {
-            origin: compute::zeroed_buffer::<[f32; 4]>(device, "wf ray_origin", tuples, storage_rw),
-            dir: compute::zeroed_buffer::<[f32; 4]>(device, "wf ray_dir", tuples, storage_rw),
-            k: compute::zeroed_buffer::<[f32; 4]>(device, "wf ray_k", tuples, storage_rw),
-            prev_plane_normal: compute::zeroed_buffer::<[f32; 4]>(
+            origin: zeroed::<[f32; 4]>(device, "wf ray_origin", tuples, storage_rw),
+            dir: zeroed::<[f32; 4]>(device, "wf ray_dir", tuples, storage_rw),
+            k: zeroed::<[f32; 4]>(device, "wf ray_k", tuples, storage_rw),
+            prev_plane_normal: zeroed::<[f32; 4]>(
                 device,
                 "wf ray_prev_plane_normal",
                 tuples,
                 storage_rw,
             ),
-            flags: compute::zeroed_buffer::<u32>(device, "wf ray_flags", tuples, storage_rw),
-            stokes: compute::zeroed_buffer::<[f32; 4]>(
-                device,
-                "wf ray_stokes",
-                tuples * 8,
-                storage_rw,
-            ),
-            radiance: compute::zeroed_buffer::<f32>(
-                device,
-                "wf ray_radiance",
-                tuples * 8,
-                storage_rw,
-            ),
-            path_pdf: compute::zeroed_buffer::<f32>(
-                device,
-                "wf ray_path_pdf",
-                tuples * 8,
-                storage_rw,
-            ),
-            split_radiance: compute::zeroed_buffer::<f32>(
-                device,
-                "wf ray_split_radiance",
-                tuples * 8,
-                storage_rw,
-            ),
-            compat: compute::zeroed_buffer::<u32>(device, "wf ray_compat", tuples * 8, storage_rw),
-            pending_light_mis: compute::zeroed_buffer::<f32>(
+            flags: zeroed::<u32>(device, "wf ray_flags", tuples, storage_rw),
+            stokes: zeroed::<[f32; 4]>(device, "wf ray_stokes", tuples * 8, storage_rw),
+            radiance: zeroed::<f32>(device, "wf ray_radiance", tuples * 8, storage_rw),
+            path_pdf: zeroed::<f32>(device, "wf ray_path_pdf", tuples * 8, storage_rw),
+            split_radiance: zeroed::<f32>(device, "wf ray_split_radiance", tuples * 8, storage_rw),
+            compat: zeroed::<u32>(device, "wf ray_compat", tuples * 8, storage_rw),
+            pending_light_mis: zeroed::<f32>(
                 device,
                 "wf ray_pending_light_mis",
                 tuples,
                 storage_rw,
             ),
-            pending_light_mis_dir: compute::zeroed_buffer::<[f32; 4]>(
+            pending_light_mis_dir: zeroed::<[f32; 4]>(
                 device,
                 "wf ray_pending_light_mis_dir",
                 tuples,
                 storage_rw,
             ),
-            nee_xyz: compute::zeroed_buffer::<[f32; 4]>(
-                device,
-                "wf ray_nee_xyz",
-                tuples,
-                storage_rw,
-            ),
-            lambdas: compute::zeroed_buffer::<f32>(
-                device,
-                "wf ray_lambdas",
-                tuples * 8,
-                storage_rw,
-            ),
-            seed: compute::zeroed_buffer::<u32>(device, "wf ray_seed", tuples, storage_rw),
-            active_in: compute::zeroed_buffer::<u32>(
-                device,
-                "wf active_ray_indices",
-                tuples,
-                storage_rw,
-            ),
+            nee_xyz: zeroed::<[f32; 4]>(device, "wf ray_nee_xyz", tuples, storage_rw),
+            lambdas: zeroed::<f32>(device, "wf ray_lambdas", tuples * 8, storage_rw),
+            seed: zeroed::<u32>(device, "wf ray_seed", tuples, storage_rw),
+            active_in: zeroed::<u32>(device, "wf active_ray_indices", tuples, storage_rw),
             // Needs `COPY_SRC` -- after
             // `wavefront_compact_scatter` fills it, `dispatch_chunk_wavefront`'s
             // "wavefront active-list copy encoder" copies its content BACK into
@@ -513,25 +489,15 @@ impl WavefrontRayBuffers {
             // buffer can only be a `copy_buffer_to_buffer` source with `COPY_SRC` set,
             // which plain `storage_rw` (used by every other read/write ray-state buffer
             // here, none of which is ever a copy source) does not include.
-            active_out: compute::zeroed_buffer::<u32>(
-                device,
-                "wf active_ray_indices_next",
-                tuples,
-                storage_rw_src,
-            ),
-            local_offset: compute::zeroed_buffer::<u32>(
-                device,
-                "wf compact_local_offset",
-                tuples,
-                storage_rw,
-            ),
-            block_alive_count: compute::zeroed_buffer::<u32>(
+            active_out: zeroed::<u32>(device, "wf active_ray_indices_next", tuples, storage_rw_src),
+            local_offset: zeroed::<u32>(device, "wf compact_local_offset", tuples, storage_rw),
+            block_alive_count: zeroed::<u32>(
                 device,
                 "wf compact_block_alive_count",
                 workgroups.max(1),
                 storage_rw_src,
             ),
-            block_offset: compute::zeroed_buffer::<u32>(
+            block_offset: zeroed::<u32>(
                 device,
                 "wf compact_block_offset",
                 workgroups.max(1),

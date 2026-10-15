@@ -237,6 +237,10 @@ pub const APP_CLOSING_NOTE: &str = "Stopped when the app closed.";
 
 /// Which buttons a job row shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one visibility flag per job-row button; the fields are independent switches"
+)]
 pub struct RowActions {
     /// Show Pause.
     pub pause: bool,

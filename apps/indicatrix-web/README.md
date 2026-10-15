@@ -21,8 +21,13 @@ nowhere else.
   button at the main view's bottom-right corner. Every pill and icon button has a
   tooltip; Help has a short **User guide** and the **Keyboard shortcuts** list (also `?`).
 - **Tier table and editing (Design dock).** The desktop's tier table with its columns
-  (angle, name, indices, meets, mast, solve strategy, margin, orbit, Adopt / Pin /
-  Detach / Add Anchor, move, duplicate, delete), manufacturability and unsolved-tier
+  (code in cutting order -- P1, G1, C1, T --, angle, name, indices, meets, mast, solve
+  strategy, margin, orbit, Adopt / Pin / Detach / Add Anchor, move, duplicate, delete),
+  a "= P1 - 2" badge on an angle that follows a relation (such an angle takes no direct
+  edit, drag or nudge; the status line names the tier that drives it), concave tiers
+  listed after the flat ones with a "Tool" badge and their tool line (they can be viewed
+  and selected but not edited yet: every editing action on one says so and changes
+  nothing), manufacturability and unsolved-tier
   tints, a filter box, and a status panel (solving / solved / stale / cannot be solved /
   not a closed solid, plus the warnings, each click-through to its tier). Selecting a row
   selects the tier in the Solid and Diagram views and back; Ctrl / Shift-click
@@ -43,7 +48,7 @@ nowhere else.
   color, index gear (with the remap confirmation), symmetry and mirror, title / header /
   footnotes, printed proportions, and a compact custom-material editor (name, RI,
   dispersion, birefringence, specific gravity, color). A custom material is offered in
-  the material lists and kept with the design's `.indicatrix` file (its snapshot: optics and
+  the material lists and kept with the design's `.isdd` file (its snapshot: optics and
   body color; a built-in material's name is refused, so a custom material never shadows
   one). The Render tab's "Linked to design" switch is the one control for whether the
   render follows the design's material.
@@ -113,40 +118,37 @@ nowhere else.
   follow their menu items). Action steps complete by themselves once the design reaches
   their goal, whichever route led there; reading steps wait for Next. Closing the guide
   lifts every lock. Its place (open, step, collapsed, panel position) survives a reload.
-- **New Design.** The template gallery (Empty plus the five built-in templates) inside the
+- **New Design.** The template gallery (Empty plus the nine built-in templates) inside the
   desktop's New Design dialog: preform, index gear, symmetry, mirror and starting material.
 - **Opening files.** File > Open (several files at once) or drag and drop onto the page.
 
   | File | How it is read |
   |---|---|
   | `.asc` | `decode_asc_bytes` (Windows-1252 aware), then `indicatrix_editor::loading::design_from_asc_text` |
-  | `.indicatrix` | `indicatrix_cut_core::native::design_from_str` (self-contained; a text file in TOML syntax with a versioned header; its `[meta]` table and attachments stay with the design in the session) |
-  | `.asc` + older `.indicatrix.toml` / `.gemcut.toml` sidecar | `indicatrix_cut_core::native::load_paired` (open or drop both files together) |
-  | older self-contained `.indicatrix.toml` alone | `indicatrix_cut_core::native::load_native_only` |
+  | `.isdd` (or a legacy `.indicatrix`) | `indicatrix_cut_core::native::design_from_str` (self-contained; a text file in TOML syntax with a versioned header; its `[meta]` table and attachments stay with the design in the session) |
   | `.gem`, `.gcs` | `indicatrix_editor::files::convert_foreign_design`, then the `.asc` path |
   | `.hdr` | header checked against the browser caps (64 MiB, 8192 x 4096), then kept for rendering |
 
-  A `.toml` or `.indicatrix` file is routed by its header, not by its name: a design file
-  opens on its own, an older sidecar waits for its `.asc`. A design file written by a
+  A design file opens on its own: `.isdd` and the legacy `.indicatrix` are read the same
+  way, and a `.toml` is only opened when its header says it is a design file. A design file written by a
   newer Indicatrix than the page reads is refused with a message that says to update.
   A load error is shown as a message; it never stops the page. A file is checked against
   its size limit (16 MiB for a design, 64 MiB for an `.hdr`) from the browser's file size
   before any of it is read. Opening or starting a new design over unsaved changes asks
-  first, in a Save / Discard / Cancel dialog (Save downloads the `.indicatrix` file, then
+  first, in a Save / Discard / Cancel dialog (Save downloads the `.isdd` file, then
   continues); closing or reloading the tab with unsaved changes asks the browser's own
   leave-the-page question.
-- **Saving (browser downloads).** Save design (`.indicatrix`, Ctrl+S), Save `.asc`,
-  Save `.asc` + older sidecar (`.asc` + `.indicatrix.toml`), Download cutting
+- **Saving (browser downloads).** Save design (`.isdd`, Ctrl+S), Save `.asc`, Download cutting
   sheet (HTML), Download diagram PNG and Export PNG. Each one uses the desktop's own
   function, so the bytes match what the desktop would write. File names follow the
   desktop's naming.
-- **Design metadata and attachments.** The `.indicatrix` file carries descriptive
+- **Design metadata and attachments.** The `.isdd` file carries descriptive
   metadata in a `[meta]` table (title, designer, source, notes, tags, licence, dates and
   an id) and the files that cannot be recomputed from the design in `[[attachments]]`
   (a PDF, the original `.gem` or `.asc`, a diagram image; base64 with size and SHA-256,
   64 MiB in total). Derived values (ratios, volume, facet counts, the angle table, previews
   and tilt curves) are not stored; an importer computes them again. The web app keeps what
-  a file carries: opening a `.indicatrix` holds its metadata and attachments in the
+  a file carries: opening an `.isdd` holds its metadata and attachments in the
   session, and Save design writes them back unchanged, including `[meta]` keys this build
   does not know. Only the stamp changes: `modified_at` becomes the time of the save
   (ISO-8601 UTC, from the browser's clock), `created_at` is filled in when the file had
@@ -154,12 +156,11 @@ nowhere else.
   none, and the tags are written sorted. The dock shows the title, designer, source,
   notes, tags and licence of an opened file, read-only; the web app has no editor for
   them or for the attachments. A file whose attachments are over the cap or damaged is
-  refused on save with the reason in the message. Save `.asc` + older sidecar uses the
-  older format, which has neither.
+  refused on save with the reason in the message.
 - **Session memory.** Settings (including the auto-solve budget), the current design and
   the guide's place are saved to `sessionStorage` about half a second after each change,
-  under the keys `indicatrix.settings.v1` (JSON), `indicatrix.design.v1` (a
-  `.indicatrix` design file, metadata included) and `indicatrix.guide.v1` (JSON). They are
+  under the keys `indicatrix.settings.v1` (JSON), `indicatrix.design.v1` (an
+  `.isdd` design file, metadata included) and `indicatrix.guide.v1` (JSON). They are
   restored after a reload of the same tab and are gone when the tab closes. If the design's
   attachments do not fit in `sessionStorage`, the stored design leaves them out (the
   metadata stays), `indicatrix.design.attachments_dropped.v1` records that, and the
@@ -177,7 +178,7 @@ browser allows it; browser-reserved combinations are replaced.
 
 | Keys | Action |
 |---|---|
-| Ctrl+O / Ctrl+S / Ctrl+Shift+S | Open / Save design (`.indicatrix`) / Save `.asc` |
+| Ctrl+O / Ctrl+S / Ctrl+Shift+S | Open / Save design (`.isdd`) / Save `.asc` |
 | Alt+N | New Design (the desktop's Ctrl+N would open a new browser window) |
 | Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z | Undo, Redo (left to a text field while one has focus) |
 | F5 | Solve (Slint's web backend cancels the browser's reload on it) |
@@ -300,7 +301,7 @@ keeps the page working behind a CDN that rewrites scripts.
    "Using exceptions for control flow" notice is expected):
    New Design (Standard Round Brilliant) -> the render starts and samples climb ->
    Solid tab, drag the angle handle -> Diagram tab, click a panel -> File > Save design
-   downloads a `.indicatrix` file -> reload the tab, the design comes back -> Ctrl+Z / F5 / `?` work ->
+   downloads an `.isdd` file -> reload the tab, the design comes back -> Ctrl+Z / F5 / `?` work ->
    Tilt Curve runs and Cancel keeps the curves -> File > Export PNG at 256 px -> narrow
    the window to phone width and check the File menu and the dialogs still fit.
 

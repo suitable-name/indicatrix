@@ -8,7 +8,7 @@
 /// the machine that opens the file -- without it, a native file referencing a
 /// custom material by name only falls back to Diamond elsewhere.
 ///
-/// Sharing a `.indicatrix.toml` + `.asc` pair naming a custom material (or simply
+/// Sharing a design file naming a custom material (or simply
 /// reinstalling and losing the local database row) would otherwise silently
 /// resolve that name to Diamond, with no warning. Every field here is a plain
 /// primitive, not
@@ -18,10 +18,13 @@
 /// registering it back as a session-local custom material when the name fails to
 /// resolve -- is `indicatrix-cut-core`'s job, same split as every other table
 /// here. `crystal_system`/`optical_character` are carried as their `Debug`-style
-/// names (e.g. `"Trigonal"`, `"UniaxialNegative"`) purely for a human reading the
-/// raw TOML; `GemMaterial::new_custom` re-derives both from the sign of
-/// `birefringence_delta` on load; and `specific_gravity` is `None` when the
-/// material carried no SG at save time.
+/// names (e.g. `"Trigonal"`, `"BiaxialPositive"`) and read back by
+/// `indicatrix-cut-core` when the name is recognised (since 2026-10-12); an empty or
+/// unrecognised name leaves what `GemMaterial::new_custom` infers from the sign of
+/// `birefringence_delta`, which is all a file written before that date carried, except that a
+/// usable `biaxial_delta_beta_alpha` makes the reader pick the biaxial character itself
+/// (positive when `2 * delta < |birefringence_delta|`, negative otherwise); and
+/// `specific_gravity` is `None` when the material carried no SG at save time.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CustomMaterialSnapshot {
     /// Mean refractive index.
@@ -37,12 +40,21 @@ pub struct CustomMaterialSnapshot {
     pub crystal_system: String,
     /// Optical character of the material.
     pub optical_character: String,
+    /// `n_beta - n_alpha` of a biaxial material (`biaxial_delta_beta_alpha = 0.004`): the
+    /// figure a library row stores for the two biaxial optical characters. It is only ever
+    /// written for a biaxial material, so a reader treats a usable value (finite, positive, not
+    /// above `|birefringence_delta|`) as evidence of one even when [`Self::optical_character`]
+    /// is empty or unrecognised. `None` for an isotropic or uniaxial material and for every
+    /// file written before the key existed (`#[serde(default)]`, so the schema version does not
+    /// move; an older build keeps the key in [`Self::unknown`] and writes it back unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biaxial_delta_beta_alpha: Option<f64>,
     /// The material's body color, `absorption_rgb = [r, g, b]`: the isotropic
     /// absorption triple `GemMaterial::new_custom` takes (`None` = colorless).
     ///
     /// Added after this table first shipped: `#[serde(default)]` loads a file written
     /// before it existed with `None` -- exactly the colorless material such a file
-    /// always described -- so the schema version ([`FORMAT_VERSION`]) does not move.
+    /// always described -- so the schema version does not move.
     /// An older build reading a newer file keeps the key in [`Self::unknown`] and
     /// writes it back unchanged. Stored as `f64` (TOML's only float) through each
     /// `f32` component's shortest round-trip decimal -- see [`Self::with_body_color`].
@@ -174,12 +186,20 @@ impl CustomMaterialSnapshot {
             specific_gravity,
             crystal_system: crystal_system.into(),
             optical_character: optical_character.into(),
+            biaxial_delta_beta_alpha: None,
             absorption_rgb: None,
             absorption_bands_per_mm: None,
             color_recipe: None,
             dispersion_model: None,
             unknown: toml::Table::new(),
         }
+    }
+
+    /// Attaches [`Self::biaxial_delta_beta_alpha`].
+    #[must_use]
+    pub const fn with_biaxial_delta(mut self, delta: Option<f64>) -> Self {
+        self.biaxial_delta_beta_alpha = delta;
+        self
     }
 
     /// Attaches [`Self::dispersion_model`].
@@ -224,6 +244,10 @@ impl CustomMaterialSnapshot {
 
     /// The N-band body color as `f32` rows (`None` when absent or empty).
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the file stores absorption as f64 text; f32 is the editor's storage precision"
+    )]
     pub fn absorption_bands(&self) -> Option<Vec<[f32; 3]>> {
         self.absorption_bands_per_mm
             .as_ref()
@@ -252,6 +276,10 @@ impl CustomMaterialSnapshot {
 
     /// The body color as the editor's `f32` absorption triple (`None` = colorless).
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the file stores absorption as shortest round-trip f32 text widened to f64, so narrowing returns the same f32"
+    )]
     pub fn body_color(&self) -> Option<[f32; 3]> {
         self.absorption_rgb.map(|rgb| rgb.map(|v| v as f32))
     }

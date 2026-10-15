@@ -190,8 +190,7 @@ pub(super) fn bind_locate_window_theme(window: &LocateWindow) {
 }
 
 /// Makes the Rough colour wizard window follow the high-contrast preference. Called once, when
-/// the window is created (`zoning` feature only).
-#[cfg(feature = "zoning")]
+/// the window is created.
 pub(super) fn bind_rough_colour_window_theme(window: &crate::RoughColourWindow) {
     let weak = window.as_weak();
     register_theme_sink(move |on| {

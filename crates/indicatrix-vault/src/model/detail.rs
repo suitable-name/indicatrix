@@ -19,7 +19,7 @@ pub struct FacetingDiagramDetail {
     pub diagram_image_data: Option<Vec<u8>>,
     /// This design's angle-settings table -- one row per tier.
     pub angle_settings_table: Vec<AngleSetting>,
-    /// Every attachment (`.asc`/`.gem`/`.pdf`/native-sidecar, or a scraped page's own
+    /// Every attachment (`.asc`/`.gem`/`.pdf`/design file, or a scraped page's own
     /// attachments) with full byte content.
     pub attached_files: Vec<AttachedFile>,
 

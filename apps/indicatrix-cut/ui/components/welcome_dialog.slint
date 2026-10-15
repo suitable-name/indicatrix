@@ -58,17 +58,17 @@ export component WelcomeDialog inherits Rectangle {
                 spacing: 8px;
                 alignment: end;
                 TipButton {
-                    text: "Not now";
+                    text: "Not Now";
                     hint: "Close this welcome. You can find the tour again under Edit > Preferences. Escape does the same.";
                     clicked => { TutorialsModel.tour_dismiss(); }
                 }
                 TipButton {
-                    text: "Start with a template";
+                    text: "Start with a Template";
                     hint: "Open the New Design dialog, with a gallery of ready-made shapes to start from.";
                     clicked => { TutorialsModel.tour_templates(); }
                 }
                 TipButton {
-                    text: "Take the 2-minute tour";
+                    text: "Take the 2-Minute Tour";
                     hint: "Walk through the window step by step: where the stone, the tier list and the inspector are. Enter does the same.";
                     primary: true;
                     clicked => { TutorialsModel.tour_start(); }

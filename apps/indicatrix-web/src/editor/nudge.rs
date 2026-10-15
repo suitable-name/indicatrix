@@ -13,7 +13,10 @@
 //! the source ([`EditIntent`]): ticks on the same targets are summed and applied once per
 //! [`DRAIN_INTERVAL`], the same queue the desktop keeps.
 
-use super::edit::{Dirty, finish_edit, with_app};
+use super::{
+    edit::{Dirty, finish_edit, with_app},
+    table,
+};
 use crate::{
     TierTableModel,
     app::{
@@ -35,11 +38,31 @@ thread_local! {
     static DRAIN: Timer = Timer::default();
 }
 
+// The relation helpers are pure and native-tested in `indicatrix_web_core::rows`.
+pub use indicatrix_web_core::rows::{driven_refusal, with_followers};
+
 /// The inline cell's Enter / focus-loss commit for tier `index`.
+///
+/// A concave row is refused (see [`table::editable_tier`]). A tier whose angle follows a
+/// relation takes no plain angle: text that is not itself a relation (`=...`) is refused,
+/// naming the tier that drives it.
 pub fn commit_angle(ctx: &Ctx, index: i32, text: &str) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
+    let refusal = (!text.trim_start().starts_with('='))
+        .then(|| {
+            ctx.state
+                .borrow()
+                .design
+                .as_ref()
+                .and_then(|d| driven_refusal(&d.session.design, index))
+        })
+        .flatten();
+    if let Some(message) = refusal {
+        show_message(ctx, MessageKind::Info, &message);
+        return;
+    }
     let result = with_app(ctx, |app| {
         Some(
             app.design
@@ -79,6 +102,10 @@ fn nudge_targets(ctx: &Ctx, anchor: i32) -> Vec<usize> {
 /// Posts a nudge of `delta_deg` for the rows anchored at `anchor`; it is applied by the
 /// next drain, summed with every tick that arrives before it.
 fn post_nudge(ctx: &Ctx, anchor: i32, delta_deg: f32) {
+    // A concave anchor never reaches the queue (a negative one is the batch bar's Offset).
+    if anchor >= 0 && table::editable_tier(ctx, anchor).is_none() {
+        return;
+    }
     let targets = nudge_targets(ctx, anchor);
     if targets.is_empty() {
         return;
@@ -112,18 +139,49 @@ fn drain(ctx: &Ctx) {
     else {
         return;
     };
+    // A tier whose angle follows a relation takes no direct nudge: say which one and why,
+    // and nudge the free tiers of the group as usual.
+    let (driven, targets): (Vec<usize>, Vec<usize>) = {
+        let app = ctx.state.borrow();
+        match app.design.as_ref() {
+            Some(design) => targets
+                .iter()
+                .copied()
+                .partition(|&tier| design.session.design.is_tier_driven(tier)),
+            None => (Vec::new(), targets),
+        }
+    };
+    let refusal = driven.first().and_then(|&tier| {
+        ctx.state
+            .borrow()
+            .design
+            .as_ref()
+            .and_then(|d| driven_refusal(&d.session.design, tier))
+    });
+    if targets.is_empty() {
+        if let Some(message) = refusal {
+            show_message(ctx, MessageKind::Info, &message);
+        }
+        return;
+    }
+    // The delta moves the number the row SHOWS (a pavilion angle is printed without its
+    // minus sign), like the desktop's nudge.
     let result = with_app(ctx, |app| {
-        Some(
-            app.design
-                .as_mut()?
-                .session
-                .nudge_angles(&targets, delta_deg, coalesce_now()),
-        )
+        Some(app.design.as_mut()?.session.nudge_displayed_angles(
+            &targets,
+            delta_deg,
+            coalesce_now(),
+        ))
     });
     match result {
         None | Some(Ok(None)) => {}
         Some(Ok(Some(outcome))) => {
-            finish_edit(ctx, Dirty::Tiers(targets.iter().copied().collect()));
+            // The tiers that follow a nudged tier moved with it.
+            let dirty = ctx.state.borrow().design.as_ref().map_or_else(
+                || targets.iter().copied().collect(),
+                |d| with_followers(&d.session.design, targets.iter().copied()),
+            );
+            finish_edit(ctx, Dirty::Tiers(dirty));
             // The angle's sign says which block a tier belongs to, so a nudge that would
             // cross zero is clamped instead; explain the stop.
             if !outcome.clamped_labels.is_empty() {
@@ -137,6 +195,10 @@ fn drain(ctx: &Ctx) {
                         outcome.clamped_labels.join(", ")
                     ),
                 );
+            }
+            // Last, so it is the message left on screen: part of the group did not move.
+            if let Some(message) = refusal {
+                show_message(ctx, MessageKind::Info, &message);
             }
         }
         Some(Err(e)) => show_message(ctx, MessageKind::Error, &e.to_string()),

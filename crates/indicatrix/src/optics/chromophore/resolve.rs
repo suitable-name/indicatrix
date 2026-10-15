@@ -34,6 +34,15 @@ use crate::{
     optics::absorption::{AbsorptionBand, AbsorptionTensor},
 };
 
+/// A catalogue or solver value (`f64`) as the `f32` the band types hold.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "bands are stored as f32; wavelengths, widths and strengths are in the normal float range"
+)]
+const fn f32_of(value: f64) -> f32 {
+    value as f32
+}
+
 /// Upper bound on the `strength` multiplier.
 pub(super) const MAX_STRENGTH: f64 = 1000.0;
 /// Upper bound on a single band's peak in mm^-1 (keeps every `f32` cast finite).
@@ -145,35 +154,58 @@ fn resolve_impl(
 
 /// The chromophore of `host` that a catalogue `requires` / `excludes` entry names, if any.
 ///
-/// The entries are free text; one names a chromophore when it equals the id or one is a prefix of
-/// the other (`"H3 / H4"` names `"H3 / H4 (N-V-N, 2N+V; 4N+2V)"`). Entries that name no
-/// chromophore (`"oxidising melt"`) are documentation only.
+/// An entry names a chromophore only when it equals the id exactly, the rule the desktop
+/// editor's `impossible_reason` applies too. Entries that name no chromophore (`"oxidising
+/// melt"`, an element symbol, a qualified note such as `"Fe2+ (almandine) when x_Alm > 0.10"`)
+/// are documentation only. Prefix matching was dropped because it made qualified notes bind
+/// (tourmaline Cu2+ "requires Mn3+ for violet hues (optional)" warned on every Paraiba recipe)
+/// and depended on the sort order of the ids.
 fn named_chromophore<'a>(host: &'a HostData, text: &str) -> Option<&'a ChromophoreData> {
-    host.chromophores
-        .iter()
-        .find(|c| c.id == text || c.id.starts_with(text) || text.starts_with(c.id.as_str()))
+    host.chromophores.iter().find(|c| c.id == text)
 }
 
 /// Reports `requires` / `excludes` relations of the catalogue that the recipe violates: an
 /// active chromophore whose excluded partner is also active, or whose required partner is absent.
 /// Advisory only (the bands are untouched), because the relations are free text in the data.
+///
+/// A mutual exclusion (both chromophores list each other) is reported once, from the smaller
+/// id; an exclusion listed on one side only is reported from that side whatever the ids sort
+/// like (the old rule reported it only when the partner's id sorted higher, which silently
+/// dropped the glass Mn3+ / Fe2+ and zircon brown / blue centre exclusions).
+///
+/// A chromophore whose bands are all removed by a treatment (a `remove_centre` with no band
+/// filter and factor 0) is not active: an amethyst centre created by irradiation and then removed
+/// by an anneal must not trigger the citrine / prasiolite exclusions.
 fn relation_warnings(
     host: &HostData,
     amounts: &BTreeMap<String, f64>,
     treated: &Treated,
 ) -> Vec<ResolveWarning> {
+    let fully_removed = |c: &ChromophoreData| {
+        treated.removals.get(&c.id).is_some_and(|rs| {
+            rs.iter()
+                .any(|(bands, factor)| bands.is_empty() && *factor <= 0.0)
+        })
+    };
     let active = |c: &ChromophoreData| {
-        c.is_offered() && {
+        c.is_offered() && !fully_removed(c) && {
             let c_eff = effective_concentration(host, c, amounts, &treated.split, &treated.created);
             c_eff.is_finite() && c_eff > 1e-12
         }
+    };
+    let lists_back = |other: &ChromophoreData, me: &ChromophoreData| {
+        other
+            .excludes
+            .iter()
+            .any(|t| named_chromophore(host, t).is_some_and(|c| c.id == me.id))
     };
     let mut out = Vec::new();
     for chromo in host.chromophores.iter().filter(|c| active(c)) {
         for text in &chromo.excludes {
             if let Some(other) = named_chromophore(host, text)
-                && other.id > chromo.id
+                && other.id != chromo.id
                 && active(other)
+                && (other.id > chromo.id || !lists_back(other, chromo))
             {
                 out.push(ResolveWarning::Relation {
                     id: chromo.id.clone(),
@@ -198,8 +230,11 @@ fn relation_warnings(
     out
 }
 
-/// The recipe amounts keyed by selectable id, each clamped to `[0, conc_max]` of the host
-/// (unselectable ids and clamped amounts are reported in `warnings`).
+/// The recipe amounts keyed by selectable id, each clamped to `[0, conc_max]` of the host under
+/// the recipe's treatments (`HostData::element_conc_max_split` with the treated valence split),
+/// then scaled down together where the elements of a multi-element chromophore add up to more
+/// than its `conc_max` (`HostData::cap_summed_amounts`). Unselectable ids and clamped amounts are
+/// reported in `warnings`.
 pub(super) fn clamped_amounts(
     catalogue: &ChromophoreCatalogue,
     host: &HostData,
@@ -207,13 +242,15 @@ pub(super) fn clamped_amounts(
     warnings: &mut Vec<ResolveWarning>,
 ) -> BTreeMap<String, f64> {
     let selectable = catalogue.selectable_elements(&host.id);
+    let present = |id: &str| recipe.entries.iter().any(|e| e.id == id && e.amount > 0.0);
+    let split = host.treated_split(&recipe.treatments, &present);
     let mut amounts: BTreeMap<String, f64> = BTreeMap::new();
     for e in &recipe.entries {
         if !selectable.contains(&e.id) {
             warnings.push(ResolveWarning::UnknownEntry { id: e.id.clone() });
             continue;
         }
-        let max = host.element_conc_max(&e.id);
+        let max = host.element_conc_max_split(&e.id, &split);
         let used = e.amount.clamp(0.0, max);
         if used < e.amount {
             warnings.push(ResolveWarning::AmountClamped {
@@ -223,6 +260,13 @@ pub(super) fn clamped_amounts(
             });
         }
         *amounts.entry(e.id.clone()).or_insert(0.0) += used;
+    }
+    for (id, requested, used) in host.cap_summed_amounts(&mut amounts) {
+        warnings.push(ResolveWarning::AmountClamped {
+            id,
+            requested,
+            used,
+        });
     }
     amounts
 }
@@ -283,9 +327,9 @@ fn collect_bands(
             let make = |w: f64| {
                 (
                     AbsorptionBand::energy(
-                        band.centre_nm as f32,
-                        band.fwhm_cm1.unwrap_or(0.0) as f32,
-                        (coeff_mm * w) as f32,
+                        f32_of(band.centre_nm),
+                        f32_of(band.fwhm_cm1.unwrap_or(0.0)),
+                        f32_of(coeff_mm * w),
                     ),
                     chromo.id.clone(),
                 )
@@ -344,7 +388,9 @@ pub(super) fn apply_treatments(
     amounts: &BTreeMap<String, f64>,
     warnings: &mut Vec<ResolveWarning>,
 ) -> Treated {
-    let mut split = host.valence_split.clone();
+    let split = host.treated_split(&recipe.treatments, &|id| {
+        amounts.get(id).copied().unwrap_or(0.0) > 0.0
+    });
     let mut created: BTreeMap<String, f64> = BTreeMap::new();
     let mut removals: BTreeMap<String, Vec<Removal>> = BTreeMap::new();
     for treatment in &host.treatments {
@@ -364,17 +410,6 @@ pub(super) fn apply_treatments(
         }
         for eff in &treatment.effects {
             match eff.effect_type.as_str() {
-                "valence_shift" => {
-                    let (Some(el), Some(from), Some(to), Some(frac)) =
-                        (&eff.element, &eff.from, &eff.to, eff.fraction)
-                    else {
-                        continue;
-                    };
-                    let m = split.entry(el.clone()).or_default();
-                    let moved = m.get(from).copied().unwrap_or(0.0) * frac.clamp(0.0, 1.0);
-                    *m.entry(from.clone()).or_insert(0.0) -= moved;
-                    *m.entry(to.clone()).or_insert(0.0) += moved;
-                }
                 "create_centre" => {
                     let Some(cid) = &eff.centre_id else { continue };
                     let Some(chromo) = host.chromophores.iter().find(|c| &c.id == cid) else {
@@ -393,6 +428,7 @@ pub(super) fn apply_treatments(
                         .or_default()
                         .push((eff.bands_nm.clone(), factor.clamp(0.0, 1.0)));
                 }
+                // `valence_shift` was applied by `HostData::treated_split` above.
                 _ => {}
             }
         }
@@ -575,9 +611,9 @@ pub(super) fn merged_pair(a: &AbsorptionBand, b: &AbsorptionBand) -> AbsorptionB
         (area_a * (sa * sa + (na - nu).powi(2)) + area_b * (sb * sb + (nb - nu).powi(2))) / area;
     let sigma = var.sqrt();
     AbsorptionBand {
-        center_nm: (1e7 / nu) as f32,
-        width_nm: sigma as f32,
-        peak: (area / sigma) as f32,
+        center_nm: f32_of(1e7 / nu),
+        width_nm: f32_of(sigma),
+        peak: f32_of(area / sigma),
         shape: a.shape,
     }
 }
@@ -593,10 +629,11 @@ fn merge_cost(a: &AbsorptionBand, b: &AbsorptionBand, m: &AbsorptionBand, path_m
     (0..=80)
         .map(|i| {
             let l = 380.0 + 5.0 * f64::from(i);
-            let cmf = cie_1931_cmf(l as f32);
+            let cmf = cie_1931_cmf(f32_of(l));
             let w = f64::from(cmf[0] + cmf[1] + cmf[2]);
-            let d = f64::from(a.evaluate(l as f32) + b.evaluate(l as f32) - m.evaluate(l as f32))
-                * path_mm;
+            let d =
+                f64::from(a.evaluate(f32_of(l)) + b.evaluate(f32_of(l)) - m.evaluate(f32_of(l)))
+                    * path_mm;
             w * d * d
         })
         .sum()
@@ -618,7 +655,7 @@ fn budget_bands(
     let eval = |set: &[TaggedBand], lambda: f64| -> f64 {
         f64::from(
             set.iter()
-                .map(|(b, _)| b.evaluate(lambda as f32))
+                .map(|(b, _)| b.evaluate(f32_of(lambda)))
                 .sum::<f32>(),
         )
     };
@@ -721,7 +758,7 @@ mod tests {
         c.usable_bands()
             .filter(|b| b.pol.get(pol).copied().unwrap_or(0.0) > 0.0)
             .max_by(|a, b| a.peak_coeff.partial_cmp(&b.peak_coeff).expect("finite"))
-            .map(|b| (b.centre_nm as f32, b.peak_coeff.expect("peak")))
+            .map(|b| (f32_of(b.centre_nm), b.peak_coeff.expect("peak")))
             .expect("band")
     }
 
@@ -1086,10 +1123,10 @@ total_atom_density_cm3 = 5.0e22
         let eff = &c.host("tanzanite").expect("tanzanite").treatments[0].effects[0];
         let factor = eff.factor.expect("factor");
         assert_ne!(eff.bands_nm.len(), 0, "the effect names its bands");
-        let brown = eff.bands_nm[0] as f32;
+        let brown = f32_of(eff.bands_nm[0]);
         let raw_brown = peak_near(&raw.e_ray, brown).expect("brown band in the unheated gamma ray");
         match peak_near(&heated.e_ray, brown) {
-            Some(h) => assert!((h / raw_brown - factor as f32).abs() < 1e-4),
+            Some(h) => assert!((h / raw_brown - f32_of(factor)).abs() < 1e-4),
             None => assert!(factor == 0.0, "a zero factor removes the band"),
         }
         // The V3+ bands are untouched.
@@ -1199,5 +1236,157 @@ total_atom_density_cm3 = 5.0e22
                 .any(|w| matches!(w, ResolveWarning::Relation { .. })),
             "{warnings:?}"
         );
+    }
+
+    /// Relations bind by exact id only: a qualified note (`"Mn3+ for violet hues (optional)"`)
+    /// is documentation and must not warn, although a chromophore id is its prefix; the
+    /// Boron acceptor's exclusions are written as exact ids and do bind.
+    #[test]
+    fn relations_bind_by_exact_id_and_qualified_notes_are_documentation() {
+        let c = cat();
+        let tourmaline = c.host("tourmaline").expect("tourmaline");
+        let cu = tourmaline
+            .chromophores
+            .iter()
+            .find(|ch| ch.id == "Cu2+")
+            .expect("Cu2+");
+        assert!(
+            cu.requires
+                .iter()
+                .any(|r| r.starts_with("Mn3+") && r != "Mn3+"),
+            "the data keeps the qualified note: {:?}",
+            cu.requires
+        );
+        assert!(
+            named_chromophore(tourmaline, "Mn3+ for violet hues (optional)").is_none(),
+            "a qualified note names no chromophore"
+        );
+        assert_eq!(
+            named_chromophore(tourmaline, "Mn3+").map(|ch| ch.id.as_str()),
+            Some("Mn3+")
+        );
+        let mut paraiba = ColorRecipe::new("tourmaline", c.data_version);
+        paraiba.set_amount("Cu", 1.0);
+        let (_, warnings) = resolve(&paraiba, c).expect("resolves");
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| matches!(w, ResolveWarning::Relation { .. })),
+            "Cu alone must not 'require' Mn3+: {warnings:?}"
+        );
+
+        let diamond = c.host("diamond").expect("diamond");
+        let boron = diamond
+            .chromophores
+            .iter()
+            .find(|ch| ch.id.starts_with("Boron"))
+            .expect("Boron acceptor");
+        for text in &boron.excludes {
+            let other = named_chromophore(diamond, text)
+                .unwrap_or_else(|| panic!("Boron acceptor excludes {text:?}, no diamond id"));
+            assert!(
+                other
+                    .excludes
+                    .iter()
+                    .any(|t| named_chromophore(diamond, t).is_some_and(|x| x.id == boron.id)),
+                "{} does not list the Boron acceptor back",
+                other.id
+            );
+        }
+    }
+
+    /// An exclusion listed on one side only is reported from that side whatever the ids sort
+    /// like; a mutual one is reported once, from the smaller id.
+    #[test]
+    fn one_sided_exclusions_are_reported_and_mutual_ones_once() {
+        let toml = r#"
+data_version = 1
+
+[[host]]
+id = "toy"
+name = "Toy"
+formula = "X"
+optical = "isotropic"
+materials = ["Toy"]
+density_g_cm3 = 4.0
+formula_weight_g_mol = 100.0
+sites_per_fu = 1.0
+cation_site_density_cm3 = 1.0e22
+total_atom_density_cm3 = 5.0e22
+
+  [[host.chromophore]]
+  id = "alpha"
+  kind = "ion"
+  elements = ["Cr"]
+  conc_unit = "ppm_site"
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 3000.0
+    peak_coeff = 1.0
+
+  [[host.chromophore]]
+  id = "beta"
+  kind = "ion"
+  elements = ["Fe"]
+  conc_unit = "ppm_site"
+  excludes = ["alpha"]
+    [[host.chromophore.band]]
+    centre_nm = 550.0
+    fwhm_cm1 = 3000.0
+    peak_coeff = 1.0
+
+  [[host.chromophore]]
+  id = "gamma"
+  kind = "ion"
+  elements = ["Ni"]
+  conc_unit = "ppm_site"
+  excludes = ["delta"]
+    [[host.chromophore.band]]
+    centre_nm = 600.0
+    fwhm_cm1 = 3000.0
+    peak_coeff = 1.0
+
+  [[host.chromophore]]
+  id = "delta"
+  kind = "ion"
+  elements = ["Co"]
+  conc_unit = "ppm_site"
+  excludes = ["gamma"]
+    [[host.chromophore.band]]
+    centre_nm = 650.0
+    fwhm_cm1 = 3000.0
+    peak_coeff = 1.0
+"#;
+        let cat = ChromophoreCatalogue::from_toml(toml).expect("fixture loads");
+        let relations = |ids: &[(&str, f64)]| -> Vec<(String, String)> {
+            let mut r = ColorRecipe::new("toy", cat.data_version);
+            for (id, a) in ids {
+                r.set_amount(id, *a);
+            }
+            let (_, warnings) = resolve(&r, &cat).expect("resolves");
+            warnings
+                .into_iter()
+                .filter_map(|w| match w {
+                    ResolveWarning::Relation {
+                        id,
+                        relation: "excludes",
+                        other,
+                    } => Some((id, other)),
+                    _ => None,
+                })
+                .collect()
+        };
+        // "beta" excludes "alpha" and sorts after it: reported once, from beta.
+        assert_eq!(
+            relations(&[("Cr", 10.0), ("Fe", 10.0)]),
+            vec![("beta".to_string(), "alpha".to_string())]
+        );
+        // Mutual: once, from the smaller id.
+        assert_eq!(
+            relations(&[("Ni", 10.0), ("Co", 10.0)]),
+            vec![("delta".to_string(), "gamma".to_string())]
+        );
+        // Nothing when the partner is absent.
+        assert_eq!(relations(&[("Fe", 10.0)]).len(), 0);
     }
 }

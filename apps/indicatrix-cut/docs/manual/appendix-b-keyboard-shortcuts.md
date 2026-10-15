@@ -36,7 +36,8 @@ between the `<!-- SHORTCUTS_GLOBAL -->`, `<!-- SHORTCUTS_TIER_LIST -->`,
 | Ctrl+E | Toggle the 3D Spectral Preview tab's Live Render / Edit pill. **Not** Export -- "Export Edited .asc" has no keyboard shortcut of its own. |
 | Ctrl+F | Focus the catalogue search box, or, while the Edit tab's tier list is showing, the tier list's own filter box instead |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 | Switch to the 3D Spectral Preview tab / Cutting Instructions tab / Files & Downloads tab. There is no Ctrl+4 -- the window only has these three top-level tabs. |
-| 1 / 2 / 3 / 4 | Solid / Path-traced / Both / Diagram view of the Edit tab's viewport. Only while that viewport is on screen and no text field has focus. |
+| Ctrl+Alt+1 / Ctrl+Alt+2 / Ctrl+Alt+3 | Open the Parameters panel on its Stone / Lighting & Environment / Render & Output tab, in the Live Render view and in the Edit view. The View menu and the buttons beside the viewport open it too; Esc folds a floating panel away. |
+| 1 / 2 / 3 / 4 | Solid / Path-Traced / Both / Diagram view of the Edit tab's viewport. Only while that viewport is on screen and no text field has focus. |
 | Ctrl+, (Ctrl+Comma) | Open Preferences -- the Simple/Advanced interface, UI scale, high contrast, larger handles and tutorials. Not while a text field has focus. |
 | F5 | Solve (Edit tab) -- disabled while a solve is already running, so F5 cannot start a second one on top of it |
 | F1 | Help for this screen -- opens the manual at the page for what is on screen (the open inspector tab in the Edit tab, Live Render, the Cutting Instructions tab). Works while a text field has focus. |
@@ -47,11 +48,22 @@ between the `<!-- SHORTCUTS_GLOBAL -->`, `<!-- SHORTCUTS_TIER_LIST -->`,
 **Tab switching needs Ctrl** (or Cmd on macOS) held down — a bare `1`, `2`,
 or `3` does nothing at the window level *except* the case described next.
 
-## Plain 1 / 2 / 3 / 4 — Solid/Diagram viewport view modes
+## Ctrl+Alt+1 / 2 / 3 — The Parameters Dock
+
+Ctrl+Alt+1, Ctrl+Alt+2 and Ctrl+Alt+3 open the Parameters dock on its **Stone**,
+**Lighting & Environment** and **Render & Output** tab (Chapter 2). They work in the
+Live Render view and in the Edit view; they bring the 3D Spectral Preview tab forward
+if another tab is showing. Pressing the shortcut of the tab that is already open leaves
+it open (use the toolbar button or the View menu's **Fold the Parameters Panel Away** to fold
+it). On a keyboard where AltGr+digit types the characters ¹ ² ³, those work as well.
+These are separate from Ctrl+1/2/3 above (the top-level tabs): the extra Alt picks the
+dock. When the panel floats over the picture (a narrow window), Esc folds it first.
+
+## Plain 1 / 2 / 3 / 4 — Solid/Diagram Viewport View Modes
 
 While the Edit sub-tab's own Solid viewport is on screen (3D Spectral Preview
 tab, Edit sub-tab), the unmodified digit keys **1**, **2**, **3**, and **4** switch
-that viewport's own view mode — Solid, Path-traced, Both, and Diagram
+that viewport's own view mode — Solid, Path-Traced, Both, and Diagram
 respectively (Chapter 13). This is completely separate from Ctrl+1/2/3's
 top-level tab switching above: same digits, different modifier, different
 target, and only active while that particular viewport is the one on
@@ -78,7 +90,7 @@ design — a mouse click still works exactly as before and is not required.
 ## The tier list
 
 The Edit tab's tier list is keyboard-navigable once it has focus (click
-into it first) — see Chapter 4, "Keyboard navigation in the tier list,"
+into it first) — see Chapter 4, "Keyboard Navigation in the Tier List,"
 for the full walkthrough:
 
 <!-- SHORTCUTS_TIER_LIST:BEGIN -->
@@ -148,7 +160,7 @@ held together with Ctrl, Alt or the Windows key does nothing there:
 | Left / Right | Go to the previous/next cutting step |
 | Page Up / Page Down | Go to the previous/next cutting step |
 | Space / D | Mark the step done and go on to the next one (a step that is already done is just passed) |
-| Esc | Leave cutting mode (while the Reset progress question is showing, Esc cancels the question instead) |
+| Esc | Leave cutting mode (while the Reset Progress question is showing, Esc cancels the question instead) |
 <!-- SHORTCUTS_CUTTING_MODE:END -->
 
 ## Elsewhere
@@ -165,11 +177,11 @@ The 3D viewport's camera and light controls (Chapter 2) are mouse
 gestures — left-drag to orbit, right-drag or Shift+left-drag to move the
 light, scroll to zoom — not keyboard shortcuts. The Edit tab's Solid
 viewport (Chapter 13) shares that same orbit/zoom camera with the Live
-Render tab in its Solid/Path-traced/Both modes; its Diagram mode instead
+Render tab in its Solid/Path-Traced/Both modes; its Diagram mode instead
 drags to pan and scrolls to zoom its own image, with a Reset View button
 to snap both back.
 
-On a selected facet in the Solid viewport's Solid, Path-traced and Both
+On a selected facet in the Solid viewport's Solid, Path-Traced and Both
 modes, the angle, depth and index handles are dragged with the left mouse
 button (Chapter 13). While a handle is being dragged, **Shift** switches the
 angle and depth snapping to its fine step, and **Escape** cancels the drag
@@ -177,8 +189,8 @@ and restores the design; with nothing being dragged, Escape clears the
 selection as usual.
 
 The Solid viewport's own keys, including the Slice tool's S, F, Enter and Esc,
-are in "The Solid viewport" table above.
+are in "The Solid Viewport" table above.
 
-## Next steps
+## Next Steps
 
 Appendix C tables every built-in render material's optical properties.

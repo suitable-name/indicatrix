@@ -6,7 +6,7 @@ import { RoughPill } from "fields.slint";
 // One design group row inside a result card: color swatch, thumbnail, title with
 // its count, a short status chip, the Exclude pill, and a label/value metric list.
 // The design name is its own link to the design in the library; a click anywhere
-// else on the row selects the group. The Exclude pill asks Rust to leave the design
+// else on the row selects the group. Metric values stay on one line (elided). The Exclude pill asks Rust to leave the design
 // out of (or take it back into) the planner's candidates; the group's `excluded`
 // flag is Rust's display copy of that mark. The link to all the designs of the
 // result is on the card.
@@ -15,7 +15,10 @@ export component DesignGroupRow inherits Rectangle {
     in property <bool> is_selected;
     in property <bool> show_thumbnails: true;
     callback clicked();
-    // "Use colour" (only in a `zoning` build, with a stored rough colour): adopt the colour of
+    // "Open in Editor": open the first stone of this design in the editor, with the piece of
+    // rough it comes from as the design's preform, at the stone's real size.
+    callback open_in_editor();
+    // "Use Color" (only with a stored rough colour): adopt the colour of
     // the first stone of this design as a material.
     callback adopt();
 
@@ -117,7 +120,7 @@ export component DesignGroupRow inherits Rectangle {
                 name_focus := FocusScope {
                     enabled: root.link_ok;
                     accessible-role: AccessibleRole.button;
-                    accessible-label: "Show " + root.group.name + " in the library";
+                    accessible-label: "Show " + root.group.name + " in the Library";
                     accessible-description: "Select this design in the library list.";
                     accessible-action-default => { RoughPlanModel.select_design(root.group.entry_id); }
                     key-pressed(event) => {
@@ -184,16 +187,31 @@ export component DesignGroupRow inherits Rectangle {
                 }
             }
 
-            // Adopt the rough's colour for this design (`zoning` feature, plan with a stored colour).
-            if Zoning.enabled && Zoning.colour_available: VerticalLayout {
+            // Open the first stone of this design in the editor, with the piece of rough it
+            // comes from as the preform. Rust loads the design the way Load Selected does.
+            VerticalLayout {
                 alignment: center;
-                RoughPill {
-                    text: "Use colour";
+                rough-pill-group := RoughPill {
+                    text: "Open in Editor";
                     hint: !root.link_ok ? "Switch to the local library first: this needs the design in the library."
                         : (RoughPlanModel.running ? "Not while a plan is running."
-                        : "Make a material from the colour this stone has in the rough, select it in the editor and set the stone size to the real size of this stone.");
+                        : "Open this design in the editor with the piece of rough this stone comes from as its preform, at the stone's real size.");
                     enabled: root.link_ok && !RoughPlanModel.running;
-                    accessible-label: "Use the colour of " + root.group.name;
+                    accessible-label: "Open " + root.group.name + " in the editor";
+                    clicked => { root.open_in_editor(); }
+                }
+            }
+
+            // Adopt the rough's colour for this design (plan with a stored colour).
+            if Zoning.colour_available: VerticalLayout {
+                alignment: center;
+                rough-pill-group-2 := RoughPill {
+                    text: "Use Color";
+                    hint: !root.link_ok ? "Switch to the local library first: this needs the design in the library."
+                        : (RoughPlanModel.running ? "Not while a plan is running."
+                        : "Make a material from the color this stone has in the rough, select it in the editor and set the stone size to the real size of this stone.");
+                    enabled: root.link_ok && !RoughPlanModel.running;
+                    accessible-label: "Use the Color of " + root.group.name;
                     clicked => { root.adopt(); }
                 }
             }
@@ -215,7 +233,7 @@ export component DesignGroupRow inherits Rectangle {
             overflow: elide;
         }
 
-        // Metrics: two columns, labels left, values right-aligned and wrapping
+        // Metrics: two columns, labels left, values right-aligned
         if root.group.metrics.length > 0: VerticalLayout {
             spacing: 2px;
 
@@ -236,7 +254,10 @@ export component DesignGroupRow inherits Rectangle {
                     color: Theme.text-secondary;
                     horizontal-alignment: right;
                     vertical-alignment: top;
-                    wrap: word-wrap;
+                    // One line, elided: a wrapping Text reports its height for the
+                    // unwrapped width, so the card (sized from this row) came out shorter
+                    // than the row and the row spilled over the next card.
+                    overflow: elide;
                 }
             }
         }

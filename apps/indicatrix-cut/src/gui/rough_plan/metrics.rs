@@ -128,6 +128,11 @@ pub fn format_saw_work(
 #[must_use]
 pub fn format_model_readout(volume_mm3: f64, specific_gravity: f64, material_name: &str) -> String {
     let ct = carat_weight(volume_mm3, specific_gravity);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a model volume is non-negative and far below usize::MAX; `as` saturates anyway"
+    )]
     let vol_int = volume_mm3.round() as usize;
     let formatted_vol = super::format::group_thousands(vol_int);
     format!("Model {formatted_vol} mm³ · {ct:.2} ct ({material_name}, SG {specific_gravity:.2})")

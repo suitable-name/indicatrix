@@ -1,9 +1,9 @@
-# indicatrix-cut — settings file
+# indicatrix-cut — Settings File
 
 The on-disk settings format: location, persistence guarantees, render quality,
 and the remote endpoint. For everything else see [the README](../README.md).
 
-## Settings file
+## Settings File
 
 Location, resolved by `settings::store::default_settings_path()`:
 
@@ -85,7 +85,7 @@ lighting_rig = "Gem Studio Ring Lights"
 camera_distance = 2.4
 ```
 
-### Target samples
+### Target Samples
 
 Render quality is one setting, `target_samples`: how many samples per pixel the
 progressive accumulation converges to before it stops. Default 256.
@@ -107,33 +107,35 @@ local and remote samples count toward it together. The separate
 `remote_render_samples` key older files carry is ignored on load and dropped on the
 next save.
 
-### Surface glare
+### Surface Glare
 
 `surface_glare` (`0.0..=1.0`, default `1.0`) scales the white mirror image of the
-light on a polished surface -- the cross-polarised look; the dialog's "Surface glare"
+light on a polished surface -- the cross-polarised look; the Lighting & Environment tab's "Surface Glare"
 slider drags it as a percent in steps of 5. `1.0` is the unscaled render, `0.0` keeps
 only light that entered the stone. It applies to the built-in lighting presets, never
 to an HDR map, and follows into the live view, remote workers and exports (it rides
 `SceneState::surface_glare`, protocol v18). The metrics, tilt curves and catalogue
 previews never read it. The key is optional (a file without it loads `1.0`) and a
 hand-edited value outside the range loads as the nearest valid one (NaN as `1.0`).
-It is not part of a saved lighting preset.
+It is part of every saved lighting (`LightingPreset::surface_glare`, serde default `1.0`
+for presets saved by an older build) and of a design's stored lighting.
 
-### Head shadow
+### Head Shadow
 
 `head_shadow_deg` (`0.0..=30.0`, default `16.0`) is the angular radius, in degrees, of
-the viewer's head shadow on the lit lighting presets (light tent and its variants, grading
-tray, daylight sky); `0.0` turns it off. The dialog's "Head shadow" slider drags it in whole
+the viewer's head shadow on the lit lighting rigs (light tent and its variants, grading
+tray, daylight sky); `0.0` turns it off. The Lighting & Environment tab's "Head Shadow" slider drags it in whole
 degrees. The Studio rigs and an HDR map ignore it. It follows into the
 live view, remote workers and exports (it rides `SceneState::head_shadow_deg`, protocol
 v22, and `RenderContext::head_shadow_deg` into the scene identity, so a change restarts
 accumulation). The key is optional (a file without it loads `16.0`) and a hand-edited
 value outside the range loads as the nearest valid one (NaN as `16.0`). The on-screen
 brilliance, windowing and extinction figures follow the slider under the lit presets;
-the Optimize and Retarget searches always score with the default 16 degrees. It is not
-part of a saved lighting preset or a design's stored lighting.
+the Optimize and Retarget searches always score with the default 16 degrees. It is part
+of every saved lighting and of a design's stored lighting (`head_shadow_deg`, serde
+default `16.0` for rows and presets saved before it existed).
 
-### Bounce cap
+### Bounce Cap
 
 `max_bounces` is independent of the sample count. Default 12; the dialog offers
 4 / 8 / 12 / 24 / 64 / 128, raised from an earlier 4/8/12/16/24 ladder on the
@@ -150,7 +152,42 @@ as written for rendering; only the highlighted pill snaps to the nearest rung.
 Render resolution is its own setting (`render_width`/`render_height`), not part
 of either control.
 
-### Interface preferences
+### Parameters Dock, Output Defaults and the Stone Migration
+
+Keys written by the Parameters dock (Stone / Lighting & Environment / Render & Output):
+
+| Key | Values | Default |
+|---|---|---|
+| `parameters_dock_open` | `true` / `false` | `false` (a file without the key loads folded) |
+| `parameters_dock_tab` | `0` Stone, `1` Lighting & Environment, `2` Render & Output | `0` |
+| `migrated_stone_effects` | `true` / `false` | `false` for a file without the key, `true` on a brand-new install |
+| `[settings.update_check]` | `enabled` (`true` / `false`; absent = not asked yet), `last_check_unix` (seconds), `skipped_version` (`"0.7.3"`) | not asked, never checked, none skipped |
+| `[settings.output.still]` | `size_preset`, `custom_width`, `custom_height`, `sample_exponent`, `bounces`, `color_space_index`, `compute`, `transfer` | the still export's defaults |
+| `[settings.output.tilt_video]` | `resolution_preset`, `custom_width`, `custom_height`, `sample_exponent`, `bounces`, `color_space_index`, `transfer`, `filename_template` | the tilt video's defaults |
+
+**Output defaults.** `[settings.output]` is what the Export and Tilt Video dialogs open
+with. Both tables and every field are optional (a file without them loads the defaults),
+and the values are limited to what their controls allow when read. Starting an export or
+a tilt video writes the values it used back, so the dialogs open with the last run. A
+`transfer` of nothing follows the remote endpoint's `export_transfer`. The tilt video's
+compute pill stays in `tilt_video_compute_target`.
+
+**Stone effects and width (migration).** The stone's width and its four material effects
+(inclusion haze, crystal axis, frosted girdle, edge rounding) are stored in each design
+(`girdle_diameter_mm` and the optional `[render_effects]` table of the `.isdd`
+file). The old app-level keys `stone_width_mm`, `inclusion_sigma_s`,
+`c_axis_override_enabled`, `c_axis_tilt_deg`, `c_axis_azimuth_deg`, `girdle_frosted` and
+`edge_rounding_radius` stay in the file but are no longer read for rendering. If any of
+them is off its default and `migrated_stone_effects` is `false`, they are applied once,
+as one undo step, to the first design opened that has neither a `[render_effects]` table
+nor a girdle diameter; then `migrated_stone_effects` becomes `true` and they are ignored.
+
+**Saved lighting.** `[[presets]]` entries now also carry `surface_glare`, `backdrop` and
+`head_shadow_deg` (serde defaults `1.0`, `"Grey"`, `16.0` for presets saved by an older
+build), so applying a saved lighting sets the whole look. A newly saved lighting is
+named "<rig> - <date>" by default.
+
+### Interface Preferences
 
 Edit > Preferences... (Ctrl+Comma) writes these top-level keys; the
 [manual chapter](manual/17-preferences-and-accessibility.md) explains what each one does.
@@ -184,7 +221,7 @@ not offered (a hand-edited `133`, say) loads as `0`, Automatic.
 Slice tool itself is on (`slice_mode`) is deliberately not saved: it changes what a
 left-drag does, so every session starts with it off.
 
-### Remote endpoint (`RemoteEndpoint`)
+### Remote Endpoint (`RemoteEndpoint`)
 
 The viewer has exactly one remote: `remote: Option<RemoteEndpoint>`, an
 `indicatrix-worker serve` coordinator (rendering through joined workers, its own
@@ -217,11 +254,13 @@ width/height is **not** part of the endpoint — it's session-wide, since the re
 compose correctly.
 
 `export_transfer` is the default of the export dialog's and the tilt video's
-"Transfer" choice; `live_transfer` is the settings dialog's "Live Transfer" -- see
+"Transfer" choice; `live_transfer` is the Render & Output tab's Live Transfer (shown read-only there and
+edited in the Remote dialog, where the old "Live stream" and "Live Transfer" are one
+three-way control: progressive, full data when finished, final picture) -- see
 [remote-rendering.md](remote-rendering.md) for what "final picture" does.
 
 `contribute_to_final_picture` (default `true`, top-level, not on `RemoteEndpoint`)
-is the settings dialog's "Final-picture exports: this machine renders a share too"
+is the Render & Output tab's "Final-Picture Exports: This Machine Renders a Share Too"
 switch (v16): with a remote configured and `export_transfer`/the tilt video's own
 "Transfer" pill at `FinalPicture`, the viewer's own idle CPU/GPU traces a share of
 the sample budget alongside the remote and uploads it as one `CONTRIBUTION`, which
@@ -243,23 +282,23 @@ editing it. The coordinator's own choice for what it sends the viewer is
 
 `import_preview_choice` (default `"ask"`, top-level; `"full"`, `"solid"` or `"skip"`) is
 the remembered answer to the question asked after an import about generating catalogue
-previews, stored by the question's "Remember my choice" box. Set it back to `"ask"` to be
+previews, stored by the question's "Remember My Choice" box. Set it back to `"ask"` to be
 asked again.
 
 `remote_batch_lanes` (default `4`, top-level, limited to 1..=32 on load and on set) is
-the remote worker dialog's "Remote lanes for batches" spin box: how many pictures
+the remote worker dialog's "Remote Lanes for Batches" spin box: how many pictures
 (preview batch) or designs (tilt batch) a catalogue batch keeps in flight on the remote
 at once, one remote dispatcher per lane. Read when a batch starts. Against a
 coordinator, keep it at or below the coordinator's `--jobs-per-viewer` (default 8):
 requests beyond that wait in its per-viewer queue without progress, and one that waits
 there longer than 60 s is given up by the desktop (rendered locally under
-"Compute: Both", counted as failed under "Remote only").
+"Compute: Both", counted as failed under "Remote Only").
 
 `remote_batch_lanes_user_set` (default `false`, set to `true` by the spin box) records
 that the user chose a lane count. Until then a preview batch against a remote GPU worker
 uses 2 dispatchers instead of `remote_batch_lanes` (a CPU worker or coordinator keeps it):
 the batched requests below keep the GPU busy with few connections. `remote_preview_batch_size`
-(default `10`, limited to 1..=32) is the "Pictures per preview request" spin box: how many
+(default `10`, limited to 1..=32) is the "Pictures per Preview Request" spin box: how many
 pictures one protocol v24 `BatchRenderRequest` carries; each dispatcher keeps two such
 requests in flight on one persistent connection. A coordinator takes no batches, so
 previews against one are sent a picture at a time.

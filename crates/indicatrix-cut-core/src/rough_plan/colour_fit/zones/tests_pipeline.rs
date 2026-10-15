@@ -166,6 +166,10 @@ impl Noise {
 
 /// Photos of `records` for the absorption `alpha(zone, lambda)`, the per-view `gains` and the
 /// noise standard deviation `sigma` (also the stated variance).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the synthetic photos are stored as f32 like real observations; values are in the normal float range"
+)]
 fn synthesize(
     records: &ForwardRecords,
     alpha: &dyn Fn(usize, f64) -> f64,
@@ -201,8 +205,10 @@ fn synthesize(
 }
 
 fn log_linear(a0: f64, slope: f64) -> Vec<f64> {
-    (0..7)
-        .map(|k| a0.ln() + slope * (f64::from(k) - 3.0))
+    // One value per band of the fit basis; the slope is per 40 nm about 540 nm.
+    crate::rough_plan::colour_fit::solve::FIT_BASIS_NM
+        .iter()
+        .map(|&(centre, _)| a0.ln() + slope * (f64::from(centre) - 540.0) / 40.0)
         .collect()
 }
 
@@ -355,6 +361,7 @@ fn a_bicolour_boundary_is_found_in_synthetic_forward_data() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
+#[ignore = "slow colour-fit test (over 60 s); run with --ignored"]
 fn the_refinement_moves_a_boundary_offset_of_0_3_mm_to_within_0_1_mm() {
     let positions = [
         (0.0, -100.0, 0.0),

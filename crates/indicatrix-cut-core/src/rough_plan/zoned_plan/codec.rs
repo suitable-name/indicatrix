@@ -33,15 +33,15 @@ pub enum CodecError {
 impl fmt::Display for CodecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Json(message) => write!(f, "the stored colour is not readable: {message}"),
-            Self::Invalid(message) => write!(f, "the stored colour zones are invalid: {message}"),
+            Self::Json(message) => write!(f, "the stored color is not readable: {message}"),
+            Self::Invalid(message) => write!(f, "the stored color zones are invalid: {message}"),
             Self::UnsupportedVersion(version) => write!(
                 f,
-                "the stored colour was written by a newer version (format {version}); \
+                "the stored color was written by a newer version (format {version}); \
                  this version reads format {ZONING_FORMAT_VERSION}"
             ),
             Self::TooLarge(bytes) => {
-                write!(f, "the stored colour text is too large ({bytes} bytes)")
+                write!(f, "the stored color text is too large ({bytes} bytes)")
             }
         }
     }

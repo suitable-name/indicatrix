@@ -1,8 +1,7 @@
 //! The inverse solver of the colour fit (plan 2026-10-09, section 6).
 //!
 //! From the stored path records of lane F1 and the rig photos of lane P1 to the absorption
-//! spectrum of every zone, with its uncertainty, a validation and a model comparison. Only built
-//! with the `zoning` feature.
+//! spectrum of every zone, with its uncertainty, a validation and a model comparison.
 //!
 //! # Entry points
 //!
@@ -27,8 +26,9 @@
 //!
 //! * [`ChromophoreModel`] (A): log-amounts of the host's catalogue chromophores, through the
 //!   catalogue resolver.
-//! * [`SmoothBasisModel`] (B): seven log-amplitudes on the body-colour basis, with a
-//!   second-difference prior.
+//! * [`SmoothBasisModel`] (B): fourteen log-amplitudes on [`FIT_BASIS_NM`], with a
+//!   Gaussian-process smoothness prior on the amplitudes and an exponential magnitude prior (see
+//!   the notes of `models`). Its spectrum is exported to seven GPU bands by a refit.
 //!
 //! The default choice follows the plan: A when a host is set and A is not significantly worse
 //! than B (likelihood ratio test at 1 %), else B; [`FitConfig::preferred_model`] overrides.
@@ -46,18 +46,29 @@
 //!
 //! # Honest noise (round 3, D3 and D4)
 //!
-//! After the fit the Birge ratio `R = chi2 / (n - p_eff)` is computed; above
-//! [`BIRGE_THRESHOLD`] the covariance (and with it the radii) is inflated by `R` and the
-//! metamer search accepts `Delta chi2 <= R`. Metamer candidates are verified with the full
-//! nonlinear data chi-square and shrunk by bisection until they pass.
+//! After the fit the Birge ratio `R = chi2_robust / (erf(k / sqrt 2) (n - p_eff))` is computed
+//! from the Huber-weighted chi-square (round 5, ZC-18: a few down-weighted outliers must not
+//! widen the covariance; `erf(k / sqrt 2)` is the expectation of the weighted square for honest
+//! Gaussian noise); above [`BIRGE_THRESHOLD`] the covariance (and with it the radii) is
+//! inflated by `R` and the metamer search accepts `Delta chi2 <= R`.
+//!
+//! # The metamer spread (round 5, ZC-4)
+//!
+//! The reported spread is a profile-likelihood statement: for every zone, size and illuminant
+//! and each of `+-L*, +-a*, +-b*` (then once for the CIEDE2000 distance from the fit) the colour
+//! is extremised over `{x : chi2_data(x) + 2 gain_prior(x) <= chi2(x_data) + Delta}`, where
+//! `x_data` is the optimum without the model priors. See `extremes`. The old ellipsoid figure is
+//! kept as `ZonePrediction::metamer_spread_unverified`.
 //!
 //! # Cost and determinism
 //!
-//! One normal-equation pass visits every valid pixel serially (`for_each_pixel_jacobian`): about
-//! `pixels * 3 * (np^2 / 2 + np)` multiply-adds plus the record sums, a second or so for 480 000
-//! pixels with `np` of about 10. The independent starts and the held-out refits run in parallel;
-//! every task is a complete computation and the results are gathered in task order, so the output
-//! is bitwise the same for any `FitConfig::threads` (and for any thread count of the tracer).
+//! One normal-equation pass visits every valid pixel (`fold_pixel_jacobian`): about
+//! `pixels * 3 * (np^2 / 2 + np)` multiply-adds plus the record sums, a second or so serially for
+//! 480 000 pixels with `np` of about 10. The pass is cut into fixed chunks of pixels, each summed
+//! serially and combined in chunk order, on the cores the running starts leave over
+//! (`par::inner_threads`). The independent starts and the held-out refits run in parallel; every
+//! task is a complete computation and the results are gathered in task order, so the output is
+//! bitwise the same for any `FitConfig::threads` (and for any thread count of the tracer).
 //!
 //! # Not done here
 //!
@@ -75,6 +86,7 @@
 )]
 
 mod diagnostics;
+mod extremes;
 mod fitter;
 mod linalg;
 mod lm;
@@ -95,7 +107,8 @@ use indicatrix::color::body_color::Illuminant;
 pub use diagnostics::{ObjectiveAt, SUGGEST_MORAN, SUGGEST_RMS, objective_at};
 pub use fitter::fit_records;
 pub use models::{
-    CHROMOPHORE_FD_STEP, CHROMOPHORE_FLOOR_FRACTION, ChromophoreModel, SmoothBasisModel,
+    CHROMOPHORE_FD_STEP, CHROMOPHORE_FLOOR_FRACTION, ChromophoreModel, FIT_BASIS_NM,
+    SmoothBasisModel,
 };
 pub use outer::fit_colour;
 pub use output::{
@@ -293,15 +306,29 @@ pub struct FitConfig {
     /// whenever the path length hardly varies across the pixels (a cube), so it must be pinned
     /// by the calibration knowledge that the white-frame normalisation leaves it near 1.
     pub gain_mean_sigma: f64,
-    /// Pin the common mode of the log-gains at 0 (sigma [`GAIN_FIXED_SIGMA`]), for rigs with locked
-    /// exposure; default off.
+    /// Pin the common mode of the log-gains at 0 (sigma [`GAIN_FIXED_SIGMA`]); default ON
+    /// (round 5, ZC-5). P1 divides every photo by its own white frame, so the common exposure
+    /// factor is 1 by construction, and on a cube (every direct path 10 mm) a free common gain
+    /// is exactly degenerate with a flat absorption: its prior alone would leave 0.8 to 1.9 L*
+    /// of uncertainty at 7 to 12 mm. Set it to `false` only for rigs without white frames.
     pub fix_common_gain: bool,
     /// The Huber threshold in sigma, default 2.
     pub huber_k: f64,
-    /// Sigma of the second difference of the log-amplitudes of model B, default 0.5.
+    /// Amplitude scale `sigma_a` of the Gaussian-process smoothness prior of model B, per mm,
+    /// default 0.3. It is the prior standard deviation of an amplitude, and the body-colour
+    /// amplitudes of gems are 0.01 to 0.3 per mm; the former 1 per mm sat 5 to 10 sigma wider
+    /// than the physics and bounded nothing, leaving the 11 null directions of the three camera
+    /// channels per zone to noise (round 6, R2). Costs scale as `1 / sigma_a^2`: a saturated
+    /// truth 1.7, an isolated 0.2 per mm band 8.9. See the notes of `models`.
     pub smoothness_sigma: f64,
-    /// Sigma of the weak magnitude prior of model B around 0.1 per mm, default 3.
-    pub magnitude_sigma: f64,
+    /// Correlation length `ell` of the smoothness prior, nm, default 60 (1.5 band spacings of
+    /// the 40 nm body-colour basis; crystal-field bands are 25 to 50 nm wide).
+    pub smoothness_length_nm: f64,
+    /// Scale `b` of the exponential magnitude prior of model B, per mm, default 0.05: a band of
+    /// amplitude `a` costs `a / b`, so zero costs nothing, 0.2 per mm costs 4.0, and a 0.38 per
+    /// mm band the camera cannot see costs 7.6, far above the ~0.5 a free direction buys from
+    /// noise (round 6, R2).
+    pub magnitude_scale: f64,
     /// Weight of the reweighted L1 prior on the relative amounts of model A, default 0.05
     /// (0 turns it off).
     pub l1_weight: f64,
@@ -348,10 +375,11 @@ impl Default for FitConfig {
             preferred_model: None,
             gain_sigma: GAIN_DEVIATION_SIGMA,
             gain_mean_sigma: GAIN_MEAN_SIGMA,
-            fix_common_gain: false,
+            fix_common_gain: true,
             huber_k: 2.0,
-            smoothness_sigma: 0.5,
-            magnitude_sigma: 3.0,
+            smoothness_sigma: 0.3,
+            smoothness_length_nm: 60.0,
+            magnitude_scale: 0.05,
             l1_weight: 0.05,
             l1_rounds: 3,
             zone_pull_sigma: None,
@@ -380,12 +408,18 @@ impl FitConfig {
             && positive(self.gain_mean_sigma)
             && positive(self.huber_k)
             && positive(self.smoothness_sigma)
-            && positive(self.magnitude_sigma)
+            && positive(self.smoothness_length_nm)
+            && positive(self.magnitude_scale)
             && positive(self.variance_floor))
         {
             return Err(bad(
-                "gain_sigma, gain_mean_sigma, huber_k, smoothness_sigma, magnitude_sigma and variance_floor \
-                 must be positive",
+                "gain_sigma, gain_mean_sigma, huber_k, smoothness_sigma, smoothness_length_nm, \
+                 magnitude_scale and variance_floor must be positive",
+            ));
+        }
+        if models::smoothness_factor(self.smoothness_sigma, self.smoothness_length_nm).is_none() {
+            return Err(bad(
+                "smoothness_length_nm is so long that the smoothness prior is singular",
             ));
         }
         if !(self.l1_weight.is_finite() && self.l1_weight >= 0.0) {

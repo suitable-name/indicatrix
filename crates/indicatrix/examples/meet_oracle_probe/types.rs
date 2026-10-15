@@ -58,6 +58,10 @@ pub struct Cand {
 
 /// Per-tier outcome of the oracle analysis.
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a probe record of independent per-rule hit flags, printed as columns"
+)]
 pub struct TierStats {
     /// E3b relative error, instance 0.
     pub err0: f64,
@@ -102,6 +106,10 @@ pub struct TierStats {
 
 /// Everything one design's analysis contributes to the aggregate report.
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a probe record of independent per-design outcome flags, printed as columns"
+)]
 pub struct DesignResult {
     /// The schedule parsed successfully.
     pub parsed: bool,

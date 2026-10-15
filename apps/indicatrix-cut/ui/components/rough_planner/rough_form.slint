@@ -69,7 +69,7 @@ export component RoughForm inherits VerticalLayout {
         spacing: 6px;
         alignment: start;
         Text {
-            text: "Mesh file units:";
+            text: "Mesh File Units:";
             font-size: 10px;
             color: Theme.text-muted;
             vertical-alignment: center;
@@ -81,7 +81,7 @@ export component RoughForm inherits VerticalLayout {
                 model: ["mm", "cm", "m", "inch", "µm"];
                 current-index <=> RoughPlanModel.mesh_unit_index;
                 enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
-                accessible-label: "Unit of the numbers in a mesh file";
+                accessible-label: "Unit of the Numbers in a Mesh File";
             }
         }
     }
@@ -113,7 +113,7 @@ export component RoughForm inherits VerticalLayout {
             spacing: 6px;
             alignment: start;
             RoughPill {
-                text: "Add inclusion...";
+                text: "Add Inclusion...";
                 hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
                     : (RoughPlanModel.mesh_busy ? "Wait for the mesh to finish loading."
                     : "Pick a mesh file (OBJ, STL or PLY) of a closed shape inside the rough, such as a crack or a crystal of another mineral. Stones keep clear of it, and the weight and the yield count it as material. The file uses the same coordinates and unit as the rough's file.");
@@ -133,7 +133,7 @@ export component RoughForm inherits VerticalLayout {
                     min-width: 0px;
                     text <=> RoughPlanModel.inclusion_margin;
                     enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
-                    accessible-label: "Margin of a new inclusion in millimetres";
+                    accessible-label: "Margin of a New Inclusion in Millimetres";
                 }
             }
         }
@@ -141,7 +141,7 @@ export component RoughForm inherits VerticalLayout {
             spacing: 6px;
             alignment: start;
             RoughPill {
-                text: "Locate inclusion from photos...";
+                text: "Locate Inclusion from Photos...";
                 hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
                     : (RoughPlanModel.mesh_busy ? "Wait for the mesh to finish loading."
                     : (!RoughPlanModel.locate_possible ? "This rough has no mesh to trace photos through: import a closed mesh of the rough first."
@@ -149,10 +149,10 @@ export component RoughForm inherits VerticalLayout {
                 enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy && RoughPlanModel.locate_possible;
                 clicked => { RoughPlanModel.locate_inclusion(); }
             }
-            if Zoning.enabled: RoughPill {
-                text: "Rough colour...";
+            RoughPill {
+                text: "Rough Color...";
                 hint: !RoughPlanModel.locate_possible ? "Needs a mesh rough (import a closed mesh of the rough) and no plan running."
-                    : "Work out the colour of the stone, and of colour zones inside it, from photos of the rough on a backlit rig.";
+                    : "Work out the color of the stone, and of color zones inside it, from photos of the rough on a backlit rig.";
                 enabled: RoughPlanModel.locate_possible && !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
                 clicked => { Zoning.open_rough_colour(); }
             }
@@ -272,7 +272,7 @@ export component RoughForm inherits VerticalLayout {
                 model: RoughPlanModel.materials;
                 current-index <=> RoughPlanModel.material_index;
                 enabled: !RoughPlanModel.running && RoughPlanModel.materials.length > 0;
-                accessible-label: "Material of the rough";
+                accessible-label: "Material of the Rough";
                 selected(value) => { RoughPlanModel.base_field_committed(); }
             }
         }
@@ -300,7 +300,7 @@ export component RoughForm inherits VerticalLayout {
         VerticalLayout {
             alignment: end;
             RoughPill {
-                text: "Fit to weight";
+                text: "Fit to Weight";
                 hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
                     : (RoughPlanModel.mesh_busy ? "Wait for the mesh to finish loading."
                     : (RoughPlanModel.weight_check_level == 0 ? "Type a weighed carat first, so there is a weight to scale the model to."

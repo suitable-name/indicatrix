@@ -12,7 +12,7 @@ use indicatrix_editor::{EditorSession, guide::solving_events::SOLVE_REQUESTED};
 use indicatrix_vault::db::sqlite::Database;
 use slint::ComponentHandle;
 
-use super::{misc::bump_form_reset_pulse, new_design::do_new_design_create};
+use super::{misc::bump_form_reset_pulse, new_design::do_new_design_create, planned_stone};
 use crate::{
     EditorModel, LibraryModel, MainWindow,
     bridge::{library::source::LibrarySource, render_thread::RenderContext},
@@ -272,6 +272,19 @@ fn apply_loaded_design(
         ui.global::<EditorModel>()
             .set_material_suggestion_text("".into());
     }
+    // A stone the Rough Planner asked to open (`planned_stone`): the design it was computed for
+    // is on the bench now, so its planned piece, real width and colour are applied as one
+    // undoable edit. Any other load drops the request. The state borrow is long released.
+    if let Some(request) = planned_stone::take_for(source_entry_id) {
+        planned_stone::apply_pending(
+            ui,
+            state,
+            render_ctx,
+            preview_state,
+            solid_last_solved,
+            &request,
+        );
+    }
 }
 
 /// "Load Selected": replaces the editor state with the currently selected catalogue
@@ -323,6 +336,8 @@ pub(in crate::gui::editor) fn setup_load_selected_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
+            // A load the person starts outlives no stone the planner left behind.
+            planned_stone::load_selected_invoked();
             let entry_id = ui.global::<LibraryModel>().get_selected_entry_id();
             if entry_id < 0 {
                 show_toast(&ui, "No diagram selected to load.", "error");
@@ -470,34 +485,88 @@ fn do_load_selected(
         return;
     }
 
-    // Local: read the full record straight from the DB.
-    let full = {
-        let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        db.get_diagram_full(i64::from(entry_id))
-    };
-    let Ok(Some(full)) = full else {
-        show_toast(ui, "Diagram detail not found.", "error");
-        return;
-    };
-    match loading::design_from_full_record(&full) {
-        Ok(loaded) => {
-            let printed_proportions = loading::external_proportions_from_full_record(&full);
-            apply_loaded_design(
-                ui,
-                state,
-                render_ctx,
-                preview_state,
-                solid_last_solved,
-                LoadedDesignOutcome {
-                    loaded,
-                    printed_proportions,
-                    label: &full.title,
-                    source_entry_id: Some(full.entry_id),
-                    catalogue_url: Some(&full.url),
-                },
-            );
-        }
-        Err(e) => show_toast(ui, &e, "error"),
+    load_local_entry(
+        ui,
+        state,
+        &RenderPreviewHandles {
+            render_ctx,
+            preview_state,
+            solid_last_solved,
+        },
+        db,
+        entry_id,
+    );
+}
+
+/// [`do_load_selected`]'s local branch: the full record (every angle row and file BLOB)
+/// and its parse are read on a worker over a read-only connection, like the remote
+/// branch (perf review UI-5); only the apply -- gated by the solve policy inside
+/// `apply_loaded_design` -- runs on the UI thread. The edit-since check is the remote
+/// branch's, for the same reason: the load is now asynchronous.
+fn load_local_entry(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    handles: &RenderPreviewHandles<'_>,
+    db: &Arc<Mutex<Database>>,
+    entry_id: i32,
+) {
+    let render_ctx = Arc::clone(handles.render_ctx);
+    let preview_state = Arc::clone(handles.preview_state);
+    let solid_last_solved = Arc::clone(handles.solid_last_solved);
+    let requested_generation = state.borrow().current_generation();
+    let db = Arc::clone(db);
+    let ui_weak = ui.as_weak();
+    let spawned = std::thread::Builder::new()
+        .name("load-selected-read".to_owned())
+        .spawn(move || {
+            let read = Database::with_read_connection(crate::gui::DB_PATH, &db, |database| {
+                database.get_diagram_full(i64::from(entry_id))
+            });
+            let parsed = match read {
+                Ok(Some(full)) => loading::design_from_full_record(&full).map(|loaded| {
+                    let printed = loading::external_proportions_from_full_record(&full);
+                    (full, loaded, printed)
+                }),
+                _ => Err("Diagram detail not found.".to_owned()),
+            };
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                let (full, loaded, printed_proportions) = match parsed {
+                    Ok(parts) => parts,
+                    Err(e) => {
+                        // No design lands, so a stone the planner asked for has nowhere to go.
+                        planned_stone::clear();
+                        return show_toast(&ui, &e, "error");
+                    }
+                };
+                REMOTE_LOAD_TARGET.with(|cell| {
+                    let target = cell.borrow().clone();
+                    let Some(state) = target else {
+                        return;
+                    };
+                    if edited_since(&state, requested_generation) {
+                        ask_again_before_load(&ui, &state);
+                        return;
+                    }
+                    apply_loaded_design(
+                        &ui,
+                        &state,
+                        &render_ctx,
+                        &preview_state,
+                        &solid_last_solved,
+                        LoadedDesignOutcome {
+                            loaded,
+                            printed_proportions,
+                            label: &full.title,
+                            source_entry_id: Some(full.entry_id),
+                            catalogue_url: Some(&full.url),
+                        },
+                    );
+                });
+            });
+        });
+    if spawned.is_err() {
+        planned_stone::clear();
+        show_toast(ui, "Could not start loading the design.", "error");
     }
 }
 
@@ -682,6 +751,8 @@ fn setup_unsaved_guard_dispatch(
     ui.global::<EditorModel>()
         .on_unsaved_dialog_cancel(move || {
             state_cancel.borrow_mut().pending_unsaved_action = None;
+            // A stone the Rough Planner asked to open waited on this answer: it is no.
+            planned_stone::clear();
         });
 }
 

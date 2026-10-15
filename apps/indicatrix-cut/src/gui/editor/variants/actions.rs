@@ -39,7 +39,7 @@ const STEP_CHANGED_TEXT: &str =
     "The history changed since you chose this step. Choose the step again.";
 /// Said when the design was opened again, or another one opened, while the save form was up.
 const FORM_DESIGN_CHANGED_TEXT: &str =
-    "The design changed since this form was opened. Choose Save as a variant again.";
+    "The design changed since this form was opened. Choose Save as a Variant again.";
 pub(super) const VARIANT_GONE_TEXT: &str = "That variant is no longer in the list.";
 
 // --- small helpers -------------------------------------------------------------------------

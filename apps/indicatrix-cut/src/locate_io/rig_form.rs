@@ -283,7 +283,13 @@ pub fn layout_views(
 
 /// `value` as a count of pixels: a whole number of at least 1.
 fn whole_pixels(value: f64) -> Option<u32> {
-    (value >= 1.0 && value.fract() == 0.0 && value <= f64::from(u32::MAX)).then_some(value as u32)
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "value is checked to be a whole number in 1..=u32::MAX"
+    )]
+    let pixels = value as u32;
+    (value >= 1.0 && value.fract() == 0.0 && value <= f64::from(u32::MAX)).then_some(pixels)
 }
 
 /// The calibration cube from the window's fields: datasheet edge and tolerance in mm, the

@@ -66,8 +66,18 @@ impl Lcg {
         if bound == 0 {
             0
         } else {
-            (self.next_u64() % bound as u64) as usize
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the remainder is below `bound`, which is a usize"
+            )]
+            let picked = (self.next_u64() % bound as u64) as usize;
+            picked
         }
+    }
+
+    /// [`Self::index`] as a `u32` (the bound is small in every caller).
+    fn index_u32(&mut self, bound: usize) -> u32 {
+        u32::try_from(self.index(bound)).expect("a test index below a small bound fits u32")
     }
 
     /// A finite `f64` in `[lo, hi)`.
@@ -149,7 +159,7 @@ fn generated_tier(rng: &mut Lcg) -> ConstraintTier {
     ConstraintTier {
         angle_deg: rng.range_f64(-60.0, 60.0),
         name: format!("G{}", rng.index(99)),
-        indices: vec![f64::from(rng.index(16) as u32)],
+        indices: vec![f64::from(rng.index_u32(16))],
         constraint: MeetConstraint::ScaleReference(mast),
         imported_meet: None,
         original_notes: None,
@@ -394,11 +404,8 @@ fn set_indices_round_trips() {
         let mut rng = Lcg::new(seed);
         let design = round_brilliant_fixture();
         let index = rng.index(design.tiers.len());
-        let indices = vec![
-            f64::from(rng.index(16) as u32),
-            f64::from(rng.index(16) as u32),
-        ];
-        let detached = vec![f64::from(rng.index(16) as u32)];
+        let indices = vec![f64::from(rng.index_u32(16)), f64::from(rng.index_u32(16))];
+        let detached = vec![f64::from(rng.index_u32(16))];
         assert_round_trips(
             design,
             &Edit::SetIndices {
@@ -690,7 +697,7 @@ fn restore_indices_round_trips() {
         let mut rng = Lcg::new(seed);
         let design = round_brilliant_fixture();
         let index = rng.index(design.tiers.len());
-        let tiers = vec![(index, vec![f64::from(rng.index(16) as u32)], Vec::new())];
+        let tiers = vec![(index, vec![f64::from(rng.index_u32(16))], Vec::new())];
         assert_round_trips(design, &Edit::RestoreIndices { tiers }, "RestoreIndices");
     }
 }
@@ -808,9 +815,7 @@ fn generated_concave_tier(rng: &mut Lcg) -> ConcaveTier {
     ConcaveTier {
         name: format!("Groove {}", rng.index(99)),
         angle_deg: rng.range_f64(-60.0, -10.0),
-        indices: (0..count)
-            .map(|_| f64::from(rng.index(16) as u32))
-            .collect(),
+        indices: (0..count).map(|_| f64::from(rng.index_u32(16))).collect(),
         instructions: String::new(),
         tool: ConcaveTool::Cylinder,
         tool_azimuth_deg: rng.range_f64(0.0, 90.0),

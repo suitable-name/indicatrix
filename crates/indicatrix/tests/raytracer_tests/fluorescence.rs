@@ -127,7 +127,9 @@ fn empty_fluorescence_is_bit_identical_and_routes_as_before() {
         {
             let ray = camera.generate_ray(ix, iy, 12.0, 12.0, 0.5, 0.5);
             for s in 0..32u32 {
-                let seed = indicatrix::optics::raytracer::hash_u32(s ^ ((i as u32) << 8));
+                let seed = indicatrix::optics::raytracer::hash_u32(
+                    s ^ (u32::try_from(i).expect("a loop index fits in u32") << 8),
+                );
                 let hero = (indicatrix::optics::raytracer::hash_u32(seed) as f32) / 4_294_967_295.0;
                 let plain =
                     trace_spectral_ray(ray, &planes, &material, 12, environment, seed, hero, None);
@@ -265,6 +267,11 @@ fn furnace_emission_energy_matches_absorbed_energy_times_the_stokes_factor() {
             / f64::from(SAMPLES_PER_WAVELENGTH);
 
         // Independent of every table in the crate: the analytic bands, 0.1 nm steps.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "lambda is at least 300 nm, so the 0.1 nm step count is a small positive value"
+        )]
         let steps = ((lambda - 300.0) * 10.0) as usize;
         let inner: f64 = (0..steps)
             .map(|i| {

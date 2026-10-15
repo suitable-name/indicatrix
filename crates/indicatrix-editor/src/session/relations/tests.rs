@@ -562,7 +562,7 @@ fn a_linked_series_that_would_leave_the_range_refuses_the_edit_that_does_it() {
     session.nudge_angles(&[0], 1.0, ms(0)).unwrap_err();
     assert!(matches!(
         session.take_refusal(),
-        Some(SessionEditError::Relation(RelationError::OutOfRange { value, .. })) if value == 91.0
+        Some(SessionEditError::Relation(RelationError::OutOfRange { value, .. })) if (value - 91.0).abs() < 1e-9
     ));
     assert_eq!(angles(&session), vec![80.0, 85.0, 90.0]);
 }

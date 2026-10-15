@@ -1,0 +1,95 @@
+// A modal panel for the Library page: a bottom sheet on a compact window, a centered
+// card otherwise. A scrim covers the page; tapping it closes the panel. The children
+// are the body, which scrolls when it is taller than 85 % of the page.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell } from "../models.slint";
+import { IconButton } from "../shell/icon_button.slint";
+
+export component ModalSheet inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title;
+    callback closed();
+
+    visible: root.open;
+
+    property <bool> compact: Shell.window-class == 0;
+    property <length> head-h: 56px;
+
+    Rectangle {
+        background: Theme.scrim.with-alpha(0.32);
+
+        TouchArea {
+            clicked => {
+                root.closed();
+            }
+        }
+    }
+
+    panel := Rectangle {
+        width: root.compact ? root.width : min(root.width - 2 * Theme.space-xl, 480px);
+        height: min(root.height * 0.85, root.head-h + body.preferred-height + Theme.space-lg);
+        x: (root.width - self.width) / 2;
+        y: root.compact ? root.height - self.height : (root.height - self.height) / 2;
+        background: Theme.surface-container;
+        border-top-left-radius: Theme.radius-xl;
+        border-top-right-radius: Theme.radius-xl;
+        border-bottom-left-radius: root.compact ? 0px : Theme.radius-xl;
+        border-bottom-right-radius: root.compact ? 0px : Theme.radius-xl;
+        drop-shadow-color: Theme.shadow;
+        drop-shadow-blur: Theme.shadow-blur-3;
+        drop-shadow-offset-y: -Theme.shadow-offset-1;
+        clip: true;
+        accessible-role: AccessibleRole.groupbox;
+        accessible-label: root.title;
+
+        // Swallows taps so they do not reach the scrim.
+        TouchArea { }
+
+        HorizontalLayout {
+            y: 0px;
+            height: root.head-h;
+            padding-left: Theme.space-lg;
+            padding-right: Theme.space-xs;
+
+            Text {
+                text: root.title;
+                color: Theme.on-surface;
+                font-size: Theme.text-title;
+                font-weight: 500;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            IconButton {
+                icon: Icons.close;
+                label: "Close";
+                clicked => {
+                    root.closed();
+                }
+            }
+        }
+
+        flick := Flickable {
+            x: 0px;
+            y: root.head-h;
+            width: parent.width;
+            height: parent.height - root.head-h;
+            content-width: self.width;
+            content-height: body.preferred-height + Theme.space-lg;
+
+            body := VerticalLayout {
+                x: 0px;
+                y: 0px;
+                width: flick.width;
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                spacing: Theme.space-sm;
+                alignment: start;
+
+                @children
+            }
+        }
+    }
+}

@@ -22,7 +22,7 @@ pub fn other_tier_names_excluding(design: &Design, excluded_index: i32) -> Vec<S
         .tiers
         .iter()
         .enumerate()
-        .filter(|&(i, _)| excluded_index < 0 || i != excluded_index as usize)
+        .filter(|&(i, _)| usize::try_from(excluded_index).ok() != Some(i))
         .flat_map(|(_, tier)| tier.names().into_iter().map(str::to_string))
         .chain(
             design
@@ -101,7 +101,7 @@ pub fn tier_save_edit(
             },
         )
     } else {
-        let index = index as usize;
+        let index = index.cast_unsigned() as usize;
         let dependant_rewrites = rename_dependant_edits(design, index, &tier.name);
         let modify = Edit::ModifyTier { index, tier };
         if dependant_rewrites.is_empty() {

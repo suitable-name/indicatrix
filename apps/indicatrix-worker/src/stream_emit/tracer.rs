@@ -10,7 +10,7 @@ use super::{
 use crate::{
     cli::ComputeMode,
     render_core,
-    render_core::hybrid::{CachedCalibration, JobKey},
+    render_core::hybrid::{CachedCalibration, HybridBuffers, JobKey},
 };
 use glam::Vec3;
 use indicatrix::renderer::gpu_backend::GpuBackend;
@@ -102,7 +102,8 @@ pub(super) struct TracerJob {
 /// into `state.pending_delta`, checking `cancel` between sub-batches and mid-dispatch
 /// for whichever share of a sub-batch runs on the GPU. Never touches the socket.
 ///
-/// Each sub-batch traces through [`render_core::hybrid::hybrid_trace`] once this job has
+/// Each sub-batch traces through [`render_core::hybrid::hybrid_trace_into`] (one
+/// [`HybridBuffers`] kept across sub-batches) once this job has
 /// calibrated a GPU throughput share, or
 /// [`render_core::trace_samples_with_gpu_cancellable`] otherwise (prefers `gpu`, falls
 /// back to CPU when it declines). A `None` outcome means `cancel` fired mid-dispatch
@@ -157,78 +158,7 @@ pub(super) fn run_tracer(
     // `render_core::hybrid::job_key`'s own doc comment for what it depends on).
     let key = render_core::hybrid::job_key(gpu, &job.scene, job.threads, job.compute_mode);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut produced: u32 = 0;
-        let mut batch_size: u32 = seeded_batch_size(key);
-
-        // Only `Hybrid` ever attempts a split -- `OnlyGpu`/`OnlyCpu` leave `gpu_frac`
-        // `None` for the whole job.
-        // A scene with concave tools is CPU-only (`render_core::scene_uses_gpu`), so it
-        // never calibrates a split either.
-        let mut gpu_frac: Option<f64> = if matches!(job.compute_mode, ComputeMode::Hybrid)
-            && job.samples >= render_core::hybrid::HYBRID_MIN_SPP
-            && render_core::scene_uses_gpu(&job.scene)
-        {
-            calibrate_hybrid_split(key, gpu, job, &reporter, cancel, &mut produced)
-        } else {
-            None
-        };
-        // Whether this job actually started on the hybrid split path -- only then does
-        // `finalize_split_cache` get called below, so a `GpuOnly`/`GpuDeclined`/
-        // `Cancelled` outcome (or an `OnlyGpu`/`OnlyCpu` job that never calibrates at
-        // all) never evicts a cache entry it didn't itself create.
-        let started_on_split_path = gpu_frac.is_some();
-
-        while produced < job.samples {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
-            let this_batch = batch_size.min(job.samples - produced);
-            let batch_first = job.first_sample + produced;
-
-            let start = Instant::now();
-            let dispatch_outcome = if gpu_frac.is_some() {
-                render_core::hybrid::hybrid_trace(
-                    gpu,
-                    &job.scene,
-                    batch_first,
-                    this_batch,
-                    job.threads,
-                    &mut gpu_frac,
-                    cancel,
-                )
-            } else {
-                render_core::trace_samples_with_gpu_cancellable(
-                    gpu,
-                    &job.scene,
-                    batch_first,
-                    this_batch,
-                    job.threads,
-                    cancel,
-                )
-            };
-            // `None` means `cancel` was observed mid-dispatch; nothing was added for
-            // this sub-batch, so this stops the job immediately without touching
-            // `produced`/`state`, same as a between-sub-batches cancellation just
-            // noticed earlier.
-            let Some(buf) = dispatch_outcome else {
-                break;
-            };
-            let elapsed = start.elapsed();
-
-            reporter.fold_and_notify(batch_first, this_batch, &buf, &mut produced);
-
-            batch_size = next_batch_size(batch_size, elapsed);
-        }
-
-        // Write back this job's own converged state for the next job/chunk with the
-        // same resource profile -- see `run_tracer`'s own doc comment. Skipped entirely
-        // on a panic (this whole closure unwinds before reaching here), so a
-        // partially-completed, panicking job never poisons either cache with a bogus
-        // value.
-        remember_converged_subbatch(key, batch_size);
-        if started_on_split_path {
-            render_core::hybrid::finalize_split_cache(key, gpu_frac);
-        }
+        trace_all_batches(key, job, gpu, &reporter, cancel);
     }));
 
     let mut guard = state
@@ -238,6 +168,104 @@ pub(super) fn run_tracer(
     guard.panicked = result.is_err();
     drop(guard);
     let _ = progress_tx.send(());
+}
+
+/// The body of [`run_tracer`]'s `catch_unwind`: calibrates a hybrid split when the job
+/// qualifies, then free-runs the adaptive sub-batch loop, folding each result in via
+/// `reporter`, and finally writes the job's converged state back to the two caches.
+///
+/// The cache write-back is skipped entirely on a panic (this whole function unwinds before
+/// reaching it), so a partially-completed, panicking job never poisons either cache with a
+/// bogus value.
+fn trace_all_batches(
+    key: JobKey,
+    job: &TracerJob,
+    gpu: &GpuBackend,
+    reporter: &Reporter<'_>,
+    cancel: &AtomicBool,
+) {
+    let mut produced: u32 = 0;
+    let mut batch_size: u32 = seeded_batch_size(key);
+
+    // Only `Hybrid` ever attempts a split -- `OnlyGpu`/`OnlyCpu` leave `gpu_frac`
+    // `None` for the whole job.
+    // A scene with concave tools is CPU-only (`render_core::scene_uses_gpu`), so it
+    // never calibrates a split either.
+    let mut gpu_frac: Option<f64> = if matches!(job.compute_mode, ComputeMode::Hybrid)
+        && job.samples >= render_core::hybrid::HYBRID_MIN_SPP
+        && render_core::scene_uses_gpu(&job.scene)
+    {
+        calibrate_hybrid_split(key, gpu, job, reporter, cancel, &mut produced)
+    } else {
+        None
+    };
+    // Whether this job actually started on the hybrid split path -- only then does
+    // `finalize_split_cache` get called below, so a `GpuOnly`/`GpuDeclined`/
+    // `Cancelled` outcome (or an `OnlyGpu`/`OnlyCpu` job that never calibrates at
+    // all) never evicts a cache entry it didn't itself create.
+    let started_on_split_path = gpu_frac.is_some();
+
+    let pixel_count = job.scene.width as usize * job.scene.height as usize;
+    let mut scratch: Vec<Vec3> = Vec::new();
+    // The hybrid path's two full-frame buffers, kept across sub-batches (re-zeroed inside
+    // `hybrid_trace_into` to the same state as a fresh allocation).
+    let mut hybrid_bufs = HybridBuffers::default();
+    while produced < job.samples {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let this_batch = batch_size.min(job.samples - produced);
+        let batch_first = job.first_sample + produced;
+
+        let start = Instant::now();
+        let dispatch_outcome: Option<&[Vec3]> = if gpu_frac.is_some() {
+            render_core::hybrid::hybrid_trace_into(
+                gpu,
+                &job.scene,
+                (batch_first, this_batch),
+                job.threads,
+                &mut gpu_frac,
+                cancel,
+                &mut hybrid_bufs,
+            )
+            .then_some(hybrid_bufs.sum.as_slice())
+        } else {
+            // One buffer reused across sub-batches (re-zeroed here, since both
+            // backends add into it) instead of a fresh ~25 MB allocation per
+            // ~100 ms sub-batch at 1080p; `fold_and_notify` copies/adds out of it
+            // under the lock, so it is free again once that returns.
+            scratch.clear();
+            scratch.resize(pixel_count, Vec3::ZERO);
+            render_core::trace_samples_with_gpu_into(
+                gpu,
+                &job.scene,
+                (batch_first, this_batch),
+                job.threads,
+                cancel,
+                &mut scratch,
+            )
+            .then_some(scratch.as_slice())
+        };
+        // `None` means `cancel` was observed mid-dispatch; nothing was added for
+        // this sub-batch, so this stops the job immediately without touching
+        // `produced`/`state`, same as a between-sub-batches cancellation just
+        // noticed earlier.
+        let Some(buf) = dispatch_outcome else {
+            break;
+        };
+        let elapsed = start.elapsed();
+
+        reporter.fold_and_notify(batch_first, this_batch, buf, &mut produced);
+
+        batch_size = next_batch_size(batch_size, elapsed);
+    }
+
+    // Write back this job's own converged state for the next job/chunk with the same
+    // resource profile -- see `run_tracer`'s own doc comment.
+    remember_converged_subbatch(key, batch_size);
+    if started_on_split_path {
+        render_core::hybrid::finalize_split_cache(key, gpu_frac);
+    }
 }
 
 /// What [`trace_range`] traced: the summed radiance of a PREFIX of the range.

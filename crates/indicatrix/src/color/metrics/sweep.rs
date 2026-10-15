@@ -5,9 +5,9 @@
 //! now call it from here. [`evaluate_all_axes_profiles_stepped`] is the same sweep with a
 //! progress/cancel hook between the raytrace evaluations, for the browser app's Worker.
 
-use super::profile::{
-    EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG, evaluate_full_axis_profile_at_azimuth_geom,
-    evaluate_full_axis_profile_at_azimuth_stepped_geom,
+use super::{
+    pose_batch::{AxisCurves, sweep_axes, sweep_axes_gated},
+    profile::{EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG},
 };
 use crate::{
     geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
@@ -46,6 +46,16 @@ pub struct SweepProgress {
     pub total: usize,
 }
 
+impl From<AxisCurves> for AxisProfile {
+    fn from([brilliance, extinction, windowing]: AxisCurves) -> Self {
+        Self {
+            brilliance,
+            extinction,
+            windowing,
+        }
+    }
+}
+
 /// Raytrace evaluations the whole sweep takes: 181 per axis, four axes (724).
 #[must_use]
 pub const fn total_evaluations() -> usize {
@@ -57,7 +67,8 @@ pub const fn total_evaluations() -> usize {
 ///
 /// Axis 0 is swept too, rather than reusing the live render's own value: that one covers
 /// only the positive half and cannot supply the negative half a full-axis sweep needs.
-/// About 724 raytrace evaluations, roughly 1.4 s natively.
+/// About 724 raytrace evaluations; ~1.4 s on one core, spread over the machine's cores
+/// (at most 16) since the sweep became parallel.
 #[must_use]
 pub fn evaluate_all_axes_profiles(
     planes: &[GpuFacetPlane],
@@ -75,13 +86,34 @@ pub fn evaluate_all_axes_profiles_geom(
     material: &GemMaterial,
     environment: EnvironmentSource<'_>,
 ) -> Vec<AxisProfile> {
-    PROFILE_AZIMUTHS_DEG
-        .iter()
-        .map(|&azimuth_deg| {
-            evaluate_full_axis_profile_at_azimuth_geom(geom, material, azimuth_deg, environment)
-                .into()
-        })
-        .collect()
+    evaluate_all_axes_profiles_geom_threaded(geom, material, environment, None)
+}
+
+/// [`evaluate_all_axes_profiles_geom`] with an explicit worker cap.
+///
+/// All 724 poses share one prepared stone and run as one parallel batch. `max_threads` of
+/// `None` uses the machine's parallelism (at most 16); a caller that already parallelises
+/// across designs (the batch tilt curves) passes its share, `Some(1)` being the serial
+/// sweep on the calling thread. Each pose writes the curve slot it owns, so the curves are
+/// bit-identical for any thread count, and the callers' serial f64 means over them are
+/// untouched.
+#[must_use]
+pub fn evaluate_all_axes_profiles_geom_threaded(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    environment: EnvironmentSource<'_>,
+    max_threads: Option<usize>,
+) -> Vec<AxisProfile> {
+    sweep_axes(
+        geom,
+        material,
+        environment,
+        &PROFILE_AZIMUTHS_DEG,
+        max_threads,
+    )
+    .into_iter()
+    .map(AxisProfile::from)
+    .collect()
 }
 
 /// [`evaluate_all_axes_profiles`] with a hook before every evaluation.
@@ -113,24 +145,40 @@ pub fn evaluate_all_axes_profiles_stepped_geom(
     environment: EnvironmentSource<'_>,
     step: &mut dyn FnMut(SweepProgress) -> bool,
 ) -> Option<Vec<AxisProfile>> {
+    evaluate_all_axes_profiles_stepped_geom_threaded(geom, material, environment, None, step)
+}
+
+/// [`evaluate_all_axes_profiles_stepped_geom`] with an explicit worker cap (see
+/// [`evaluate_all_axes_profiles_geom_threaded`]).
+///
+/// `step` runs on the calling thread only, never concurrently, in evaluation order. On a
+/// parallel run it is asked a few evaluations per worker ahead of the work, so a reported
+/// `done` leads the finished poses by a few milliseconds; the first `false` stops the
+/// sweep before the next batch starts. Serial runs (`Some(1)`, `wasm32`) interleave ask and
+/// evaluate exactly as the pre-parallel sweep did.
+#[must_use]
+pub fn evaluate_all_axes_profiles_stepped_geom_threaded(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    environment: EnvironmentSource<'_>,
+    max_threads: Option<usize>,
+    step: &mut dyn FnMut(SweepProgress) -> bool,
+) -> Option<Vec<AxisProfile>> {
     let total = total_evaluations();
     let mut done = 0usize;
-    let mut axes = Vec::with_capacity(PROFILE_AZIMUTHS_DEG.len());
-    for (axis, &azimuth_deg) in PROFILE_AZIMUTHS_DEG.iter().enumerate() {
-        let curves = evaluate_full_axis_profile_at_azimuth_stepped_geom(
-            geom,
-            material,
-            azimuth_deg,
-            environment,
-            &mut || {
-                let go = step(SweepProgress { axis, done, total });
-                done += 1;
-                go
-            },
-        )?;
-        axes.push(curves.into());
-    }
-    Some(axes)
+    let axes = sweep_axes_gated(
+        geom,
+        material,
+        environment,
+        &PROFILE_AZIMUTHS_DEG,
+        max_threads,
+        &mut |axis| {
+            let go = step(SweepProgress { axis, done, total });
+            done += 1;
+            go
+        },
+    )?;
+    Some(axes.into_iter().map(AxisProfile::from).collect())
 }
 
 #[cfg(test)]

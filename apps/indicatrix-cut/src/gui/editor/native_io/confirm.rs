@@ -108,6 +108,13 @@ thread_local! {
     static PENDING_WRITE_CONFIRM: RefCell<Option<PendingWriteConfirm>> = const { RefCell::new(None) };
 }
 
+/// Forgets a write-confirm continuation a previous main window left stashed (it closes over
+/// that window's save context). See `gui::window_release`.
+pub(super) fn release_window_state() {
+    let pending = PENDING_WRITE_CONFIRM.with(|cell| cell.borrow_mut().take());
+    drop(pending);
+}
+
 /// Opens the shared in-window write-confirm dialog (`EditorModel.write_confirm_*`,
 /// mounted in `ui/app.slint`) and stashes `on_accept` to run once the cutter
 /// accepts. A decline (Cancel) drops it with no toast.

@@ -108,7 +108,11 @@ export component EditorInspector inherits Rectangle {
     property <bool> fills_dock: EditorModel.tier_table_collapsed && !EditorModel.inspector_collapsed;
     property <length> fixed_height: EditorModel.inspector_collapsed ? root.header_height : EditorModel.inspector_height;
     vertical-stretch: root.fills_dock ? 1 : 0;
-    min-height: root.fills_dock ? 160px : root.fixed_height;
+    // The stored height is the PREFERRED one: when the dock is shorter (1366x768, the minimum
+    // window) the layout shrinks the inspector down to this minimum instead of pushing it
+    // below the window clip, so the INSPECTOR header and its tab pills always stay visible
+    // (the body scrolls). A collapsed inspector is exactly its header row.
+    min-height: root.fills_dock ? 160px : (EditorModel.inspector_collapsed ? root.header_height : min(root.fixed_height, 96px));
     preferred-height: root.fixed_height;
     max-height: root.fills_dock ? 100000px : root.fixed_height;
     background: Theme.bg-darkest;
@@ -707,7 +711,7 @@ export component EditorInspector inherits Rectangle {
                 // The manual page for the open tab. The History tab brings its own.
                 if EditorModel.inspector_tab != 4: VerticalLayout {
                     alignment: center;
-                    HelpButton {
+                    help-button-inspector-tab := HelpButton {
                         topic: root.tab_help_topic;
                         hint: EditorModel.inspector_tab == 0
                             ? (root.concave_loaded ? "Open the manual page on adding a concave tier" : "Open the manual page on the tier form")
@@ -846,7 +850,7 @@ export component EditorInspector inherits Rectangle {
             // Button row pinned outside the scroll view above.
             if EditorModel.inspector_tab == 0: HorizontalLayout {
                 spacing: 6px;
-                TipButton {
+                tip-button-concave-loaded := TipButton {
                     text: root.concave_loaded
                         ? (root.loaded_tier_index < 0 ? "Add Concave Tier" : "Save Concave Tier")
                         : (root.loaded_tier_index < 0 ? "Add Tier" : "Save Tier");
@@ -856,7 +860,7 @@ export component EditorInspector inherits Rectangle {
                     // Save button gated on angle_field_invalid (also covers
                     // Rust-reported angle rejection). Other fields validated after save attempt.
                     enabled: root.concave_loaded
-                        ? (!root.concave_angle_invalid && GuideModel.allows_tier_form() && GuideModel.allows_concave_tier())
+                        ? (!root.concave_angle_invalid && root.c_angle != "" && GuideModel.allows_tier_form() && GuideModel.allows_concave_tier())
                         : (!root.angle_field_invalid && GuideModel.allows_tier_form());
                     clicked => { root.save_form(); }
                 }

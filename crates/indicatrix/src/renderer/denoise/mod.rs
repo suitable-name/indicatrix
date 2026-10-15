@@ -292,8 +292,13 @@ impl AtrousDenoiser {
         threads: usize,
     ) {
         let len = inputs.width * inputs.height;
-        output.clear();
-        output.resize(len, Vec3::ZERO);
+        // Every path below overwrites all `len` texels (`copy_to`, the identity copy, or
+        // the copy-plus-zero-tail fallback), so a same-length buffer is left as it is
+        // rather than memset first (UI-9: ~6 MB of dead zero-fill per cycle at 1080p).
+        if output.len() != len {
+            output.clear();
+            output.resize(len, Vec3::ZERO);
+        }
 
         if len == 0 {
             return;
@@ -381,6 +386,10 @@ mod tests {
             self.0 = x;
             x
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the value is a fraction in 0..=1, exactly representable enough in f32 for a test generator"
+        )]
         fn next_f32(&mut self) -> f32 {
             (f64::from(self.next_u32()) / f64::from(u32::MAX)) as f32
         }
@@ -401,7 +410,8 @@ mod tests {
         for y in 0..height {
             for x in 0..width {
                 let idx = y * width + x;
-                facet_id[idx] = ((x / 5 + y / 7) % 6) as i32;
+                facet_id[idx] =
+                    i32::try_from((x / 5 + y / 7) % 6).expect("a value below 6 fits i32");
                 depth[idx] = rng.next_f32() * 4.0;
                 let jitter =
                     Vec3::new(rng.next_signed() * 0.3, rng.next_signed() * 0.3, 1.0).normalize();
@@ -567,8 +577,8 @@ mod tests {
     #[test]
     fn signature_filtering_is_thread_count_invariant() {
         let (g, _color) = irregular_scene(83, 59, 0x77aa);
-        let sig: Vec<u32> = (0..83 * 59)
-            .map(|i| ((i % 83) / 6 + (i / 83) / 5) as u32 % 4)
+        let sig: Vec<u32> = (0_i32..83 * 59)
+            .map(|i| ((i % 83) / 6 + (i / 83) / 5).cast_unsigned() % 4)
             .collect();
         let with_sig = GBuffers {
             path_sig: Some(&sig),

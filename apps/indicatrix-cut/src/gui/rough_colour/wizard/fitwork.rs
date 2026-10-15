@@ -79,6 +79,44 @@ pub struct FitOutput {
     pub gains: Vec<(usize, f32)>,
 }
 
+/// The gain of every fitted view `(rig view, gain)` of a fit.
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a view gain is stored as f32; gains are in the normal float range"
+)]
+pub fn gains_of(fit: &ColourFit) -> Vec<(usize, f32)> {
+    fit.chosen_fit()
+        .view_ids
+        .iter()
+        .copied()
+        .zip(fit.chosen_fit().gains())
+        .map(|(v, g)| (v, g as f32))
+        .collect()
+}
+
+impl FitOutput {
+    /// The output of a fit that was stored with a plan: the zones and the report, but no render
+    /// (the renders are not stored; the photos behind the fit may not be around any more).
+    #[must_use]
+    pub fn from_stored(zoned: ZonedAbsorption, fit: ColourFit) -> Self {
+        let gains = gains_of(&fit);
+        Self {
+            fit,
+            zoned,
+            predictions: Vec::new(),
+            gains,
+        }
+    }
+
+    /// Whether the render of every fitted view is there (a fit restored from a saved plan has
+    /// none until the fit runs again).
+    #[must_use]
+    pub const fn has_render(&self) -> bool {
+        !self.predictions.is_empty()
+    }
+}
+
 /// The surface map for a choice and alpha, with the windows polished.
 #[must_use]
 pub fn surface_map(choice: SurfaceChoice, alpha: Option<f32>, windows: &[u32]) -> SurfaceMap {
@@ -123,7 +161,13 @@ fn build(setup: &FitSetup) -> Result<Built, String> {
         if prepared.view >= whites.len() {
             return Err(format!("{}: the rig has no such view.", prepared.name));
         }
-        whites[prepared.view] = Some(prepared.white_frame.clone());
+        let Some(white) = &prepared.white_frame else {
+            return Err(format!(
+                "{}: restored from the saved plan, it has no white frame. Load its photos and prepare it again to fit.",
+                prepared.name
+            ));
+        };
+        whites[prepared.view] = Some(white.clone());
         let mask = prepared.combined_mask();
         let mut view = ObservedView::from_resampled(prepared.view, &prepared.observed);
         for (i, var) in view.variance.iter_mut().enumerate() {
@@ -254,7 +298,7 @@ pub fn run_fit(
         search.then_some(&rough_fn as &(dyn Fn(f32) -> SurfaceMap + Sync)),
         |inputs| fit_colour(inputs, cancel, progress),
     )
-    .map_err(|e| format!("The fit failed: {e:?}"))?;
+    .map_err(|e| format!("The fit failed: {e}"))?;
 
     // The picture of the result: trace again at the roughness the fit chose (cached on disk).
     let shown = surface_map(
@@ -270,20 +314,13 @@ pub fn run_fit(
             })
         })
     })
-    .map_err(|e| format!("The render of the result failed: {e:?}"))?;
-    let gains = fit
-        .chosen_fit()
-        .view_ids
-        .iter()
-        .copied()
-        .zip(fit.chosen_fit().gains())
-        .map(|(v, g)| (v, g as f32))
-        .collect();
-    let zoned = assemble_zoned(geometry, &fit)
+    .map_err(|e| format!("The render of the result failed: {e}"))?;
+    let gains = gains_of(&fit);
+    let assembled = assemble_zoned(geometry, &fit)
         .ok_or_else(|| "The fit returned fewer zones than the geometry has.".to_owned())?;
     Ok(FitOutput {
         fit,
-        zoned,
+        zoned: assembled,
         predictions,
         gains,
     })
@@ -313,7 +350,7 @@ pub fn run_refine(
     with_input(setup, &built, &surfaces, None, &config, None, |inputs| {
         refine_zone_geometry(inputs, geometry, locks, options, cancel, progress)
     })
-    .map_err(|e| format!("The refinement failed: {e:?}"))
+    .map_err(|e| format!("The refinement failed: {e}"))
 }
 
 /// Suggests zone boundaries from the fit's residual maps (or, without a fit, from the photos).
@@ -344,7 +381,7 @@ pub fn suggest(setup: &FitSetup, fit: Option<&ColourFit>) -> Result<Vec<ZoneSugg
         })
         .collect();
     let report = suggest_zones(&setup.data.scene(), &views, &SuggestOptions::default())
-        .map_err(|e| format!("No suggestion: {e:?}"))?;
+        .map_err(|e| format!("No suggestion: {e}"))?;
     Ok(report.suggestions)
 }
 
@@ -365,8 +402,23 @@ fn quality(fitted: &FittedZoneShape) -> String {
     text
 }
 
-/// Fits a primitive to a boundary marked in the photos. `polylines` holds the marks of the
-/// boundary (at least two views, the same vertices in the same order); a slab needs a second set.
+/// The prism side counts the "Fit zone" picker offers, by its list index.
+pub const PRISM_SIDE_CHOICES: [u32; 2] = [3, 6];
+
+/// The side count for the picker's list index (3 sides for an index outside the list).
+#[must_use]
+pub fn prism_sides(index: i32) -> u32 {
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| PRISM_SIDE_CHOICES.get(i).copied())
+        .unwrap_or(PRISM_SIDE_CHOICES[0])
+}
+
+/// Fits a primitive to a boundary marked in the photos.
+///
+/// `polylines` holds the marks of the boundary (at least two views, the same vertices in the
+/// same order); a slab needs a second set. `sides` is the side count of a prism (ignored for the
+/// other primitives).
 ///
 /// # Errors
 ///
@@ -374,23 +426,24 @@ fn quality(fitted: &FittedZoneShape) -> String {
 pub fn zone_from_marks(
     setup: &FitSetup,
     kind: ShapeKind,
+    sides: u32,
     polylines: &[ViewPolyline],
     second: &[ViewPolyline],
 ) -> Result<MarkedZone, String> {
     let scene = setup.data.scene();
     let locate = |lines: &[ViewPolyline]| {
         BoundaryPoints::locate(&scene, lines, false, &LocateOptions::default())
-            .map_err(|e| format!("The marks could not be located: {e:?}"))
+            .map_err(|e| format!("The marks could not be located: {e}"))
     };
     let points = locate(polylines)?;
     let fitted = match kind {
         ShapeKind::HalfSpace => fit_half_space(&points, None),
         ShapeKind::Slab => fit_slab(&points, &locate(second)?),
         ShapeKind::Cylinder => fit_cylinder(&points, None, RadialRole::Core),
-        ShapeKind::Prism => fit_prism(&points, 3, None, RadialRole::Core),
+        ShapeKind::Prism => fit_prism(&points, sides, None, RadialRole::Core),
         ShapeKind::Sector => fit_sector(&points, &locate(second)?, None, None),
     }
-    .map_err(|e| format!("The boundary could not be fitted: {e:?}"))?;
+    .map_err(|e| format!("The boundary could not be fitted: {e}"))?;
     Ok(MarkedZone {
         quality: quality(&fitted),
         shape: fitted.shape,

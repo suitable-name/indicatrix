@@ -342,7 +342,7 @@ fn centroid(v: &[DVec3]) -> DVec3 {
 
 /// Appends one ring and its centroid fan the way `build_solid_mesh` does.
 fn push_ring(out: &mut SolidMesh, facet: usize, ring: Vec<DVec3>, centre: DVec3, normal: DVec3) {
-    let base = out.positions.len() as u32;
+    let base = u32::try_from(out.positions.len()).expect("a mesh's vertex count fits in u32");
     out.positions.push(centre);
     out.normals.push(normal);
     out.facet_id.push(facet);
@@ -351,7 +351,7 @@ fn push_ring(out: &mut SolidMesh, facet: usize, ring: Vec<DVec3>, centre: DVec3,
         out.normals.push(normal);
         out.facet_id.push(facet);
     }
-    let k = ring.len() as u32;
+    let k = u32::try_from(ring.len()).expect("a facet ring's vertex count fits in u32");
     for e in 0..k {
         out.indices.push(base);
         out.indices.push(base + 1 + e);
@@ -459,6 +459,10 @@ pub(super) fn build(planes: &[Plane], tools: &[ToolPrimitive], mesh: &SolidMesh)
             for p in pieces.into_iter().filter_map(finalise) {
                 let p = p.reversed();
                 let c = centroid(&p.v);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "the centroid is narrowed to f32 for the tool's normal query, the GPU/storage precision"
+                )]
                 let at = Vec3::new(c.x as f32, c.y as f32, c.z as f32);
                 let n = tools[k].outward_normal(at);
                 // The tool's outward normal points into the stone's material.

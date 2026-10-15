@@ -64,11 +64,11 @@ pub fn plan_still_outputs(
     planned
 }
 
-/// The name a still job has in the list: `Design · Preset · 1920×1080`, with "Current view"
+/// The name a still job has in the list: `Design · Preset · 1920×1080`, with "Current View"
 /// for the picture that has no preset.
 pub fn still_label(design: &str, preset: &str, width: u32, height: u32) -> String {
     let view = if preset.is_empty() {
-        "Current view"
+        "Current View"
     } else {
         preset
     };
@@ -169,7 +169,6 @@ struct Prepared {
     text: String,
     /// The stone's colour zones: the frozen scene (the wire's `SceneState`) carries none, so they
     /// are stored beside the job and put back when it runs (`rough_colour::store`).
-    #[cfg(feature = "zoning")]
     material: indicatrix::optics::materials::GemMaterial,
 }
 
@@ -331,7 +330,6 @@ fn prepare_jobs(
             summary: still_summary(&params, colorspace, job.scene.lighting_preset.label()),
             output,
             text,
-            #[cfg(feature = "zoning")]
             material: job.scene.material.clone(),
         });
     }
@@ -361,20 +359,17 @@ fn store(deps: &Deps, prepared: &[Prepared], now: i64) -> Result<(), (usize, Str
                 now,
             )
             .map_err(|error| (stored, format!("The job could not be saved: {error}")))?;
-        // Zoning builds: a zoned stone's zones travel beside the job. If they cannot be stored
+        // A zoned stone's zones travel beside the job. If they cannot be stored
         // the job is removed again rather than queued to render without its colour.
-        #[cfg(feature = "zoning")]
         if let Err(error) =
             crate::gui::rough_colour::store::save_job_zoning(&db, job_id, &job.material)
         {
             let _ = db.delete_render_job(job_id);
             return Err((
                 stored,
-                format!("The colour zones of the job could not be saved: {error:#}"),
+                format!("The color zones of the job could not be saved: {error:#}"),
             ));
         }
-        #[cfg(not(feature = "zoning"))]
-        let _ = job_id;
     }
     drop(db);
     Ok(())

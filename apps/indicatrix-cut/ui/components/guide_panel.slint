@@ -317,10 +317,10 @@ export component GuidePanel inherits Rectangle {
             // "Skip step" where it cannot; those steps also advance by themselves once their
             // goal is reached. After Back, a step whose goal still holds shows "Done" and a
             // primary Next instead: it stays until the learner moves on.
-            ActionButton {
+            action-button-offers-next := ActionButton {
                 width: 84px;
                 height: 26px;
-                text: GuideModel.offers_next ? (GuideModel.has_next ? "Next" : "Finish") : (GuideModel.offers_perform ? "Next" : "Skip step");
+                text: GuideModel.offers_next ? (GuideModel.has_next ? "Next" : "Finish") : (GuideModel.offers_perform ? "Next" : "Skip Step");
                 hint: GuideModel.offers_next
                     ? (GuideModel.has_next ? "Go on to the next step." : "Finish the guide.")
                     : (GuideModel.offers_perform

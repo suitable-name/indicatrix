@@ -1,0 +1,46 @@
+import { TrainerTheme } from "../theme.slint";
+
+// A titled card of the setup column.
+export component Section inherits Rectangle {
+    in property <string> title;
+    background: TrainerTheme.bg-surface;
+    border-radius: TrainerTheme.radius;
+    border-width: 1px;
+    border-color: TrainerTheme.border-subtle;
+    accessible-role: groupbox;
+    accessible-label: root.title;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text {
+            text: root.title;
+            color: TrainerTheme.accent-cyan;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 1px;
+        }
+        @children
+    }
+}
+
+// A caption on the left, a value on the right (hyperparameter and data set summaries).
+export component InfoRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 8px;
+    Text {
+        text: root.label;
+        color: TrainerTheme.text-secondary;
+        font-size: 12px;
+    }
+    Text {
+        text: root.value;
+        color: TrainerTheme.text-primary;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: right;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+}

@@ -1,0 +1,215 @@
+// Cut destination: the cutting instructions of the solved design, to follow at the machine.
+//
+//   compact (phone)   a card with the progress and the big Start / Continue Cutting button
+//                     above the instruction list; tapping a row opens Cutting Mode there
+//   medium/expanded   the list on the left; on the right the progress card and the
+//                     three-panel diagram with the selected row's tier highlighted
+//
+// The list is grouped Pavilion / Girdle / Crown in cutting order. Without a design, or
+// before it is solved, the page says so and offers the next step. All data comes through
+// `CutModel`; Cutting Mode itself (`ui/cut/cutting_mode.slint`) is hosted by `app.slint`.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell } from "../models.slint";
+import { EmptyState } from "../shell/empty_state.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { CutModel } from "../cut/cut_model.slint";
+import { CutIcons } from "../cut/cut_icons.slint";
+import { CutRowItem, SectionHeader } from "../cut/cut_row.slint";
+import { ProgressCard, DiagramCard } from "../cut/progress_card.slint";
+
+// The scrolling instruction list. On a phone the progress card scrolls with it.
+component InstructionList inherits Flickable {
+    in property <bool> wide: false;
+
+    content-height: column.height;
+
+    column := VerticalLayout {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        // At least the visible height, so a short list does not get squeezed.
+        height: max(self.preferred-height, root.height);
+        alignment: start;
+
+        if !root.wide: Rectangle {
+            height: card.height + 2 * Theme.space-md;
+
+            card := ProgressCard {
+                x: Theme.space-md;
+                y: Theme.space-md;
+                width: parent.width - 2 * Theme.space-md;
+            }
+        }
+
+        for row[index] in CutModel.rows: VerticalLayout {
+            if row.section-start: SectionHeader {
+                text: row.section;
+            }
+
+            CutRowItem {
+                data: row;
+                wide: root.wide;
+                selected: root.wide && CutModel.selected-row == index;
+                tapped => {
+                    if (root.wide) {
+                        CutModel.select-step(row.step);
+                    } else {
+                        CutModel.open-step(row.step);
+                    }
+                }
+                open => {
+                    CutModel.open-step(row.step);
+                }
+            }
+        }
+
+        Rectangle {
+            height: Theme.space-xl;
+        }
+    }
+}
+
+// The instructions, laid out for the window class.
+component Instructions inherits Rectangle {
+    // The width of the right-hand column of the wide layout.
+    property <length> pane-width: clamp(root.width * 0.42, 320px, 520px);
+
+    if Shell.window-class == 0: InstructionList {
+        wide: false;
+    }
+
+    if Shell.window-class != 0: HorizontalLayout {
+        InstructionList {
+            wide: true;
+            horizontal-stretch: 1;
+        }
+
+        VerticalLayout {
+            width: root.pane-width;
+            padding: Theme.space-md;
+            spacing: Theme.space-md;
+            alignment: start;
+
+            ProgressCard { }
+
+            DiagramCard {
+                // The diagram is 2.5 times as wide as it is tall.
+                height: (root.pane-width - 2 * Theme.space-md) / 2.5;
+                hint: "Select a row to see its facets in the diagram.";
+            }
+
+            Text {
+                text: "Tap a row to highlight it. Tap the arrow to start cutting at that step.";
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+export component CutPage inherits Rectangle {
+    property <bool> menu-open: false;
+    property <bool> ready: CutModel.state-kind == 0;
+    // Mirrors Cutting Mode being on screen, to notice when it ends.
+    property <bool> mode-open: CutModel.mode-open;
+
+    changed mode-open => {
+        if (!root.mode-open) {
+            CutModel.mode-ended();
+        }
+    }
+
+    VerticalLayout {
+        TopBar {
+            title: "Cut";
+            show-overflow: root.ready;
+            actions: [
+                { icon: Icons.share, label: "Share Cutting Sheet", enabled: root.ready },
+                { icon: CutIcons.print, label: "Print Cutting Sheet", enabled: root.ready }
+            ];
+            action-clicked(index) => {
+                if (index == 0) {
+                    CutModel.share-sheet();
+                } else {
+                    CutModel.print-sheet();
+                }
+            }
+            overflow-clicked => {
+                root.menu-open = true;
+            }
+        }
+
+        if CutModel.state-kind == 0: Instructions {
+            vertical-stretch: 1;
+        }
+
+        if CutModel.state-kind == 1: EmptyState {
+            vertical-stretch: 1;
+            icon: Icons.cut;
+            title: "Nothing to Cut Yet";
+            body: "Open a design with tiers and its cutting instructions appear here, ready to follow at the machine.";
+            primary-text: "Go to Design";
+            primary-icon: Icons.design;
+            primary-clicked => {
+                Shell.select-destination(1);
+            }
+        }
+
+        if CutModel.state-kind == 2: EmptyState {
+            vertical-stretch: 1;
+            icon: Icons.cut;
+            title: CutModel.solving ? "Solving the Design" : "Solve to See Instructions";
+            body: CutModel.state-text;
+            primary-text: CutModel.solving ? "" : "Solve";
+            primary-clicked => {
+                CutModel.solve();
+            }
+        }
+    }
+
+    // The overflow menu: a scrim and a card under the top bar.
+    if root.menu-open && root.ready: Rectangle {
+        TouchArea {
+            clicked => {
+                root.menu-open = false;
+            }
+        }
+
+        Rectangle {
+            x: parent.width - self.width - Theme.space-sm;
+            y: Theme.top-bar-height - Theme.space-sm;
+            width: min(parent.width - 2 * Theme.space-sm, 280px);
+            height: menu-rows.preferred-height;
+            background: Theme.surface-high;
+            border-radius: Theme.radius-md;
+            clip: true;
+            drop-shadow-color: Theme.shadow;
+            drop-shadow-blur: Theme.shadow-blur-3;
+            drop-shadow-offset-y: Theme.shadow-offset-3;
+
+            TouchArea { }
+
+            menu-rows := VerticalLayout {
+                ListRow {
+                    title: "Share Diagram";
+                    clicked => {
+                        root.menu-open = false;
+                        CutModel.share-diagram();
+                    }
+                }
+
+                ListRow {
+                    title: "Reset Progress";
+                    enabled: CutModel.done-count > 0;
+                    clicked => {
+                        root.menu-open = false;
+                        CutModel.reset-progress();
+                    }
+                }
+            }
+        }
+    }
+}

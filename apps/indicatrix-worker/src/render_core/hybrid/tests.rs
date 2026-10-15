@@ -124,6 +124,11 @@ fn render_core_trace_samples(
 /// here, `pub(super)` to `stream_emit` only), same formula, so this module's
 /// throughput measurement drives GPU-only and hybrid through the identical loop
 /// `run_tracer` itself uses.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to 1.0..=MAX_SUBBATCH before the cast"
+)]
 fn adaptive_next_batch_size(prev: u32, elapsed: std::time::Duration) -> u32 {
     const TARGET: std::time::Duration = std::time::Duration::from_millis(100);
     const MAX_SUBBATCH: u32 = 2048;

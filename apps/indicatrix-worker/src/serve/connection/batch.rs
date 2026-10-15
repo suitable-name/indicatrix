@@ -470,7 +470,8 @@ fn encode_picture(picture: Picture) -> Outgoing {
                     request_id,
                     item_id,
                     samples_done: samples,
-                    payload_len: bytes.len() as u32,
+                    payload_len: u32::try_from(bytes.len())
+                        .expect("a PNG of a pixel-capped picture is far below 4 GiB"),
                 }),
                 Some(bytes),
             )
@@ -551,10 +552,10 @@ impl Session {
             tracing::info!(request_id = request.request_id, %message, "refusing a batch");
             return write_error(stream, VALIDATION_FAILED_CODE, message, request.request_id);
         }
-        // `zoning` builds: re-attach the zones sent ahead of this batch. One that does not fit
+        // Re-attach the zones sent ahead of this batch. One that does not fit
         // refuses the whole batch (a half-zoned batch would render some items as their base
         // zone without saying so).
-        #[cfg(feature = "zoning")]
+        #[cfg(feature = "worker")]
         let request = match crate::serve::zoning::attach_to_batch(request) {
             Ok(request) => request,
             Err((request_id, message)) => {
@@ -649,8 +650,8 @@ impl Session {
                 Ok(())
             }
             ClientMessage::Ping { nonce } => write_pong(stream, nonce),
-            // `zoning` builds: the zones of the next batch, sent just ahead of it.
-            #[cfg(feature = "zoning")]
+            // The zones of the next batch, sent just ahead of it.
+            #[cfg(feature = "worker")]
             ClientMessage::ZoningPayload(payload) => {
                 crate::serve::zoning::stash(*payload);
                 Ok(())
@@ -874,9 +875,11 @@ mod tests {
     fn a_duplicate_batch_id_empty_oversized_or_duplicate_items_are_refused() {
         assert!(check_admission(&request(1, &[0]), &[1]).is_err());
         assert!(check_admission(&request(1, &[]), &[]).is_err());
-        let too_many: Vec<u32> = (0..=MAX_BATCH_ITEMS as u32).collect();
+        let too_many: Vec<u32> =
+            (0..=u32::try_from(MAX_BATCH_ITEMS).expect("the batch cap is small")).collect();
         assert!(check_admission(&request(1, &too_many), &[]).is_err());
-        let at_cap: Vec<u32> = (0..MAX_BATCH_ITEMS as u32).collect();
+        let at_cap: Vec<u32> =
+            (0..u32::try_from(MAX_BATCH_ITEMS).expect("the batch cap is small")).collect();
         assert!(check_admission(&request(1, &at_cap), &[]).is_ok());
         assert!(check_admission(&request(1, &[4, 5, 4]), &[]).is_err());
     }

@@ -7,7 +7,7 @@
 //! `main` hands the arguments to [`path_from_args`] and the result to
 //! [`request_open_at_startup`]; the editor's startup sequence collects it with
 //! [`take_requested_open`] and opens it through the same path File > Open Recent uses,
-//! so a `.indicatrix` design file, an older `.indicatrix.toml` sidecar, a `.asc` and a
+//! so a `.isdd` design file (or a legacy `.indicatrix` one), a `.asc` and a
 //! `.gem`/`.gcs` all work. A second launch does not forward its file to a running
 //! instance; each launch opens its own window.
 
@@ -80,16 +80,17 @@ mod tests {
     #[test]
     fn the_first_argument_that_is_not_a_flag_is_the_file() {
         assert_eq!(
-            path_from_args(args(&["design.indicatrix"])),
-            Some(PathBuf::from("design.indicatrix"))
+            path_from_args(args(&["design.isdd"])),
+            Some(PathBuf::from("design.isdd"))
         );
         assert_eq!(
-            path_from_args(args(&[
-                "--log",
-                "C:\\designs\\round.indicatrix",
-                "other.asc"
-            ])),
-            Some(PathBuf::from("C:\\designs\\round.indicatrix"))
+            path_from_args(args(&["--log", "C:\\designs\\round.isdd", "other.asc"])),
+            Some(PathBuf::from("C:\\designs\\round.isdd"))
+        );
+        // A legacy `.indicatrix` file is named and opened the same way.
+        assert_eq!(
+            path_from_args(args(&["legacy.indicatrix"])),
+            Some(PathBuf::from("legacy.indicatrix"))
         );
         assert_eq!(
             path_from_args(args(&["old.asc", "--log"])),
@@ -100,16 +101,16 @@ mod tests {
     #[test]
     fn a_path_with_spaces_stays_one_argument() {
         assert_eq!(
-            path_from_args(args(&["my designs/round brilliant.indicatrix"])),
-            Some(PathBuf::from("my designs/round brilliant.indicatrix"))
+            path_from_args(args(&["my designs/round brilliant.isdd"])),
+            Some(PathBuf::from("my designs/round brilliant.isdd"))
         );
     }
 
     #[test]
     fn after_a_double_dash_a_leading_dash_is_part_of_the_file_name() {
         assert_eq!(
-            path_from_args(args(&["--", "-odd.indicatrix"])),
-            Some(PathBuf::from("-odd.indicatrix"))
+            path_from_args(args(&["--", "-odd.isdd"])),
+            Some(PathBuf::from("-odd.isdd"))
         );
         assert_eq!(path_from_args(args(&["--"])), None);
     }
@@ -117,17 +118,17 @@ mod tests {
     #[test]
     fn empty_arguments_are_ignored() {
         assert_eq!(
-            path_from_args(args(&["", "a.indicatrix"])),
-            Some(PathBuf::from("a.indicatrix"))
+            path_from_args(args(&["", "a.isdd"])),
+            Some(PathBuf::from("a.isdd"))
         );
     }
 
     #[test]
     fn a_requested_file_is_taken_exactly_once() {
-        request_open_at_startup(PathBuf::from("take_once_test.indicatrix"));
+        request_open_at_startup(PathBuf::from("take_once_test.isdd"));
         let taken = take_requested_open().expect("a request was recorded");
         assert!(taken.is_absolute());
-        assert!(taken.ends_with("take_once_test.indicatrix"));
+        assert!(taken.ends_with("take_once_test.isdd"));
         assert_eq!(take_requested_open(), None);
     }
 }

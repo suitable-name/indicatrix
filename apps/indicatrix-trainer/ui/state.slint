@@ -1,0 +1,38 @@
+import { TrainingController } from "models.slint";
+
+// UI-only state derived from the controller: enablement shared by buttons and shortcuts,
+// the selected tab, and the small bits of text formatting.
+export global UiState {
+    in-out property <int> tab: 0;
+    out property <bool> busy: TrainingController.busy_text != "";
+    // Commands go to a live worker that is neither busy nor shutting down.
+    out property <bool> can_command: TrainingController.worker_alive && !self.busy
+        && TrainingController.status != "Stopping";
+    out property <bool> can_start: self.can_command && TrainingController.db_state == 1;
+
+    pure public function fixed(value: float, digits: int) -> string {
+        return value.to-fixed(digits);
+    }
+
+    // "—" while the figure is not measured yet.
+    pure public function figure(has: bool, value: float, digits: int) -> string {
+        return has ? value.to-fixed(digits) : "—";
+    }
+
+    // Grouped integer for counters: 1234567 -> "1 234 567".
+    pure public function count(n: int) -> string {
+        if n >= 1000000 {
+            return Math.floor(n / 1000000) + " " + pad3(Math.mod(Math.floor(n / 1000), 1000)) + " " + pad3(Math.mod(n, 1000));
+        }
+        if n >= 1000 {
+            return Math.floor(n / 1000) + " " + pad3(Math.mod(n, 1000));
+        }
+        return n;
+    }
+
+    pure public function pad3(n: int) -> string {
+        if n < 10 { return "00" + n; }
+        if n < 100 { return "0" + n; }
+        return n;
+    }
+}

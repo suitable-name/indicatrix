@@ -14,7 +14,7 @@ use crate::{
         progress_eta::{EtaEstimator, format_eta},
         show_toast,
     },
-    settings::{LightingPreset as SavedLightingPreset, LocalComputeTarget},
+    settings::{LightingPreset as SavedLightingPreset, LocalComputeTarget, model::PITCH_RANGE_RAD},
 };
 use indicatrix::color::ColorSpace;
 use slint::ComponentHandle;
@@ -62,19 +62,22 @@ pub(in crate::gui) const fn apply_export_bounce_cap(
 /// the export-time counterpart of `gui::render::lighting_presets`'s live-apply
 /// callback, and deliberately following the exact same rules:
 ///
-/// - light yaw/pitch/exposure/rig are ALWAYS overlaid -- every preset carries these.
+/// - light yaw/pitch/exposure/rig and the surface glare, backdrop and head shadow are ALWAYS
+///   overlaid -- every saved lighting carries these (read as one `LightingValues`; an older
+///   preset reads the current defaults for the three it lacks).
 /// - camera pose is overlaid only when the preset carries one (`camera_yaw`/
 ///   `camera_pitch` both `Some`) -- otherwise the base capture's own camera (whatever
 ///   the live viewport is currently posed at) is what this preset's render uses. See
 ///   `settings::model::LightingPreset`'s doc comment for why `None` must mean "leave
 ///   it alone", not "reset to some default", here exactly as it does when applying a
 ///   preset live.
-/// - the HDR environment map is overlaid only when the preset carries one AND it still
+/// - the HDR environment map is overlaid when the preset carries one AND it still
 ///   loads successfully; a preset pointing at a file that has since moved or been
 ///   deleted leaves the base capture's own environment untouched (silently, matching
 ///   `gui::render::lighting_presets`' own "never assign on `Err`" rule) rather than
 ///   failing this preset's whole render over a missing side asset -- the render itself
-///   is still worth producing.
+///   is still worth producing. A preset without a map clears the base capture's map (the
+///   rig it names comes back), the same as applying it live.
 ///
 /// Material and geometry are never touched here: a preset is a captured VIEW (this
 /// type's own doc comment), never a material or cut choice, so every fanned-out render
@@ -92,11 +95,21 @@ pub(super) fn apply_preset_to_scene(
     preset: &SavedLightingPreset,
     mesh_bounding_radius: f64,
 ) -> SceneSnapshot {
-    scene.light_yaw = preset.light_yaw_deg.to_radians();
-    scene.light_pitch = preset.light_pitch_deg.to_radians().clamp(0.15, 1.55);
-    scene.exposure = preset.exposure.clamp(0.2, 5.0);
+    // The scene fields as the one shared `LightingValues`, each limited the way the live
+    // controls limit it, exactly as the live apply reads them.
+    let values = preset.values().sanitised();
+    scene.light_yaw = values.light_yaw_deg.to_radians();
+    scene.light_pitch = values
+        .light_pitch_deg
+        .to_radians()
+        .clamp(PITCH_RANGE_RAD.0, PITCH_RANGE_RAD.1);
+    scene.exposure = values.exposure;
     scene.lighting_preset =
-        crate::gui::optics::offered_lighting::offered_from_label(&preset.lighting_rig);
+        crate::gui::optics::offered_lighting::offered_from_label(&values.lighting_rig);
+    // A saved lighting is a complete look: its glare, backdrop and head shadow come with it.
+    scene.surface_glare = values.surface_glare;
+    scene.backdrop = values.backdrop.level();
+    scene.head_shadow_deg = values.head_shadow_deg;
     // Applied unconditionally, matching `lighting_presets`' own live-apply -- unlike
     // camera yaw/pitch just below, `camera_distance` is a plain field (not an
     // `Option`), so every preset carries one.
@@ -109,10 +122,14 @@ pub(super) fn apply_preset_to_scene(
         scene.pitch = pitch.clamp(-1.48, 1.48);
     }
 
-    if let Some(path) = &preset.env_map_path
-        && let Ok(map) = load_env_map(path)
-    {
-        scene.env_map = Some(map);
+    match &values.env_map_path {
+        Some(path) => {
+            if let Ok(map) = load_env_map(path) {
+                scene.env_map = Some(map);
+            }
+        }
+        // No map saved means no map: the rig comes back, as when the lighting is applied live.
+        None => scene.env_map = None,
     }
 
     scene
@@ -390,7 +407,7 @@ pub(super) fn start_next_export_job(
         (q.params, q.color_space, q.remote.clone(), q.local_compute)
     };
     ui.global::<ExportModel>()
-        .set_preview_samples_total(params.samples_per_pixel as i32);
+        .set_preview_samples_total(params.samples_per_pixel.cast_signed());
 
     let queue_progress = queue.clone();
     let render_ctx_done = render_ctx.clone();
@@ -425,11 +442,12 @@ pub(super) fn start_next_export_job(
 /// function-length lint.
 fn set_starting_job_ui_state(ui: &MainWindow, current_index: usize, total: usize, job: &ExportJob) {
     ui.global::<ExportModel>()
-        .set_preset_index(current_index as i32);
-    ui.global::<ExportModel>().set_preset_total(total as i32);
+        .set_preset_index(i32::try_from(current_index).unwrap_or(i32::MAX));
+    ui.global::<ExportModel>()
+        .set_preset_total(i32::try_from(total).unwrap_or(i32::MAX));
     ui.global::<ExportModel>()
         .set_current_preset_label(if job.preset_label.is_empty() {
-            "Current view".into()
+            "Current View".into()
         } else {
             job.preset_label.clone().into()
         });
@@ -466,9 +484,9 @@ fn handle_export_job_progress(
     ui.global::<ExportModel>().set_progress(combined);
     ui.global::<ExportModel>().set_eta_text(eta_text.into());
     ui.global::<ExportModel>()
-        .set_preview_samples_done(progress.samples_done as i32);
+        .set_preview_samples_done(progress.samples_done.cast_signed());
     ui.global::<ExportModel>()
-        .set_preview_samples_total(progress.samples_total as i32);
+        .set_preview_samples_total(progress.samples_total.cast_signed());
     if let Some(buf) = progress.preview {
         ui.global::<ExportModel>()
             .set_preview_image(slint::Image::from_rgba8(buf));
@@ -582,6 +600,9 @@ mod tests {
             camera_pitch: None,
             env_map_path: None,
             export_usable: true,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         };
         let overlaid = apply_preset_to_scene(base.clone(), &preset, 1.5);
         assert_eq!(overlaid.yaw, base.yaw);
@@ -613,9 +634,48 @@ mod tests {
             camera_pitch: Some(0.3),
             env_map_path: None,
             export_usable: true,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         };
         let overlaid = apply_preset_to_scene(base, &preset, 1.5);
         assert_eq!(overlaid.yaw, 0.75);
         assert_eq!(overlaid.pitch, 0.3);
+    }
+
+    /// A saved lighting is a complete look: its glare and head shadow reach the exported scene,
+    /// and one without an HDR map clears the map the live view had loaded.
+    #[test]
+    fn apply_preset_to_scene_carries_the_whole_look() {
+        let base = SceneSnapshot::capture(&Mutex::new(RenderContext {
+            surface_glare: 1.0,
+            head_shadow_deg: 16.0,
+            env_map: Some(Arc::new(
+                indicatrix::renderer::env_map::EnvironmentMap::uniform(2, 2, [1.0, 1.0, 1.0]),
+            )),
+            ..Default::default()
+        }))
+        .expect("Diamond resolves");
+        assert!(base.env_map.is_some());
+        let preset = SavedLightingPreset {
+            name: "Look".to_string(),
+            built_in: false,
+            light_yaw_deg: 10.0,
+            light_pitch_deg: 20.0,
+            exposure: 0.8,
+            lighting_rig: "Gem Studio Ring Lights".to_string(),
+            camera_distance: 2.0,
+            camera_yaw: None,
+            camera_pitch: None,
+            env_map_path: None,
+            export_usable: true,
+            surface_glare: 0.25,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: 5.0,
+        };
+        let overlaid = apply_preset_to_scene(base, &preset, 1.5);
+        assert_eq!(overlaid.surface_glare.to_bits(), 0.25_f32.to_bits());
+        assert_eq!(overlaid.head_shadow_deg.to_bits(), 5.0_f32.to_bits());
+        assert!(overlaid.env_map.is_none(), "no saved map means the rig");
     }
 }

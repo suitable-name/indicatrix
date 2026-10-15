@@ -126,15 +126,15 @@ pub(super) fn quick_hull_faces(pts: &[DVec3], eps: f64) -> Option<Vec<Face>> {
             .1;
         let p = pts[apex];
 
-        // Flood the faces the apex sees, breadth first; every crossing from a seen face to
-        // an unseen one is a horizon edge, in the seen face's winding direction.
+        // Flood the faces the apex sees, breadth first; every crossing from a visible face to
+        // an unseen one is a horizon edge, in the visible face's winding direction.
         nodes[start].stamp = round;
         nodes[start].lit = true;
-        let mut seen = vec![start];
+        let mut visible = vec![start];
         let mut horizon: Vec<(usize, usize)> = Vec::new();
         let mut cursor = 0;
-        while cursor < seen.len() {
-            let face = seen[cursor];
+        while cursor < visible.len() {
+            let face = visible[cursor];
             cursor += 1;
             for (a, b) in nodes[face].face.edges() {
                 let Some(&next) = edges.get(&(b, a)) else {
@@ -145,7 +145,7 @@ pub(super) fn quick_hull_faces(pts: &[DVec3], eps: f64) -> Option<Vec<Face>> {
                     nodes[next].stamp = round;
                     nodes[next].lit = height > eps;
                     if nodes[next].lit {
-                        seen.push(next);
+                        visible.push(next);
                         continue;
                     }
                 } else if nodes[next].lit {
@@ -155,9 +155,9 @@ pub(super) fn quick_hull_faces(pts: &[DVec3], eps: f64) -> Option<Vec<Face>> {
             }
         }
 
-        // Remove the seen faces, keeping their points to place again.
+        // Remove the visible faces, keeping their points to place again.
         let mut orphans: Vec<usize> = Vec::new();
-        for &face in &seen {
+        for &face in &visible {
             pending.remove(&face);
             for edge in nodes[face].face.edges() {
                 edges.remove(&edge);

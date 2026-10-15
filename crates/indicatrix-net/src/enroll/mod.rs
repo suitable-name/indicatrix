@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn claim_rejects_an_address_with_no_port() {
         let secret = [0u8; token::SECRET_LEN];
-        let fp: crate::tls::Fingerprint = std::array::from_fn(|i| i as u8);
+        let fp: crate::tls::Fingerprint = std::array::from_fn(|i| u8::try_from(i).unwrap());
         let token = token::encode(&secret, &fp);
         let err = claim(&token, "worker-with-no-port").unwrap_err();
         assert!(matches!(err, ClaimError::InvalidAddr(_)), "{err}");

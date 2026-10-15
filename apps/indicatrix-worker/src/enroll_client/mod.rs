@@ -400,8 +400,11 @@ mod tests {
 
         // Same secret, wrong CA fingerprint -- simulates an attacker or a transcription
         // error. `claim` must refuse to send the secret at all.
-        let wrong_fingerprint: indicatrix_net::tls::Fingerprint =
-            std::array::from_fn(|i| (i as u8).wrapping_add(1));
+        let wrong_fingerprint: indicatrix_net::tls::Fingerprint = std::array::from_fn(|i| {
+            u8::try_from(i)
+                .expect("a fingerprint index fits u8")
+                .wrapping_add(1)
+        });
         assert_ne!(wrong_fingerprint, real.ca_fingerprint);
         let bad_token = indicatrix_net::token::encode(&real.secret, &wrong_fingerprint);
 

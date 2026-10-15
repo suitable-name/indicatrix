@@ -72,7 +72,23 @@ pub const MAX_BANDS: usize = 8;
 /// `2 sqrt(2 ln 2)`: FWHM = this * sigma for a Gaussian.
 const FWHM_TO_SIGMA: f32 = 2.354_82;
 /// Number of 1 nm bins of the excitation table, `[300, 780]`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "const context; the difference of the two constants is the positive value 480"
+)]
 const BINS: usize = (EMISSION_MAX_NM - EXCITATION_MIN_NM) as usize;
+
+/// `x` floored to a table bin index; a negative value or `NaN` gives 0 and a huge value
+/// saturates (callers clamp it into the table with `.min(..)`).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "`as` saturates and maps NaN to 0; negative inputs mean bin 0 by design"
+)]
+const fn floor_to_bin(x: f32) -> usize {
+    x.floor() as usize
+}
 
 /// One Gaussian emission line or band.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -186,6 +202,10 @@ impl EmitterTable {
             .collect()
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the table precision; the running f64 integral is stored per bin"
+    )]
     fn build(emitter: &FluorescentEmitter) -> Self {
         let alpha = |i: usize| emitter.excitation_absorption(EXCITATION_MIN_NM + i as f32);
         let mut cumulative = Vec::with_capacity(BINS + 1);
@@ -213,7 +233,7 @@ impl EmitterTable {
     /// `A_c(lambda) = Int_{300}^{lambda} alpha_c`, interpolating the table.
     fn excitation_area(&self, lambda_nm: f32) -> f32 {
         let pos = lambda_nm.clamp(EXCITATION_MIN_NM, EMISSION_MAX_NM) - EXCITATION_MIN_NM;
-        let i = (pos.floor() as usize).min(BINS - 1);
+        let i = floor_to_bin(pos).min(BINS - 1);
         let frac = pos - i as f32;
         frac.mul_add(
             self.cumulative[i + 1] - self.cumulative[i],
@@ -369,7 +389,7 @@ impl Fluorescence {
                     .map(|t| t.yield_density(lambda) * t.excitation_area(lambda))
                     .sum()
             };
-            let bins = CAMERA_SPAN_NM as usize;
+            let bins = floor_to_bin(CAMERA_SPAN_NM);
             let mut cdf = Vec::with_capacity(bins + 1);
             cdf.push(0.0f64);
             let mut prev = mu(0);
@@ -380,6 +400,10 @@ impl Fluorescence {
                 prev = next;
             }
             let total = cdf[bins];
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the table precision; the normalised CDF is within 0..=1"
+            )]
             let guide_cdf = if total > 0.0 && total.is_finite() {
                 cdf.iter().map(|&c| (c / total) as f32).collect()
             } else {
@@ -434,7 +458,7 @@ impl Fluorescence {
             return 0.0;
         }
         let bins = cdf.len() - 1;
-        let i = ((lambda_nm - CAMERA_MIN_NM).floor().max(0.0) as usize).min(bins - 1);
+        let i = floor_to_bin((lambda_nm - CAMERA_MIN_NM).max(0.0)).min(bins - 1);
         cdf[i + 1] - cdf[i]
     }
 
@@ -538,10 +562,10 @@ pub(crate) fn sample_vertex(
     u_emitter: f32,
     u_lambda: f32,
 ) -> Option<FluorescenceVertex> {
-    let lambda_ex = fluorescence.sample_excitation(lambda_em, u_emitter, u_lambda)?;
+    let excitation_nm = fluorescence.sample_excitation(lambda_em, u_emitter, u_lambda)?;
     Some(FluorescenceVertex {
-        lambda_ex,
-        energy_ratio: lambda_ex / lambda_em,
+        lambda_ex: excitation_nm,
+        energy_ratio: excitation_nm / lambda_em,
     })
 }
 
@@ -594,6 +618,11 @@ mod tests {
         for lambda_em in [450.0f32, 560.0, 693.0, 694.0, 695.0] {
             // Independent of the table: fine quadrature of the analytic bands.
             let steps = (lambda_em - EXCITATION_MIN_NM) * 20.0;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "lambda_em is at least 450, so the step count is positive and small"
+            )]
             let n = steps as usize;
             let area: f64 = (0..n)
                 .map(|i| {
@@ -663,7 +692,7 @@ mod tests {
         let fl = Fluorescence::new(vec![emitter.clone()]);
 
         let draws = 2000u32;
-        let mut emitted = 0.0f64;
+        let mut emitted_energy = 0.0f64;
         for lambda_em in 380..=780 {
             let lambda_em = lambda_em as f32;
             let mu_f = f64::from(fl.pseudo_extinction(lambda_em));
@@ -677,7 +706,7 @@ mod tests {
                     ratio += f64::from(v.energy_ratio);
                 }
             }
-            emitted += mu_f * ratio / f64::from(draws);
+            emitted_energy += mu_f * ratio / f64::from(draws);
         }
 
         // Brute force from the analytic bands, no tables.
@@ -691,24 +720,33 @@ mod tests {
             let lambda_em = lambda_em as f32;
             let f = f64::from(emitter.emission_density(lambda_em));
             let mut inner = 0.0f64;
-            for i in 0..((lambda_em - 300.0) * 10.0) as usize {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "lambda_em is 380..=780, so the step count is a positive value below 5000"
+            )]
+            let inner_steps = ((lambda_em - 300.0) * 10.0) as usize;
+            for i in 0..inner_steps {
                 let l = (i as f32 + 0.5).mul_add(0.1, 300.0);
                 inner = (f64::from(emitter.excitation_absorption(l)) * 0.1)
                     .mul_add(f64::from(l / lambda_em), inner);
             }
             expected = f.mul_add(inner, expected);
         }
-        let rel = (emitted - expected).abs() / expected;
+        let rel = (emitted_energy - expected).abs() / expected;
         assert!(
             rel < 0.01,
-            "emitted {emitted} vs expected {expected} ({rel})"
+            "emitted {emitted_energy} vs expected {expected} ({rel})"
         );
         assert!(
-            emitted < absorbed * 1.01,
-            "emitted {emitted} exceeds the absorbed energy {absorbed}"
+            emitted_energy < absorbed * 1.01,
+            "emitted {emitted_energy} exceeds the absorbed energy {absorbed}"
         );
         // And it is not trivially tiny: a real fraction of the absorbed energy.
-        assert!(emitted > 0.3 * absorbed, "{emitted} vs {absorbed}");
+        assert!(
+            emitted_energy > 0.3 * absorbed,
+            "{emitted_energy} vs {absorbed}"
+        );
     }
 
     /// The camera-wavelength mixture is a proper density: with weight `1 / (400 p)`, the

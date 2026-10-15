@@ -1,6 +1,6 @@
 # 13. The Solid Inspection View
 
-## What you will do
+## What You Will Do
 
 This chapter covers the Edit tab's Solid viewport: a second, independent
 view of your design's actual solved shape, shown alongside the ordinary
@@ -10,7 +10,7 @@ and click do, the hatched and outlined
 overlays, and what the "Not solved" banner means here versus in Chapter 5
 — including the case where an edit genuinely does not solve at all.
 
-## Why a second viewport
+## Why a Second Viewport
 
 The Live Render viewport shows a physically based spectral render — the
 gem as light actually behaves in it, in whatever material you have chosen.
@@ -20,15 +20,17 @@ flat-shaded rendering of the same solved geometry, built for one job:
 letting you see and pick individual facets while you edit, updated after
 almost every change — not just after Solve.
 
-## The four view modes
+## The Four View Modes
+
+![The Solid view mode of the inspection viewport.](../../../../assets/solid_rendering.png)
 
 Four buttons sit above the Solid viewport:
 
 - **Solid** — the flat-shaded software render, independent of the spectral
   path tracer.
-- **Path-traced** — the same image the Live Render tab shows, forwarded
+- **Path-Traced** — the same image the Live Render tab shows, forwarded
   here so you can compare without switching tabs. Hover and click picking
-  still work here (see "Hovering and clicking a facet" below); you just
+  still work here (see "Hovering and Clicking a Facet" below); you just
   won't see the facet tint or edges the Solid render draws underneath.
 - **Both** — the path-traced image with the solid's own facet edges drawn
   on top of it, so you can see exactly which facet boundaries line up with
@@ -41,21 +43,21 @@ settings are stored generally).
 
 **The toolbar and the hint strip.** Every button above the viewport has a hover note
 that says what it does, and you can reach each one with the Tab key and press it with
-Space or Enter; the viewport itself shows a coloured outline while it has the keyboard.
+Space or Enter; the viewport itself shows a colored outline while it has the keyboard.
 A round **?** at the end of the toolbar opens this chapter. Simple mode (Chapter 17) hides
-the **Tilt Curve** and **Save View Preset** buttons; **Preform**, **Snap** and **Slice**
+the **Tilt Curve** and **Save Lighting** buttons; **Preform**, **Snap** and **Slice**
 stay. The thin strip under the toolbar shows what the pointer will do and carries its own
 small buttons, each with a hover note too.
 
 ## Orbiting
 
-Drag inside the Solid viewport (in Solid, Path-traced, or Both mode) to
+Drag inside the Solid viewport (in Solid, Path-Traced, or Both mode) to
 orbit, and scroll to zoom. Both are shared with the Live Render viewport —
 orbiting or zooming in one moves the other, so the two views always show
 the stone from the same pose. **Front** and **Top** buttons above the
 viewport snap that shared camera to the same canonical poses Chapter 2
 describes. A drag that barely moves before you release the mouse is still
-treated as a click, not a drag — see "Hovering and clicking a facet" below.
+treated as a click, not a drag — see "Hovering and Clicking a Facet" below.
 
 Diagram mode does not share this camera — its three panels are fixed
 orthographic projections — but dragging and scrolling still do something
@@ -66,7 +68,7 @@ Diagram mode to snap both back to their defaults.
 ## The Cut slider
 
 The small slider in the toolbar, with a short label beside it, lets you
-watch the stone being cut. It works in **Solid**, **Path-traced** and **Both**
+watch the stone being cut. It works in **Solid**, **Path-Traced** and **Both**
 mode, and appears as soon as the design has at least one tier.
 
 - **All the way left is the rough.** The label reads **Rough** and the
@@ -106,7 +108,7 @@ the design and it now has fewer steps than the slider's position, the
 slider goes back to Finished rather than showing a position that no longer
 exists. If the design does not solve at all right now, the rough is still
 drawn (it needs no solved tier), with the banner naming the problem as
-described under "When an edit genuinely does not solve" below. The later
+described under "When an Edit Genuinely Does Not Solve" below. The later
 positions use the last solid that closed; when there is none that still
 fits the design (you added or removed a tier since), they stay blank
 until the edit solves, and the banner says why.
@@ -118,7 +120,7 @@ rather than a path-traced picture of the wrong stone. The Live Render tab
 and the path-traced mode draw from the same geometry, so they follow the cut
 as well; put the slider back to Finished when you want a picture of the
 whole design. Over the Live Render picture a small amber badge says that the
-stone is cut back and has a **Show finished** button that puts the slider
+stone is cut back and has a **Show Finished** button that puts the slider
 back for you. An export, the tilt video and the tilt curves never use the cut
 stone; they always draw the finished gem (Chapter 9).
 
@@ -131,10 +133,12 @@ also put the slider back to Finished.
 **The Optimize and Retarget previews** are cut to the slider too: with the
 slider on step 3, a candidate shows its own first three tiers.
 
-## Diagram view
+## Diagram View
 
 Diagram mode draws your design the way a faceting reference diagram
 usually does: three flat panels side by side.
+
+![The Diagram view with all panels and the Schedule tab.](../../../../assets/diagram_view.png)
 
 - **Crown** — looking straight down at the top of the stone.
 - **Pavilion** — looking straight up at the bottom of the stone. Because
@@ -165,16 +169,16 @@ three panels and its tier is selected in the Cutting Instructions list below,
 the same as clicking the Solid render. The exact facet you clicked is
 remembered the same way too, so switching between the Diagram and the Solid
 view keeps the same facet picked, and the drag handles (see "Handles in the
-Diagram view" below) sit on it. Hovering a facet draws it on top of the
+Diagram View" below) sit on it. Hovering a facet draws it on top of the
 selected tier's tint instead of replacing the tint. This click-to-select mapping is
 built the moment the diagram is (re)drawn in Diagram mode, so if you switch
 into Diagram mode and click immediately, before the panels have redrawn
 for the current design, the click does nothing; give it a moment (or make
 any edit, which redraws it) and clicking will work as described.
 
-## Hovering and clicking a facet
+## Hovering and Clicking a Facet
 
-Move the mouse over the viewport in **Solid**, **Path-traced**, or **Both**
+Move the mouse over the viewport in **Solid**, **Path-Traced**, or **Both**
 mode and a small tooltip panel appears in the lower-left corner, naming:
 
 - the tier the facet belongs to,
@@ -188,7 +192,7 @@ mode and a small tooltip panel appears in the lower-left corner, naming:
 **Click** a facet to select its whole tier in the Cutting Instructions list
 below — the row highlights, and every facet belonging to that tier (its
 whole symmetric orbit, not just the one you clicked) is tinted in the
-viewport. This also works in Path-traced mode, even though the tint itself
+viewport. This also works in Path-Traced mode, even though the tint itself
 is harder to see without the Solid render's own facet edges under it;
 switch to Both if you want to see exactly which facet you picked. This
 works in reverse too: click a row in the tier list, and its facets tint in
@@ -199,11 +203,11 @@ A tool facet of a concave tier (a groove or a dimple) works the same way: clicki
 it, in the Solid view or the diagram, selects its concave row and opens the
 concave form, and selecting a concave row tints all of its tool facets (Chapter 16).
 
-## Dragging a facet: the angle, depth and index handles
+## Dragging a Facet: The Angle, Depth and Index Handles
 
 Once a tier is selected (by clicking one of its facets, or by clicking its
 row in the tier list) and the design is solved, three handles grow out of
-that facet's centre in **Solid**, **Path-traced**, and **Both** mode. Each
+that facet's centre in **Solid**, **Path-Traced**, and **Both** mode. Each
 is a colored line ending in a marker with a letter beside it, and each
 drags the **whole tier** — every facet of its symmetric orbit — not just
 the facet you grabbed:
@@ -253,7 +257,7 @@ whenever the solid on screen is behind the design you are editing; they come
 back when the preview catches up. The Diagram view has handles of its own,
 described next.
 
-## Handles in the Diagram view
+## Handles in the Diagram View
 
 The same three handles work in **Diagram** mode, on the flat panels. Select a
 tier (click one of its facets in any panel, or click its row in the tier list)
@@ -263,6 +267,8 @@ the same hint line, the same orange outline on the tiers that follow, one
 undo step for the whole drag, a toast when you let go, and **Escape** while
 dragging puts the design back as it was. The **Snap** pill is shown in
 Diagram mode too and does the same thing; hold **Shift** for fine steps.
+
+![The Diagram view with the Crown panel enlarged.](../../../../assets/diagram_view_detail.png)
 
 **One panel at a time.** The handles sit on the panel your pointer last
 entered, as long as that panel offers handles for the facet; move the pointer
@@ -309,11 +315,11 @@ dragging a handle, so the picture holds still under your pointer.
 not available in Diagram mode. While a Slice tier is waiting to be kept or
 discarded, the Diagram view shows no handles; keep or discard it first.
 
-## Slicing a new facet with the mouse
+## Slicing a New Facet with the Mouse
 
 The **Slice** pill in the toolbar (or the **S** key, once you have clicked into
 the viewport) lets you start a new tier by drawing on the stone instead of
-typing an angle and an index. It works in **Solid**, **Path-traced**, and
+typing an angle and an index. It works in **Solid**, **Path-Traced**, and
 **Both** mode. While Slice is on, the pill is lit, the line under the toolbar
 explains what to do, and a left drag draws a line instead of orbiting the
 stone.
@@ -330,7 +336,7 @@ stone.
    free crown or pavilion name (for example C3), and the line under the
    toolbar says how many facets it has, its angle and its index. If the side
    is the wrong way round, press **Flip** (or **F**): the same line is used, the
-   other side is cut away. (In **Path-traced** mode the picture is the render
+   other side is cut away. (In **Path-Traced** mode the picture is the render
    of the committed design, which does not include the new tier until you keep
    it, so there the provisional facet shows only as its handles; use **Solid**
    or **Both** to see the cut.)
@@ -342,7 +348,7 @@ stone.
    facet starts exactly touching the stone, so it cuts nothing at first: the
    line under the toolbar says "Drag the depth handle inward first", and
    **Keep** refuses (with the same message) until the facet actually touches
-   the stone. You can orbit, zoom, or switch between Solid, Path-traced and Both
+   the stone. You can orbit, zoom, or switch between Solid, Path-Traced and Both
    while you work; the provisional facet stays on screen. If the Cut slider
    is set short of the new tier, the line under the toolbar asks you to move
    it to the end.
@@ -364,7 +370,7 @@ on its own with a short message saying so, rather than being kept against a
 design it was not cut from. Clicking a facet in the viewport selects nothing
 until you Keep or Discard.
 
-## The two overlays
+## The Two Overlays
 
 Two visual cues appear directly on the solid, independent of hover/click:
 
@@ -375,10 +381,10 @@ Two visual cues appear directly on the solid, independent of hover/click:
   surfaced directly on the geometry.
 - **Outlined-in-a-different-color facets** — a facet outlined rather than
   its usual dark edge color marks a tier whose edit has not been folded
-  into the shown solid yet (see "Live update and the 'Not solved' banner"
+  into the shown solid yet (see "Live Update and the 'Not Solved' Banner"
   below).
 
-## Live update and the "Not solved" banner
+## Live Update and the "Not Solved" Banner
 
 Unlike the Live Render viewport, most edits *do* update the Solid view —
 a single tier's angle, name, or indices change is normally resolved and
@@ -416,7 +422,7 @@ a wrong mast value flash by; it is simply slightly more likely to show the
 "Not solved" banner briefly on a large design until that background solve
 finishes.
 
-## When an edit genuinely does not solve
+## When an Edit Genuinely Does Not Solve
 
 The case above is about a background resolve simply taking a moment. A
 different case is an edit that does not solve at all right now — a missing
@@ -428,7 +434,7 @@ last good shape while you fix the edit that broke it. The banner
 underneath names the actual problem (the same wording Chapter 5's status
 strip shows), not the generic "showing the last solved solid" text above.
 
-## Next steps
+## Next Steps
 
 Chapter 5 covers the ordinary Solve action and its own status strip in
 full; Chapter 6 covers the refractive-index margin the hatched-facet

@@ -72,7 +72,7 @@ fn confirm_concave_loss_then(
         None => proceed(ui),
         Some(notice) => crate::gui::editor::native_io::ask_write_confirm(
             ui,
-            "Concave tiers are not part of this format",
+            "Concave Tiers Are Not Part of This Format",
             format!("{notice}\n\nExport anyway?"),
             "Export Anyway",
             None,
@@ -130,85 +130,101 @@ pub fn setup_export_asc_callback(
             return;
         }
 
-        let full = {
-            let db = db_export
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            db.get_diagram_full(i64::from(entry_id))
-        };
-        let Ok(Some(full)) = full else {
-            show_toast(&ui, "Diagram detail not found.", "error");
-            return;
-        };
-
-        // Whether a stored `.asc` attachment exists (exported unchanged, same path
-        // `gui::library::detail::export_diagram_file` uses for the
-        // Attachments tab) or one has to be reconstructed below, both branches now
-        // write to a user-chosen destination rather than silently into `./exports/`
-        // -- one Save As dialog shared by both, prompted BEFORE either does any work,
-        // so cancelling writes nothing either way (same cancel rule as
-        // `gui::library::detail::export_diagram_file_via_source`).
-        let existing_name = full
-            .attached_files
-            .iter()
-            .find(|f| f.name.to_lowercase().ends_with(".asc"))
-            .map(|f| f.name.clone());
-        let default_file_name = existing_name.clone().unwrap_or_else(|| {
-            // A `.gem`/`.gcs`-only design exports its converted cutting
-            // instructions under `<stem>.asc` (see `finish_export_asc`).
-            local::design_attachment_position(full.attached_files.iter().map(|f| f.name.as_str()))
-                .map_or_else(
-                    || format!("{}.asc", sanitize_filename(&full.title)),
-                    |(position, _)| {
-                        local::converted_asc_file_name(&full.attached_files[position].name)
-                    },
-                )
-        });
-
-        // The save-as picker runs off the UI thread via `gui::pickers::pick` --
-        // everything below (the stored-bytes export or the reconstruct-and-write
-        // path) stays synchronous, running once the picker's continuation lands
-        // back on the UI thread.
-        let default_dir = std::path::Path::new("exports");
-        let db_for_pick = Arc::clone(&db_export);
-        // Only the reconstruction loses anything: a stored `.asc` is exported as it
-        // is (its concave tiers already are footnotes) and a `.gem`/`.gcs` cannot
-        // hold a concave tier to begin with.
-        let notice = (existing_name.is_none()
-            && local::design_attachment_position(
-                full.attached_files.iter().map(|f| f.name.as_str()),
-            )
-            .is_none())
-        .then(|| concave_export_notice(&full))
-        .flatten();
-        confirm_concave_loss_then(&ui, notice, move |ui| {
-            crate::gui::pickers::pick(
-                ui,
-                crate::gui::pickers::PickerRequest {
-                    kind: crate::gui::pickers::PickerKind::SaveFile,
-                    title: None,
-                    filters: vec![crate::gui::pickers::PickerFilter {
-                        label: ".asc design".to_string(),
-                        extensions: vec!["asc".to_string()],
-                    }],
-                    default_file_name: Some(default_file_name),
-                    starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
-                },
-                move |ui, dest_path| {
-                    finish_export_asc(
-                        ui,
-                        &db_for_pick,
-                        entry_id,
-                        &full,
-                        existing_name,
-                        dest_path,
-                    );
-                },
-            );
+        // The record (attachment bytes included) is read on a worker; the dialogs
+        // continue from the event loop once it lands.
+        let db_for_start = Arc::clone(&db_export);
+        read_full_record_then(&ui, &db_export, i64::from(entry_id), move |ui, full| {
+            start_asc_export(ui, &db_for_start, entry_id, full);
         });
     });
 
     setup_export_gcs_callback(ui, db, source);
+}
+
+/// Reads `entry_id`'s full record (every attachment's bytes) on a worker thread over a
+/// read-only connection, then runs `then` with it on the UI thread -- or toasts "not
+/// found". The export callbacks used to take the record on the UI thread under the
+/// shared database lock (perf review UI-5).
+fn read_full_record_then(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    entry_id: i64,
+    then: impl FnOnce(&MainWindow, indicatrix_vault::model::entry::FullDiagramRecord) + Send + 'static,
+) {
+    let db = Arc::clone(db);
+    let ui_weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let full =
+            crate::gui::library::read_access::with_read_db(&db, |db| db.get_diagram_full(entry_id));
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| match full {
+            Ok(Some(full)) => then(&ui, full),
+            _ => show_toast(&ui, "Diagram detail not found.", "error"),
+        });
+    });
+}
+
+/// The body of "Export .asc" once the record is in hand: picks the default file name,
+/// asks about concave tiers if the reconstruction would lose them, then opens the
+/// Save As dialog.
+fn start_asc_export(
+    ui: &MainWindow,
+    db_export: &Arc<Mutex<Database>>,
+    entry_id: i32,
+    full: indicatrix_vault::model::entry::FullDiagramRecord,
+) {
+    // Whether a stored `.asc` attachment exists (exported unchanged, same path
+    // `gui::library::detail::export_diagram_file` uses for the
+    // Attachments tab) or one has to be reconstructed below, both branches now
+    // write to a user-chosen destination rather than silently into `./exports/`
+    // -- one Save As dialog shared by both, prompted BEFORE either does any work,
+    // so cancelling writes nothing either way (same cancel rule as
+    // `gui::library::detail::export_diagram_file_via_source`).
+    let existing_name = full
+        .attached_files
+        .iter()
+        .find(|f| f.name.to_lowercase().ends_with(".asc"))
+        .map(|f| f.name.clone());
+    let default_file_name = existing_name.clone().unwrap_or_else(|| {
+        // A `.gem`/`.gcs`-only design exports its converted cutting
+        // instructions under `<stem>.asc` (see `finish_export_asc`).
+        local::design_attachment_position(full.attached_files.iter().map(|f| f.name.as_str()))
+            .map_or_else(
+                || format!("{}.asc", sanitize_filename(&full.title)),
+                |(position, _)| local::converted_asc_file_name(&full.attached_files[position].name),
+            )
+    });
+
+    // The save-as picker runs off the UI thread via `gui::pickers::pick` --
+    // everything below (the stored-bytes export or the reconstruct-and-write
+    // path) runs once the picker's continuation lands back on the UI thread.
+    let default_dir = std::path::Path::new("exports");
+    let db_for_pick = Arc::clone(db_export);
+    // Only the reconstruction loses anything: a stored `.asc` is exported as it
+    // is (its concave tiers already are footnotes) and a `.gem`/`.gcs` cannot
+    // hold a concave tier to begin with.
+    let notice = (existing_name.is_none()
+        && local::design_attachment_position(full.attached_files.iter().map(|f| f.name.as_str()))
+            .is_none())
+    .then(|| concave_export_notice(&full))
+    .flatten();
+    confirm_concave_loss_then(ui, notice, move |ui| {
+        crate::gui::pickers::pick(
+            ui,
+            crate::gui::pickers::PickerRequest {
+                kind: crate::gui::pickers::PickerKind::SaveFile,
+                title: None,
+                filters: vec![crate::gui::pickers::PickerFilter {
+                    label: ".asc Design".to_string(),
+                    extensions: vec!["asc".to_string()],
+                }],
+                default_file_name: Some(default_file_name),
+                starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
+            },
+            move |ui, dest_path| {
+                finish_export_asc(ui, &db_for_pick, entry_id, &full, existing_name, dest_path);
+            },
+        );
+    });
 }
 
 /// "Export as Gem Cut Studio (.gcs)..." (experimental) for the selected catalogue
@@ -245,43 +261,45 @@ fn setup_export_gcs_callback(
             show_toast(&ui, "No diagram selected for export.", "error");
             return;
         }
-        let full = db_export
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_diagram_full(i64::from(entry_id));
-        let Ok(Some(full)) = full else {
-            show_toast(&ui, "Diagram detail not found.", "error");
-            return;
-        };
-        let export = match gcs_export_for_record(&full) {
-            Ok(export) => export,
-            Err(message) => {
-                show_toast(&ui, &message, "error");
-                return;
-            }
-        };
-        let default_dir = std::path::Path::new("exports");
-        // An original `.gcs` attachment is written byte for byte; one rebuilt from the
-        // design's schedule has no place for a concave tier.
-        let notice = (!export.is_original)
-            .then(|| concave_export_notice(&full))
-            .flatten();
-        confirm_concave_loss_then(&ui, notice, move |ui| {
-            crate::gui::pickers::pick(
-                ui,
-                crate::gui::pickers::PickerRequest {
-                    kind: crate::gui::pickers::PickerKind::SaveFile,
-                    title: None,
-                    filters: vec![crate::gui::pickers::PickerFilter {
-                        label: "Gem Cut Studio design (.gcs)".to_string(),
-                        extensions: vec!["gcs".to_string()],
-                    }],
-                    default_file_name: Some(export.file_name.clone()),
-                    starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
-                },
-                move |ui, dest_path| finish_export_gcs(ui, &export, dest_path),
-            );
+        // The record is read on a worker; the dialogs continue from the event loop.
+        read_full_record_then(&ui, &db_export, i64::from(entry_id), |ui, full| {
+            start_gcs_export(ui, &full);
         });
+    });
+}
+
+/// The body of "Export as Gem Cut Studio (.gcs)..." once the record is in hand: builds
+/// the file, asks about concave tiers if the rebuild would lose them, then opens the
+/// Save As dialog.
+fn start_gcs_export(ui: &MainWindow, full: &indicatrix_vault::model::entry::FullDiagramRecord) {
+    let export = match gcs_export_for_record(full) {
+        Ok(export) => export,
+        Err(message) => {
+            show_toast(ui, &message, "error");
+            return;
+        }
+    };
+    let default_dir = std::path::Path::new("exports");
+    // An original `.gcs` attachment is written byte for byte; one rebuilt from the
+    // design's schedule has no place for a concave tier.
+    let notice = (!export.is_original)
+        .then(|| concave_export_notice(full))
+        .flatten();
+    confirm_concave_loss_then(ui, notice, move |ui| {
+        crate::gui::pickers::pick(
+            ui,
+            crate::gui::pickers::PickerRequest {
+                kind: crate::gui::pickers::PickerKind::SaveFile,
+                title: None,
+                filters: vec![crate::gui::pickers::PickerFilter {
+                    label: "Gem Cut Studio Design (.gcs)".to_string(),
+                    extensions: vec!["gcs".to_string()],
+                }],
+                default_file_name: Some(export.file_name.clone()),
+                starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
+            },
+            move |ui, dest_path| finish_export_gcs(ui, &export, dest_path),
+        );
     });
 }
 
@@ -472,19 +490,25 @@ fn finish_export_asc(
     };
 
     if let Some(name) = existing_name {
-        match crate::gui::library::detail::export_diagram_file(
-            db,
-            i64::from(entry_id),
-            &name,
-            &dest_path,
-        ) {
-            Ok(msg) => {
-                ui.global::<LibraryModel>()
-                    .set_status_message(msg.clone().into());
-                show_toast(ui, &msg, "success");
-            }
-            Err(e) => show_toast(ui, &e, "error"),
-        }
+        // Reading the attachment and writing the file run on a worker.
+        let db = Arc::clone(db);
+        let ui_weak = ui.as_weak();
+        std::thread::spawn(move || {
+            let result = crate::gui::library::detail::export_diagram_file(
+                &db,
+                i64::from(entry_id),
+                &name,
+                &dest_path,
+            );
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| match result {
+                Ok(msg) => {
+                    ui.global::<LibraryModel>()
+                        .set_status_message(msg.clone().into());
+                    show_toast(&ui, &msg, "success");
+                }
+                Err(e) => show_toast(&ui, &e, "error"),
+            });
+        });
         return;
     }
     // No `.asc` of its own, but a `.gem`/`.gcs`: its converted cutting

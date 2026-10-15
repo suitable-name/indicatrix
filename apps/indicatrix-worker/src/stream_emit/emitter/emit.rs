@@ -32,7 +32,7 @@ pub(in crate::stream_emit) fn effective_cadence_ms(elapsed: Duration, emission_c
     if emission_count < 2 {
         0
     } else {
-        (elapsed.as_millis() / u128::from(emission_count - 1)) as u32
+        u32::try_from(elapsed.as_millis() / u128::from(emission_count - 1)).unwrap_or(u32::MAX)
     }
 }
 
@@ -433,13 +433,13 @@ fn emit_final_display<S: Write>(
         .unwrap_or_else(|| DisplayDenoiser::spawn(&request.scene));
     let dims = (request.scene.width, request.scene.height);
     let total = final_total.unwrap_or_else(|| emitter.running_total());
-    let denoised = denoiser.finish(
+    let filtered = denoiser.finish(
         request.samples,
         total,
         super::super::HEARTBEAT_INTERVAL,
         || emit_progress_heartbeat(stream, request, state, emission_count),
     )?;
-    let written = match denoised {
+    let written = match filtered {
         Some(rgba) => super::picture::write_display_rgba(
             stream,
             request.request_id,

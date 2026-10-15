@@ -49,6 +49,10 @@ pub(super) const fn wants_display_only(
 
 /// Everything [`should_redispatch`] looks at, as plain booleans read by the poll tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "plain predicate inputs read by the poll tick; fields are independent switches"
+)]
 pub(super) struct RedispatchInputs {
     /// The handoff machine is `Idle`: no drag, no settle or epoch in progress.
     pub(super) handoff_idle: bool,

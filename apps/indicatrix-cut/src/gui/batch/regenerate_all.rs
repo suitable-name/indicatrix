@@ -111,15 +111,15 @@ fn designs(count: usize) -> String {
 /// The "missing or outdated only" pill's text: `None` while the scan is still counting.
 pub(in crate::gui) fn missing_choice_label(count: Option<usize>) -> String {
     match count {
-        None => "Missing or outdated only (counting...)".to_string(),
+        None => "Missing or Outdated Only (counting...)".to_string(),
         Some(0) => "All designs are up to date".to_string(),
-        Some(n) => format!("Missing or outdated only ({})", designs(n)),
+        Some(n) => format!("Missing or Outdated Only ({})", designs(n)),
     }
 }
 
 /// The "all" pill's text.
 pub(in crate::gui) fn all_choice_label(count: usize) -> String {
-    format!("All designs ({count})")
+    format!("All Designs ({count})")
 }
 
 /// Opens the preview confirm step as a regeneration: the designs may already have
@@ -250,8 +250,8 @@ mod tests {
         let all = [1, 2, 3, 5, 8];
         let missing = [8, 3, 7, 9];
         assert_eq!(missing_among(&all, &missing), vec![3, 8]);
-        assert!(missing_among(&all, &[]).is_empty());
-        assert!(missing_among(&[], &missing).is_empty());
+        assert_eq!(missing_among(&all, &[]).len(), 0);
+        assert_eq!(missing_among(&[], &missing).len(), 0);
     }
 
     #[test]
@@ -271,18 +271,18 @@ mod tests {
     fn choice_labels_count_and_pluralise() {
         assert_eq!(
             missing_choice_label(None),
-            "Missing or outdated only (counting...)"
+            "Missing or Outdated Only (counting...)"
         );
         assert_eq!(missing_choice_label(Some(0)), "All designs are up to date");
         assert_eq!(
             missing_choice_label(Some(1)),
-            "Missing or outdated only (1 design)"
+            "Missing or Outdated Only (1 design)"
         );
         assert_eq!(
             missing_choice_label(Some(12)),
-            "Missing or outdated only (12 designs)"
+            "Missing or Outdated Only (12 designs)"
         );
-        assert_eq!(all_choice_label(3299), "All designs (3299)");
+        assert_eq!(all_choice_label(3299), "All Designs (3299)");
     }
 
     #[test]

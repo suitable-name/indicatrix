@@ -34,11 +34,12 @@ pub fn assert_euler_formula(hull: &GemPolyhedron) -> (usize, usize, usize) {
         );
     }
 
+    let signed = |n: usize| i64::try_from(n).expect("a hull element count fits in i64");
     let v = hull.vertices.len();
     let e = edges.len();
     let f = faces.len();
     assert_eq!(
-        v as i64 - e as i64 + f as i64,
+        signed(v) - signed(e) + signed(f),
         2,
         "Euler's formula V - E + F = 2 failed: V={v}, E={e}, F={f}"
     );

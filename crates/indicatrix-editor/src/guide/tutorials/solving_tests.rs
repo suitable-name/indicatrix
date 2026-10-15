@@ -68,9 +68,6 @@ struct Sim {
     solved: bool,
     tab: Option<i32>,
     variants: Vec<Design>,
-    /// The Design Settings panel's Material list holds a pick that Apply Material has not
-    /// written to the design yet.
-    pending_material: Option<String>,
 }
 
 /// What the learner does in one step: nothing for a reading step, otherwise the action.
@@ -91,7 +88,7 @@ const fn act(play: fn(&mut Sim)) -> Move {
     Move::Act(play)
 }
 
-/// A material choice by name, as the Design Settings panel makes it.
+/// A material choice by name, as the Stone tab's Material list makes it.
 fn material(name: &str) -> MaterialSelection {
     MaterialSelection {
         name: Some(name.to_owned()),
@@ -125,7 +122,6 @@ impl Sim {
             solved: false,
             tab: None,
             variants: Vec::new(),
-            pending_material: None,
         }
     }
 
@@ -169,29 +165,12 @@ impl Sim {
         self.solved = false;
     }
 
-    /// Picks `name` in the Design Settings panel's Material list. The panel only marks the pick
-    /// pending (the button reads "Apply Material *"); the design keeps its material until
-    /// [`Self::apply_material`].
-    fn pick_material(&mut self, name: &str) {
-        self.pending_material = Some(name.to_owned());
-    }
-
-    /// The Apply Material button: writes the pending pick to the design.
-    fn apply_material(&mut self) {
-        let name = self
-            .pending_material
-            .take()
-            .expect("a material was picked before Apply Material");
-        self.apply(Edit::SetMaterial {
-            material: material(&name),
-        });
-    }
-
-    /// What the lessons tell the learner to do: pick `name` in the Material list, then click
-    /// Apply Material.
+    /// What the lessons tell the learner to do: pick `name` in the Stone tab's Material list.
+    /// The pick is written to the design at once (one undo step); there is no Apply button.
     fn set_material(&mut self, name: &str) {
-        self.pick_material(name);
-        self.apply_material();
+        self.apply(Edit::SetMaterial {
+            material: material(name),
+        });
     }
 
     /// Ctrl+Z.
@@ -361,11 +340,12 @@ fn the_lessons_use_only_plain_characters() {
     }
 }
 
-/// The Material list only marks a pick as pending; the design's material is written by Apply
-/// Material. So a step that waits for a material must say "click Apply Material", keep the
-/// Design Settings panel usable, and stay open after the pick alone.
+/// The Stone tab's Material list writes the design's material at once, with no Apply button. So
+/// a step that waits for a material must send the learner to the Stone tab (and say so in the
+/// look-for line), keep the controls that tab is gated by usable, outline and open the tab, and
+/// be met by the pick itself. None of the old Design Settings wording may remain.
 #[test]
-fn a_material_step_waits_for_apply_material_and_says_so() {
+fn a_material_step_sends_the_learner_to_the_stone_tab() {
     let mut checked = 0;
     for guide in all_guides() {
         for step in &guide.steps {
@@ -377,27 +357,32 @@ fn a_material_step_waits_for_apply_material_and_says_so() {
             assert!(
                 step.actions
                     .iter()
-                    .any(|action| action.contains("Click Apply Material")),
-                "{at}: the actions never tell the learner to click Apply Material"
+                    .any(|action| action.contains("Stone tab of the Parameters dock")),
+                "{at}: the actions never send the learner to the Stone tab"
             );
             assert!(
-                step.check.contains("Apply Material"),
-                "{at}: the look-for line does not mention Apply Material: {:?}",
+                step.check.contains("Stone tab"),
+                "{at}: the look-for line does not mention the Stone tab: {:?}",
                 step.check
             );
+            for line in step.actions.iter().chain([&step.check, &step.why]) {
+                assert!(
+                    !line.contains("Apply Material") && !line.contains("Design Settings"),
+                    "{at}: stale wording about the old Design Settings material block: {line:?}"
+                );
+            }
             assert!(
                 step.allow.contains(&Group::DesignSettings),
-                "{at}: the Apply Material button is locked"
+                "{at}: the Stone tab's material controls are locked"
+            );
+            assert_eq!(
+                step.highlight_target, "stone_tab",
+                "{at}: the step must outline (and open) the Stone tab"
             );
             let mut sim = Sim::start(&guide.starting_state);
             assert!(!sim.met(&step.goal), "{at}: already met");
-            sim.pick_material(name);
-            assert!(
-                !sim.met(&step.goal),
-                "{at}: the pick alone must not finish the step"
-            );
-            sim.apply_material();
-            assert!(sim.met(&step.goal), "{at}: Apply Material must finish it");
+            sim.set_material(name);
+            assert!(sim.met(&step.goal), "{at}: the pick must finish it");
         }
     }
     assert!(

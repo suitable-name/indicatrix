@@ -260,10 +260,12 @@ fn cut_planes_world(
         .into_iter()
         .skip(base_facets)
         .map(|(normal, offset)| {
-            (
-                normal.as_vec3(),
-                ((offset - normal.dot(frame.centre)) * frame.scale) as f32,
-            )
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the GPU precision; the offset is in the normalised world frame"
+            )]
+            let world_offset = ((offset - normal.dot(frame.centre)) * frame.scale) as f32;
+            (normal.as_vec3(), world_offset)
         })
         .collect()
 }
@@ -278,11 +280,16 @@ impl ModelScene {
             .base
             .to_halfspaces(false)
             .map_or(0, |planes| planes.len());
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the GPU precision; the extents are in the normalised world frame"
+        )]
+        let half_extents = extents.map(|e| (e * frame.scale * 0.5) as f32);
         Self {
             mesh: world_mesh(centred_mm, frame.scale),
             base_facets,
             cut_count: model.cuts.len(),
-            half_extents: extents.map(|e| (e * frame.scale * 0.5) as f32),
+            half_extents,
             block: matches!(model.base, RoughBase::Block { .. }),
             cut_planes: cut_planes_world(model, base_facets, &frame),
         }
@@ -459,9 +466,8 @@ impl FitScene {
 
     /// Colours the facets of the stones that have a colour in `colours` (one entry per stone,
     /// `None` keeps the palette colour). A stone drawn as a grey box because its design is gone or
-    /// unreadable keeps its grey: that colour is the warning. `zoning` builds only; this is how
+    /// unreadable keeps its grey: that colour is the warning. This is how
     /// the planner shows the colour of a plan that has a rough colour.
-    #[cfg(feature = "zoning")]
     pub(super) fn apply_stone_colours(&mut self, colours: &[Option<[u8; 3]>]) {
         for (stone, span) in self.stone_starts.windows(2).enumerate() {
             let Some(Some(colour)) = colours.get(stone) else {
@@ -587,8 +593,11 @@ fn recorded_width_mm(stone: &PlacedStone) -> Option<f64> {
 /// The pose of `stone` with its scale changed so a design mesh whose caliper width is
 /// `width_units` model units is as wide as the width the plan recorded; the second
 /// value tells whether the scale was changed. A pose or mesh without a usable width
-/// keeps the plan's scale.
-fn rescaled_pose(stone: &PlacedStone, width_units: f64) -> (StonePose, bool) {
+/// keeps the plan's scale. ("Open in Editor" places a changed design the same way.)
+pub(in crate::gui::rough_plan) fn rescaled_pose(
+    stone: &PlacedStone,
+    width_units: f64,
+) -> (StonePose, bool) {
     let mut pose = stone.pose;
     match recorded_width_mm(stone) {
         Some(width_mm) if width_units.is_finite() && width_units > 0.0 => {

@@ -97,8 +97,9 @@ pub enum LiveTransfer {
 }
 
 impl LiveTransfer {
-    /// Index of the settings dialog's "Live transfer" pill (0 = Full data, 1 = Final
+    /// Index of the Parameters panel's "Live transfer" pill (0 = Full data, 1 = Final
     /// picture).
+    #[cfg(test)]
     #[must_use]
     pub const fn index(self) -> i32 {
         match self {
@@ -108,6 +109,7 @@ impl LiveTransfer {
     }
 
     /// Inverse of [`Self::index`]; anything but `1` is `FullData`.
+    #[cfg(test)]
     #[must_use]
     pub const fn from_index(index: i32) -> Self {
         if index == 1 {
@@ -129,7 +131,7 @@ pub struct RemoteEndpoint {
     pub connection: WorkerSettings,
     /// The default "Transfer" choice of the export dialog and the tilt-video section.
     pub export_transfer: ExportTransfer,
-    /// The live view's transfer choice (settings dialog, next to "Live Compute").
+    /// The live view's transfer choice (Parameters panel, next to "Live Compute").
     pub live_transfer: LiveTransfer,
 }
 

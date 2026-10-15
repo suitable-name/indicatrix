@@ -501,7 +501,7 @@ fn abandon_compare(ui: &MainWindow, message: &str) {
     show_toast(ui, message, "info");
 }
 
-/// The design inside the `.indicatrix` file at `path`.
+/// The design inside the design file (`.isdd`, or a legacy `.indicatrix`) at `path`.
 fn read_design_file(path: &Path) -> Result<Design, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("The file cannot be read. {error}"))?;
@@ -510,7 +510,7 @@ fn read_design_file(path: &Path) -> Result<Design, String> {
         .map_err(|error| format!("The file cannot be opened as a design. {error}"))
 }
 
-/// The saved `.indicatrix` file, or for a design that came from a bare `.asc` the text of
+/// The saved `.isdd` file, or for a design that came from a bare `.asc` the text of
 /// that file.
 fn compare_with_saved_file(ui: &MainWindow, deps: &Deps, token: u64) {
     let model = ui.global::<RawTextModel>();

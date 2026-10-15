@@ -72,7 +72,7 @@ fn json_report(
 ///
 /// The design is solved and its stone checked. A design that does not solve and close is
 /// reported (the report is the stdout text) and ends with exit code 2, and nothing is written.
-/// Otherwise `--out` saves the design as a `.indicatrix` file, which is also how an `.asc`,
+/// Otherwise `--out` saves the design as a `.isdd` file, which is also how an `.asc`,
 /// `.gem` or `.gcs` file is converted.
 ///
 /// # Errors
@@ -97,7 +97,7 @@ pub fn run(args: &SolveArgs) -> CommandResult {
         });
     }
     let (mut outcome, written) = if let Some(path) = &args.out {
-        let text = loaded.indicatrix_text(&loaded.design, &catalogue)?;
+        let text = loaded.design_text(&loaded.design, &catalogue)?;
         (
             Outcome::default().with_file(path.clone(), text),
             Some(path.to_string_lossy().into_owned()),
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_text_report_says_solved_and_closed() {
-        let loaded = Loaded::in_memory(testing::template(), "round.indicatrix");
+        let loaded = Loaded::in_memory(testing::template(), "round.isdd");
         let analysis = analyze(&loaded.design);
         let report = text_report(&loaded, &analysis);
         assert!(report.contains("Solve:    solved ("), "{report}");
@@ -135,21 +135,21 @@ mod tests {
 
     #[test]
     fn the_json_report_carries_the_problem_and_the_file() {
-        let loaded = Loaded::in_memory(testing::template(), "round.indicatrix");
+        let loaded = Loaded::in_memory(testing::template(), "round.isdd");
         let analysis = analyze(&loaded.design);
-        let text = json_report(&loaded, &analysis, None, Some("out.indicatrix"));
+        let text = json_report(&loaded, &analysis, None, Some("out.isdd"));
         let value: Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(value["solved"], true);
         assert_eq!(value["closure"], "closed");
         assert_eq!(value["problem"], Value::Null);
-        assert_eq!(value["written"], "out.indicatrix");
+        assert_eq!(value["written"], "out.isdd");
         assert!(value["warnings"].is_array());
     }
 
     #[test]
     fn end_to_end_solve_saves_a_file_that_opens_again() {
-        let input = testing::write_design("solve-e2e.indicatrix", &testing::template());
-        let target = testing::temp_path("solve-e2e-saved.indicatrix")
+        let input = testing::write_design("solve-e2e.isdd", &testing::template());
+        let target = testing::temp_path("solve-e2e-saved.isdd")
             .to_string_lossy()
             .into_owned();
         let outcome = testing::run(&["solve", &input, "--out", &target]);
@@ -160,7 +160,7 @@ mod tests {
             outcome.stdout
         );
         let saved = testing::file_text(&outcome, &target).expect("the design is saved");
-        let again = crate::load::from_bytes("saved.indicatrix", saved.as_bytes()).expect("opens");
+        let again = crate::load::from_bytes("saved.isdd", saved.as_bytes()).expect("opens");
         assert_eq!(
             testing::shape(&again.design),
             testing::shape(&testing::template())
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn end_to_end_solve_without_out_writes_nothing() {
-        let input = testing::write_design("solve-e2e-plain.indicatrix", &testing::template());
+        let input = testing::write_design("solve-e2e-plain.isdd", &testing::template());
         let outcome = testing::run(&["solve", &input, "--json"]);
         assert_eq!(outcome.exit, EXIT_OK, "{}", outcome.stderr);
         assert_eq!(outcome.files.len(), 0);
@@ -185,8 +185,8 @@ mod tests {
             ScheduleMeta::standard_round_brilliant(),
             Vec::new(),
         );
-        let input = testing::write_design("solve-e2e-empty.indicatrix", &design);
-        let target = testing::temp_path("solve-e2e-empty-out.indicatrix")
+        let input = testing::write_design("solve-e2e-empty.isdd", &design);
+        let target = testing::temp_path("solve-e2e-empty-out.isdd")
             .to_string_lossy()
             .into_owned();
         let outcome = testing::run(&["solve", &input, "--out", &target]);
@@ -202,7 +202,7 @@ mod tests {
             ScheduleMeta::standard_round_brilliant(),
             Vec::new(),
         );
-        let loaded = Loaded::in_memory(design, "empty.indicatrix");
+        let loaded = Loaded::in_memory(design, "empty.isdd");
         let analysis = analyze(&loaded.design);
         let report = text_report(&loaded, &analysis);
         assert!(report.contains("Tiers:"), "{report}");

@@ -18,13 +18,13 @@
 //! | `optimize` | search the free tier angles, as the Optimize tab does |
 //! | `retarget` | new angles for another material, through the dialog's engine and gate |
 //! | `sweep` | one tier's angle over a range, every angle scored |
-//! | `export` | `.asc`, `.indicatrix`, `.gcs` or the cutting sheet as HTML |
+//! | `export` | `.asc`, `.isdd`, `.gcs` or the cutting sheet as HTML |
 //! | `render` | render a still picture from a render job file (`*.job.json`) |
 //! | `tilt-video` | render a tilt performance video from a render job file; resumes from its frames |
 //!
-//! Designs open from `.indicatrix`, `.asc`, `.gem` and `.gcs` files. Custom materials come from
-//! a design library given with `--db`, opened read-only. Render job files are written by the
-//! desktop app's render queue. See each command's `--help`.
+//! Designs open from `.isdd` (or older `.indicatrix`), `.asc`, `.gem` and `.gcs` files.
+//! Custom materials come from a design library given with `--db`, opened read-only. Render job
+//! files are written by the desktop app's render queue. See each command's `--help`.
 //!
 //! # Exit codes
 //!
@@ -60,6 +60,9 @@ mod outcome;
 mod stone;
 #[cfg(test)]
 mod testing;
+mod update;
+
+pub use update::{NO_UPDATE_CHECK_ENV, NO_UPDATE_CHECK_FLAG, take_update_check};
 
 pub use outcome::{
     EXIT_DESIGN, EXIT_IO, EXIT_OK, EXIT_PROBLEM, EXIT_RENDER, EXIT_USAGE, OutFile, Outcome,
@@ -186,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_file_that_cannot_be_read_is_exit_3() {
-        let outcome = run_command_line(&words("info no-such-folder/no-such-file.indicatrix"));
+        let outcome = run_command_line(&words("info no-such-folder/no-such-file.isdd"));
         assert_eq!(outcome.exit, EXIT_IO, "{}", outcome.stderr);
         assert!(
             outcome.stderr.starts_with("error: cannot read"),
@@ -197,8 +200,8 @@ mod tests {
 
     #[test]
     fn run_writes_the_files_and_says_so() {
-        let input = testing::write_design("lib-run.indicatrix", &testing::template());
-        let target = testing::temp_path("lib-run-out.indicatrix");
+        let input = testing::write_design("lib-run.isdd", &testing::template());
+        let target = testing::temp_path("lib-run-out.isdd");
         let _ = std::fs::remove_file(&target);
         let outcome = run(&[
             "solve".to_string(),
@@ -215,8 +218,8 @@ mod tests {
 
     #[test]
     fn run_ends_with_exit_3_when_a_file_cannot_be_written() {
-        let input = testing::write_design("lib-run-bad.indicatrix", &testing::template());
-        let target = testing::temp_path("no-such-folder").join("out.indicatrix");
+        let input = testing::write_design("lib-run-bad.isdd", &testing::template());
+        let target = testing::temp_path("no-such-folder").join("out.isdd");
         let outcome = run(&[
             "solve".to_string(),
             input,
@@ -233,11 +236,11 @@ mod tests {
 
     #[test]
     fn a_refused_command_leaves_no_file_behind() {
-        let target = testing::temp_path("lib-refused.indicatrix");
+        let target = testing::temp_path("lib-refused.isdd");
         let _ = std::fs::remove_file(&target);
         let outcome = run(&[
             "solve".to_string(),
-            "no-such-file.indicatrix".to_string(),
+            "no-such-file.isdd".to_string(),
             "--out".to_string(),
             target.to_string_lossy().into_owned(),
         ]);

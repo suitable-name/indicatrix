@@ -57,7 +57,7 @@ export component RawTextDialog inherits Rectangle {
 
                 Text {
                     horizontal-stretch: 1;
-                    text: RawTextModel.compare_open ? "Compare the text" : "Edit as Text";
+                    text: RawTextModel.compare_open ? "Compare the Text" : "Edit as Text";
                     font-size: 15px;
                     font-weight: 700;
                     color: Theme.text-primary;
@@ -323,13 +323,13 @@ export component RawTextDialog inherits Rectangle {
                 }
 
                 TipButton {
-                    text: "Keep editing";
+                    text: "Keep Editing";
                     hint: "Go back to the text and keep your edits.";
                     clicked => { RawTextModel.confirm_discard = false; }
                 }
 
                 TipButton {
-                    text: "Discard edits";
+                    text: "Discard Edits";
                     hint: "Close Edit as Text and throw away the edits that were not applied. The design stays as it is.";
                     primary: true;
                     clicked => {
@@ -346,15 +346,15 @@ export component RawTextDialog inherits Rectangle {
 
                 Text {
                     horizontal-stretch: 1;
-                    text: "Compare the text in the box with:";
+                    text: "Compare the Text in the Box With:";
                     font-size: 12px;
                     color: Theme.text-secondary;
                     vertical-alignment: center;
                 }
 
                 TipButton {
-                    text: "Saved file on disk";
-                    hint: "Show the text in the box against the .indicatrix file last saved to disk, line by line.";
+                    text: "Saved File on Disk";
+                    hint: "Show the text in the box against the .isdd file last saved to disk, line by line.";
                     clicked => {
                         root.choosing_source = false;
                         RawTextModel.compare(0);
@@ -386,7 +386,7 @@ export component RawTextDialog inherits Rectangle {
                 alignment: end;
 
                 TipButton {
-                    text: "Back to the text";
+                    text: "Back to the Text";
                     hint: "Leave the comparison and return to the text you were editing.";
                     primary: true;
                     clicked => { RawTextModel.compare_open = false; }
@@ -398,7 +398,7 @@ export component RawTextDialog inherits Rectangle {
                 spacing: 8px;
 
                 TipButton {
-                    text: "Compare with...";
+                    text: "Compare With...";
                     hint: root.editable ? "Show the text in the box against the saved file or the snapshot, line by line." : "The text cannot be compared while it is not shown.";
                     enabled: root.editable;
                     clicked => { root.choosing_source = true; }

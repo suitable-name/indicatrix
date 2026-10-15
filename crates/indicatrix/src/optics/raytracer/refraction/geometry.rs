@@ -68,6 +68,10 @@ pub(crate) struct BounceRefractionGeometry {
 /// material never consults its result (see the biaxial per-channel/per-mode block in
 /// [`compute_bounce_refraction_geometry`] for its own, separate iteration via
 /// `BiaxialIndicatrix::resolve_entry_mode`); callers guard `is_biaxial` themselves.
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names"
+)]
 pub(crate) fn theta_c_for_bounce(
     ctx: &RayMaterialContext,
     normal: Vec3,
@@ -131,6 +135,10 @@ pub(super) fn per_channel_ordinary_indices(ctx: &RayMaterialContext) -> [f32; NU
 /// evaluation against; production tracing uses the cached split form instead, so this
 /// exists only under the `gpu` feature.
 #[cfg(feature = "gpu")]
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names"
+)]
 pub(crate) fn per_channel_uniaxial_indices(
     ctx: &RayMaterialContext,
     theta_c: f32,
@@ -145,9 +153,10 @@ pub(crate) fn per_channel_uniaxial_indices(
         // (Quartz, Amethyst, Citrine and Rutile); falls back to the constant-offset
         // `n_o_k + birefringence_delta` otherwise -- see
         // `GemMaterial::extraordinary_index_at`'s own doc comment.
-        let n_e_k = material.extraordinary_index_at(ctx.lambdas[k], n_o_k);
         n_o_ch[k] = n_o_k;
         n_eff_ch[k] = if is_anisotropic {
+            // Evaluated only on the anisotropic path: `n_e_k` has no other reader.
+            let n_e_k = material.extraordinary_index_at(ctx.lambdas[k], n_o_k);
             BirefringenceParams::effective_extraordinary_index(n_o_k, n_e_k, theta_c)
         } else {
             n_o_k
@@ -159,6 +168,10 @@ pub(crate) fn per_channel_uniaxial_indices(
 /// The per-bounce (`theta_c`-dependent) half of `per_channel_uniaxial_indices`, reading
 /// the theta_c-independent half (`n_o_ch`) back from [`RayWavelengthCache`] instead of
 /// recomputing it.
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names"
+)]
 fn per_channel_effective_extraordinary_indices(
     ctx: &RayMaterialContext,
     n_o_ch: &[f32; NUM_CHANNELS],
@@ -169,8 +182,10 @@ fn per_channel_effective_extraordinary_indices(
     let mut n_eff_ch = [0.0f32; NUM_CHANNELS];
     for k in 0..NUM_CHANNELS {
         let n_o_k = n_o_ch[k];
-        let n_e_k = material.extraordinary_index_at(ctx.lambdas[k], n_o_k);
         n_eff_ch[k] = if is_anisotropic {
+            // Evaluated only on the anisotropic path (PERF-9): 8 lookups per isotropic
+            // bounce were discarded.
+            let n_e_k = material.extraordinary_index_at(ctx.lambdas[k], n_o_k);
             BirefringenceParams::effective_extraordinary_index(n_o_k, n_e_k, theta_c)
         } else {
             n_o_k
@@ -198,6 +213,10 @@ fn per_channel_effective_extraordinary_indices(
 /// modes walk off (see [`poynting_dir_for_mode`]'s doc comment), so `k_hat` here is
 /// genuinely not the same as `Ray::dir`/`S` while inside the crystal in either mode,
 /// unlike the uniaxial ordinary eigenmode.
+#[expect(
+    clippy::similar_names,
+    reason = "mode A/mode B wave directions are the established paired names"
+)]
 fn hero_biaxial_wave_dirs(
     cache: &RayWavelengthCache,
     normal: Vec3,
@@ -231,6 +250,10 @@ fn hero_biaxial_wave_dirs(
 /// at the shared hero wave-normal directions from [`hero_biaxial_wave_dirs`]. Zero
 /// (the array default) for a non-biaxial material or a channel whose indicatrix is
 /// somehow unavailable, matching the pre-extraction code's behaviour exactly.
+#[expect(
+    clippy::similar_names,
+    reason = "mode A/mode B wave directions and index arrays are the established paired names"
+)]
 fn per_channel_biaxial_indices(
     cache: &RayWavelengthCache,
     is_biaxial: bool,
@@ -276,6 +299,10 @@ fn per_channel_medium_indices(
     (n1_ch, n2_ch, sin2_t_ch)
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names; mode A/mode B wave directions are the established paired names; mode A/mode B index arrays are the established paired names; mode A/mode B hero indices are the established paired names"
+)]
 pub(in crate::optics::raytracer) fn compute_bounce_refraction_geometry(
     ctx: &RayMaterialContext,
     cache: &RayWavelengthCache,

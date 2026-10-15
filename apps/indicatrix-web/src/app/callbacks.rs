@@ -12,7 +12,7 @@ use super::{
     solve::auto_solve,
     state::{DesignSource, DesignState},
 };
-use crate::{AppModel, AppWindow, editor::guide, io, render::viewport};
+use crate::{AppModel, AppWindow, RenderModel, editor::guide, io, render::viewport};
 use indicatrix::optics::raytracer::LightingPreset;
 use indicatrix_cut_core::FreshDesignSpec;
 use indicatrix_editor::{
@@ -21,6 +21,7 @@ use indicatrix_editor::{
     loading::{parse_new_design_form, parse_preform_form},
     templates::template_cards,
 };
+use indicatrix_web_core::settings::surface_glare_from_percent;
 use slint::{ComponentHandle, TimerMode};
 
 /// The desktop New Design dialog's preform defaults (`ui/models/editor.slint`:
@@ -64,10 +65,17 @@ fn install_new_design(ctx: &Ctx, template_index: i32) {
         .nth(usize::try_from(template_index).unwrap_or(0))
         .map_or_else(|| "Empty".to_string(), |card| card.name);
     let session = EditorSession::from_template(spec, template_index);
-    ctx.state.borrow_mut().replace_design(DesignState::new(
-        session,
-        DesignSource::Template(name.clone()),
-    ));
+    {
+        let mut app = ctx.state.borrow_mut();
+        app.replace_design(DesignState::new(
+            session,
+            DesignSource::Template(name.clone()),
+        ));
+        // A design the user just created is unsaved until the first save.
+        if let Some(design) = app.design.as_mut() {
+            design.session.mark_unsaved();
+        }
+    }
     if let Some(ui) = ctx.ui.upgrade() {
         push_all(&ui, &ctx.state.borrow());
     }
@@ -118,7 +126,7 @@ fn wire_file_actions(model: &AppModel<'_>, ctx: &Ctx) {
     let c = ctx.clone();
     model.on_save_asc(move || io::save::save_asc(&c));
     let c = ctx.clone();
-    model.on_save_native_pair(move || io::save::save_native_pair(&c));
+    model.on_save_gcs(move || io::save::save_gcs(&c));
     let c = ctx.clone();
     model.on_save_design(move || io::save::save_design(&c));
     let c = ctx.clone();
@@ -169,6 +177,26 @@ fn wire_settings(model: &AppModel<'_>, ctx: &Ctx) {
     });
 }
 
+/// The render settings panel's surface-glare slider: its snapped percent becomes the stored
+/// glare fraction, then the settings persist (which also asks the renderer to sync, so the
+/// live view re-renders). A value equal to the stored one -- the slider echoing a push --
+/// changes nothing.
+fn wire_surface_glare(ui: &AppWindow, ctx: &Ctx) {
+    let c = ctx.clone();
+    ui.global::<RenderModel>()
+        .on_surface_glare_edited(move |percent| {
+            let glare = surface_glare_from_percent(percent);
+            {
+                let mut app = c.state.borrow_mut();
+                if app.settings.surface_glare.to_bits() == glare.to_bits() {
+                    return;
+                }
+                app.settings.surface_glare = glare;
+            }
+            schedule_save(&c);
+        });
+}
+
 /// Orbit and viewport size: kept in `WebApp::view` for the renderer; the
 /// camera is also persisted with the settings. Resizes are debounced and clamped
 /// (`crate::render::viewport`).
@@ -215,5 +243,6 @@ pub fn wire(ui: &AppWindow, ctx: &Ctx) {
     let model = ui.global::<AppModel>();
     wire_file_actions(&model, ctx);
     wire_settings(&model, ctx);
+    wire_surface_glare(ui, ctx);
     wire_viewport(&model, ctx);
 }

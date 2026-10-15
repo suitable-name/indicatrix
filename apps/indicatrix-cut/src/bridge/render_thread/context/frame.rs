@@ -33,6 +33,10 @@ pub fn load_env_map(path: &str) -> Result<Arc<EnvironmentMap>, String> {
 
 /// One frame's worth of inputs read out of `RenderContext` under its lock, copied out
 /// so the mutex guard can be dropped immediately.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors RenderContext's flag fields; fields are independent switches"
+)]
 pub(in crate::bridge::render_thread) struct FrameInputs {
     pub(in crate::bridge::render_thread) width: u32,
     pub(in crate::bridge::render_thread) height: u32,

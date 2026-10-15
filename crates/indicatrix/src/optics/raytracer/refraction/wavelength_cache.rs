@@ -10,6 +10,10 @@ use crate::optics::{
 };
 
 /// Builds [`RayWavelengthCache`] once per sample.
+#[expect(
+    clippy::similar_names,
+    reason = "alpha_o_ch/alpha_e_ch are the established ordinary/extraordinary absorption names"
+)]
 pub(in crate::optics::raytracer) fn build_ray_wavelength_cache(
     ctx: &RayMaterialContext,
 ) -> RayWavelengthCache {
@@ -52,7 +56,6 @@ pub(in crate::optics::raytracer) fn build_ray_wavelength_cache(
         hero_indicatrix,
         biaxial_ch,
         tensor_ch,
-        #[cfg(feature = "zoning")]
         zoned: crate::optics::raytracer::zoned::build_zoned_cache(ctx, is_biaxial),
     }
 }

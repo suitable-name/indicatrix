@@ -101,7 +101,7 @@ fn the_plus_two_preset_is_always_safe_and_never_loses_margin_to_rounding() {
         let presets = angle_presets(AngleSide::Pavilion, n_d, "Test");
         let plus_two = presets
             .iter()
-            .find(|entry| entry.label.starts_with("Critical angle + 2"))
+            .find(|entry| entry.label.starts_with("Critical Angle + 2"))
             .or_else(|| presets.first())
             .expect("a preset");
         let critical = critical_angle_deg(n_d);
@@ -165,7 +165,7 @@ fn standard_for_a_low_index_stone_is_raised_to_the_safe_margin() {
     assert_eq!(windowing_risk(-standard.value_deg, QUARTZ), Risk::Safe);
     // The plus-2 entry repeats that angle and is dropped; plus-4 stays.
     assert_eq!(presets.len(), 2);
-    assert!(presets[1].label.starts_with("Critical angle + 4"));
+    assert!(presets[1].label.starts_with("Critical Angle + 4"));
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn the_plus_four_preset_keeps_four_degrees_of_margin() {
     let critical = critical_angle_deg(DIAMOND);
     let plus_four = presets
         .iter()
-        .find(|entry| entry.label.starts_with("Critical angle + 4"))
+        .find(|entry| entry.label.starts_with("Critical Angle + 4"))
         .expect("plus four");
     assert!(plus_four.value_deg - critical >= 4.0);
     assert!(plus_four.value_deg - critical < 4.0 + ANGLE_STEP_DEG + 1e-9);
@@ -198,15 +198,15 @@ fn crown_presets_are_standard_then_low_medium_high() {
     let values: Vec<f64> = colored.iter().map(|entry| entry.value_deg).collect();
     assert_eq!(values, [35.0, 25.0, 32.0, 40.0]);
     assert_eq!(colored[0].label, "Standard for Sapphire");
-    assert_eq!(colored[1].label, "Low crown");
-    assert_eq!(colored[2].label, "Medium crown");
-    assert_eq!(colored[3].label, "High crown");
+    assert_eq!(colored[1].label, "Low Crown");
+    assert_eq!(colored[2].label, "Medium Crown");
+    assert_eq!(colored[3].label, "High Crown");
     // Diamond's AGS/GIA crown window is 34 to 35.
     let diamond = angle_presets(AngleSide::Crown, DIAMOND, "Diamond");
     assert!((diamond[0].value_deg - 34.5).abs() < 1e-9);
     // Without an index the crown menu still works, on the colored-stone window.
     let no_index = angle_presets(AngleSide::Crown, f64::NAN, "");
-    assert_eq!(no_index[0].label, "Standard for this stone");
+    assert_eq!(no_index[0].label, "Standard for This Stone");
     assert_eq!(no_index[0].value_deg, 35.0);
     let slider = angle_slider(AngleSide::Crown, SAPPHIRE);
     assert!(colored.iter().all(
@@ -218,7 +218,7 @@ fn crown_presets_are_standard_then_low_medium_high() {
 fn a_material_without_a_name_reads_as_this_stone() {
     for name in ["", "  ", "(none)"] {
         let presets = angle_presets(AngleSide::Pavilion, DIAMOND, name);
-        assert_eq!(presets[0].label, "Standard for this stone");
+        assert_eq!(presets[0].label, "Standard for This Stone");
     }
     let named = angle_presets(AngleSide::Pavilion, DIAMOND, " Sapphire ");
     assert_eq!(named[0].label, "Standard for Sapphire");

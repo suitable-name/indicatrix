@@ -70,6 +70,10 @@ pub(super) fn current_drag_held(ctx: &Mutex<RenderContext>) -> bool {
 /// `redraw_from_epoch` (the Slint-event-loop side) must never hold this SAME lock
 /// across its own tonemap/denoise work: doing so would stall that connection-thread
 /// access for however long the redraw took.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "poll-tick state; the flags are independent latches, not a mode"
+)]
 pub(super) struct Orchestrator {
     pub(super) handoff: HandoffMachine,
     /// The handle of the chunk request currently on the wire (for `CANCEL`), `None`
@@ -125,12 +129,11 @@ pub(super) struct Orchestrator {
     /// settle decision (`bridge::remote::live_remote_dispatch`) keeps HDR scenes local
     /// once this says `Some(false)`. Reset wherever `remote_connection` is replaced.
     pub(super) remote_hdr: Option<bool>,
-    /// `zoning` builds: the live remote's zoning capability (`Welcome::zoning`) from its last
+    /// The live remote's zoning capability (`Welcome::zoning`) from its last
     /// `WELCOME`; `None` before the connection first reported one, `Some(false)` for a default
     /// build or a coordinator (`CAPABILITY_CHANGED` always resets it to `false`: a coordinator
     /// never advertises it). The settle decision keeps a zoned stone local once this says
     /// `Some(false)`. Reset wherever `remote_connection` is replaced.
-    #[cfg(feature = "zoning")]
     pub(super) remote_zoning: Option<bool>,
     pub(super) last_pose: Pose,
     /// When the settle debounce last restarted: the last pose change, or the last

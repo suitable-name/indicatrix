@@ -153,9 +153,9 @@ pub(in crate::stream_emit) fn poll_for_client_message<S: Read + TimeoutRead>(
             ClientPoll::Stale
         }
         ClientMessage::Ping { nonce } => ClientPoll::Ping(nonce),
-        // `zoning` builds: the zones of the request pipelined right behind this one. Kept for
+        // The zones of the request pipelined right behind this one. Kept for
         // it (it is read, and served, on this same connection thread).
-        #[cfg(feature = "zoning")]
+        #[cfg(feature = "worker")]
         ClientMessage::ZoningPayload(payload) => {
             crate::serve::zoning::stash(*payload);
             ClientPoll::Stale

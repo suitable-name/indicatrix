@@ -23,7 +23,7 @@ pub(super) struct SaveRequest<'a> {
     pub(super) name: &'a str,
     /// The note, already cleaned; `None` for none.
     pub(super) note: Option<&'a str>,
-    /// The `.indicatrix` text of the design.
+    /// The `.isdd` text of the design.
     pub(super) design_text: &'a str,
     /// The PNG picture, if one could be drawn.
     pub(super) picture_png: Option<&'a [u8]>,

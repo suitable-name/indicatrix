@@ -9,10 +9,10 @@ use super::super::run::{rotate_into_caliper_frame, to_caliper_frame};
 use glam::DVec3;
 use indicatrix::geometry::{
     GpuFacetPlane,
-    stone_metrics::{SolidStatus, build_solid_mesh_geom},
+    stone_metrics::{SolidStatus, build_solid_mesh_geom, measure_solid},
     tool::ToolPrimitive,
 };
-use indicatrix_cut_core::rough_plan::shape::hull::design_outline;
+use indicatrix_cut_core::rough_plan::{DesignPlacement, shape::hull::design_outline};
 use indicatrix_vault::db::sqlite::Database;
 use std::{
     collections::HashMap,
@@ -59,6 +59,11 @@ impl DesignFacet {
 pub(super) struct DesignMesh {
     /// The faces that have a polygon.
     pub(super) facets: Vec<DesignFacet>,
+    /// The design's axis-aligned width in its own model frame, in model units
+    /// (`measure_solid(facet planes).width_axis`, for a design with tools that of the convex
+    /// outline of its carved mesh, as `run::scan` measures it): what the editor's girdle
+    /// diameter is a measurement of. `0.0` when it cannot be measured.
+    pub(super) width_axis_units: f64,
 }
 
 impl DesignMesh {
@@ -222,8 +227,10 @@ pub(super) fn design_mesh_from_planes(
     };
     let mesh_corners = corners_of(&mesh);
     // The planner measures a design with tools from the convex hull of its carved mesh
-    // (`run::scan`), so the frame and the centre come from the same corners. Without
-    // tools every ring corner is used, exactly as before.
+    // (`run::scan`), so the frame and the centre come from the same corners, and so does the
+    // axis-aligned width. Without tools every ring corner is used, exactly as before, and the
+    // width is the flat facet stone's.
+    let mut carved_width_axis = None;
     let corners = if tools.is_empty() {
         mesh_corners
     } else {
@@ -233,9 +240,17 @@ pub(super) fn design_mesh_from_planes(
             .map(DVec3::from_array)
             .collect();
         design_outline(&points).map_or(mesh_corners, |outline| {
+            carved_width_axis = Some(outline.extents.width_axis);
             outline.corners.iter().map(DVec3::to_array).collect()
         })
     };
+    let width_axis_units = carved_width_axis
+        .or_else(|| measure_solid(planes).map(|metrics| metrics.width_axis))
+        .unwrap_or(0.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the corners are deliberately rounded to f32, the storage precision of the design"
+    )]
     let stored: Vec<[f64; 3]> = corners
         .iter()
         .map(|corner| corner.map(|c| f64::from(c as f32)))
@@ -275,7 +290,10 @@ pub(super) fn design_mesh_from_planes(
             })
         })
         .collect();
-    (!facets.is_empty()).then_some(DesignMesh { facets })
+    (!facets.is_empty()).then_some(DesignMesh {
+        facets,
+        width_axis_units,
+    })
 }
 
 /// What one design's slot holds: nothing until it is loaded, then the mesh (or `None` for
@@ -448,40 +466,39 @@ impl MeshLibrary {
 }
 
 /// How a design's model frame relates to the planner's caliper frame, for the corners the planner
-/// measures the design from (`zoning` builds only): the caliper turn of their outline and the
-/// centre of their bounding box in the turned frame. These are the same helpers
-/// [`design_mesh_from_planes`] applies (`rotate_into_caliper_frame`, `caliper_centre`), called in
-/// the same order on the same `f32`-rounded corners, so the placement and the mesh agree.
-#[cfg(feature = "zoning")]
+/// measures the design from: the caliper turn of their outline and the centre of their bounding
+/// box in the turned frame. These are the same helpers [`design_mesh_from_planes`] applies
+/// (`rotate_into_caliper_frame`, `caliper_centre`), called in the same order on the same
+/// `f32`-rounded corners, so the placement and the mesh agree.
 #[must_use]
 pub(in crate::gui::rough_plan) fn placement_from_corners(
     corners: &[[f64; 3]],
-) -> Option<indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement> {
+) -> Option<DesignPlacement> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the corners are deliberately rounded to f32, the storage precision of the design"
+    )]
     let stored: Vec<[f64; 3]> = corners
         .iter()
         .map(|corner| corner.map(|c| f64::from(c as f32)))
         .collect();
     let width_dir = rotate_into_caliper_frame(&stored)?.width_dir;
     let centre = caliper_centre(corners, width_dir);
-    Some(
-        indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement {
-            width_dir,
-            centre_units: centre.to_array(),
-        },
-    )
+    Some(DesignPlacement {
+        width_dir,
+        centre_units: centre.to_array(),
+    })
 }
 
-/// The placement of the stone `planes` bound minus the concave `tools` (`zoning` builds only): the
-/// corners are chosen exactly as [`design_mesh_from_planes`] chooses them (the ring corners of a
-/// planar design, the convex hull of the carved mesh for a design with tools), then
-/// [`placement_from_corners`]. `None` when the planes do not close into a solid or the outline has
-/// no width.
-#[cfg(feature = "zoning")]
+/// The placement of the stone `planes` bound minus the concave `tools`: the corners are chosen
+/// exactly as [`design_mesh_from_planes`] chooses them (the ring corners of a planar design, the
+/// convex hull of the carved mesh for a design with tools), then [`placement_from_corners`].
+/// `None` when the planes do not close into a solid or the outline has no width.
 #[must_use]
 pub(in crate::gui::rough_plan) fn design_placement_from_planes(
     planes: &[(DVec3, f64)],
     tools: &[ToolPrimitive],
-) -> Option<indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement> {
+) -> Option<DesignPlacement> {
     let SolidStatus::Closed(mesh) = build_solid_mesh_geom(planes, tools) else {
         return None;
     };
@@ -505,14 +522,10 @@ pub(in crate::gui::rough_plan) fn design_placement_from_planes(
     placement_from_corners(&corners)
 }
 
-#[cfg(feature = "zoning")]
 impl MeshLibrary {
     /// The placement of design `entry_id` (`None` for a design that is gone, unreadable or has no
     /// solid). Read from the library each time; the caller asks once per design.
-    pub(in crate::gui::rough_plan) fn placement(
-        &self,
-        entry_id: i64,
-    ) -> Option<indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement> {
+    pub(in crate::gui::rough_plan) fn placement(&self, entry_id: i64) -> Option<DesignPlacement> {
         let full = self
             .db
             .lock()

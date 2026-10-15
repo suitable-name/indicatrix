@@ -247,6 +247,10 @@ fn cpu_signed_psi(c: &SignedPsiCase) -> f32 {
 }
 
 /// Runs the signed psi check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_signed_psi(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<SignedPsiCase> {
     let cases = build_signed_psi_cases();
@@ -275,7 +279,9 @@ pub fn run_signed_psi(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         &pipeline,
         &[(8, &in_buf), (9, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -367,6 +373,10 @@ fn cpu_tir_phase_delta(c: &TirPhaseDeltaCase) -> f32 {
 }
 
 /// Runs the tir phase delta check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_tir_phase_delta(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -397,7 +407,9 @@ pub fn run_tir_phase_delta(
         &pipeline,
         &[(10, &in_buf), (11, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

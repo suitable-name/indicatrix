@@ -179,7 +179,7 @@ fn progress_text(
 /// The name of effort choice `index`.
 fn effort_label(index: usize, steps: usize) -> String {
     let name = EFFORT_NAMES.get(index).copied().unwrap_or("Custom");
-    format!("{name} ({steps} steps)")
+    format!("{name} ({steps} Steps)")
 }
 
 // --- Settings, options and the estimate ---
@@ -209,7 +209,7 @@ pub(super) fn push_options(ui: &MainWindow) {
     model.set_range_options(string_model(
         RANGE_CHOICES_DEG
             .iter()
-            .map(|degrees| format!("{degrees:.0} degrees either side")),
+            .map(|degrees| format!("{degrees:.0} Degrees Either Side")),
     ));
     model.set_effort_options(string_model(
         EFFORT_CHOICES
@@ -727,8 +727,8 @@ mod tests {
 
     #[test]
     fn effort_choices_are_named_with_their_steps() {
-        assert_eq!(effort_label(1, 300), "Normal (300 steps)");
-        assert_eq!(effort_label(9, 5), "Custom (5 steps)");
+        assert_eq!(effort_label(1, 300), "Normal (300 Steps)");
+        assert_eq!(effort_label(9, 5), "Custom (5 Steps)");
         assert_eq!(EFFORT_NAMES.len(), EFFORT_CHOICES.len());
     }
 

@@ -78,7 +78,7 @@ pub fn set_selection(app: &mut WebApp, index: Option<usize>) {
 /// A tier other tiers still meet by name is refused until the user confirms "Remove
 /// anyway", which clears those references as part of the same undoable edit.
 pub fn remove_tier(ctx: &Ctx, index: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     remove_tier_at(ctx, index, false);
@@ -129,9 +129,9 @@ fn remove_tier_at(ctx: &Ctx, index: usize, cascade: bool) {
             let c = ctx.clone();
             confirm_action(
                 ctx,
-                "Remove tier?",
+                "Remove Tier?",
                 &remove_anyway_message(&e),
-                "Remove anyway",
+                "Remove Anyway",
                 move || remove_tier_at(&c, index, true),
             );
         }
@@ -141,7 +141,7 @@ fn remove_tier_at(ctx: &Ctx, index: usize, cascade: bool) {
 
 /// Duplicate / Ctrl+D: a copy right after tier `index`, selected.
 pub fn duplicate_tier(ctx: &Ctx, index: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     let result = with_app(ctx, |app| {
@@ -171,7 +171,7 @@ pub fn duplicate_tier(ctx: &Ctx, index: i32) {
 /// Alt+Up / Alt+Down and the row's arrows: moves tier `index` up (`direction < 0`) or
 /// down in the cutting order; the selection follows it.
 pub fn move_tier(ctx: &Ctx, index: i32, direction: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     let result = with_app(ctx, |app| {
@@ -191,7 +191,7 @@ pub fn move_tier(ctx: &Ctx, index: i32, direction: i32) {
 
 /// The row's Detach / Reattach.
 fn toggle_detach(ctx: &Ctx, index: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     let result = with_app(ctx, |app| {
@@ -214,7 +214,7 @@ fn toggle_detach(ctx: &Ctx, index: i32) {
 
 /// The row's Adopt: switches tier `index` to the meet its source file stated.
 fn adopt(ctx: &Ctx, index: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     let result = with_app(ctx, |app| {
@@ -267,7 +267,7 @@ fn adopt_many(ctx: &Ctx, selected: bool) {
 /// possible against a solve of the current design (a stale mast would pin the wrong
 /// number).
 fn pin(ctx: &Ctx, index: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     let mast = ctx
@@ -314,7 +314,7 @@ fn flip_block(ctx: &Ctx, index: i32, to_crown: bool) {
 /// tab on it with "Exact scale value" chosen and the cursor in the value field (the
 /// desktop's `suggested_constraint_kind` route).
 fn add_anchor(ctx: &Ctx, index: i32) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     super::inspector::open_anchor(ctx, index);
@@ -353,9 +353,9 @@ fn remove_multi_with(ctx: &Ctx, cascade: bool) {
             let c = ctx.clone();
             confirm_action(
                 ctx,
-                "Remove tiers?",
+                "Remove Tiers?",
                 &remove_anyway_message(&e),
-                "Remove anyway",
+                "Remove Anyway",
                 move || remove_multi_with(&c, true),
             );
         }
@@ -382,6 +382,8 @@ fn delete_selected(ctx: &Ctx) {
         remove_multi(ctx);
     } else if let Some(index) = selected.and_then(|i| i32::try_from(i).ok()) {
         remove_tier(ctx, index);
+    } else if table::concave_selected().is_some() {
+        show_message(ctx, MessageKind::Warning, table::CONCAVE_EDIT_REFUSED);
     }
 }
 
@@ -424,7 +426,7 @@ fn generate_steps(
 
 /// "Mirror tier to other block": a mirrored copy appended after the last tier, selected.
 fn mirror_to_other_block(ctx: &Ctx, index: i32, suffix: &str) {
-    let Ok(index) = usize::try_from(index) else {
+    let Some(index) = table::editable_tier(ctx, index) else {
         return;
     };
     let result = with_app(ctx, |app| {

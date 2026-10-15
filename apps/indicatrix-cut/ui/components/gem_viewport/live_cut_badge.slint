@@ -25,7 +25,7 @@ export component LiveCutBadge inherits Rectangle {
     accessible-role: AccessibleRole.text;
     accessible-label: "The picture shows the stone cut back. Cut: " + SolidPreviewModel.cut_label;
 
-    Tooltip { text: @markdown("The Cut slider in the Edit tab has this design cut back to **\{SolidPreviewModel.cut_label}**, and this picture follows it. Exports and tilt videos always show the finished stone. Press Show finished to put the slider back."); }
+    Tooltip { text: @markdown("The Cut slider in the Edit tab has this design cut back to **\{SolidPreviewModel.cut_label}**, and this picture follows it. Exports and tilt videos always show the finished stone. Press Show Finished to put the slider back."); }
 
     HorizontalLayout {
         padding-left: 10px;
@@ -47,7 +47,7 @@ export component LiveCutBadge inherits Rectangle {
             PillButton {
                 width: 104px;
                 height: 22px;
-                text: "Show finished";
+                text: "Show Finished";
                 font_size: 11px;
                 hint: "Put the Cut slider back on the finished stone.";
                 clicked => { SolidPreviewModel.show_finished(); }

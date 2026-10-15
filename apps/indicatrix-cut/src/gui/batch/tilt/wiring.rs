@@ -11,6 +11,7 @@ use crate::{
     bridge::{preview_render, render_thread::RenderContext},
     gui::batch::{
         batch_queue::{LanePlan, WorkQueue, local_lane_count, remote_lane_count},
+        catalogue_material::load_custom_materials,
         regenerate_all::{
             ScopeKind, all_choice_label, chosen_ids, missing_among, missing_choice_label,
             next_scope_generation, scope_is_current,
@@ -146,12 +147,16 @@ pub fn spawn_tilt_batch(
         let _ = ui_weak
             .upgrade_in_event_loop(|ui| ui.global::<BatchModel>().set_tilt_batch_running(true));
 
-        let design_total = entry_ids.len() as u32;
+        let design_total = u32::try_from(entry_ids.len()).unwrap_or(u32::MAX);
         let material_candidates = preview_render::ri_candidates();
+        // Read ONCE for the whole batch, so every design resolves a material name against
+        // the same custom-material list (`gui::batch::catalogue_material`).
+        let custom_materials = load_custom_materials(&db);
         let angle_table_entries = Mutex::new(BTreeSet::new());
         let ctx = BatchContext {
             db: &db,
             material_candidates: &material_candidates,
+            custom_materials: &custom_materials,
             angle_table_entries: &angle_table_entries,
         };
 
@@ -172,7 +177,7 @@ pub fn spawn_tilt_batch(
         // `plan.run_local` -- `RemoteOnly` computes this but never uses it beyond
         // reporting `0` as `tilt_batch_local_lane_total`.
         let local_lane_total = if plan.run_local {
-            local_lane_count() as u32
+            u32::try_from(local_lane_count()).unwrap_or(u32::MAX)
         } else {
             0
         };
@@ -180,7 +185,7 @@ pub fn spawn_tilt_batch(
         // `batch_queue::remote_lane_count`. `RemoteOnly` and `Both` both use all of
         // them; `LocalOnly` runs none.
         let remote_lane_total = if plan.run_remote {
-            remote_lane_count(remote_batch_lanes) as u32
+            u32::try_from(remote_lane_count(remote_batch_lanes)).unwrap_or(u32::MAX)
         } else {
             0
         };
@@ -234,7 +239,7 @@ pub fn spawn_tilt_batch(
 
 /// Starts a batch for `entry_ids`, reading the configured remote endpoint AND the
 /// persisted `LiveComputeTarget` from `settings_store`'s current snapshot -- the SAME
-/// standing "Live Compute" preference the live viewport uses (`settings_dialog.slint`'s
+/// standing "Live Compute" preference the live viewport uses (the Parameters panel's
 /// pill, `AppSettings::live_compute_target`), not a separate picker of this batch's own.
 /// Mirrors `gui::batch::preview::wiring::start_batch`'s own shape, minus the
 /// preview-size/spp settings this batch has no use for.
@@ -279,10 +284,9 @@ fn start_batch(
     ui.global::<BatchModel>().set_tilt_design_index(0);
     ui.global::<BatchModel>().set_tilt_eta(String::new().into());
     // `entry_ids.len()` is at most one catalogue's worth of rows (a few thousand in
-    // the real corpus), nowhere near `i32::MAX` -- `cast_possible_truncation` is
-    // workspace-`allow`ed (`Cargo.toml`).
+    // the real corpus), nowhere near `i32::MAX`; saturate rather than wrap regardless.
     ui.global::<BatchModel>()
-        .set_tilt_design_total(entry_ids.len() as i32);
+        .set_tilt_design_total(i32::try_from(entry_ids.len()).unwrap_or(i32::MAX));
     ui.global::<BatchModel>().set_tilt_local_active(0);
     ui.global::<BatchModel>().set_tilt_local_lane_total(0);
     ui.global::<BatchModel>()
@@ -327,11 +331,14 @@ pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
     // catalogue, nowhere near `i32::MAX`; Slint's `[int]` model type has no i64
     // element type to use instead -- same cast
     // `gui::batch::preview::offer_batch_confirmation` makes for the identical reason.
-    let ids_i32: Vec<i32> = ids.iter().map(|&id| id as i32).collect();
+    let ids_i32: Vec<i32> = ids
+        .iter()
+        .map(|&id| i32::try_from(id).unwrap_or(i32::MAX))
+        .collect();
     ui.global::<BatchModel>()
         .set_tilt_offer_ids(slint::ModelRc::new(slint::VecModel::from(ids_i32)));
     ui.global::<BatchModel>()
-        .set_tilt_offer_count(ids.len() as i32);
+        .set_tilt_offer_count(i32::try_from(ids.len()).unwrap_or(i32::MAX));
     ui.global::<BatchModel>().set_tilt_offer_regenerate(false);
     ui.global::<BatchModel>().set_tilt_single(false);
     ui.global::<BatchModel>().set_tilt_confirming(true);
@@ -342,6 +349,22 @@ thread_local! {
     /// What [`offer_regeneration`]'s background count needs: the vault. Set once by
     /// [`setup_tilt_batch_callbacks`]; UI-thread only.
     static SCOPE_DB: RefCell<Option<Arc<Mutex<Database>>>> = const { RefCell::new(None) };
+}
+
+/// Forgets the vault a previous main window left in [`SCOPE_DB`], so that window's database
+/// connection can close. See `gui::window_release`.
+pub(in crate::gui) fn release_window_state() {
+    let old = SCOPE_DB.with(|db| db.borrow_mut().take());
+    drop(old);
+}
+
+/// Names this module's holder in `out` while it is still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui) fn note_holders(out: &mut Vec<&'static str>) {
+    if SCOPE_DB.with(|db| db.borrow().is_some()) {
+        out.push("batch::tilt::wiring SCOPE_DB (vault)");
+    }
 }
 
 /// Opens the confirm step as a REGENERATION of `ids` (the Library menu's whole-catalogue
@@ -374,9 +397,12 @@ pub fn offer_regeneration(ui: &MainWindow, ids: &[i64]) {
         }
         let missing = missing_among(&all, &missing);
         let model = ui.global::<BatchModel>();
-        model.set_tilt_offer_missing_count(missing.len() as i32);
+        model.set_tilt_offer_missing_count(i32::try_from(missing.len()).unwrap_or(i32::MAX));
         model.set_tilt_offer_missing_label(missing_choice_label(Some(missing.len())).into());
-        let missing_i32: Vec<i32> = missing.iter().map(|&id| id as i32).collect();
+        let missing_i32: Vec<i32> = missing
+            .iter()
+            .map(|&id| i32::try_from(id).unwrap_or(i32::MAX))
+            .collect();
         model.set_tilt_offer_missing_ids(slint::ModelRc::new(slint::VecModel::from(missing_i32)));
     });
 }

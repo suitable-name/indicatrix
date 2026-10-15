@@ -15,7 +15,10 @@ mod app_settings;
 mod head_shadow;
 mod import_preview;
 mod lighting_preset;
+pub mod lighting_values;
 mod local_compute;
+mod output_settings;
+mod parameter_defaults;
 mod recent_files;
 mod remote_endpoint;
 mod settings_file;
@@ -34,12 +37,29 @@ mod worker;
 pub use app_settings::{
     clamp_remote_batch_lanes, clamp_remote_preview_batch_size, effective_remote_batch_lanes,
 };
+#[allow(
+    unused_imports,
+    reason = "DEFAULT_HEAD_SHADOW_DEG is named from cfg(test) literals and by later waves"
+)]
+pub use head_shadow::DEFAULT_HEAD_SHADOW_DEG;
 pub use head_shadow::{clamp_head_shadow_deg, head_shadow_deg_from_slider};
 pub use import_preview::ImportPreviewChoice;
 pub use lighting_preset::LightingPreset;
+pub use lighting_values::{EXPOSURE_RANGE, FORMAT_VERSION, LightingValues, PITCH_RANGE_RAD};
 pub use local_compute::LocalComputeTarget;
+pub use output_settings::{
+    BOUNCE_LADDER, EXPORT_SAMPLES_EXPONENT_RANGE, LIVE_SAMPLES_EXPONENT_RANGE, OutputSettings,
+    PREVIEW_SAMPLES_RANGE, PREVIEW_SIZE_RANGE, RemoteAvailability, StillOutput, TiltVideoOutput,
+    bounce_index, clamp_exponent, nearest_bounce_cap,
+};
+pub use parameter_defaults::{LegacyStoneDefaults, ParameterTab, reset_tab};
 pub use remote_endpoint::{ExportTransfer, LiveTransfer, RemoteEndpoint, TiltVideoCompute};
 pub use settings_file::SettingsFile;
+#[allow(
+    unused_imports,
+    reason = "DEFAULT_SURFACE_GLARE is named from cfg(test) literals and by later waves"
+)]
+pub use surface_glare::DEFAULT_SURFACE_GLARE;
 pub use surface_glare::{
     clamp_surface_glare, percent_from_surface_glare, surface_glare_from_percent,
 };
@@ -114,6 +134,9 @@ mod tests {
                 camera_pitch: None,
                 env_map_path: None,
                 export_usable: false,
+                surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+                backdrop: crate::settings::model::Backdrop::default(),
+                head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
             }],
             rig_profiles: Vec::new(),
         };
@@ -137,6 +160,9 @@ mod tests {
             camera_pitch: None,
             env_map_path: None,
             export_usable: false,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         };
         file.upsert_user_preset(preset.clone()).unwrap();
         assert_eq!(file.find_preset("Evening Glow"), Some(&preset));
@@ -170,6 +196,9 @@ mod tests {
             camera_pitch: None,
             env_map_path: None,
             export_usable: false,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         };
         let result = file.upsert_user_preset(clash);
         assert!(result.is_err());
@@ -195,6 +224,9 @@ mod tests {
             camera_pitch: None,
             env_map_path: None,
             export_usable: false,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         };
         assert!(file.upsert_user_preset(preset).is_err());
     }
@@ -214,6 +246,9 @@ mod tests {
             camera_pitch: None,
             env_map_path: None,
             export_usable: false,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         })
         .unwrap();
         file.rename_preset("Draft", "Final Cut").unwrap();
@@ -238,6 +273,9 @@ mod tests {
             camera_pitch: None,
             env_map_path: None,
             export_usable: false,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         })
         .unwrap();
         assert!(file.rename_preset("Second", "Studio Softbox").is_err());
@@ -258,6 +296,9 @@ mod tests {
             camera_pitch: None,
             env_map_path: None,
             export_usable: false,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         })
         .unwrap();
         file.delete_preset("Temp").unwrap();
@@ -284,6 +325,9 @@ mod tests {
             camera_pitch: Some(0.45),
             env_map_path: Some("C:/env/studio.hdr".to_string()),
             export_usable: true,
+            surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
+            backdrop: crate::settings::model::Backdrop::default(),
+            head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         })
         .unwrap();
 

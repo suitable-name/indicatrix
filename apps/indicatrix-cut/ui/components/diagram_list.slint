@@ -47,12 +47,12 @@ export component CollapsedLibraryRail inherits Rectangle {
                     colorize: Theme.text-secondary;
                     width: 13px;
                     height: 13px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
                 }
 
                 expand_touch := TouchButton {
-                    label: "Show the library list";
+                    label: "Show the Library List";
                     hint: "Show the library list again.";
                     clicked => { root.expand_requested(); }
                 }
@@ -136,11 +136,11 @@ export component DiagramListView inherits Rectangle {
                         colorize: Theme.text-secondary;
                         width: 10px;
                         height: 10px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
                     }
                     collapse_touch := TouchButton {
-                        label: "Hide the library list";
+                        label: "Hide the Library List";
                         hint: "Shrink the library list to a thin strip to give the viewport more room. Click the strip to bring it back.";
                         clicked => { root.collapse_requested(); }
                     }
@@ -187,7 +187,7 @@ export component DiagramListView inherits Rectangle {
                     }
                     clear_touch := TouchButton {
                         enabled: !RemoteWorkerModel.library_is_remote;
-                        label: "Clear the filter";
+                        label: "Clear the Filter";
                         hint: "Stop showing only the designs you just imported and show the whole library again.";
                         clicked => {
                             LibraryModel.recent_import_filter = [];
@@ -206,16 +206,21 @@ export component DiagramListView inherits Rectangle {
                 alignment: center;
                 spacing: 8px;
 
-                Image {
-                    source: @image-url("../icons/search.svg");
-                    colorize: Theme.text-secondary;
-                    width: 28px;
-                    height: 28px;
-                    horizontal-alignment: center;
+                // Centred by a layout of its own: a fixed-size Image in the column sits at the
+                // left of its cell (`horizontal-alignment` only places the picture inside the Image).
+                HorizontalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../icons/search.svg");
+                        colorize: Theme.text-secondary;
+                        width: 28px;
+                        height: 28px;
+                    }
                 }
 
                 Text {
                     text: "No diagrams found";
+                    accessible-role: AccessibleRole.text;
                     font-size: 13px;
                     font-weight: 600;
                     color: Theme.text-secondary;
@@ -264,6 +269,10 @@ export component DiagramListView inherits Rectangle {
                     // (a ListView has no `spacing`). The row is sized by its content
                     // (`card_body`), exactly as the card was when it sat in a layout.
                     height: card_body.preferred-height + 6px;
+                    // The open "more actions" menu reaches below the card; later rows are
+                    // drawn after this one and would cover its lower items, so the row
+                    // with the open menu is lifted above its siblings.
+                    z: card.kebab_open ? 1 : 0;
 
                     card := Rectangle {
                         y: 0px;
@@ -312,7 +321,7 @@ export component DiagramListView inherits Rectangle {
                         // to a row that has them.
                         property <PreviewThumbnails> preview: LibraryModel.get_preview_thumbnails(item.id, LibraryModel.preview_cache_version);
 
-                        // The "Add tag..." context-menu entry opens this inline text
+                        // The "Add Tag..." context-menu entry opens this inline text
                         // field rather than a modal dialog -- same idiom as
                         // `detail_header.slint`'s inline rename (`renaming`/`rename_draft`).
                         property <bool> adding_tag: false;
@@ -348,26 +357,26 @@ export component DiagramListView inherits Rectangle {
                                     }
                                 }
                                 MenuItem {
-                                    title: item.ignored ? "Un-ignore" : "Ignore";
+                                    title: item.ignored ? "Un-Ignore" : "Ignore";
                                     activated => {
                                         LibraryModel.toggle_ignored(item.id);
                                     }
                                 }
                                 MenuItem {
-                                    title: item.planner_excluded ? "Include in planner" : "Exclude from planner";
+                                    title: item.planner_excluded ? "Include in Planner" : "Exclude from Planner";
                                     activated => {
                                         LibraryModel.toggle_planner_excluded(item.id);
                                     }
                                 }
                                 MenuItem {
-                                    title: "Build this design";
+                                    title: "Build This Design";
                                     enabled: !BuildDesignModel.busy;
                                     activated => {
                                         BuildDesignModel.start(item.id);
                                     }
                                 }
                                 MenuItem {
-                                    title: "Add tag...";
+                                    title: "Add Tag...";
                                     activated => {
                                         card.tag_draft = "";
                                         card.adding_tag = true;
@@ -382,7 +391,10 @@ export component DiagramListView inherits Rectangle {
                         // has no API in this version to open programmatically from a
                         // left click.
                         property <bool> kebab_open: false;
-                        if item_touch.has-hover || card.kebab_open: Rectangle {
+                        // Also on the selected row and the keyboard-focused one: a button that
+                        // shows only under the mouse has no keyboard or screen-reader path.
+                        if item_touch.has-hover || card.kebab_open || LibraryModel.selected_entry_id == item.id
+                            || idx == root.keyboard_focus_index: Rectangle {
                             x: card.width - self.width - 4px;
                             y: 2px;
                             width: 20px;
@@ -399,7 +411,7 @@ export component DiagramListView inherits Rectangle {
                                 image-fit: contain;
                             }
                             kebab_touch := TouchButton {
-                                label: "More actions for " + item.title;
+                                label: "More Actions for " + item.title;
                                 hint: "More actions for this design: previews, tilt curves, ignore, planner, build it as a lesson, tags. Also on right-click and in the Library menu under Selected Design.";
                                 expandable: true;
                                 expanded: card.kebab_open;
@@ -453,9 +465,9 @@ export component DiagramListView inherits Rectangle {
                                 Rectangle {
                                     height: 24px;
                                     background: kebab_item3.has_hover ? Theme.bg-card-hover : transparent;
-                                    Text { text: item.ignored ? "Un-ignore" : "Ignore"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                    Text { text: item.ignored ? "Un-Ignore" : "Ignore"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
                                     kebab_item3 := TouchButton {
-                                        label: item.ignored ? "Un-ignore" : "Ignore";
+                                        label: item.ignored ? "Un-Ignore" : "Ignore";
                                         hint: item.ignored
                                             ? "Show this design in the list again."
                                             : "Hide this design from the list. You can still show it with Show ignored designs in the filters.";
@@ -465,9 +477,9 @@ export component DiagramListView inherits Rectangle {
                                 Rectangle {
                                     height: 24px;
                                     background: kebab_item_planner.has_hover ? Theme.bg-card-hover : transparent;
-                                    Text { text: item.planner_excluded ? "Include in planner" : "Exclude from planner"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                    Text { text: item.planner_excluded ? "Include in Planner" : "Exclude from Planner"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
                                     kebab_item_planner := TouchButton {
-                                        label: item.planner_excluded ? "Include in planner" : "Exclude from planner";
+                                        label: item.planner_excluded ? "Include in Planner" : "Exclude from Planner";
                                         hint: item.planner_excluded
                                             ? "Let the Rough Planner use this design again."
                                             : "Keep this design out of the Rough Planner's candidates. It stays in the list.";
@@ -477,10 +489,10 @@ export component DiagramListView inherits Rectangle {
                                 Rectangle {
                                     height: 24px;
                                     background: kebab_item_build.has_hover ? Theme.bg-card-hover : transparent;
-                                    Text { text: "Build this design"; font-size: 9px; color: BuildDesignModel.busy ? Theme.text-muted : Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                    Text { text: "Build This Design"; font-size: 9px; color: BuildDesignModel.busy ? Theme.text-muted : Theme.text-primary; x: 8px; vertical-alignment: center; }
                                     kebab_item_build := TouchButton {
                                         enabled: !BuildDesignModel.busy;
-                                        label: "Build this design";
+                                        label: "Build This Design";
                                         hint: "Turn this design into a step-by-step lesson that rebuilds it from an empty design.";
                                         clicked => { card.kebab_open = false; BuildDesignModel.start(item.id); }
                                     }
@@ -488,9 +500,9 @@ export component DiagramListView inherits Rectangle {
                                 Rectangle {
                                     height: 24px;
                                     background: kebab_item4.has_hover ? Theme.bg-card-hover : transparent;
-                                    Text { text: "Add tag..."; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                    Text { text: "Add Tag..."; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
                                     kebab_item4 := TouchButton {
-                                        label: "Add tag";
+                                        label: "Add Tag";
                                         hint: "Type a tag to put on this design, for example the stone you cut it in.";
                                         clicked => {
                                             card.kebab_open = false;
@@ -580,7 +592,7 @@ export component DiagramListView inherits Rectangle {
                                 // right (the kebab button owns the top-right corner),
                                 // and elides rather than widening the card.
                                 if item.planner_excluded: Text {
-                                    text: "not planned";
+                                    text: "Not Planned";
                                     font-size: 9px;
                                     color: Theme.text-muted;
                                     overflow: elide;
@@ -694,8 +706,8 @@ export component DiagramListView inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchButton {
-                                        label: "Remove tag " + tag_name;
+                                    touch-button-l701 := TouchButton {
+                                        label: "Remove Tag " + tag_name;
                                         hint: "Remove the tag " + tag_name + " from this design.";
                                         clicked => {
                                             LibraryModel.remove_tag_from_entry(item.id, tag_name);
@@ -706,7 +718,7 @@ export component DiagramListView inherits Rectangle {
                                     width: 90px;
                                     height: 16px;
                                     font-size: 9px;
-                                    accessible-label: "New tag";
+                                    accessible-label: "New Tag";
                                     accessible-description: "Type a tag and press Enter.";
                                     text <=> card.tag_draft;
                                     accepted => {
@@ -735,7 +747,12 @@ export component DiagramListView inherits Rectangle {
                                     spacing: 8px;
                                     if item.gear != "": HorizontalLayout {
                                         spacing: 3px;
-                                        Image { source: @image-url("../icons/gear.svg"); colorize: Theme.accent-cyan; width: 9px; height: 9px; vertical-alignment: center; }
+                                        // Centred by a layout of its own: a fixed-size Image in the row
+                                        // sits at the top of its cell.
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image { source: @image-url("../icons/gear.svg"); colorize: Theme.accent-cyan; width: 9px; height: 9px; }
+                                        }
                                         Text {
                                             text: item.gear;
                                             font-size: 10px;
@@ -745,7 +762,10 @@ export component DiagramListView inherits Rectangle {
                                     }
                                     if item.facets != "": HorizontalLayout {
                                         spacing: 3px;
-                                        Image { source: @image-url("../icons/diamond.svg"); colorize: Theme.accent-amber; width: 9px; height: 9px; vertical-alignment: center; }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image { source: @image-url("../icons/diamond.svg"); colorize: Theme.accent-amber; width: 9px; height: 9px; }
+                                        }
                                         Text {
                                             text: item.facets;
                                             font-size: 10px;

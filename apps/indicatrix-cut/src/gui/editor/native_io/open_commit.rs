@@ -1,7 +1,7 @@
-//! Commits a loaded native/`.asc` design into `EditorState`, wholesale, and pushes
+//! Commits a loaded design file / `.asc` design into `EditorState`, wholesale, and pushes
 //! the result into the panel/viewport -- the shared tail every "Open" path
-//! (a `.indicatrix` design file, an older pair, an older self-contained sidecar, or a
-//! bare `.asc`) funnels through.
+//! (a `.isdd` design file, a bare `.asc`, or a converted `.gem`/`.gcs`) funnels
+//! through.
 
 mod restore_material;
 
@@ -28,10 +28,7 @@ use crate::{
         solid_preview::preview_state::SolidPreviewState,
     },
 };
-use indicatrix_cut_core::{
-    FingerprintCheck, History, LoadPairedResult, TierOverlay,
-    native::{LoadNativeOnlyResult, LoadedDesign as DesignFileLoaded},
-};
+use indicatrix_cut_core::{History, native::LoadedDesign as DesignFileLoaded};
 use indicatrix_editor::EditorSession;
 use restore_material::restore_custom_material;
 use slint::ComponentHandle;
@@ -110,15 +107,6 @@ impl ReplaceGuard {
     }
 }
 
-/// [`open_native_self_contained`]'s own load result -- bundled (rather than
-/// three more parameters) purely to keep that function under clippy's
-/// argument-count lint, the same reasoning [`LoadedNativeOutcome`] uses.
-pub(super) struct SelfContainedLoad<'a> {
-    pub(super) native_path: &'a Path,
-    pub(super) loaded: LoadNativeOnlyResult,
-    pub(super) asc_filename: &'a str,
-}
-
 /// [`open_design_file`]'s own load result -- bundled (rather than two more
 /// parameters) purely to keep that function under clippy's argument-count lint.
 pub(super) struct DesignFileLoad {
@@ -126,12 +114,13 @@ pub(super) struct DesignFileLoad {
     pub(super) loaded: DesignFileLoaded,
 }
 
-/// A `.indicatrix` design file: the file's own tiers WERE the design, so there is no
-/// paired `.asc`, fingerprint or tier-overlay question to ask. Restores a custom
-/// material snapshot like [`commit_loaded_native`] does, and records the file as this
-/// design's save location -- unless it is a recovery snapshot, which is never a
-/// location to save back to (the next Save asks for a name, suggesting the design's
-/// own).
+/// A `.isdd` design file (or a legacy `.indicatrix` one): the file's own tiers WERE the
+/// design, so there is no paired `.asc`, fingerprint or tier-overlay question to ask.
+/// Restores a custom material snapshot and records the file as this design's save
+/// location -- unless it is a recovery snapshot, which is never a location to save back
+/// to (the next Save asks for a name, suggesting the design's own). A legacy
+/// `.indicatrix` file is a location to open from, not to save back to: Save proposes the
+/// `.isdd` name beside it and leaves the old file alone.
 ///
 /// The design is recorded under `<stem>.asc` ([`schedule_name_for_design_path`]): the
 /// name the editor keys its window title, catalogue write-back and "Export .asc"
@@ -202,10 +191,10 @@ pub(super) fn open_design_file(
     if let Some(name) = native_path.file_name() {
         ui.set_loaded_design_name(name.to_string_lossy().into_owned().into());
     }
-    let lead = if recovered {
+    let status_lead = if recovered {
         format!(
             "Recovered '{native_path_display}' from an autosave snapshot. Save writes it to a \
-             new .indicatrix file."
+             new .isdd file."
         )
     } else {
         format!("Loaded '{native_path_display}'.")
@@ -213,7 +202,7 @@ pub(super) fn open_design_file(
     show_toast(
         ui,
         &format!(
-            "{lead}{}{}",
+            "{status_lead}{}{}",
             material_note.unwrap_or_default(),
             draft_note.unwrap_or_default()
         ),
@@ -225,93 +214,11 @@ pub(super) fn open_design_file(
     );
 }
 
-/// The older self-contained `.indicatrix.toml` (recovery snapshot)
-/// path -- [`read_native_pair_then`] only ever hands this a [`LoadNativeOnlyResult`]
-/// once it has already confirmed no paired `.asc` was findable AND
-/// [`load_native_only`] actually accepted the file, so there is no fingerprint/
-/// tier-overlay question to ask here at all (unlike [`open_native_pair`]): the
-/// file's own `tiers` array WAS the design, full stop. Restores a custom material
-/// snapshot exactly like [`commit_loaded_native`] does, on the same
-/// [`LoadNativeOnlyResult::restorable_custom_material`]/`material_resolution`
-/// fields [`LoadPairedResult`] also carries.
-pub(super) fn open_native_self_contained(
-    ui: &MainWindow,
-    state: &Rc<RefCell<EditorState>>,
-    render_ctx: &Arc<Mutex<RenderContext>>,
-    preview_state: &Arc<SolidPreviewState>,
-    solid_last_solved: &crate::gui::editor::view::SolidLastSolved,
-    load: SelfContainedLoad<'_>,
-) {
-    let SelfContainedLoad {
-        native_path,
-        loaded,
-        asc_filename,
-    } = load;
-    let native_path_display = native_path.display().to_string();
-    record_recent_native_file(ui, &native_path_display);
-    // An older recovery snapshot is never a location to save back to: the next Save
-    // asks for a `.indicatrix` file name.
-    remember_design_location(None, None);
-
-    let (material_note, material_still_unresolved) = restore_custom_material(
-        ui,
-        render_ctx,
-        loaded.restorable_custom_material.as_ref(),
-        loaded.design.material.name.as_deref(),
-        loaded.material_resolution,
-    );
-    let newer_version_note = loaded.written_by_newer_version.then(|| {
-        " This file was written by a newer version of Indicatrix Cut; some settings \
-          may not have been understood and could be lost on your next save."
-            .to_string()
-    });
-    let is_mismatch = material_still_unresolved || loaded.written_by_newer_version;
-
-    let printed_proportions = loaded.printed_proportions;
-    state.borrow_mut().replace_wholesale(EditorState {
-        deep_solve_result_generation: None,
-        session: EditorSession::with_history(loaded.design, History::new()),
-        printed_proportions,
-        design_epoch: Arc::new(AtomicU64::new(0)),
-        pending_unsaved_action: None,
-        after_save: None,
-        deep_solve: None,
-        optimize: None,
-        pending_optimize: Arc::new(Mutex::new(None)),
-        // No paired `.asc` text exists at all -- see this function's own doc
-        // comment; a later Save/Export builds a fresh one from scratch, exactly
-        // like a brand-new design.
-        asc_filename: Some(asc_filename.to_string()),
-        original_asc_text: None,
-        pending_gear_remap: None,
-        pending_retarget: None,
-        last_pushed_scratch: RefCell::new(PushedScratch::default()),
-        material_combo_cache: RefCell::new(MaterialComboCache::default()),
-        source_entry_id: None,
-        used_placeholder: false,
-        // The older sidecar has no id: its location names the design (see
-        // `state::design_identity`).
-        file_extras: DesignFileExtras::default().with_design_uuid_assigned_for_file(native_path),
-        has_design: true,
-    });
-    finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
-    show_toast(
-        ui,
-        &format!(
-            "Recovered '{native_path_display}' -- no paired .asc file was found, so this design \
-             was rebuilt directly from the file's own saved data.{}{}",
-            material_note.unwrap_or_default(),
-            newer_version_note.unwrap_or_default()
-        ),
-        if is_mismatch { "warning" } else { "success" },
-    );
-}
-
-/// The bare-`.asc`-with-no-sidecar path -- builds the design exactly the
+/// The bare-`.asc` path -- builds the design exactly the
 /// way `gui::editor::loading::design_from_asc_text` already does for a catalogue
 /// attachment (no meet-intent overlay, no fingerprint, no draft flag: there is no
 /// design file at all), then replaces `state` wholesale via [`finish_state_replace`],
-/// the same tail [`commit_loaded_native`] runs for the paired case.
+/// the same tail [`open_design_file`] runs for a design file.
 pub(super) fn open_plain_asc(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -339,8 +246,8 @@ pub(super) fn open_plain_asc(
             show_toast(
                 ui,
                 &format!(
-                    "Loaded '{}' (plain .asc, no .indicatrix design file found -- authored meet \
-                     constraints and detached facets are not available).",
+                    "Loaded '{}' (plain .asc -- authored meet constraints and detached \
+                     facets are not available; open the .isdd design file for those).",
                     asc_path.display()
                 ),
                 "success",
@@ -353,11 +260,10 @@ pub(super) fn open_plain_asc(
 /// A `.gem`/`.gcs` file converted to `.asc` cutting instructions
 /// ([`ConvertedPick`]): built into a design by the SAME
 /// `gui::editor::loading::design_from_asc_text` a bare `.asc` uses and committed
-/// through [`commit_plain_design`], so it behaves exactly like an opened `.asc`
-/// with no sidecar.
+/// through [`commit_plain_design`], so it behaves exactly like an opened `.asc`.
 ///
 /// The design is recorded under `<stem>.asc` (never the source file's own name),
-/// so Save offers a new `.indicatrix` design file and can never overwrite the `.gem`/
+/// so Save offers a new `.isdd` design file and can never overwrite the `.gem`/
 /// `.gcs`; the window title still names the file actually opened. Reader and
 /// converter warnings go into the toast, which then stays up as a warning.
 pub(super) fn open_converted_design(
@@ -397,7 +303,7 @@ pub(super) fn open_converted_design(
                 ui,
                 &format!(
                     "Loaded '{}' as .asc cutting instructions. Save writes a new \
-                     .indicatrix design file named after '{asc_file_name}'; the original file is \
+                     .isdd design file named after '{asc_file_name}'; the original file is \
                      never changed.{notes}",
                     source_path.display()
                 ),
@@ -455,14 +361,13 @@ fn commit_plain_design(
         pending_retarget: None,
         last_pushed_scratch: RefCell::new(PushedScratch::default()),
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
-        // Open (this path and the paired-load
-        // one below) has no catalogue row of its own -- it loaded from a
-        // file the cutter picked directly, not from a library selection --
-        // so there is nothing here for a later Save to write back
+        // Open (this path and the design-file one above) has no catalogue row of its
+        // own -- it loaded from a file the cutter picked directly, not from a library
+        // selection -- so there is nothing here for a later Save to write back
         // to. `gui::editor::callbacks::tier_actions::setup_load_selected_callback`'s
         // local branch is the one place this is ever `Some`.
         source_entry_id: None,
-        // A native/plain-`.asc` open carries a real recorded
+        // A design-file/plain-`.asc` open carries a real recorded
         // schedule, never the angle-table reconstruction fallback.
         used_placeholder: false,
         file_extras: DesignFileExtras::default().with_design_uuid_assigned_for_file(source_path),
@@ -475,7 +380,7 @@ fn commit_plain_design(
 /// state is already stored: refresh the viewport/panel from it, then reset selection
 /// unconditionally (a previously selected tier index now names, at best, an
 /// unrelated row in whatever design just replaced it) and mark the fresh state clean.
-/// Shared by [`commit_loaded_native`] (a native+`.asc` pair) and [`open_plain_asc`] (a
+/// Shared by [`open_design_file`] (a design file) and [`open_plain_asc`] (a
 /// bare `.asc`) so the "reset selection, mark clean" sequence is written exactly once
 /// for both -- the same reset `gui::editor::callbacks::tier_actions::apply_loaded_design`/
 /// `setup_new_design_create_callback` run for Load Selected/New.
@@ -501,7 +406,7 @@ fn finish_state_replace(
     let st = state.borrow();
     refresh_all(ui, render_ctx, preview_state, solid_last_solved, &st, true);
     // Names the window title (`MainWindow.loaded_design_name`)
-    // after whatever design this replace just loaded -- covers both `open_native_pair`
+    // after whatever design this replace just loaded -- covers both `open_design_file`
     // and `open_plain_asc`, the two callers of this shared tail. Falls back to empty
     // (bare "Indicatrix Cut") only in the defensive case where `asc_filename` was
     // somehow never set, which neither caller actually does.
@@ -524,192 +429,4 @@ fn finish_state_replace(
     // (`saved_generation`/`generation` both start at `0`), and saying so directly
     // here is one line, easier to verify than tracing through the Slint side.
     ui.global::<EditorModel>().set_is_dirty(false);
-}
-
-/// Bundles [`commit_loaded_native`]'s per-call payload -- kept as one struct (rather
-/// than five more parameters) purely to keep that function under clippy's
-/// argument-count lint, the same reasoning `tier_actions::LoadedDesignOutcome` uses.
-pub(super) struct LoadedNativeOutcome {
-    pub(super) loaded: LoadPairedResult,
-    /// What the toast calls the file -- the picked file's own display path.
-    pub(super) native_path_display: String,
-    pub(super) asc_filename: String,
-    pub(super) asc_text: String,
-    /// Drives the toast's class: `"warning"` (which `gui::show_toast` never
-    /// auto-dismisses, same as `"error"`, but is colored and captioned as a note
-    /// rather than a failure) rather than `"info"`'s 3.5-second flash,
-    /// since a mismatch means something about this design's authored intent may not
-    /// have made the round trip -- worth a permanent, plainly-worded note, not a
-    /// flash a cutter can miss mid-click, and not styled as an error when nothing
-    /// actually failed.
-    pub(super) is_mismatch: bool,
-}
-
-/// Replaces `state` wholesale with `outcome.loaded`'s design and pushes the result
-/// into the panel/viewport -- the shared tail [`do_open_native`]'s clean path and both
-/// of [`setup_mismatch_dialog_callbacks`]'s committing branches (Apply Anyway/Use .asc
-/// Only) all funnel through, so the "replace state, reset selection, report the
-/// outcome" sequence is written exactly once.
-pub(super) fn commit_loaded_native(
-    ui: &MainWindow,
-    state: &Rc<RefCell<EditorState>>,
-    render_ctx: &Arc<Mutex<RenderContext>>,
-    preview_state: &Arc<SolidPreviewState>,
-    solid_last_solved: &crate::gui::editor::view::SolidLastSolved,
-    outcome: LoadedNativeOutcome,
-) {
-    let LoadedNativeOutcome {
-        loaded,
-        native_path_display,
-        asc_filename,
-        asc_text,
-        is_mismatch,
-    } = outcome;
-    record_recent_native_file(ui, &native_path_display);
-    // An older pair has no design file yet: the next Save asks for a `.indicatrix`
-    // name (suggesting the design's own) in the folder this pair lives in, and leaves
-    // the older files untouched.
-    remember_design_location(
-        None,
-        Path::new(&native_path_display)
-            .parent()
-            .map(Path::to_path_buf),
-    );
-    // A plain sentence, not
-    // `FingerprintCheck`/`TierOverlay`'s own technical `Display` text (e.g.
-    // "per-tier meet-intent overlay skipped (fingerprint mismatch)") -- see
-    // `plain_load_outcome_text`'s own doc comment.
-    let outcome_note = plain_load_outcome_text(&loaded.fingerprint, &loaded.tier_overlay);
-    // A material name this build can't resolve AND whose sidecar carried a
-    // `[material.custom]` snapshot is
-    // restored into this session's own custom-material registry right now --
-    // `RenderContext::custom_materials`, the same list the material editor's own
-    // "Save Custom Material" pushes into (`gui::optics::custom_materials`) --
-    // instead of silently rendering as Diamond. See
-    // `LoadPairedResult::restorable_custom_material`'s own doc comment for why
-    // this is the caller's job, not `load_paired`'s.
-    // `material_still_unresolved` is `false` for a successful restoration -- that
-    // is good news, not a mismatch, so it must not push this toast into the
-    // persistent "warning" class below the way a genuinely unresolved material
-    // does.
-    let (material_note, material_still_unresolved) = restore_custom_material(
-        ui,
-        render_ctx,
-        loaded.restorable_custom_material.as_ref(),
-        loaded.design.material.name.as_deref(),
-        loaded.material_resolution,
-    );
-    // `format_version` was written but never checked -- a sidecar from a
-    // newer build could carry fields this one silently drops into `unknown` and
-    // re-serializes on the next save (quietly degrading it further each round trip).
-    // Warned rather than refused: every named field here already tolerates being
-    // absent, so the design itself still loaded fine.
-    let newer_version_note = loaded.written_by_newer_version.then(|| {
-        " This file was written by a newer version of Indicatrix Cut; some settings \
-          may not have been understood and could be lost on your next save."
-            .to_string()
-    });
-    let is_mismatch = is_mismatch || material_still_unresolved || loaded.written_by_newer_version;
-
-    // `replace_wholesale`, not a plain `*state.borrow_mut() = ...` -- see
-    // `open_plain_asc`'s matching comment and `EditorState::replace_wholesale`'s own
-    // doc comment (`state/mod.rs`) for why: this carries the OLD `generation` `Arc`
-    // (and bumps it) across the replacement so a background Deep Solve/Optimize/
-    // auto-solve dispatched against the design being replaced still observes the
-    // change instead of comparing against a counter nobody increments anymore.
-    // Restored from the sidecar's own `[source]` table (written by an
-    // earlier Save -- see `EditorState::printed_proportions`'s own doc
-    // comment) rather than hard-coded `None`, so Deep Solve still has printed figures
-    // to verify against after a Save/Open round trip, not only on this
-    // design's very first "Load Selected" from the catalogue. Still `None` for a
-    // sidecar saved before printed proportions were recorded there, or one for a
-    // design never loaded from a catalogue row at all.
-    let printed_proportions = loaded.printed_proportions;
-    state.borrow_mut().replace_wholesale(EditorState {
-        deep_solve_result_generation: None,
-        session: EditorSession::with_history(loaded.design, History::new()),
-        printed_proportions,
-        design_epoch: Arc::new(AtomicU64::new(0)),
-        pending_unsaved_action: None,
-        after_save: None,
-        deep_solve: None,
-        optimize: None,
-        pending_optimize: Arc::new(Mutex::new(None)),
-        asc_filename: Some(asc_filename),
-        original_asc_text: Some(asc_text),
-        pending_gear_remap: None,
-        pending_retarget: None,
-        last_pushed_scratch: RefCell::new(PushedScratch::default()),
-        material_combo_cache: RefCell::new(MaterialComboCache::default()),
-        // Same reasoning as the plain-`.asc` Open path
-        // above -- the native sidecar's own `[source]` table (`printed_proportions`,
-        // just above) carries a catalogue row's PRINTED proportions, but not which
-        // row it was loaded from, so there is nothing here to write back to either.
-        source_entry_id: None,
-        // A native/plain-`.asc` open carries a real recorded
-        // schedule, never the angle-table reconstruction fallback.
-        used_placeholder: false,
-        // The older pair has no id: the sidecar's location names the design (see
-        // `state::design_identity`).
-        file_extras: DesignFileExtras::default()
-            .with_design_uuid_assigned_for_file(Path::new(&native_path_display)),
-        has_design: true,
-    });
-    finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
-    show_toast(
-        ui,
-        &format!(
-            "Loaded '{native_path_display}'. {outcome_note}{}{} Saving writes a new \
-             .indicatrix file and leaves these older files untouched.",
-            material_note.unwrap_or_default(),
-            newer_version_note.unwrap_or_default()
-        ),
-        if is_mismatch { "warning" } else { "success" },
-    );
-}
-
-/// Plain-English replacement for [`FingerprintCheck`]/[`TierOverlay`]'s own
-/// `Display` text in the load-outcome toast. The crate's internal diagnostic prose
-/// ("per-tier meet-intent overlay skipped (fingerprint mismatch)") says nothing to
-/// a cutter about what actually happened to their file, so this rewrites it in
-/// plain language a cutter can read without knowing what a fingerprint or a tier
-/// overlay is. Persistence and severity (a "warning" toast that stays until
-/// dismissed, rather than a 3.5-second "info" flash) are handled separately by
-/// the caller.
-pub(super) fn plain_load_outcome_text(
-    fingerprint: &FingerprintCheck,
-    tier_overlay: &TierOverlay,
-) -> String {
-    if matches!(fingerprint, FingerprintCheck::Match) {
-        return match tier_overlay {
-            TierOverlay::Applied | TierOverlay::AppliedDespiteMismatch => {
-                "Your saved meet constraints were restored.".to_string()
-            }
-            TierOverlay::SkippedTierCountMismatch {
-                native_tiers,
-                asc_tiers,
-            } => format!(
-                "This file's saved tier count ({native_tiers}) does not match the .asc file's \
-                 ({asc_tiers}), so your saved meet constraints could not be restored."
-            ),
-            TierOverlay::SkippedFingerprintMismatch => {
-                // Not reached in practice once `fingerprint` is `Match` -- kept as its
-                // own honest arm rather than assumed unreachable, since the two checks
-                // are independent types with no shared invariant enforcing this.
-                "Your saved meet constraints were restored.".to_string()
-            }
-            TierOverlay::AppliedFromDraft => "Loaded from an unsolved draft: the masts shown are \
-                 placeholders, not a real solve."
-                .to_string(),
-        };
-    }
-    match tier_overlay {
-        TierOverlay::AppliedDespiteMismatch => "The .asc file changed since this sidecar was \
-             saved, so its geometry was used as-is; your saved meet constraints were re-applied \
-             anyway, at your request, and may no longer line up with the changed tiers."
-            .to_string(),
-        _ => "The .asc file changed since this sidecar was saved, so its geometry was used as-is \
-             and your saved meet constraints were not restored."
-            .to_string(),
-    }
 }

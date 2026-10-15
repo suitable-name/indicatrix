@@ -1,6 +1,6 @@
 # 19. The Command Palette and the Keyboard
 
-## What you will do
+## What You Will Do
 
 Indicatrix Cut has a lot of actions, and only a few of them have a key of their own.
 The **command palette** is one small window that lists all of them. You type a few
@@ -9,7 +9,9 @@ tabs and panels, and no mouse needed. This chapter covers how to open it, how th
 search behaves, what the rows tell you, which actions it offers, and where it stops.
 The shortcuts that do have their own key are collected at the end and in Appendix B.
 
-## Opening the palette
+## Opening the Palette
+
+![The command palette with the query export.](../../../../assets/command_palette.png)
 
 There are three ways, and they all do the same thing:
 
@@ -51,7 +53,7 @@ match is highlighted at the top.
 If nothing matches, the palette says so and shows no rows. Clear a few letters and the
 list returns.
 
-## Moving around and choosing
+## Moving Around and Choosing
 
 | Key | What it does |
 | --- | --- |
@@ -73,7 +75,7 @@ The list scrolls to keep the highlighted row visible, and shows at most twelve r
 a time. The bottom line of the card reminds you of the keys and says how many commands
 match.
 
-## Recent commands
+## Recent Commands
 
 Before you type anything, the palette shows the commands you ran lately first, newest
 at the top (up to eight), followed by everything else, grouped by category and sorted
@@ -85,7 +87,7 @@ begins with the plain category order. Cancelling out of the palette does not cou
 running a command, and neither does choosing a command that turns out to be
 unavailable.
 
-## Why some rows look dim
+## Why Some Rows Look Dim
 
 A row that cannot run right now is not hidden: it is shown dimmed with a short reason
 under its name. That way you can see that the command exists and what it is waiting
@@ -115,7 +117,7 @@ The palette follows exactly the same rules as the buttons and menus. It never le
 do something the matching button would refuse; this includes the guide's locks, which
 apply to the palette as strictly as they apply to the controls themselves.
 
-## What happens when a command runs
+## What Happens When a Command Runs
 
 The palette closes first, and the command starts a fraction of a second later. This is
 deliberate: a command that opens a dialog (New Design..., Preferences..., Retarget...)
@@ -123,7 +125,7 @@ would otherwise lose the keyboard focus to the palette's closing. After the comm
 run, keyboard shortcuts such as F5 and Ctrl+Z work again at once, without clicking
 into the window first.
 
-## What the palette offers
+## What the Palette Offers
 
 The commands are grouped in seven categories, each shown as a small label on the right
 of the row.
@@ -148,7 +150,7 @@ of the row.
   the five Auto-solve settings (Off, 150 ms, 300 ms, 1 s, 3 s).
 - **Tools:** Plan Rough..., Angle Sweep... (Chapter 21), Cutting Mode... (Chapter 20), the
   three Regenerate commands for the catalogue's preview images and tilt curves, Show Tilt
-  Performance Chart, New or Edit Gem Material..., Render Settings..., Export Render Image...
+  Performance Chart, New or Edit Gem Material..., Stone Properties..., Lighting & Environment..., Render & Output... (the Parameters dock's three tabs; the older Render Settings... entry still opens the last one), Export Render Image...
 - **Help:** User Manual, Help for This Screen (F1), Keyboard Shortcuts, Guide: New Design
   Walkthrough, Tutorials..., Build the Selected Library Design and Welcome Tour
   (Chapter 22).
@@ -161,7 +163,7 @@ Where a command is a pair of states (Simple and Advanced interface, Slice mode, 
 the Library panel), the palette flips the same setting the matching button flips, so
 the button and the palette never disagree.
 
-## The shortcuts worth learning
+## The Shortcuts Worth Learning
 
 You never need to learn any of these, because the palette finds everything. The ones
 below are the ones people use all day. Appendix B lists every one, grouped by where it
@@ -183,7 +185,7 @@ A key that types a character (a digit, S, ? or a comma) does nothing while you a
 typing in a text field, so you can still type those characters. That is another reason
 to keep Ctrl+K in mind: it works even then.
 
-## Limits of the palette
+## Limits of the Palette
 
 - It lists **actions**, not data. It does not search your library designs, your tiers
   or your files by name; the catalogue's search box and the tier list's filter do
@@ -204,4 +206,4 @@ to keep Ctrl+K in mind: it works even then.
 | Ctrl+K does nothing | A dialog or another window has the keyboard, so the main window never sees the key | Click the main window (or close the other dialog) and press Ctrl+K again; or use Edit → Command Palette.... |
 | A command is dim although it should work | One of its conditions is not met | Read the reason under its name; it names the missing condition. |
 | A key such as S or 1 does nothing | A text field has the focus | Click an empty part of the window, or press Esc, then press the key again. |
-| The palette does not list a command you remember | It is a button inside a dialog, or an import | See "Limits of the palette" above. |
+| The palette does not list a command you remember | It is a button inside a dialog, or an import | See "Limits of the Palette" above. |

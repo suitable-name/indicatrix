@@ -67,7 +67,9 @@ mod materials;
 mod migrations;
 mod mirror_state;
 mod planner_exclusions;
+mod preview_material;
 mod previews;
+mod read_access;
 mod render_jobs;
 mod saved_rough_plans;
 mod search;
@@ -78,7 +80,6 @@ mod tags;
 mod tests;
 mod tilt_curves;
 mod variants;
-#[cfg(feature = "zoning")]
 mod zoning_store;
 
 pub use materials::CustomMaterialParams;
@@ -378,6 +379,9 @@ impl Database {
         db.migrate_diagram_entries_provenance()?;
         db.migrate_diagram_previews_table()?;
         db.migrate_diagram_tilt_curves_table()?;
+        // After both cache tables exist: it also marks the cached results of designs that
+        // carry a design file outdated, in both.
+        db.migrate_preview_material_provenance()?;
         db.migrate_diagram_solid_extents_table()?;
         db.migrate_diagram_solid_hull_table()?;
         db.migrate_saved_rough_plans_table()?;
@@ -386,9 +390,7 @@ impl Database {
         db.migrate_design_cut_progress_table()?;
         db.migrate_design_lighting_table()?;
         db.migrate_render_jobs_table()?;
-        // Zoning builds only: the rough-colour side tables (see `zoning_store`). A default
-        // build neither creates nor touches them.
-        #[cfg(feature = "zoning")]
+        // The rough-colour side tables (see `zoning_store`).
         db.migrate_zoning_tables()?;
         db.migrate_mirror_state_tombstone_column()?;
         db.migrate_prune_tilt_curve_aggregate_columns()?;

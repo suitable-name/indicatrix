@@ -176,8 +176,13 @@ pub fn estimate_noise(
             points.push((mean, median_sorted(&variances) / median_bias));
         }
         let (a, b) = fit_line(&points);
-        model.a[channel] = a as f32;
-        model.b[channel] = b as f32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the noise-model storage precision; the fitted coefficients are small"
+        )]
+        let (a_f32, b_f32) = (a as f32, b as f32);
+        model.a[channel] = a_f32;
+        model.b[channel] = b_f32;
     }
     Ok(model)
 }

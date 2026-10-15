@@ -1,7 +1,7 @@
 //! Shared save/export helpers: a design's custom-catalogue material snapshot, the
-//! "not a closed solid" header marker, the cached-solve-reusing paired-save entry
+//! "not a closed solid" header marker, the cached-solve-reusing catalogue-`.asc` entry
 //! point, the source-catalogue-row footnote stamp, and a design's own
-//! [`CustomMaterialSnapshot`] for a `.indicatrix` design file, and that file's text.
+//! [`CustomMaterialSnapshot`] for a `.isdd` design file, and that file's text.
 
 use crate::{bridge::render_thread::RenderContext, gui::optics::crystal_optics::library_material};
 use indicatrix::{
@@ -11,8 +11,8 @@ use indicatrix::{
 use indicatrix_cut_core::{
     Design, built_in_refractive_index,
     native::{
-        CustomMaterialSnapshot, DesignExtras, PairedSave, SaveError, SaveExtras, design_to_file,
-        save_paired_extended, save_paired_extended_from_solved,
+        CatalogueAsc, CustomMaterialSnapshot, DesignExtras, SaveError, SaveExtras,
+        catalogue_asc_extended, catalogue_asc_extended_from_solved, design_to_file,
     },
 };
 use indicatrix_vault::db::sqlite::Database;
@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 /// (`RenderContext::custom_materials`) -- snapshotted (a cheap `Arc` clone, not a
 /// deep copy) for a save/export callback to pass to a `_with` entry point
 /// (`Design::to_asc_schedule_with`/`Design::cutting_sheet_with`) or into
-/// `SaveExtras::custom_catalogue` (for `save_paired_extended`/
-/// `save_paired_extended_from_solved`) so a design on a CUSTOM catalogue material
+/// `SaveExtras::custom_catalogue` (for `catalogue_asc_extended`/
+/// `catalogue_asc_extended_from_solved`) so a design on a CUSTOM catalogue material
 /// writes/prints that material's own refractive index instead of silently falling
 /// back to the legacy schedule RI.
 pub(super) fn snapshot_custom_materials(
@@ -78,13 +78,13 @@ pub(super) fn degenerate_marker_header(headers: &[String], message: &str) -> Opt
 ///
 /// Also returns the `solved` masts themselves (`None` only for a `MissingAnchor`),
 /// so a caller that goes on to write the file can pass them straight to
-/// [`save_paired_extended_from_solved`] instead of re-solving the same design
-/// a second time via `Design::to_asc_schedule` (see [`save_paired_reusing_solve`]).
-/// Calls [`save_paired_extended_from_solved`] when `solved` is available and
+/// [`catalogue_asc_extended_from_solved`] instead of re-solving the same design
+/// a second time via `Design::to_asc_schedule` (see [`catalogue_asc_reusing_solve`]).
+/// Calls [`catalogue_asc_extended_from_solved`] when `solved` is available and
 /// `design` actually has tiers to build masts for, so a caller that already solved
 /// once (e.g. [`confirm_status_before_write`], or [`run_autosave_tick`]'s own local
-/// solve) never pays for [`save_paired_extended`]'s internal `Design::solve()`
-/// a second time. Falls back to [`save_paired_extended`] itself for the two
+/// solve) never pays for [`catalogue_asc_extended`]'s internal `Design::solve()`
+/// a second time. Falls back to [`catalogue_asc_extended`] itself for the two
 /// cases `solved` cannot stand in for: `solved` is `None` (the design does not
 /// currently solve -- re-solving there is cheap, since `Design::solve` returns
 /// `MissingAnchor` before ever running the expensive `solve_meet_points` pass) or
@@ -95,33 +95,22 @@ pub(super) fn degenerate_marker_header(headers: &[String], message: &str) -> Opt
 /// a design on a CUSTOM catalogue material writes that material's own refractive
 /// index to the `.asc` `I` line instead of the legacy schedule RI -- see
 /// [`SaveExtras::custom_catalogue`]'s own doc comment.
-pub(super) fn save_paired_reusing_solve(
+pub(super) fn catalogue_asc_reusing_solve(
     design: &Design,
     solved: Option<&[SolvedTier]>,
-    asc_filename: impl Into<String>,
     original_asc_text: Option<&str>,
     placeholder_note: Option<&str>,
-    printed_proportions: Option<&ExternalProportions>,
     extras: &SaveExtras<'_>,
-) -> Result<PairedSave, SaveError> {
+) -> Result<CatalogueAsc, SaveError> {
     match solved {
-        Some(solved) if !design.tiers.is_empty() => save_paired_extended_from_solved(
+        Some(solved) if !design.tiers.is_empty() => catalogue_asc_extended_from_solved(
             design,
             solved,
-            asc_filename,
             original_asc_text,
             placeholder_note,
-            printed_proportions,
             extras,
         ),
-        _ => save_paired_extended(
-            design,
-            asc_filename,
-            original_asc_text,
-            placeholder_note,
-            printed_proportions,
-            extras,
-        ),
+        _ => catalogue_asc_extended(design, original_asc_text, placeholder_note, extras),
     }
 }
 
@@ -138,7 +127,7 @@ pub(super) fn save_paired_reusing_solve(
 /// same-titled row into a recorded version of the original.
 ///
 /// Called from both "Export .asc" and "Save": a bare Export with no design
-/// sidecar at all still needs to survive an export-then-reimport round trip, so the
+/// file beside it still needs to survive an export-then-reimport round trip, so the
 /// plain `.asc` itself has to carry this, not only the design file (which already
 /// records everything else about this design, but is never attached to a plain
 /// Export).
@@ -154,7 +143,7 @@ pub(super) fn stamp_source_entry_footnote(
 
 /// Builds `design`'s [`CustomMaterialSnapshot`] for a save, so a design saved
 /// under a custom material does not silently reload as Diamond -- without this,
-/// nothing would attach that material's own numbers to the sidecar. `None` when
+/// nothing would attach that material's own numbers to the design file. `None` when
 /// `design.material.name` is unset, or names one of the
 /// built-in presets ([`built_in_refractive_index`] resolves it -- nothing to
 /// preserve; any build already knows that name), or names a custom material this
@@ -167,9 +156,10 @@ pub(super) fn stamp_source_entry_footnote(
 /// `GemMaterial::new_custom`'s own Cauchy fit for no reason when the authored
 /// numbers already exist. `crystal_system`/`optical_character` are carried
 /// through as the row's own plain-text names (`""` when the row predates those
-/// fields) -- [`gem_material_from_custom_snapshot`] re-derives both from the
-/// snapshot's `birefringence_delta` sign on load regardless, so these are for a
-/// human reading the raw TOML only.
+/// fields), and a biaxial row's `biaxial_delta_beta_alpha` as a number --
+/// [`gem_material_from_custom_snapshot`] reads all three back on load when the
+/// names are recognised, and falls back to the `birefringence_delta` sign for an
+/// empty or unrecognised name.
 pub(super) fn custom_material_snapshot_for_save(
     design: &Design,
     db: &Arc<Mutex<Database>>,
@@ -190,7 +180,7 @@ pub(super) fn custom_material_snapshot_for_save(
     Some(library_material(&row).snapshot())
 }
 
-/// The text of `design`'s self-contained `.indicatrix` file: every tier in full plus
+/// The text of `design`'s self-contained `.isdd` file: every tier in full plus
 /// the custom-material snapshot, history trail, `[meta]` table and attachments
 /// `extras` carries, and the printed proportions of the catalogue row the design came
 /// from. `draft` records that the design did not solve when it was saved.

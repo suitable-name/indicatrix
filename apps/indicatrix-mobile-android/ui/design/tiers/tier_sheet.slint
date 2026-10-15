@@ -1,0 +1,356 @@
+// The tier sheet: everything about one tier except typing its angle (that has its own
+// sheet) -- name, indices as removable chips with add, rotate, mirror and complete-orbit,
+// what the tier meets, and Duplicate / Delete / Move / Detach. Hosted inside the Tiers
+// tab as a full-height overlay.
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { PageScroll } from "../../shell/page_scroll.slint";
+import { Chip } from "../../shell/chips.slint";
+import { TonalButton, TextButton } from "../../shell/buttons.slint";
+import { IconButton } from "../../shell/icon_button.slint";
+import { StateLayer } from "../../shell/state_layer.slint";
+import { Keypad } from "../../shell/keypad.slint";
+import { TiersModel } from "tiers_model.slint";
+
+// A small heading above a group.
+component SectionLabel inherits Text {
+    color: Theme.primary;
+    font-size: Theme.text-label-large;
+    font-weight: 500;
+}
+
+// A paragraph of supporting text.
+component Note inherits Text {
+    color: Theme.on-surface-variant;
+    font-size: Theme.text-body;
+    wrap: word-wrap;
+}
+
+export component TierSheet inherits Rectangle {
+    background: Theme.surface-container;
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: TiersModel.tier-title;
+
+    // Swallows taps so they do not reach the list below.
+    TouchArea { }
+
+    VerticalLayout {
+        Rectangle {
+            height: 56px;
+
+            HorizontalLayout {
+                padding-left: Theme.space-xs;
+                padding-right: Theme.space-sm;
+                spacing: Theme.space-xs;
+
+                IconButton {
+                    icon: Icons.back;
+                    label: "Back";
+                    tint: Theme.on-surface;
+                    clicked => {
+                        TiersModel.close-tier();
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: TiersModel.tier-title;
+                        color: Theme.on-surface;
+                        font-size: Theme.text-title;
+                        font-weight: 500;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: TiersModel.tier-block;
+                        color: Theme.on-surface-variant;
+                        font-size: Theme.text-label;
+                        overflow: elide;
+                    }
+                }
+
+                TextButton {
+                    text: "Done";
+                    clicked => {
+                        TiersModel.close-tier();
+                    }
+                }
+            }
+        }
+
+        PageScroll {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                padding-bottom: Theme.space-xl;
+                spacing: Theme.space-md;
+
+                SectionLabel {
+                    text: "Name";
+                }
+
+                LineEdit {
+                    text <=> TiersModel.tier-name;
+                    placeholder-text: "Facet name";
+                    accepted(text) => {
+                        TiersModel.tier-rename(text);
+                    }
+                    changed has-focus => {
+                        if (!self.has-focus) {
+                            TiersModel.tier-rename(self.text);
+                        }
+                    }
+                }
+
+                SectionLabel {
+                    text: "Angle";
+                }
+
+                Rectangle {
+                    height: Theme.touch;
+                    border-radius: Theme.radius-md;
+                    background: Theme.surface-high;
+                    border-width: 1px;
+                    border-color: Theme.outline-variant;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: "Edit angle, " + TiersModel.tier-angle;
+                    accessible-action-default => {
+                        TiersModel.open-angle(TiersModel.tier-row);
+                    }
+
+                    StateLayer {
+                        pressed: angle-touch.pressed;
+                        hovered: angle-touch.has-hover;
+                        border-radius: parent.border-radius;
+                    }
+
+                    HorizontalLayout {
+                        padding-left: Theme.space-lg;
+                        padding-right: Theme.space-lg;
+
+                        Text {
+                            text: TiersModel.tier-angle;
+                            color: Theme.primary;
+                            font-size: Theme.text-title-large;
+                            font-weight: 500;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        Text {
+                            text: "Edit";
+                            color: Theme.on-surface-variant;
+                            font-size: Theme.text-label-large;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    angle-touch := TouchArea {
+                        clicked => {
+                            TiersModel.open-angle(TiersModel.tier-row);
+                        }
+                    }
+                }
+
+                if TiersModel.tier-relation != "": Note {
+                    text: "The angle follows " + TiersModel.tier-relation + ".";
+                }
+
+                SectionLabel {
+                    text: "Indices";
+                }
+
+                Rectangle {
+                    height: Math.ceil(TiersModel.tier-chips.length / 4) * 48px;
+
+                    for chip[i] in TiersModel.tier-chips: Chip {
+                        x: Math.mod(i, 4) * (parent.width / 4);
+                        y: Math.floor(i / 4) * 48px;
+                        text: chip.label + "  \u{d7}";
+                        selected: chip.detached;
+                        clicked => {
+                            TiersModel.tier-remove-index(i);
+                        }
+                    }
+                }
+
+                if TiersModel.tier-chips.length == 0: Note {
+                    text: "This tier has no index positions.";
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.space-sm;
+
+                    TonalButton {
+                        text: "Add Index";
+                        clicked => {
+                            TiersModel.index-key("clear");
+                            TiersModel.index-entry-open = true;
+                        }
+                    }
+
+                    TonalButton {
+                        text: "Turn \u{2212}1";
+                        enabled: TiersModel.tier-chips.length > 0;
+                        clicked => {
+                            TiersModel.tier-rotate(-1);
+                        }
+                    }
+
+                    TonalButton {
+                        text: "Turn +1";
+                        enabled: TiersModel.tier-chips.length > 0;
+                        clicked => {
+                            TiersModel.tier-rotate(1);
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.space-sm;
+
+                    TonalButton {
+                        text: "Mirror";
+                        enabled: TiersModel.tier-chips.length > 0;
+                        clicked => {
+                            TiersModel.tier-mirror();
+                        }
+                    }
+
+                    TonalButton {
+                        text: "Complete Orbit";
+                        enabled: TiersModel.tier-orbit-incomplete;
+                        clicked => {
+                            TiersModel.tier-complete-orbit();
+                        }
+                    }
+                }
+
+                if TiersModel.tier-orbit != "": Note {
+                    text: TiersModel.tier-orbit;
+                }
+
+                if TiersModel.index-entry-open: VerticalLayout {
+                    spacing: Theme.space-sm;
+
+                    HorizontalLayout {
+                        alignment: center;
+
+                        Keypad {
+                            max-width: 400px;
+                            horizontal-stretch: 1;
+                            caption: "Index Position";
+                            readout: TiersModel.index-readout;
+                            typing: TiersModel.index-typing;
+                            key(id) => {
+                                TiersModel.index-key(id);
+                            }
+                            ok => {
+                                TiersModel.index-ok();
+                            }
+                        }
+                    }
+
+                    TextButton {
+                        text: "Cancel";
+                        clicked => {
+                            TiersModel.index-key("clear");
+                            TiersModel.index-entry-open = false;
+                        }
+                    }
+                }
+
+                SectionLabel {
+                    text: "Meets";
+                }
+
+                Note {
+                    text: TiersModel.tier-meet;
+                }
+
+                if TiersModel.tier-solve != "": Note {
+                    text: "Solved: " + TiersModel.tier-solve + ".";
+                }
+
+                if TiersModel.tier-warning != "": Text {
+                    text: TiersModel.tier-warning;
+                    color: Theme.error;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+
+                if TiersModel.tier-imported != "": VerticalLayout {
+                    spacing: Theme.space-sm;
+
+                    Note {
+                        text: "The source file said this tier meets " + TiersModel.tier-imported + ".";
+                    }
+
+                    TonalButton {
+                        text: "Adopt Imported Meet";
+                        clicked => {
+                            TiersModel.tier-adopt();
+                        }
+                    }
+                }
+
+                SectionLabel {
+                    text: "Actions";
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.space-sm;
+
+                    TonalButton {
+                        text: "Duplicate";
+                        clicked => {
+                            TiersModel.tier-duplicate();
+                        }
+                    }
+
+                    TonalButton {
+                        text: TiersModel.tier-detached ? "Reattach" : "Detach";
+                        clicked => {
+                            TiersModel.tier-detach();
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.space-sm;
+
+                    TonalButton {
+                        text: "Move Up";
+                        enabled: TiersModel.tier-can-up;
+                        clicked => {
+                            TiersModel.tier-move(-1);
+                        }
+                    }
+
+                    TonalButton {
+                        text: "Move Down";
+                        enabled: TiersModel.tier-can-down;
+                        clicked => {
+                            TiersModel.tier-move(1);
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    TextButton {
+                        text: "Delete Tier";
+                        clicked => {
+                            TiersModel.tier-delete();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

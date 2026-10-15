@@ -442,7 +442,7 @@ fn a_girdle_failure_climbs_the_ladder_and_other_stones_do_not() {
     let original = analyze(&design, true).expect("the design solves and closes");
     let plan = build_plan(&design, &target_at(1.5791), EMERALD_CROWN, &[]);
     let moves = plan.moving_angles();
-    let plain = best_attempt(&design, &moves, &original, None, &|| false)
+    let unallowed = best_attempt(&design, &moves, &original, None, &|| false)
         .expect("relations hold")
         .expect("not stopped");
     let allowed = best_attempt(
@@ -454,11 +454,11 @@ fn a_girdle_failure_climbs_the_ladder_and_other_stones_do_not() {
     )
     .expect("relations hold")
     .expect("not stopped");
-    assert_eq!(plain.girdle_step, None);
-    if plain.reasons.is_empty() {
+    assert_eq!(unallowed.girdle_step, None);
+    if unallowed.reasons.is_empty() {
         // Rung 0 wins when it is valid: the allowance changes nothing.
         assert_eq!(allowed.girdle_step, None);
-        assert_eq!(allowed.anchors, plain.anchors);
+        assert_eq!(allowed.anchors, unallowed.anchors);
     } else if allowed.girdle_step.is_some() {
         assert_eq!(allowed.reasons.len(), 0);
     }

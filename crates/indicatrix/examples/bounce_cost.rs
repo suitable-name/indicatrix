@@ -190,20 +190,26 @@ impl TerminationStats {
             / total as f64;
         let median = self.percentile(total, 0.5);
         let p95 = self.percentile(total, 0.95);
-        let max = self.bounce_counts.iter().rposition(|&c| c > 0).unwrap_or(0) as u32;
+        let max = u32::try_from(self.bounce_counts.iter().rposition(|&c| c > 0).unwrap_or(0))
+            .expect("bounce count fits u32");
         (mean, median, p95, max)
     }
 
     fn percentile(&self, total: u64, p: f64) -> u32 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "p is a fraction in 0..=1, so the ceil is within 0..=total"
+        )]
         let target = ((p * total as f64).ceil() as u64).max(1);
         let mut cumulative = 0u64;
         for (i, &c) in self.bounce_counts.iter().enumerate() {
             cumulative += c;
             if cumulative >= target {
-                return i as u32;
+                return u32::try_from(i).expect("bounce count fits u32");
             }
         }
-        (self.bounce_counts.len() - 1) as u32
+        u32::try_from(self.bounce_counts.len() - 1).expect("bounce count fits u32")
     }
 
     /// A view of these stats excluding paths that never even reached the gem: a camera
@@ -301,12 +307,13 @@ fn trace_frame_plain(job: &TraceJob<'_>) -> Vec<Vec3> {
                             break;
                         }
                         let mut row = vec![Vec3::ZERO; job.width as usize];
+                        let row_index = u32::try_from(y).expect("row index is below job.height");
                         for x in 0..job.width {
-                            let pixel = y as u32 * job.width + x;
+                            let pixel = row_index * job.width + x;
                             let rng = pixel_rng(pixel);
                             for sample in 0..job.spp {
                                 let draw = sample_draw(pixel, sample, &rng);
-                                let ray = job.ray_for(x, y as u32, draw.jx, draw.jy);
+                                let ray = job.ray_for(x, row_index, draw.jx, draw.jy);
                                 row[x as usize] += trace_spectral_ray_with_finish(
                                     ray,
                                     job.planes,
@@ -353,12 +360,13 @@ fn trace_frame_instrumented(job: &TraceJob<'_>) -> (Vec<Vec3>, TerminationStats)
                         }
                         let mut row = vec![Vec3::ZERO; job.width as usize];
                         let mut stats = TerminationStats::new(job.max_bounces);
+                        let row_index = u32::try_from(y).expect("row index is below job.height");
                         for x in 0..job.width {
-                            let pixel = y as u32 * job.width + x;
+                            let pixel = row_index * job.width + x;
                             let rng = pixel_rng(pixel);
                             for sample in 0..job.spp {
                                 let draw = sample_draw(pixel, sample, &rng);
-                                let ray = job.ray_for(x, y as u32, draw.jx, draw.jy);
+                                let ray = job.ray_for(x, row_index, draw.jx, draw.jy);
                                 let (radiance, bounces, reason) =
                                     trace_spectral_ray_with_finish_instrumented(
                                         ray,

@@ -272,7 +272,7 @@ pub fn run_image_comparison_absorption_path_scale(
     run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)
 }
 
-/// Tier 3 statistical image comparison of a ZONED stone (`zoning` feature).
+/// Tier 3 statistical image comparison of a ZONED stone.
 ///
 /// The CPU tracer's zoned absorption (`optics::raytracer::zoned`) against the megakernel's zone
 /// kernels (`shaders/zoning/*.wgsl`), through the same disjoint-sample-range z-score criteria as
@@ -282,7 +282,6 @@ pub fn run_image_comparison_absorption_path_scale(
 ///
 /// See [`crate::renderer::gpu::zoned_cases::ZonedImageCase`] for the stones; the soft cases
 /// are the ones that decide whether `GPU_SOFT_SUBDIV` may be lowered.
-#[cfg(feature = "zoning")]
 #[must_use]
 pub fn run_image_comparison_zoned(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -694,7 +693,8 @@ fn compute_image_comparison_result(
         mean_z_sum += z;
         if z.abs() > max_abs_z {
             max_abs_z = z.abs();
-            max_abs_z_pixel = ((pixel as u32) % width, (pixel as u32) / width);
+            let pixel = u32::try_from(pixel).expect("the grid has width * height u32 pixels");
+            max_abs_z_pixel = (pixel % width, pixel / width);
         }
     }
 
@@ -734,7 +734,8 @@ fn compute_image_comparison_result(
 /// # Panics
 ///
 /// Panics if `material.gpu_supported()` is false for `material` -- self-test scaffolding
-/// callers always pass a GPU-supported built-in.
+/// callers always pass a GPU-supported built-in. Also panics if a pixel index does not fit
+/// `u32`, which `width * height` in `u32` rules out.
 #[must_use]
 pub fn run_specialisation_image_comparison(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -834,7 +835,8 @@ pub fn run_specialisation_image_comparison(
         mean_z_sum += z;
         if z.abs() > max_abs_z {
             max_abs_z = z.abs();
-            max_abs_z_pixel = ((pixel as u32) % width, (pixel as u32) / width);
+            let pixel = u32::try_from(pixel).expect("the grid has width * height u32 pixels");
+            max_abs_z_pixel = (pixel % width, pixel / width);
         }
     }
 

@@ -17,7 +17,7 @@ import { TipBox } from "../tip_box.slint";
 // The gradients of the square and the strip are the colour space itself, not theme colours, so
 // their literals stay (`tests/theme_tokens.rs` lists them as the only colours this file may
 // hold).
-export component colorPicker inherits Rectangle {
+export component ColorPicker inherits Rectangle {
     // The color the picker opens on.
     in property <color> initial: #c0392b;
     in property <string> apply_label: "Apply";
@@ -59,11 +59,11 @@ export component colorPicker inherits Rectangle {
             background: Colors.hsv(root.hue, 1.0, 1.0, 1.0);
 
             accessible-role: AccessibleRole.slider;
-            accessible-label: "Saturation and brightness";
+            accessible-label: "Saturation and Brightness";
             accessible-description: "Left and right change the saturation, up and down change the brightness.";
             accessible-value: "saturation " + Math.round(root.sat * 100) + " percent, brightness " + Math.round(root.val * 100) + " percent";
 
-            Tooltip { text: @markdown("Pick how rich (left to right) and how bright (bottom to top) the colour is."); }
+            Tooltip { text: @markdown("Pick how rich (left to right) and how bright (bottom to top) the color is."); }
 
             Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
             Rectangle { background: @linear-gradient(180deg, #00000000 0%, #000000 100%); }
@@ -135,7 +135,7 @@ export component colorPicker inherits Rectangle {
             accessible-action-increment => { root.hue = min(359.9, root.hue + 5.0); root.sync_hex(); }
             accessible-action-decrement => { root.hue = max(0.0, root.hue - 5.0); root.sync_hex(); }
 
-            Tooltip { text: @markdown("Pick the hue: the basic colour, from red through green and blue and back to red."); }
+            Tooltip { text: @markdown("Pick the hue: the basic color, from red through green and blue and back to red."); }
 
             Rectangle {
                 x: root.hue / 360.0 * parent.width - 2px;
@@ -190,15 +190,15 @@ export component colorPicker inherits Rectangle {
                 border-width: 1px;
                 border-color: Theme.border-dialog;
                 accessible-role: AccessibleRole.image;
-                accessible-label: "Chosen colour " + root.hex_text;
+                accessible-label: "Chosen Color "+ root.hex_text;
             }
             TipBox {
                 width: 90px;
-                hint: "The colour as hex digits, for example #c0392b. Type or paste one to jump to it.";
+                hint: "The color as hex digits, for example #c0392b. Type or paste one to jump to it.";
                 LineEdit {
                     text <=> root.hex_text;
                     placeholder-text: "#rrggbb";
-                    accessible-label: "Colour as hex digits";
+                    accessible-label: "Color as Hex Digits";
                     edited(t) => {
                         root.load(PhysicscolorModel.parse_hex(t, root.current));
                         root.hex_text = t;
@@ -210,16 +210,16 @@ export component colorPicker inherits Rectangle {
                 width: 64px;
                 height: 24px;
                 text: "Cancel";
-                hint: "Close the picker without choosing a colour.";
+                hint: "Close the picker without choosing a color.";
                 ink: Theme.text-secondary;
                 font_size: 10px;
                 clicked => { root.cancelled(); }
             }
-            ActionButton {
+            action-button-apply-label := ActionButton {
                 width: 80px;
                 height: 24px;
                 text: root.apply_label;
-                hint: "Use the chosen colour.";
+                hint: "Use the chosen color.";
                 fill: Theme.accent-cyan;
                 hover_fill: Theme.accent-cyan-hover;
                 ink: Theme.text-on-accent;

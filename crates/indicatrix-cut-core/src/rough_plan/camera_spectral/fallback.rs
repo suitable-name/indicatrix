@@ -148,6 +148,10 @@ impl CameraResponse {
         };
         let inverse = invert3(&native)?;
         let columns: [[f64; 3]; GRID_LEN] = std::array::from_fn(|i| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the CIE tables are sampled at f32 wavelengths; grid wavelengths are 380..780 nm"
+            )]
             let cmf = cie_1931_cmf(grid_wavelength_nm(i) as f32);
             let xyz = [f64::from(cmf[0]), f64::from(cmf[1]), f64::from(cmf[2])];
             mul_vec3(&inverse, xyz)

@@ -64,6 +64,32 @@ component ChoicePill inherits Rectangle {
     }
 }
 
+// The renderer switch (Solid / Path Traced), mounted in the first row or, in a narrow pane, in
+// a row of its own.
+component RendererPills inherits HorizontalLayout {
+    spacing: 6px;
+
+    ChoicePill {
+        label: "Solid";
+        hint: "Draw both stones quickly with the solid view. The picture updates as you turn them.";
+        active: CompareModel.renderer_index == 0;
+        clicked => {
+            CompareModel.renderer_index = 0;
+            CompareModel.renderer_changed(0);
+        }
+    }
+
+    ChoicePill {
+        label: "Path Traced";
+        hint: "Draw both stones with the path tracer, which follows the light through the stone. It looks more like the real thing and takes a moment after you stop turning.";
+        active: CompareModel.renderer_index == 1;
+        clicked => {
+            CompareModel.renderer_index = 1;
+            CompareModel.renderer_changed(1);
+        }
+    }
+}
+
 // A caption chip floated over the split and overlay views' corners.
 component SideChip inherits Rectangle {
     in property <string> label;
@@ -125,6 +151,8 @@ export component CompareView inherits Rectangle {
     // this on.
     in property <bool> show_metrics: false;
 
+    // The renderer switch moves to its own row below this width (the switches take ~380px).
+    property <bool> two_rows: root.width < 440px;
     // Side by side: the gap between the two slots and the caption row under them.
     property <length> gap: 8px;
     property <length> caption_height: 20px;
@@ -202,7 +230,7 @@ export component CompareView inherits Rectangle {
             alignment: start;
 
             ChoicePill {
-                label: "Side by side";
+                label: "Side by Side";
                 hint: "Show the current design and the changed one next to each other.";
                 active: CompareModel.mode_index == 0;
                 clicked => {
@@ -222,7 +250,7 @@ export component CompareView inherits Rectangle {
             }
 
             if root.show_split: ChoicePill {
-                label: "Split slider";
+                label: "Split Slider";
                 hint: "Show both designs in one picture, with a divider you can drag. The left of the divider is the current design, the right is the changed one.";
                 active: CompareModel.mode_index == 1;
                 clicked => {
@@ -231,27 +259,9 @@ export component CompareView inherits Rectangle {
                 }
             }
 
-            Rectangle { width: 16px; }
+            if !root.two_rows: Rectangle { width: 16px; }
 
-            ChoicePill {
-                label: "Solid";
-                hint: "Draw both stones quickly with the solid view. The picture updates as you turn them.";
-                active: CompareModel.renderer_index == 0;
-                clicked => {
-                    CompareModel.renderer_index = 0;
-                    CompareModel.renderer_changed(0);
-                }
-            }
-
-            ChoicePill {
-                label: "Path traced";
-                hint: "Draw both stones with the path tracer, which follows the light through the stone. It looks more like the real thing and takes a moment after you stop turning.";
-                active: CompareModel.renderer_index == 1;
-                clicked => {
-                    CompareModel.renderer_index = 1;
-                    CompareModel.renderer_changed(1);
-                }
-            }
+            if !root.two_rows: RendererPills {}
 
             if root.width > 760px: Rectangle { width: 16px; }
 
@@ -262,6 +272,14 @@ export component CompareView inherits Rectangle {
                 vertical-alignment: center;
                 overflow: elide;
             }
+        }
+
+        // A narrow pane (the Retarget dialog at the minimum window) puts the renderer switch on a
+        // row of its own, so no pill runs past the pane.
+        if root.two_rows: HorizontalLayout {
+            height: 24px;
+            alignment: start;
+            RendererPills {}
         }
 
         image_area := Rectangle {
@@ -440,7 +458,7 @@ export component CompareView inherits Rectangle {
                 width: image_area.width;
                 height: image_area.height;
                 accessible-role: AccessibleRole.image;
-                accessible-label: "Comparison of the two stones";
+                accessible-label: "Comparison of the Two Stones";
                 accessible-description: "Left, right, up and down turn both stones. Plus and minus zoom. Home resets the view.";
                 key-pressed(event) => {
                     if event.text == Key.LeftArrow {
@@ -542,7 +560,7 @@ export component CompareView inherits Rectangle {
                 border-radius: Theme.radius-sm;
 
                 accessible-role: AccessibleRole.slider;
-                accessible-label: "Split divider";
+                accessible-label: "Split Divider";
                 accessible-description: "Left and Right move the divider. Left of it is the current design, right of it is the changed one.";
                 accessible-value: "" + Math.round(CompareModel.split_fraction * 100);
                 accessible-value-minimum: 0;

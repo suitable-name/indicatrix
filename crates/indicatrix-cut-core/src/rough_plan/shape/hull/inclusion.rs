@@ -93,7 +93,13 @@ fn convex_outer_mesh(corners: &[DVec3]) -> Result<RoughMesh, HullError> {
         .fold(DVec3::splat(f64::NEG_INFINITY), |m, &p| m.max(p));
     let eps = 1e-9 * (hi - lo).max_element().max(1e-12);
     let faces = hull_faces(corners, eps).ok_or(HullError::Flat)?;
-    let tris: Vec<[u32; 3]> = faces.iter().map(|face| face.v.map(|i| i as u32)).collect();
+    let tris: Vec<[u32; 3]> = faces
+        .iter()
+        .map(|face| {
+            face.v
+                .map(|i| u32::try_from(i).expect("a hull corner index fits u32"))
+        })
+        .collect();
     RoughMesh::new(corners, &tris).map_err(HullError::OuterUnusable)
 }
 

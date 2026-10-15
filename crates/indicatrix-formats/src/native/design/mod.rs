@@ -1,10 +1,10 @@
-//! The self-contained `.indicatrix` design file -- see [`schema`] for the format, its
-//! tables and an example.
+//! The self-contained `.isdd` design file (Indicatrix Suite Design Document; files
+//! saved as `.indicatrix` before are read the same way) -- see [`schema`] for the
+//! format, its tables and an example.
 //!
-//! [`parse`]/[`to_string`] are the codec, [`detect_kind`]/[`detect_kind_of_path`] route
-//! a file to the right loader (this one, or the older paired overlay sidecar in the
-//! parent module), and [`is_design_path`]/[`design_path_for`] with the `DESIGN_*`
-//! constants are the naming and media-type rules the apps share. Turning a
+//! [`parse`]/[`to_string`] are the codec, [`detect_kind`]/[`detect_kind_of_path`] tell
+//! a design file from anything else, and [`is_design_path`]/[`design_path_for`] with
+//! the `DESIGN_*` constants are the naming and media-type rules the apps share. Turning a
 //! [`DesignFile`] into an editor design is `indicatrix-cut-core`'s `native` module.
 //!
 //! The plain-data types the vault and apps share are [`DesignMetadata`] (the `[meta]`
@@ -36,10 +36,11 @@ pub use meta::{
 };
 pub use path::{
     DESIGN_ACCEPT, DESIGN_EXTENSION, DESIGN_EXTENSION_DOTTED, DESIGN_FILE_DESCRIPTION,
-    DESIGN_MIME_TYPE, design_path_for, design_path_for_sibling, detect_kind_of_path,
-    is_design_path,
+    DESIGN_MIME_TYPE, DESIGN_READ_EXTENSIONS, LEGACY_DESIGN_EXTENSION,
+    LEGACY_DESIGN_EXTENSION_DOTTED, design_path_for, design_path_for_sibling, detect_kind_of_path,
+    is_design_path, is_legacy_design_path, is_retired_sidecar_name,
 };
 pub use schema::{
-    CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION, DESIGN_VERSION_CONCAVE,
-    DESIGN_VERSION_RELATIONS, DesignFile, MAX_DESIGN_TIERS, ScheduleTable,
+    CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION, DESIGN_VERSION_CONCAVE, DESIGN_VERSION_PLANES,
+    DESIGN_VERSION_RELATIONS, DesignFile, MAX_DESIGN_TIERS, RenderEffectsTable, ScheduleTable,
 };

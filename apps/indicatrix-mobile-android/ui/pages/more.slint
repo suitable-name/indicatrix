@@ -1,0 +1,208 @@
+// More destination: a menu of rows plus the sub-pages it opens (`Shell.more-page`).
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell } from "../models.slint";
+import { DocumentModel } from "../design/document_model.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { Icon } from "../shell/icon.slint";
+import { PreferencesPage } from "preferences.slint";
+import { AboutPage } from "about.slint";
+import { LicensesPage } from "licenses.slint";
+import { PlaceholderPage } from "placeholder.slint";
+
+component MoreMenu inherits Rectangle {
+    VerticalLayout {
+        TopBar {
+            title: "More";
+        }
+
+        PageScroll {
+            ListRow {
+                icon: Icons.add;
+                title: "New Design";
+                supporting: "Start from a template or a blank preform";
+                clicked => {
+                    DocumentModel.new-design();
+                }
+            }
+
+            ListRow {
+                icon: Icons.open;
+                title: "Open";
+                supporting: "Open an .isdd, .indicatrix, .asc, .gem or .gcs file";
+                clicked => {
+                    DocumentModel.open();
+                }
+            }
+
+            ListRow {
+                icon: Icons.check;
+                title: "Save";
+                supporting: DocumentModel.in-library ? (DocumentModel.dirty ? "Save to the Library; it has unsaved changes" : "Save to the Library") : (DocumentModel.dirty ? "Save the design; it has unsaved changes" : "Save the design to a file");
+                enabled: DocumentModel.has-design;
+                clicked => {
+                    DocumentModel.save();
+                }
+            }
+
+            ListRow {
+                icon: Icons.library;
+                title: "Save to Library";
+                supporting: DocumentModel.in-library ? "Update this design's Library entry" : "Keep the design in your Library";
+                enabled: DocumentModel.has-design;
+                clicked => {
+                    DocumentModel.save-to-library();
+                }
+            }
+
+            if DocumentModel.in-library: ListRow {
+                icon: Icons.check;
+                title: "Save As";
+                supporting: "Save a copy to a file";
+                clicked => {
+                    DocumentModel.save-as();
+                }
+            }
+
+            ListRow {
+                icon: Icons.share;
+                title: "Share Design";
+                supporting: "Send the .isdd file to another app";
+                enabled: DocumentModel.has-design;
+                clicked => {
+                    DocumentModel.share();
+                }
+            }
+
+            ListRow {
+                icon: Icons.licenses;
+                title: "Export .asc";
+                supporting: "Save the cutting schedule as a GemCAD .asc file";
+                enabled: DocumentModel.has-design;
+                clicked => {
+                    DocumentModel.export-asc();
+                }
+            }
+
+            ListRow {
+                icon: Icons.share;
+                title: "Share .asc";
+                supporting: "Send the cutting schedule to another app";
+                enabled: DocumentModel.has-design;
+                clicked => {
+                    DocumentModel.share-asc();
+                }
+            }
+
+            if DocumentModel.recent-titles.length > 0: Rectangle {
+                height: 48px;
+
+                Text {
+                    x: Theme.space-lg;
+                    y: parent.height - self.height - Theme.space-sm;
+                    text: "Recent";
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-body;
+                    font-weight: 600;
+                }
+            }
+
+            for entry[index] in DocumentModel.recent-titles: ListRow {
+                icon: Icons.open;
+                title: entry;
+                supporting: DocumentModel.recent-details[index];
+                clicked => {
+                    DocumentModel.open-recent(index);
+                }
+            }
+
+            ListRow {
+                icon: Icons.remote;
+                title: "Remote";
+                supporting: "Render and browse on your desktop";
+                clicked => {
+                    Shell.more-page = 4;
+                }
+
+                Icon {
+                    source: Icons.chevron-right;
+                    tint: Theme.on-surface-variant;
+                }
+            }
+
+            ListRow {
+                icon: Icons.settings;
+                title: "Preferences";
+                supporting: "Theme, handles, snapping, battery";
+                clicked => {
+                    Shell.more-page = 1;
+                }
+
+                Icon {
+                    source: Icons.chevron-right;
+                    tint: Theme.on-surface-variant;
+                }
+            }
+
+            ListRow {
+                icon: Icons.help;
+                title: "Help";
+                supporting: "Manual and walkthrough";
+                clicked => {
+                    Shell.more-page = 5;
+                }
+
+                Icon {
+                    source: Icons.chevron-right;
+                    tint: Theme.on-surface-variant;
+                }
+            }
+
+            ListRow {
+                icon: Icons.info;
+                title: "About";
+                supporting: "Version and licenses";
+                clicked => {
+                    Shell.more-page = 2;
+                }
+
+                Icon {
+                    source: Icons.chevron-right;
+                    tint: Theme.on-surface-variant;
+                }
+            }
+        }
+    }
+}
+
+export component MorePage inherits Rectangle {
+    if Shell.more-page == 0: MoreMenu { }
+
+    if Shell.more-page == 1: PreferencesPage { }
+
+    if Shell.more-page == 2: AboutPage { }
+
+    if Shell.more-page == 3: LicensesPage { }
+
+    if Shell.more-page == 4: PlaceholderPage {
+        title: "Remote";
+        icon: Icons.remote;
+        heading: "Remote Rendering Comes Later";
+        body: "Connect to your desktop to render large images and browse its library. This arrives in a later version.";
+        back-clicked => {
+            Shell.handle-back();
+        }
+    }
+
+    if Shell.more-page == 5: PlaceholderPage {
+        title: "Help";
+        icon: Icons.help;
+        heading: "Help Is on the Way";
+        body: "The manual, a first-run walkthrough and tutorials arrive in a later version.";
+        back-clicked => {
+            Shell.handle-back();
+        }
+    }
+}

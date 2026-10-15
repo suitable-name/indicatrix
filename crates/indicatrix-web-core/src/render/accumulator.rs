@@ -238,7 +238,7 @@ impl Accumulator {
                 if let Some(sums) = part {
                     indicatrix::renderer::cpu_frame::scatter_interleaved(
                         &mut self.sum,
-                        first_pixel as u32,
+                        u32::try_from(first_pixel).expect("a partition index fits u32"),
                         self.partitions,
                         &sums,
                     );

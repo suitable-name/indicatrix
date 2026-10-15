@@ -67,15 +67,15 @@ fn to_i32(n: usize) -> i32 {
 
 /// The words for the camera and backlight lists.
 pub const CAMERA_NAMES: [&str; 3] = [
-    "sRGB fallback (least certain)",
-    "Measured curves (CSV)",
-    "Reference filter set",
+    "sRGB Fallback (Least Certain)",
+    "Measured Curves (CSV)",
+    "Reference Filter Set",
 ];
 /// The backlight choices.
 pub const BACKLIGHT_NAMES: [&str; 3] = [
-    "Find from the white frame",
-    "A CIE LED kind",
-    "Measured spectrum (CSV)",
+    "Find from the White Frame",
+    "A CIE LED Kind",
+    "Measured Spectrum (CSV)",
 ];
 
 /// Pushes everything.
@@ -120,11 +120,11 @@ pub fn push_rig(host: &Host) {
         } else if state.aligned() {
             "The mesh is aligned to this rig. Continue with the photos.".to_owned()
         } else if state.alignment.is_some() {
-            "The locate window's alignment belongs to another rig or rough. Align the mesh to this rig there (Locate inclusion from photos, step 2).".to_owned()
+            "The locate window's alignment belongs to another rig or rough. Align the mesh to this rig there (Locate Inclusion from Photos, step 2).".to_owned()
         } else if state.context.is_none() {
             "The Rough Planner has no mesh rough.".to_owned()
         } else {
-            "The mesh is not aligned to the rig yet. Open Locate..., load the stone photos, outline the stone in two views and press Align mesh to rig.".to_owned()
+            "The mesh is not aligned to the rig yet. Open Locate..., load the stone photos, outline the stone in two views and press Align Mesh to Rig.".to_owned()
         };
         (
             crate::locate_io::rig_store::names(&state.rigs),
@@ -153,6 +153,10 @@ pub fn push_slots(host: &Host) {
             .map(|v| {
                 let files = &state.files[v];
                 let status = match state.prepared.get(v).and_then(Option::as_ref) {
+                    Some(p) if p.is_cached() => format!(
+                        "from the saved plan's cache, {:.0} % usable (load the photos and prepare to replace)",
+                        p.usable_fraction() * 100.0
+                    ),
                     Some(p) => format!("prepared, {:.0} % usable", p.usable_fraction() * 100.0),
                     None if files.is_complete() => "ready to prepare".to_owned(),
                     None => String::new(),
@@ -248,7 +252,14 @@ pub fn push_views(host: &Host) {
                     .and_then(Option::as_ref)
                     .map_or_else(
                         || "not prepared".to_owned(),
-                        |p| format!("{:.0} % usable", p.usable_fraction() * 100.0),
+                        |p| {
+                            let origin = if p.is_cached() {
+                                ", from the saved plan's cache"
+                            } else {
+                                ""
+                            };
+                            format!("{:.0} % usable{origin}", p.usable_fraction() * 100.0)
+                        },
                     )
                     .into(),
                 active: v == state.active_view,
@@ -274,11 +285,21 @@ pub fn push_canvas(host: &Host) {
                         points
                             .iter()
                             .enumerate()
-                            .map(|(i, q)| CanvasMarker {
-                                fx: (((q[0] - grid.origin[0]) / grid.scale) / w) as f32,
-                                fy: (((q[1] - grid.origin[1]) / grid.scale) / h) as f32,
-                                kind: 0,
-                                label: (i + 1).to_string().into(),
+                            .map(|(i, q)| {
+                                #[expect(
+                                    clippy::cast_possible_truncation,
+                                    reason = "marker fractions are 0..1 picture fractions stored as f32 for the Slint model"
+                                )]
+                                let (across, down) = (
+                                    (((q[0] - grid.origin[0]) / grid.scale) / w) as f32,
+                                    (((q[1] - grid.origin[1]) / grid.scale) / h) as f32,
+                                );
+                                CanvasMarker {
+                                    fx: across,
+                                    fy: down,
+                                    kind: 0,
+                                    label: (i + 1).to_string().into(),
+                                }
                             })
                             .collect()
                     })
@@ -440,7 +461,7 @@ pub fn push_compare(host: &Host) {
         w.set_compare_photo(Image::default());
         w.set_compare_render(Image::default());
         w.set_compare_heat(Image::default());
-        w.set_compare_stats("".into());
+        w.set_compare_stats(missing_render_text(&host.state.borrow()).into());
     }
     let (lovo, models, chips, warns, prompt) = fit_texts.unwrap_or_default();
     w.set_lovo_rows(rows(lovo));
@@ -457,6 +478,19 @@ pub fn push_compare(host: &Host) {
     )));
     w.set_warning_rows(rows(warns));
     w.set_zoned_prompt(prompt.into());
+}
+
+/// The Compare step's line when it has no pictures: a fit restored from the saved plan has its
+/// report but no render.
+#[must_use]
+pub fn missing_render_text(state: &State) -> String {
+    match &state.fit {
+        Some(fit) if !fit.has_render() => {
+            "The render is not stored with the plan. Load the photos, prepare them and run the fit again to see the render next to the photos."
+                .to_owned()
+        }
+        _ => String::new(),
+    }
 }
 
 pub fn push_accept(host: &Host) {
@@ -486,9 +520,9 @@ pub fn accept_state(state: &State) -> (String, bool) {
     }
     text.push('.');
     if can {
-        text.push_str(" Accept stores the colour and the cached photos with the saved plan.");
+        text.push_str(" Accept stores the color and the cached photos with the saved plan.");
     } else {
-        text.push_str(" The plan is not saved yet: save it in the Rough Planner, then accept. You can still export the report.");
+        text.push_str(" The plan is not saved yet: save it in the Rough Planner and this window updates at once. You can still export the report.");
     }
     (text, can)
 }

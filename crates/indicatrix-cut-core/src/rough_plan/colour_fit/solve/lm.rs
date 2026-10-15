@@ -25,17 +25,27 @@ pub(super) struct LmSettings {
     pub freeze_gains: bool,
     /// Pin the common mode of the log-gains by the numerical sigma (stage 2).
     pub pin_common_gain: bool,
+    /// Threads for the pixel pass of each normal-equation build (at least 1). Starts that run
+    /// side by side share the cores, see `par::inner_threads`. The result does not depend on it.
+    pub inner_threads: usize,
 }
 
 impl LmSettings {
-    /// All parameters free, the config's gain prior.
+    /// All parameters free, the config's gain prior, a serial pixel pass.
     pub(super) const fn new(max_iterations: usize, rel_tol: f64) -> Self {
         Self {
             max_iterations,
             rel_tol,
             freeze_gains: false,
             pin_common_gain: false,
+            inner_threads: 1,
         }
+    }
+
+    /// The same settings with `threads` threads for the pixel pass.
+    pub(super) const fn with_inner_threads(mut self, threads: usize) -> Self {
+        self.inner_threads = threads;
+        self
     }
 }
 
@@ -76,6 +86,7 @@ pub(super) fn run_lm(
         config: ctx.config,
         l1_weights: ctx.l1_weights,
         pin_common_gain: ctx.pin_common_gain || settings.pin_common_gain,
+        model_priors: ctx.model_priors,
     };
     let ctx = &pinned_ctx;
     let (lo, hi) = bounds(model, problem.view_count());
@@ -90,8 +101,11 @@ pub(super) fn run_lm(
             }
         })
         .collect();
-    let mut normal = problem.normal(model, &x, active, ctx)?;
+    let mut normal = problem.normal(model, &x, active, ctx, settings.inner_threads)?;
     let mut mu = 1e-3_f64;
+    // The damped system of one try, reused across tries and iterations.
+    let mut a: Vec<f64> = Vec::new();
+    let mut b: Vec<f64> = Vec::new();
     let mut converged = false;
     let mut iterations = 0;
     while iterations < settings.max_iterations {
@@ -116,8 +130,10 @@ pub(super) fn run_lm(
         let m = free.len();
         let mut accepted = false;
         for _try in 0..16 {
-            let mut a = vec![0.0; m * m];
-            let mut b = vec![0.0; m];
+            a.clear();
+            a.resize(m * m, 0.0);
+            b.clear();
+            b.resize(m, 0.0);
             for (ri, &i) in free.iter().enumerate() {
                 b[ri] = -normal.g[i];
                 for (ci, &j) in free.iter().enumerate() {
@@ -141,7 +157,7 @@ pub(super) fn run_lm(
                 .zip(&x)
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0_f64, f64::max);
-            let trial = problem.normal(model, &candidate, active, ctx)?;
+            let trial = problem.normal(model, &candidate, active, ctx, settings.inner_threads)?;
             if trial.cost <= normal.cost {
                 let rel = (normal.cost - trial.cost) / normal.cost.abs().max(1e-300);
                 x = candidate;

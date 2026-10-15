@@ -1,0 +1,154 @@
+// Pieces of the Cutting Mode screen. The screen is white on black in every theme, for
+// maximum contrast at the faceting machine, so its colors are fixed here and do not come
+// from `Theme`. No hover states: a finger has no hover.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "../shell/icon.slint";
+
+export global ModeColors {
+    out property <color> background: #000000;
+    out property <color> ink: #ffffff;
+    // Captions and secondary text; 9.7:1 against black.
+    out property <color> dim: #b8b8b8;
+    out property <color> accent: #ffb74d;
+    out property <color> done: #1f9d4d;
+    out property <color> key: #1e1e1e;
+    out property <color> key-pressed: #3d3d3d;
+    out property <color> outline: #5a5a5a;
+    out property <color> track: #2e2e2e;
+}
+
+// A small gray label above a number.
+export component ModeCaption inherits Text {
+    color: ModeColors.dim;
+    font-size: Theme.text-label;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+}
+
+// A caption and one big number. The number shrinks to fit `avail-width` and `size-cap`
+// (the cap comes from the free height), never below `min-size`.
+export component Numeral inherits VerticalLayout {
+    in property <string> caption;
+    in property <string> value;
+    in property <length> avail-width;
+    in property <length> size-cap: 96px;
+    in property <length> min-size: 36px;
+
+    // A digit is about 0.6 em wide; 0.62 leaves room for the dashes and the degree sign.
+    property <length> size: max(root.min-size, min(root.size-cap, root.avail-width / (max(root.value.character-count, 1) * 0.62)));
+
+    spacing: 0px;
+
+    ModeCaption {
+        text: root.caption;
+    }
+
+    Text {
+        text: root.value;
+        color: ModeColors.ink;
+        font-size: root.size;
+        font-weight: 700;
+        horizontal-alignment: left;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// The previous and next buttons: 72 x 64 with a large chevron.
+export component ModeArrow inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 72px;
+    height: 64px;
+    border-radius: 16px;
+    border-width: 1px;
+    border-color: ModeColors.outline;
+    background: root.enabled && touch.pressed ? ModeColors.key-pressed : ModeColors.key;
+    opacity: root.enabled ? 1.0 : 0.3;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
+    Icon {
+        source: root.icon;
+        tint: ModeColors.ink;
+        glyph: 40px;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The full-width "Done" toggle, 72 px high. Done is a solid green with a check mark, not
+// done is a white outline, so the state reads from across the bench.
+export component DoneButton inherits Rectangle {
+    in property <bool> done;
+    callback clicked();
+
+    height: 72px;
+    border-radius: 20px;
+    border-width: root.done ? 0px : 3px;
+    border-color: ModeColors.ink;
+    background: root.done ? ModeColors.done : (touch.pressed ? ModeColors.key-pressed : ModeColors.background);
+    accessible-role: AccessibleRole.switch;
+    accessible-label: "Done";
+    accessible-checkable: true;
+    accessible-checked: root.done;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 12px;
+        cross-axis-alignment: center;
+
+        if root.done: Icon {
+            source: Icons.check;
+            tint: ModeColors.ink;
+            glyph: 40px;
+        }
+
+        Text {
+            text: root.done ? "Done" : "Mark as Done";
+            color: ModeColors.ink;
+            font-size: 30px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The thin bar under the header: how far through the steps the cutter is.
+export component StepBar inherits Rectangle {
+    in property <float> fraction: 0.0;
+
+    height: 4px;
+    background: ModeColors.track;
+
+    Rectangle {
+        x: 0px;
+        width: root.width * max(0.0, min(1.0, root.fraction));
+        height: root.height;
+        background: ModeColors.accent;
+    }
+}

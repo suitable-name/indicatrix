@@ -14,6 +14,35 @@ use crate::rough_plan::locate::{
     Projection, RigProfile, Rigid, Scene, ViewPose, box_mesh, predict_ghosts,
 };
 
+/// Narrows a synthetic `f64` value to the `f32` the images store.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the image storage precision; the synthetic values are in the normal float range"
+)]
+const fn to_f32(value: f64) -> f32 {
+    value as f32
+}
+
+/// A working-grid coordinate (non-negative, inside the image) as a pixel index.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers pass non-negative working coordinates inside a small test grid"
+)]
+const fn to_index(value: f64) -> usize {
+    value as usize
+}
+
+/// A linear-to-sRGB level in 0..=1 scaled by 255 and rounded, as an 8-bit code.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the encoded level is in 0..=1, so the rounded code is within 0..=255"
+)]
+const fn to_code(rounded: f32) -> u8 {
+    rounded as u8
+}
+
 /// A tiny deterministic generator (a linear congruential generator, high bits).
 struct Lcg(u64);
 
@@ -157,7 +186,11 @@ fn jpeg_exif_is_read() {
     tiff.extend(125_u32.to_le_bytes());
 
     let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
-    jpeg.extend(((tiff.len() + 8) as u16).to_be_bytes());
+    jpeg.extend(
+        u16::try_from(tiff.len() + 8)
+            .expect("the EXIF block is small")
+            .to_be_bytes(),
+    );
     jpeg.extend(*b"Exif\0\0");
     jpeg.extend(&tiff);
     jpeg.extend([0xFF, 0xD9]);
@@ -323,7 +356,7 @@ fn noise_model_recovers_read_and_shot_noise() {
                 let sigma = f64::mul_add(b_true, m.max(0.0), a_true).sqrt();
                 let mut px = [0.0_f32; 3];
                 for slot in &mut px {
-                    *slot = sigma.mul_add(rng.gauss(), m) as f32;
+                    *slot = to_f32(sigma.mul_add(rng.gauss(), m));
                 }
                 pixels.push(px);
             }
@@ -347,7 +380,7 @@ fn resample_conserves_the_mean_and_propagates_variance() {
     let (w, h) = (16, 16);
     let mut rng = Lcg(7);
     let values: Vec<[f32; 3]> = (0..w * h)
-        .map(|_| [rng.unit() as f32, rng.unit() as f32, rng.unit() as f32])
+        .map(|_| [to_f32(rng.unit()), to_f32(rng.unit()), to_f32(rng.unit())])
         .collect();
     let variance = vec![[0.04_f32; 3]; w * h];
     let grid = WorkingGrid::fit([0, 0, 16, 16], 4).unwrap();
@@ -512,7 +545,7 @@ fn mesh_masks_mark_outline_edge_inclusion_and_ghosts() {
     let (cx, cy) = grid
         .working_coordinates(DVec2::new(1024.0, 768.0))
         .expect("the image centre is in the region");
-    let (cx, cy) = (cx as usize, cy as usize);
+    let (cx, cy) = (to_index(cx), to_index(cy));
 
     let options = MeshMaskOptions::default();
     let plain = mesh_masks(&scene, 0, &grid, &[], &options);
@@ -550,7 +583,7 @@ fn mesh_masks_mark_outline_edge_inclusion_and_ghosts() {
     );
     for ghost in &ghosts {
         if let Some((gx, gy)) = grid.working_coordinates(DVec2::from_array(ghost.pixel)) {
-            assert!(masked.has(gx as usize, gy as usize, flag::GHOST));
+            assert!(masked.has(to_index(gx), to_index(gy), flag::GHOST));
         }
     }
 }
@@ -623,7 +656,7 @@ fn the_compression_sigma_is_estimated_from_the_white_frame() {
     };
     // Encoded 0.8 with a pseudo-random +-2 codes: sigma = 2 / 255 in the encoded domain.
     let sigma_codes = 2.0_f32;
-    let noisy: Vec<[f32; 3]> = (0..w * h)
+    let jittered: Vec<[f32; 3]> = (0..w * h)
         .map(|i| {
             let mut pixel = [0.0_f32; 3];
             for (c, slot) in pixel.iter_mut().enumerate() {
@@ -634,7 +667,7 @@ fn the_compression_sigma_is_estimated_from_the_white_frame() {
             pixel
         })
         .collect();
-    let image = LinearImage::from_pixels(w, h, noisy, SourceKind::Rgb8).unwrap();
+    let image = LinearImage::from_pixels(w, h, jittered, SourceKind::Rgb8).unwrap();
     let estimate = estimate_compression_sigma(&image, &noise, 0.98).expect("an 8-bit frame");
     let expected = sigma_codes / 255.0;
     for (c, value) in estimate.iter().enumerate() {
@@ -651,4 +684,385 @@ fn the_compression_sigma_is_estimated_from_the_white_frame() {
     // A RAW frame has no compression term to estimate.
     let raw = LinearImage::from_pixels(w, h, vec![[0.5; 3]; w * h], SourceKind::Raw).unwrap();
     assert!(estimate_compression_sigma(&raw, &noise, 0.98).is_none());
+}
+
+/// ZC-3: the stone's compression error is estimated from the stone frame by a robust Laplacian,
+/// and it is what the stone's transmittance variance carries.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    clippy::suboptimal_flops,
+    reason = "one end-to-end oracle test; the arithmetic mirrors the estimator's unfused form"
+)]
+fn the_stone_compression_sigma_is_estimated_from_the_stone_frame() {
+    use super::{
+        COMPRESSION_SIGMA_MAX, decode_standard_bytes, estimate_compression_sigma,
+        estimate_stone_compression_sigma,
+    };
+    use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
+    let (w, h) = (96_usize, 96_usize);
+    // A smooth gradient (0.2 -> 0.6 linear) has no Laplacian, so what the decoded frame shows
+    // there is the codec's own error plus the 8-bit rounding. The sensor noise is nil (a tiny
+    // noise model): a codec that smooths real sensor noise away reads low, see the estimator's
+    // doc. Quality 70 so the error is clearly above the rounding.
+    let truth_linear = |x: usize, y: usize| 0.2 + 0.4 * ((x + y) as f32 / (w + h - 2) as f32);
+    let noise = NoiseModel {
+        a: [1e-12; 3],
+        b: [0.0; 3],
+    };
+    let mut raw_codes = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                // Channels differ by a fixed offset so the three Laplacians are independent.
+                let level = truth_linear(x, y) * (1.0 - 0.1 * c as f32);
+                raw_codes.push(to_code((linear_to_srgb(level) * 255.0).round()));
+            }
+        }
+    }
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 70)
+        .encode(
+            &raw_codes,
+            u32::try_from(w).expect("small test frame"),
+            u32::try_from(h).expect("small test frame"),
+            ExtendedColorType::Rgb8,
+        )
+        .expect("the JPEG encodes");
+    let decoded = decode_standard_bytes(&bytes).expect("the JPEG decodes");
+    let estimate = estimate_stone_compression_sigma(&decoded, &noise, None, 0.98)
+        .expect("an 8-bit stone frame");
+    assert!(estimate.iter().all(|v| *v <= COMPRESSION_SIGMA_MAX));
+
+    // The oracle: the same robust Laplacian spread, taken on the ERROR image (decoded minus the
+    // smooth truth, encoded domain), with the rounding added back to the estimate.
+    let quantisation = 1.0_f64 / (255.0 * 255.0 * 12.0);
+    for c in 0..3 {
+        let error = |x: usize, y: usize| {
+            let truth = linear_to_srgb(truth_linear(x, y) * (1.0 - 0.1 * c as f32));
+            f64::from(linear_to_srgb(decoded.pixels[y * w + x][c]) - truth)
+        };
+        let mut laplacians = Vec::new();
+        let mut squares = 0.0_f64;
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let l = 4.0 * error(x, y)
+                    - error(x - 1, y)
+                    - error(x + 1, y)
+                    - error(x, y - 1)
+                    - error(x, y + 1);
+                squares += l * l;
+                laplacians.push(l);
+            }
+        }
+        let n = laplacians.len();
+        laplacians.sort_by(f64::total_cmp);
+        let centre = laplacians[n / 2];
+        let mut deviations: Vec<f64> = laplacians.iter().map(|l| (l - centre).abs()).collect();
+        deviations.sort_by(f64::total_cmp);
+        let robust = deviations[n / 2] / 0.6745 / 20.0_f64.sqrt();
+        let rms = (squares / n as f64 / 20.0).sqrt();
+        let reported = f64::from(estimate[c]).hypot(quantisation.sqrt());
+        println!(
+            "channel {c}: estimate {:.3} codes (with rounding {:.3}), robust oracle {:.3}, \
+             rms oracle {:.3}",
+            f64::from(estimate[c]) * 255.0,
+            reported * 255.0,
+            robust * 255.0,
+            rms * 255.0
+        );
+        assert!(
+            robust > 0.3 / 255.0,
+            "channel {c}: the test error is below the rounding, so it proves nothing"
+        );
+        assert!(
+            (reported - robust).abs() < 0.25 * robust,
+            "channel {c}: estimated {reported}, actual {robust}"
+        );
+    }
+
+    // Without texture the stone estimate is the white-frame estimate: both are zero.
+    let flat = LinearImage::from_pixels(w, h, vec![[0.5; 3]; w * h], SourceKind::Rgb8).unwrap();
+    let from_stone = estimate_stone_compression_sigma(&flat, &noise, None, 0.98).unwrap();
+    let from_white = estimate_compression_sigma(&flat, &noise, 0.98).unwrap();
+    for c in 0..3 {
+        assert!(
+            from_stone[c] < 1e-3 && from_white[c] < 1e-3,
+            "{from_stone:?} {from_white:?}"
+        );
+    }
+
+    // A RAW source, a mask of another size and a fully masked frame give no estimate.
+    let raw = LinearImage::from_pixels(w, h, vec![[0.5; 3]; w * h], SourceKind::Raw).unwrap();
+    assert!(estimate_stone_compression_sigma(&raw, &noise, None, 0.98).is_none());
+    let small = PixelMask::new(w - 1, h);
+    assert!(estimate_stone_compression_sigma(&decoded, &noise, Some(&small), 0.98).is_none());
+    let mut blocked = PixelMask::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            blocked.set(x, y, flag::OUTSIDE_OUTLINE);
+        }
+    }
+    assert!(estimate_stone_compression_sigma(&decoded, &noise, Some(&blocked), 0.98).is_none());
+
+    // The stone's variance in the transmittance carries the stone's estimate, not the flat white
+    // frame's zero: a textured JPEG stone against a flat white frame.
+    let calibration = ViewCalibration {
+        frames: CalibrationFrames {
+            white: vec![
+                LinearImage::from_pixels(w, h, vec![[0.8; 3]; w * h], SourceKind::Rgb8).unwrap(),
+            ],
+            dark: Vec::new(),
+        },
+        noise,
+    };
+    let textured = calibration
+        .transmittance(&decoded, &TransmittanceOptions::default())
+        .unwrap();
+    let mut as_raw = decoded.clone();
+    as_raw.source = SourceKind::Raw;
+    let raw_stone = calibration
+        .transmittance(&as_raw, &TransmittanceOptions::default())
+        .unwrap();
+    let probe = (h / 2) * w + w / 2;
+    assert!(
+        textured.variance[probe][0] > raw_stone.variance[probe][0],
+        "the encoding term reaches the stone's variance"
+    );
+    let masked = calibration
+        .transmittance_masked(
+            &decoded,
+            &TransmittanceOptions::default(),
+            Some(&PixelMask::new(w, h)),
+        )
+        .unwrap();
+    assert_eq!(masked.variance, textured.variance);
+    assert!(
+        calibration
+            .transmittance_masked(&decoded, &TransmittanceOptions::default(), Some(&small))
+            .is_err()
+    );
+}
+
+/// S2 (root-cause analysis R4): the per-8x8-block DC offset of a stone frame is estimated from the
+/// block means.
+///
+/// The oracle frame is built, not encoded: a smooth encoded-domain gradient plus a known Gaussian
+/// offset per 8 x 8 block (sigma 0.9 code) plus independent pixel noise (sigma 0.9 code), rounded
+/// to 8 bits. A real JPEG cannot serve as the 30 % oracle here: at quality 90 the DC step is only
+/// 3 coefficient units (0.1 code of block mean, below the pixel noise floor), and on a noise-free
+/// gradient the DC error is a deterministic sawtooth that is locally smooth, so no Laplacian can
+/// see it. The codec is covered by the smoke checks at the end.
+fn block_dc_oracle_frame() -> (LinearImage, NoiseModel) {
+    use super::JPEG_BLOCK;
+    let (w, h) = (160_usize, 160_usize);
+    let blocks_across = w / JPEG_BLOCK;
+    let sigma_dc_codes = 0.9_f64;
+    let sigma_pixel_codes = 0.9_f64;
+    let mut rng = Lcg(0x5EED_0B10);
+    let offsets: Vec<[f64; 3]> = (0..blocks_across * (h / JPEG_BLOCK))
+        .map(|_| [0; 3].map(|_| rng.gauss() * sigma_dc_codes))
+        .collect();
+    let mut pixels = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let block = (y / JPEG_BLOCK) * blocks_across + x / JPEG_BLOCK;
+            let level = 0.45 + 0.1 * (x + y) as f64 / (w + h - 2) as f64;
+            let mut pixel = [0.0_f32; 3];
+            for (c, slot) in pixel.iter_mut().enumerate() {
+                #[allow(
+                    clippy::suboptimal_flops,
+                    reason = "pinned-seed synthetic pixel codes: fusing would change the rounded 8-bit data"
+                )]
+                let code = (level * 255.0 + offsets[block][c] + rng.gauss() * sigma_pixel_codes)
+                    .round()
+                    .clamp(0.0, 255.0);
+                *slot = srgb_to_linear(to_f32(code) / 255.0);
+            }
+            pixels.push(pixel);
+        }
+    }
+    let noise = NoiseModel {
+        a: [1e-12; 3],
+        b: [0.0; 3],
+    };
+    let frame = LinearImage::from_pixels(w, h, pixels, SourceKind::Rgb8).unwrap();
+    (frame, noise)
+}
+
+#[test]
+fn the_block_dc_error_matches_the_known_block_offsets_within_thirty_percent() {
+    use super::{estimate_stone_compression, estimate_stone_compression_sigma};
+    let sigma_dc_codes = 0.9_f64;
+    let (frame, noise) = block_dc_oracle_frame();
+    let estimate = estimate_stone_compression(&frame, &noise, None, 0.98).expect("an 8-bit frame");
+    let ac_only = estimate_stone_compression_sigma(&frame, &noise, None, 0.98).unwrap();
+    assert_eq!(estimate.ac, ac_only, "the AC part is the old estimate");
+    for (c, block_dc) in estimate.block_dc.iter().enumerate() {
+        let variance_codes = (f64::from(*block_dc) * 255.0).powi(2);
+        let expected = sigma_dc_codes * sigma_dc_codes;
+        assert!(
+            (variance_codes - expected).abs() < 0.3 * expected,
+            "channel {c}: block-DC variance {variance_codes} codes^2, expected {expected}"
+        );
+    }
+}
+
+/// A frame with fewer than nine usable interior blocks reports no block-DC term, but keeps its
+/// AC estimate.
+#[test]
+fn a_small_frame_reports_no_block_dc_term() {
+    use super::estimate_stone_compression;
+    let (w, _h) = (160_usize, 160_usize);
+    let (frame, noise) = block_dc_oracle_frame();
+    let small = LinearImage::from_pixels(
+        24,
+        24,
+        (0..24 * 24)
+            .map(|i| frame.pixels[(i / 24) * w + i % 24])
+            .collect(),
+        SourceKind::Rgb8,
+    )
+    .unwrap();
+    let small_estimate = estimate_stone_compression(&small, &noise, None, 0.98).unwrap();
+    assert_eq!(small_estimate.block_dc, [0.0; 3]);
+}
+
+/// A mask flag inside every block removes every block.
+#[test]
+fn a_mask_flag_in_every_block_removes_the_block_dc_term() {
+    use super::{JPEG_BLOCK, estimate_stone_compression};
+    let (w, h) = (160_usize, 160_usize);
+    let blocks_across = w / JPEG_BLOCK;
+    let (frame, noise) = block_dc_oracle_frame();
+    let mut speckled = PixelMask::new(w, h);
+    for by in 0..h / JPEG_BLOCK {
+        for bx in 0..blocks_across {
+            speckled.set(
+                bx * JPEG_BLOCK + 3,
+                by * JPEG_BLOCK + 3,
+                flag::OUTSIDE_OUTLINE,
+            );
+        }
+    }
+    let masked = estimate_stone_compression(&frame, &noise, Some(&speckled), 0.98).unwrap();
+    assert_eq!(masked.block_dc, [0.0; 3]);
+}
+
+/// Smoke check on a real quality 90 JPEG of a smooth gradient: both parts exist and respect
+/// the cap, and the AC part is the old estimate.
+#[test]
+fn a_quality_90_jpeg_gives_a_capped_block_dc_term_and_the_old_ac_estimate() {
+    use super::{
+        COMPRESSION_SIGMA_MAX, decode_standard_bytes, estimate_stone_compression,
+        estimate_stone_compression_sigma,
+    };
+    use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
+    let noise = NoiseModel {
+        a: [1e-12; 3],
+        b: [0.0; 3],
+    };
+    let (jw, jh) = (96_usize, 96_usize);
+    let mut codes = Vec::with_capacity(jw * jh * 3);
+    for y in 0..jh {
+        for x in 0..jw {
+            for c in 0..3 {
+                #[allow(
+                    clippy::suboptimal_flops,
+                    reason = "synthetic gradient quantised to 8-bit codes: fusing would change the encoded data"
+                )]
+                let level =
+                    (0.2 + 0.4 * ((x + y) as f32 / (jw + jh - 2) as f32)) * (1.0 - 0.1 * c as f32);
+                codes.push(to_code((linear_to_srgb(level) * 255.0).round()));
+            }
+        }
+    }
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 90)
+        .encode(
+            &codes,
+            u32::try_from(jw).expect("small test frame"),
+            u32::try_from(jh).expect("small test frame"),
+            ExtendedColorType::Rgb8,
+        )
+        .expect("the JPEG encodes");
+    let decoded = decode_standard_bytes(&bytes).expect("the JPEG decodes");
+    let jpeg = estimate_stone_compression(&decoded, &noise, None, 0.98).expect("an 8-bit frame");
+    assert_eq!(
+        jpeg.ac,
+        estimate_stone_compression_sigma(&decoded, &noise, None, 0.98).unwrap()
+    );
+    assert!(
+        jpeg.block_dc
+            .iter()
+            .all(|v| (0.0..=COMPRESSION_SIGMA_MAX).contains(v))
+    );
+}
+
+/// S2: the per-pixel variance averages down onto the working grid, the block-DC variance only by
+/// the block count (`var_dc * min(1, 64 / N)`), and a transmittance without a block term resamples
+/// exactly as before.
+#[test]
+fn the_block_dc_variance_is_propagated_as_correlated_within_a_block() {
+    use super::TransmittanceImage;
+    let (w, h) = (16_usize, 16_usize);
+    let (per_pixel, block) = (1e-4_f32, 4e-4_f32);
+    let make = |block_variance: f32| TransmittanceImage {
+        width: w,
+        height: h,
+        values: vec![[0.5; 3]; w * h],
+        variance: vec![[per_pixel + block_variance; 3]; w * h],
+        block_variance: vec![[block_variance; 3]; w * h],
+        mask: PixelMask::new(w, h),
+    };
+    let close = |found: f32, expected: f32| {
+        assert!(
+            (found - expected).abs() <= 1e-3 * expected,
+            "found {found}, expected {expected}"
+        );
+    };
+    let options = ResampleOptions::default();
+    let with_block = make(block);
+    for (scale, side, expected) in [
+        // One photo pixel per working pixel: nothing averages.
+        (1.0_f64, 16, per_pixel + block),
+        // One block per working pixel: the pixel part averages by 64, the block part not at all.
+        (8.0, 2, per_pixel / 64.0 + block),
+        // Four blocks per working pixel: the block part averages by 4 (= 64 / 256 * 64 / 64).
+        (16.0, 1, per_pixel / 256.0 + block / 4.0),
+    ] {
+        let grid = WorkingGrid {
+            width: side,
+            height: side,
+            origin: [0.0, 0.0],
+            scale,
+        };
+        let working = with_block.to_working(&grid, &options).unwrap();
+        for v in &working.variance {
+            for &channel in v {
+                close(channel, expected);
+            }
+        }
+    }
+    // Without a block term the old resampling is unchanged, bit for bit.
+    let plain = make(0.0);
+    let grid = WorkingGrid {
+        width: 2,
+        height: 2,
+        origin: [0.0, 0.0],
+        scale: 8.0,
+    };
+    let direct = resample(
+        &ResampleSource {
+            width: w,
+            height: h,
+            values: &plain.values,
+            variance: Some(&plain.variance),
+            mask: Some(&plain.mask),
+        },
+        &grid,
+        &options,
+    )
+    .unwrap();
+    assert_eq!(plain.to_working(&grid, &options).unwrap(), direct);
 }

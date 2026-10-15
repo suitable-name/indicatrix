@@ -1,4 +1,4 @@
-//! Zones received over the wire (`zoning` feature): the per-connection stash of
+//! Zones received over the wire: the per-connection stash of
 //! `ClientMessage::ZoningPayload`s and the step that re-attaches them to the scene they
 //! belong to.
 //!
@@ -31,30 +31,40 @@ use indicatrix_net::{
     SceneState,
     messages::{BatchRenderRequest, ZoningPayload},
 };
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{cell::RefCell, collections::VecDeque};
 
-/// How many unclaimed payloads one connection may hold; the lowest request id is dropped
-/// first.
+/// How many unclaimed payloads one connection may hold; the OLDEST (first stashed) is dropped
+/// first. Request ids wrap on the viewer's side, so the id order says nothing about age.
+/// A payload whose request was cancelled before it was served stays until it is evicted or
+/// the connection ends.
 pub const MAX_STASHED: usize = 8;
 
 thread_local! {
-    static STASH: RefCell<BTreeMap<u32, ZoningPayload>> = const { RefCell::new(BTreeMap::new()) };
+    /// Unclaimed payloads in insertion order (oldest first); at most one per request id.
+    static STASH: RefCell<VecDeque<ZoningPayload>> = const { RefCell::new(VecDeque::new()) };
 }
 
 /// Keeps `payload` for the request it names (replacing an earlier one for the same id).
 pub fn stash(payload: ZoningPayload) {
     STASH.with(|stash| {
         let mut stash = stash.borrow_mut();
-        stash.insert(payload.request_id, payload);
+        stash.retain(|held| held.request_id != payload.request_id);
+        stash.push_back(payload);
         while stash.len() > MAX_STASHED {
-            stash.pop_first();
+            stash.pop_front();
         }
     });
 }
 
 /// Removes and returns the payload for `request_id`.
 pub fn take(request_id: u32) -> Option<ZoningPayload> {
-    STASH.with(|stash| stash.borrow_mut().remove(&request_id))
+    STASH.with(|stash| {
+        let mut stash = stash.borrow_mut();
+        let at = stash
+            .iter()
+            .position(|held| held.request_id == request_id)?;
+        stash.remove(at)
+    })
 }
 
 /// Drops every stashed payload.
@@ -136,7 +146,7 @@ mod tests {
 
     /// Whether a payload for `request_id` is waiting.
     fn has(request_id: u32) -> bool {
-        STASH.with(|stash| stash.borrow().contains_key(&request_id))
+        STASH.with(|stash| stash.borrow().iter().any(|p| p.request_id == request_id))
     }
 
     fn zones() -> ZonedAbsorption {
@@ -268,6 +278,29 @@ mod tests {
         assert!(reason.contains("99"), "{reason}");
     }
 
+    /// Ids wrap on the viewer's side: the newest payload may carry the lowest id and must
+    /// survive; the oldest is the one evicted.
+    #[test]
+    fn eviction_follows_insertion_order_not_id_order() {
+        let _guard = ConnectionGuard::new();
+        let local = scene(true);
+        let max = u32::try_from(MAX_STASHED).unwrap();
+        // Fill with high ids, then stash a wrapped (low) id last.
+        for id in 0..max {
+            stash(ZoningPayload::for_scene(u32::MAX - id, &local).unwrap());
+        }
+        stash(ZoningPayload::for_scene(1, &local).unwrap());
+        assert!(
+            has(1),
+            "the newest payload survives although its id is lowest"
+        );
+        assert!(!has(u32::MAX), "the oldest payload was evicted");
+        assert!(has(u32::MAX - 1));
+        // Re-stashing an id replaces it and does not grow the stash.
+        stash(ZoningPayload::for_scene(1, &local).unwrap());
+        assert_eq!(STASH.with(|s| s.borrow().len()), MAX_STASHED);
+    }
+
     #[test]
     fn the_stash_is_bounded_and_a_connection_starts_and_ends_empty() {
         let guard = ConnectionGuard::new();
@@ -276,7 +309,7 @@ mod tests {
         for id in 0..(max + 4) {
             stash(ZoningPayload::for_scene(id, &local).unwrap());
         }
-        assert!(!has(0), "the lowest ids were dropped");
+        assert!(!has(0), "the oldest payloads were dropped");
         assert!(has(max + 3));
         drop(guard);
         assert!(!has(max + 3), "the guard empties it on drop");

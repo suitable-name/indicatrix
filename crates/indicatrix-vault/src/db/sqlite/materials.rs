@@ -2,6 +2,15 @@ use super::Database;
 use anyhow::Result;
 use rusqlite::params;
 
+/// A stored custom-material value (SQLite REAL, `f64`) as the `f32` the material model holds.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the material model is f32; stored refractive indices and absorptions are small values in the normal float range"
+)]
+const fn to_f32(value: f64) -> f32 {
+    value as f32
+}
+
 /// Bundled parameters for [`Database::save_custom_material`].
 ///
 /// See `crates/indicatrix/src/optics/raytracer/refraction.rs`'s `RayMaterialContext` for the
@@ -80,15 +89,15 @@ impl Database {
 
             Ok(crate::model::material::CustomMaterialRow {
                 name,
-                refractive_index: ri as f32,
-                dispersion: disp as f32,
-                birefringence: biref as f32,
-                absorption_rgb: [abs_r as f32, abs_g as f32, abs_b as f32],
+                refractive_index: to_f32(ri),
+                dispersion: to_f32(disp),
+                birefringence: to_f32(biref),
+                absorption_rgb: [to_f32(abs_r), to_f32(abs_g), to_f32(abs_b)],
                 crystal_system,
                 optical_character,
-                biaxial_delta_beta_alpha: biaxial_delta_beta_alpha.map(|v| v as f32),
+                biaxial_delta_beta_alpha: biaxial_delta_beta_alpha.map(to_f32),
                 per_axis_dispersion_json,
-                specific_gravity: specific_gravity.map(|v| v as f32),
+                specific_gravity: specific_gravity.map(to_f32),
                 color_recipe_json,
                 dispersion_model_json,
                 absorption_bands_json,

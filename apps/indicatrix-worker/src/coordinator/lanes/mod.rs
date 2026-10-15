@@ -99,6 +99,7 @@ use indicatrix_dispatch::{CancelToken, ChunkResult, SampleRange, WorkerLane};
 use indicatrix_net::{
     SceneState,
     messages::{ClientMessage, StreamEvent, error_codes},
+    radiance::PayloadDecoder,
 };
 use std::{
     sync::{
@@ -224,6 +225,10 @@ pub struct JoinedWorkerLane {
     /// held HDR map, the excluded workers.
     job: Arc<JobLanes>,
     held: Arc<Held>,
+    /// The payload decoder every chunk of this lane reuses, so its plane buffer (one
+    /// frame, ~25 MB at 1080p) and zstd context are allocated once, not per request.
+    /// Only locked inside `run_on`, which already runs under the `held.handle` lock.
+    decoder: Mutex<PayloadDecoder>,
     heartbeat_stop: Arc<AtomicBool>,
     heartbeat: Option<thread::JoinHandle<()>>,
 }
@@ -255,6 +260,7 @@ impl JoinedWorkerLane {
             registry,
             job,
             held,
+            decoder: Mutex::new(PayloadDecoder::new()),
             heartbeat_stop,
             heartbeat,
         }
@@ -285,7 +291,10 @@ impl JoinedWorkerLane {
                 timeouts: self.job.timeouts,
                 asset: self.job.asset.as_deref(),
             };
-            let reply = chunk::run_request(handle.stream(), &request, exchange);
+            let mut reply = {
+                let mut decoder = self.decoder.lock().unwrap_or_else(PoisonError::into_inner);
+                chunk::run_request(handle.stream(), request, &mut decoder, exchange)
+            };
             parts += 1;
             if reply.assets_sent > 0 {
                 self.registry.note_assets_forwarded(reply.assets_sent);
@@ -308,8 +317,17 @@ impl JoinedWorkerLane {
                 0
             };
             if usable > 0 {
-                for (acc, v) in total.sum.iter_mut().zip(&reply.sum) {
-                    *acc += *v;
+                if parts == 1 {
+                    // `total.sum` is still all +0.0 here, and `reply.sum` also started at
+                    // +0.0 and only ever received `+=` of validated non-negative finite
+                    // samples (`PayloadDecoder::decode_and_add`, `is_valid_sample`), so it
+                    // never holds -0.0 and `0.0 + x == x` bit for bit: moving it is
+                    // identical to the zero-fill-and-add, minus a full-frame pass.
+                    total.sum = std::mem::take(&mut reply.sum);
+                } else {
+                    for (acc, v) in total.sum.iter_mut().zip(&reply.sum) {
+                        *acc += *v;
+                    }
                 }
                 total.done += usable;
             }

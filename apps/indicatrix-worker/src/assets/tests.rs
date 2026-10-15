@@ -349,7 +349,9 @@ fn a_map_in_the_disk_cache_is_resolved_without_need_asset() {
     };
     assert_eq!((map.width(), map.height()), (16, 8));
     let mut written = std::io::Cursor::new(stream.out);
-    while (written.position() as usize) < written.get_ref().len() {
+    while usize::try_from(written.position()).expect("the output is held in memory")
+        < written.get_ref().len()
+    {
         let (event, _) = indicatrix_net::messages::read_stream_event(&mut written).unwrap();
         assert!(
             matches!(event, StreamEvent::Progress(_)),

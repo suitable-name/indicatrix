@@ -51,6 +51,10 @@ enum ClickAction {
 
 /// What decides the action of a click besides what is under the pointer.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the four flags are independent facts about the planner when a click arrives"
+)]
 struct ClickContext {
     /// What the click landed on.
     picked: Picked,
@@ -179,8 +183,7 @@ pub(super) fn sync_size(host: &Rc<Host>) {
 
 /// The pointer moved with the button held: the camera follows.
 fn orbit(host: &Rc<Host>, dx: f32, dy: f32) {
-    // Zoning builds: a drag that started on a zone handle moves the handle, not the camera.
-    #[cfg(feature = "zoning")]
+    // A drag that started on a zone handle moves the handle, not the camera.
     if super::zoning_view::drag_move(host, dx, dy) {
         return;
     }
@@ -221,8 +224,7 @@ fn drag_begin(host: &Rc<Host>) {
     host.window
         .global::<RoughPlanModel>()
         .set_view_hint("".into());
-    // Zoning builds: a drag that starts on a zone handle edits the zone.
-    #[cfg(feature = "zoning")]
+    // A drag that starts on a zone handle edits the zone.
     super::zoning_view::drag_begin(host);
 }
 
@@ -230,7 +232,6 @@ fn drag_begin(host: &Rc<Host>) {
 /// under it again.
 fn drag_end(host: &Rc<Host>) {
     edit_view(host, |view| view.dragging = false);
-    #[cfg(feature = "zoning")]
     super::zoning_view::drag_end(host);
     request_rehover(host);
     request_render(host);
@@ -288,6 +289,11 @@ fn pick_at(view: &ViewState, cursor: (f32, f32), armed: bool) -> Picked {
         }
         SceneKind::Model(model) => {
             let camera = camera_for(view.pose);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the view size is a positive logical pixel count; the saturating cast maps NaN and negatives to 0"
+            )]
             let size = (
                 view.view_size.0.round() as u32,
                 view.view_size.1.round() as u32,
@@ -342,8 +348,7 @@ fn model_shown(view: &ViewState) -> bool {
 
 /// The pointer moved over the image without a button (or left it, at a negative point).
 fn hover(host: &Rc<Host>, x: f32, y: f32) {
-    // Zoning builds: the pointer lights a zone handle under it and leaves the rest alone.
-    #[cfg(feature = "zoning")]
+    // The pointer lights a zone handle under it and leaves the rest alone.
     if super::zoning_view::hover(host, x, y) {
         return;
     }
@@ -505,9 +510,8 @@ fn cut_from_facet(host: &Rc<Host>, facet: usize) -> Option<RoughCut> {
 /// after the double-click interval), in a result it selects the design of the stone under
 /// the pointer.
 fn click(host: &Rc<Host>, x: f32, y: f32) {
-    // Zoning builds: a click on a zone handle is not a click on the model, and while the wizard
+    // A click on a zone handle is not a click on the model, and while the wizard
     // paints polished windows a click on the mesh paints.
-    #[cfg(feature = "zoning")]
     if super::zoning_view::click(host, x, y) {
         return;
     }

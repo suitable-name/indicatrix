@@ -272,7 +272,9 @@ fn outer_triangles(mesh: &RoughMesh) -> Vec<Tri> {
         .enumerate()
         .map(|(i, t)| Tri {
             corners: t.map(|v| verts[v as usize]),
-            normal: mesh.triangle_plane(i as u32).0,
+            normal: mesh
+                .triangle_plane(u32::try_from(i).expect("mesh triangle index fits in u32"))
+                .0,
         })
         .collect()
 }
@@ -437,6 +439,10 @@ struct Chain {
 
 type Key = [i64; 3];
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "p / tol is a lattice index of a mesh point (millimetre scale over a tolerance); the saturating cast only matters for non-finite input"
+)]
 fn quantise(p: DVec3, tol: f64) -> Key {
     [
         (p.x / tol).round() as i64,

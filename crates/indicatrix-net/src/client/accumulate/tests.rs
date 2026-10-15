@@ -455,10 +455,11 @@ fn compressed_frames_sum_bit_identically_to_raw_frames() {
         acc.begin_request_for_range(1, 0, 30);
         let mut encoder = radiance::PayloadEncoder::new(encoding);
         for (i, delta) in deltas.iter().enumerate() {
-            let encoded = encoder.encode(radiance::as_bytes(delta));
-            let header = FrameHeader::for_encoded(1, i as u32 * 10, 10, &encoded);
+            let packed = encoder.encode(radiance::as_bytes(delta));
+            let first_sample = u32::try_from(i).expect("frame index fits in u32") * 10;
+            let header = FrameHeader::for_encoded(1, first_sample, 10, &packed);
             let outcome = acc
-                .apply(&StreamEvent::Frame(header), Some(encoded.bytes))
+                .apply(&StreamEvent::Frame(header), Some(packed.bytes))
                 .unwrap();
             assert!(matches!(outcome, ApplyOutcome::FrameSummed { .. }));
         }
@@ -487,11 +488,11 @@ fn a_compressed_frame_with_a_lying_raw_len_is_a_hard_error() {
     acc.begin_request(1);
     let delta = delta_buffer(16, 3);
     let mut encoder = radiance::PayloadEncoder::new(PayloadEncoding::ShuffleLz4);
-    let encoded = encoder.encode(radiance::as_bytes(&delta));
-    let mut header = FrameHeader::for_encoded(1, 0, 1, &encoded);
+    let packed = encoder.encode(radiance::as_bytes(&delta));
+    let mut header = FrameHeader::for_encoded(1, 0, 1, &packed);
     header.raw_len *= 2;
     let err = acc
-        .apply(&StreamEvent::Frame(header), Some(encoded.bytes))
+        .apply(&StreamEvent::Frame(header), Some(packed.bytes))
         .unwrap_err();
     assert!(
         matches!(err, RadianceError::RawLenMismatch { .. }),
@@ -509,10 +510,10 @@ fn a_compressed_preview_decodes_at_its_own_size() {
     acc.begin_request(4);
     let preview = delta_buffer(6, 9);
     let mut encoder = radiance::PayloadEncoder::new(PayloadEncoding::DEFAULT_ZSTD);
-    let encoded = encoder.encode(radiance::as_bytes(&preview));
-    let header = PreviewHeader::for_encoded(4, 3, 2, 12, &encoded);
+    let packed = encoder.encode(radiance::as_bytes(&preview));
+    let header = PreviewHeader::for_encoded(4, 3, 2, 12, &packed);
     assert_eq!(
-        acc.apply(&StreamEvent::Preview(header), Some(encoded.bytes))
+        acc.apply(&StreamEvent::Preview(header), Some(packed.bytes))
             .unwrap(),
         ApplyOutcome::PreviewReplaced
     );

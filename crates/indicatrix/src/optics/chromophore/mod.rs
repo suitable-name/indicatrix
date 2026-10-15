@@ -31,6 +31,8 @@ mod measured_color_tests;
 mod primary_data_tests;
 #[cfg(test)]
 mod reference_validation;
+#[cfg(test)]
+mod state_and_bounds_tests;
 
 #[cfg(test)]
 mod tests {
@@ -43,7 +45,7 @@ mod tests {
     #[test]
     fn catalogue_loads_and_versions() {
         let cat = ChromophoreCatalogue::global();
-        assert_eq!(cat.data_version, 4);
+        assert_eq!(cat.data_version, 5);
         assert_ne!(cat.hosts.len(), 0, "the catalogue lists hosts");
         assert!(cat.host("corundum").is_some());
         assert!(cat.host("beryl").is_some());
@@ -76,6 +78,27 @@ mod tests {
         let diamond = cat.host("diamond").expect("diamond host exists");
         let diamond_ids: Vec<&str> = diamond.chromophores.iter().map(|c| c.id.as_str()).collect();
         assert!(diamond_ids.iter().any(|id| id.contains('N')));
+    }
+
+    /// Every built-in material names a host, so the physics editor never falls back to the
+    /// alphabetically first host for a stone that has a real one (the yellow chrysoberyl and the
+    /// color-change garnet did until 2026-10-12), and every host offers something.
+    #[test]
+    fn every_built_in_material_has_a_host_and_every_host_offers_something() {
+        let cat = ChromophoreCatalogue::global();
+        let orphans: Vec<String> = crate::optics::materials::GemMaterial::all_materials()
+            .iter()
+            .filter(|m| cat.host_for_material(&m.name).is_none())
+            .map(|m| m.name.clone())
+            .collect();
+        assert!(orphans.is_empty(), "built-ins without a host: {orphans:?}");
+        let empty: Vec<&str> = cat
+            .hosts
+            .iter()
+            .filter(|h| cat.selectable_elements(&h.id).is_empty())
+            .map(|h| h.id.as_str())
+            .collect();
+        assert!(empty.is_empty(), "hosts with nothing selectable: {empty:?}");
     }
 
     #[test]

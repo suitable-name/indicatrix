@@ -80,7 +80,7 @@ pub fn run_body_color(params: &BodyColorParams, cancel: &AtomicBool) -> SolveRes
         || params.path_mm <= 0.0
     {
         return SolveResponse::AnalysisFailed {
-            message: "the colour or the path length is not a usable number".to_string(),
+            message: "the color or the path length is not a usable number".to_string(),
             missing_anchor: false,
         };
     }

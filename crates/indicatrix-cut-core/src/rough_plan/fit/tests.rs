@@ -581,10 +581,12 @@ fn test_shortlist_is_global_sorted_and_capped() {
     let score_of = |id: i64| scores.iter().find(|s| s.0 == id).expect("known id").1;
     for pair in picked.windows(2) {
         let (a, b) = (score_of(pair[0]), score_of(pair[1]));
-        assert!(
-            a > b || (a == b && pair[0] < pair[1]),
-            "order broken at {pair:?}"
-        );
+        #[expect(
+            clippy::float_cmp,
+            reason = "scores are small exact integers (i % 10); ties are exact"
+        )]
+        let ordered = a > b || (a == b && pair[0] < pair[1]);
+        assert!(ordered, "order broken at {pair:?}");
     }
     let worst_kept = picked
         .iter()

@@ -4,19 +4,21 @@
 //! This module wires the main window's menu entry to the window in [`host`]. The
 //! window's callbacks live with what they drive: model editing in [`editing`], the plan
 //! run in [`run`], the live model figures in [`shape_worker`], the 3D view in [`view`],
-//! library links in [`library_link`], saved plans in [`saved`], the designs excluded
+//! library links in [`library_link`], "Open in Editor" (a stone's design, with its piece of
+//! rough as the preform, in the main window's editor) in [`editor_link`], saved plans in
+//! [`saved`], the designs excluded
 //! from planning in [`exclusions`], the inclusions of a mesh rough in [`inclusions`] and
 //! locating an inclusion from photos on a camera rig (the locate window and the rig window)
 //! in [`locate`].
 
 mod base;
 mod carat;
-#[cfg(feature = "zoning")]
 mod colour_link;
 mod counts;
 mod cut_faces;
 mod cut_rows;
 mod editing;
+mod editor_link;
 mod exclusions;
 mod format;
 mod host;
@@ -32,45 +34,50 @@ mod saved;
 mod session;
 mod shape_worker;
 mod view;
-#[cfg(feature = "zoning")]
 mod zoning_hooks;
 
+#[cfg(feature = "ui-harness")]
+pub use self::host::harness_window as harness_planner_window;
 use self::host::open_planner;
 pub(in crate::gui) use self::host::{
     close_planner_window, planner_work_at_risk, refresh_links_enabled,
 };
+#[cfg(feature = "ui-harness")]
+pub use self::locate::{harness_locate_window, harness_rig_window};
+#[cfg(feature = "ui-harness")]
+pub use self::saved::naming::{EXPORT_SUFFIX, LEGACY_EXPORT_SUFFIX};
 use crate::{MainWindow, RoughPlanModel, bridge::library::source::LibrarySource};
 use indicatrix_vault::db::sqlite::Database;
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 
-/// Redraws the rough view (`zoning` builds): the Rough colour wizard changed the zones whose
+/// Names the planner holders that are still set. See `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui) fn note_holders(out: &mut Vec<&'static str>) {
+    view::note_holders(out);
+}
+
+/// Redraws the rough view: the Rough colour wizard changed the zones whose
 /// handles the view draws.
-#[cfg(feature = "zoning")]
 pub(in crate::gui) fn redraw_rough_view() {
     host::on_host(view::redraw);
 }
 
-/// The Rough colour wizard stored a colour for a saved plan (`zoning` builds): the shown results,
+/// The Rough colour wizard stored a colour for a saved plan: the shown results,
 /// if they are that plan's, are drawn again with it.
-#[cfg(feature = "zoning")]
 pub(in crate::gui) fn colour_stored() {
     host::on_host(view::results_changed);
 }
 
 /// The placement of design `entry_id` in the planner's caliper frame (the caliper turn and the
-/// centring of its bounding box) and its caliper width in model units, read from the library
-/// (`zoning` builds): what `rough_colour::preview` needs to move a rough's colour zones into a
-/// stone's frame. The helpers behind it (`rotate_into_caliper_frame`, `caliper_centre`) are the
-/// planner's own and unchanged; `None` for a design that is gone, unreadable or without a solid.
-#[cfg(feature = "zoning")]
-pub fn design_placement_of(
-    entry_id: i64,
-) -> Option<(
-    indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement,
-    f64,
-)> {
-    zoning_hooks::design_placement(entry_id)
+/// centring of its bounding box), its caliper width and its axis-aligned width in model units,
+/// read from the library: what a stone's piece of rough (`stone_preform_planes`) and its colour
+/// (`rough_colour::preview`) need to move into the design's own frame, and the width the editor's
+/// girdle diameter measures. The helpers behind it (`rotate_into_caliper_frame`, `caliper_centre`)
+/// are the planner's own and unchanged; `None` for a design that is gone, unreadable or without a
+/// solid.
+pub(in crate::gui) fn design_info_of(entry_id: i64) -> Option<view::DesignInfo> {
+    view::design_info(entry_id)
 }
 
 /// The library changed which designs are excluded from the planner (a toggle in the

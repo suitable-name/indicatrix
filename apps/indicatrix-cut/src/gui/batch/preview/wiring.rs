@@ -14,6 +14,7 @@ use crate::{
     bridge::{preview_render, render_thread::RenderContext},
     gui::batch::{
         batch_queue::{LanePlan, WorkQueue, local_lane_count, remote_lane_count},
+        catalogue_material::load_custom_materials,
         preview_cache::PreviewThumbnailCache,
         regenerate_all::{
             ScopeKind, all_choice_label, chosen_ids, missing_among, missing_choice_label,
@@ -173,8 +174,12 @@ pub fn spawn_preview_batch(
         let _ = ui_weak
             .upgrade_in_event_loop(|ui| ui.global::<BatchModel>().set_preview_batch_running(true));
 
-        let design_total = entry_ids.len() as u32;
+        let design_total =
+            u32::try_from(entry_ids.len()).expect("a batch holds far fewer than u32::MAX designs");
         let material_candidates = preview_render::ri_candidates();
+        // Read ONCE for the whole batch, so every design resolves a material name against
+        // the same custom-material list (`gui::batch::catalogue_material`).
+        let custom_materials = load_custom_materials(&db);
         // Acquired ONCE for the whole batch, not per item -- adapter acquisition and
         // megakernel compilation are far too slow to repeat, same reasoning as
         // `export_thread::run_export`'s own single `GpuBackend::acquire` call.
@@ -200,6 +205,7 @@ pub fn spawn_preview_batch(
         let ctx = BatchContext {
             db: &db,
             material_candidates: &material_candidates,
+            custom_materials: &custom_materials,
             preview_size: settings.preview_size,
             preview_spp: settings.preview_spp,
             solid,
@@ -230,7 +236,7 @@ pub fn spawn_preview_batch(
         // `plan.run_local` -- `RemoteOnly` computes this but never uses it beyond
         // reporting `0` as `preview_batch_local_lane_total`.
         let local_lane_total = if plan.run_local {
-            local_lane_count() as u32
+            u32::try_from(local_lane_count()).expect("a local lane count fits u32")
         } else {
             0
         };
@@ -246,11 +252,12 @@ pub fn spawn_preview_batch(
                 && remote_worker
                     .as_ref()
                     .is_some_and(super::remote_lane::remote_is_gpu);
-            remote_lane_count(effective_remote_batch_lanes(
+            u32::try_from(remote_lane_count(effective_remote_batch_lanes(
                 settings.remote_batch_lanes,
                 settings.remote_batch_lanes_user_set,
                 remote_is_gpu,
-            )) as u32
+            )))
+            .expect("a remote lane count fits u32")
         } else {
             0
         };
@@ -321,7 +328,7 @@ struct BatchSlots {
 /// Starts a batch for `entry_ids`, reading `preview_size`/`preview_spp`/the configured
 /// remote endpoint AND the persisted `LiveComputeTarget` from `settings_store`'s current
 /// snapshot -- the SAME standing "Live Compute" preference the live viewport uses
-/// (`settings_dialog.slint`'s pill, `AppSettings::live_compute_target`), not a separate
+/// (the Parameters panel's pill, `AppSettings::live_compute_target`), not a separate
 /// picker of this batch's own. The one place every trigger (`setup_preview_batch_callbacks`'s
 /// context-menu and confirmed-offer handlers, and its own `spawn_missing_preview_scan`
 /// result handler) funnels through, so all three read settings the same way and none of
@@ -372,7 +379,7 @@ fn start_batch(
     ui.global::<BatchModel>()
         .set_preview_eta(String::new().into());
     ui.global::<BatchModel>()
-        .set_preview_design_total(entry_ids.len() as i32);
+        .set_preview_design_total(slint_len(entry_ids.len()));
     ui.global::<BatchModel>().set_preview_local_active(0);
     ui.global::<BatchModel>().set_preview_local_lane_total(0);
     ui.global::<BatchModel>()
@@ -471,6 +478,22 @@ thread_local! {
     static SCOPE_ENV: RefCell<Option<ScopeEnv>> = const { RefCell::new(None) };
 }
 
+/// Forgets the vault and settings a previous main window left in [`SCOPE_ENV`], so that
+/// window's database connection and settings writer can close. See `gui::window_release`.
+pub(in crate::gui) fn release_window_state() {
+    let old = SCOPE_ENV.with(|env| env.borrow_mut().take());
+    drop(old);
+}
+
+/// Names this module's holder in `out` while it is still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui) fn note_holders(out: &mut Vec<&'static str>) {
+    if SCOPE_ENV.with(|env| env.borrow().is_some()) {
+        out.push("batch::preview::wiring SCOPE_ENV (vault, settings)");
+    }
+}
+
 /// Opens the confirm step as a REGENERATION of `ids` (the Library menu's whole-catalogue
 /// commands, the filter panel's filtered set): the dialog offers "missing or outdated
 /// only" and "all". The missing set is the same scan the startup offer runs
@@ -506,14 +529,24 @@ pub fn offer_regeneration(ui: &MainWindow, ids: &[i64]) {
             }
             let missing = missing_among(&all, &missing);
             let model = ui.global::<BatchModel>();
-            model.set_preview_offer_missing_count(missing.len() as i32);
+            model.set_preview_offer_missing_count(slint_len(missing.len()));
             model.set_preview_offer_missing_label(missing_choice_label(Some(missing.len())).into());
-            let missing_i32: Vec<i32> = missing.iter().map(|&id| id as i32).collect();
+            let missing_i32: Vec<i32> = missing.iter().map(|&id| slint_id(id)).collect();
             model.set_preview_offer_missing_ids(slint::ModelRc::new(slint::VecModel::from(
                 missing_i32,
             )));
         },
     );
+}
+
+/// A length as the `int` a Slint property holds, saturating instead of wrapping.
+fn slint_len(len: usize) -> i32 {
+    i32::try_from(len).unwrap_or(i32::MAX)
+}
+
+/// A vault row id as the `int` the Slint id model holds, saturating instead of wrapping.
+fn slint_id(id: i64) -> i32 {
+    i32::try_from(id).unwrap_or(i32::MAX)
 }
 
 /// [`offer_batch_confirmation`], also naming whether an import opened it -- which adds
@@ -522,11 +555,11 @@ pub(super) fn open_offer(ui: &MainWindow, ids: &[i64], from_import: bool) {
     if ids.is_empty() {
         return;
     }
-    let ids_i32: Vec<i32> = ids.iter().map(|&id| id as i32).collect();
+    let ids_i32: Vec<i32> = ids.iter().map(|&id| slint_id(id)).collect();
     ui.global::<BatchModel>()
         .set_preview_offer_ids(slint::ModelRc::new(slint::VecModel::from(ids_i32)));
     ui.global::<BatchModel>()
-        .set_preview_offer_count(ids.len() as i32);
+        .set_preview_offer_count(slint_len(ids.len()));
     ui.global::<BatchModel>()
         .set_preview_offer_regenerate(false);
     ui.global::<BatchModel>()
@@ -577,12 +610,12 @@ pub fn setup_preview_batch_callbacks(
     let settings_store_size = Arc::clone(settings_store);
     ui.global::<SettingsModel>()
         .on_preview_size_changed(move |size| {
-            settings_store_size.update(|s| s.settings.preview_size = size.max(1) as u32);
+            settings_store_size.update(|s| s.settings.preview_size = size.max(1).cast_unsigned());
         });
     let settings_store_spp = Arc::clone(settings_store);
     ui.global::<SettingsModel>()
         .on_preview_spp_changed(move |spp| {
-            settings_store_spp.update(|s| s.settings.preview_spp = spp.max(1) as u32);
+            settings_store_spp.update(|s| s.settings.preview_spp = spp.max(1).cast_unsigned());
         });
     // The remote coordinator panel's "Remote lanes for batches" spin box -- the lane
     // count both batches read when they start. Registered here, beside the other

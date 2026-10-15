@@ -229,7 +229,7 @@ fn design_records(
 /// The line above a loaded plan's results.
 pub(super) fn banner_text(name: &str, created_at: i64) -> String {
     format!(
-        "Saved plan \"{name}\" \u{b7} {} \u{b7} Re-plan uses the current model and settings",
+        "Saved plan \"{name}\" \u{b7} {} \u{b7} Re-Plan uses the current model and settings",
         format_unix_date(created_at)
     )
 }
@@ -363,7 +363,7 @@ mod tests {
     fn the_banner_names_the_plan_and_its_date() {
         assert_eq!(
             banner_text("Aqua pebble", 1_790_726_400),
-            "Saved plan \"Aqua pebble\" \u{b7} 2026-09-30 \u{b7} Re-plan uses the current model and settings"
+            "Saved plan \"Aqua pebble\" \u{b7} 2026-09-30 \u{b7} Re-Plan uses the current model and settings"
         );
     }
 

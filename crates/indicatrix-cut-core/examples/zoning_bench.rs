@@ -1,10 +1,9 @@
 //! Benchmark of the rough-colour fit against the performance budget of plan 2026-10-09,
-//! section 10.3 (lane V1). Built only with the `zoning` feature (`required-features` in
-//! `Cargo.toml`), never part of a default build or of a build script.
+//! section 10.3 (lane V1).
 //!
 //! ```text
-//! cargo run --release -p indicatrix-cut-core --features zoning --example zoning_bench
-//! cargo run --release -p indicatrix-cut-core --features zoning --example zoning_bench -- \
+//! cargo run --release -p indicatrix-cut-core --example zoning_bench
+//! cargo run --release -p indicatrix-cut-core --example zoning_bench -- \
 //!     --views 8 --px 384 --samples 256 --configs frosted,polished,immersion
 //! ```
 //!
@@ -20,8 +19,16 @@
 //! `--skip-solve`.
 //!
 //! Peak memory: the records are measured exactly (`ForwardRecords::memory_bytes`); the process
-//! peak is not (no OS calls here). Watch the process in Task Manager or run it under a tool that
-//! reports the peak working set; the budget is 600 MB peak.
+//! peak is not (no OS-specific crate such as `windows-sys` is a dependency of this crate). The
+//! trace holds every chunk's output until its view is assembled, and a view's store is allocated
+//! once at its final size, so the peak of a trace is about the records of all views plus the
+//! records of the largest view; the 600 MB budget is judged on that figure, printed below as
+//! "records MB" and "peak estimate MB". Watch the process in Task Manager (peak working set) to
+//! confirm it.
+//!
+//! Dispersion is traced at the d-line index in one bin (the `ForwardOptions::trace_dispersion`
+//! default): the "frosted, dispersion" configuration therefore measures one traced bin, which is
+//! what the fit uses (ZC-8).
 
 #![allow(
     clippy::too_many_lines,
@@ -36,7 +43,10 @@ mod synth;
 
 use std::{sync::atomic::AtomicBool, time::Instant};
 
-use indicatrix_cut_core::rough_plan::colour_fit::solve::{FitConfig, fit_records};
+use indicatrix_cut_core::rough_plan::colour_fit::{
+    forward::ViewRecords,
+    solve::{FitConfig, fit_records},
+};
 
 use synth::{ColourCase, NoiseSpec, RoughKind, Setup, SetupSpec, face_up_errors, photos_forward};
 
@@ -171,9 +181,22 @@ fn run(config: Config, args: &Args) -> Row {
         worst_delta_e: None,
         lovo_median: None,
     };
+    let largest_view_mb = records
+        .views
+        .iter()
+        .map(ViewRecords::memory_bytes)
+        .max()
+        .unwrap_or(0) as f64
+        / (1024.0 * 1024.0);
+    // The per-channel colour codes of a coloured panel (3 bytes per record, none for a grey one;
+    // the bench rig has a uniform surround/panel, so this reads 0 unless a white frame is added).
+    let chroma_mb =
+        records.views.iter().map(|v| v.chroma.len()).sum::<usize>() as f64 / (1024.0 * 1024.0);
     eprintln!(
-        "[{}] traced in {trace_s:.1} s: {valid_pixels} usable pixels, {:.0} MB of records",
-        config.name, row_base.records_mb
+        "[{}] traced in {trace_s:.1} s: {valid_pixels} usable pixels, {:.0} MB of records ({chroma_mb:.1} MB of them colour codes), peak estimate {:.0} MB",
+        config.name,
+        row_base.records_mb,
+        row_base.records_mb + largest_view_mb
     );
     if args.skip_solve {
         return row_base;

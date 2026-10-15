@@ -313,13 +313,13 @@ fn refresh_with(ui: &MainWindow, state: &EditorState, rebuild_ranges: bool) {
     editor.set_optimize_hint(hint.into());
     sync_ranges(ui, &state.design, vary, rebuild_ranges);
     set_estimate(ui, &state.design, vary);
-    let stale = with_panel(|panel| {
+    let results_outdated = with_panel(|panel| {
         panel
             .run
             .as_ref()
             .is_some_and(|run| run.generation != state.generation.load(Ordering::Relaxed))
     });
-    model.set_results_stale(stale);
+    model.set_results_stale(results_outdated);
     refresh_tone(ui, state);
 }
 

@@ -271,6 +271,10 @@ pub(super) fn data_alpha(host: &str, id: &str, pol: &str, lambda_nm: f64, conc: 
         .sum()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Band::evaluate takes f32 nanometres; lambda_nm is a wavelength in 380..=780"
+)]
 fn ray_alpha(t: &AbsorptionTensor, ray: char, lambda_nm: f64) -> f64 {
     let bands = match ray {
         'o' => &t.o_ray,
@@ -373,7 +377,7 @@ fn cr_recipe_reproduces_gia_appendix_2_colors() {
     for a in t
         .appendix2()
         .iter()
-        .filter(|a| a.ppma_cm == 100.0 || a.ppma_cm == 375.0)
+        .filter(|a| (a.ppma_cm - 100.0).abs() < 1e-9 || (a.ppma_cm - 375.0).abs() < 1e-9)
     {
         let r = cr_recipe(a.ppma_cm);
         let c = body_colors(&tensor(&r), 10.0, a.illuminant);
@@ -896,6 +900,10 @@ fn peridot_rays_are_yellow_green_and_beta_absorbs_most() {
 // ---------------------------------------------------------------------------------------------
 
 /// color weight `xbar + ybar + zbar` at `lambda` (the weight of the fits).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the CMF takes f32 nanometres; lambda is a wavelength in 380..=780"
+)]
 fn weight(lambda: f64) -> f64 {
     let c = cie_1931_cmf(lambda as f32);
     f64::from(c[0] + c[1] + c[2])

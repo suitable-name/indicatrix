@@ -9,7 +9,7 @@
 //! Undo/redo is business logic, not view logic: it has to be correct independent of
 //! whatever widget toolkit drives it, and testable without a window (see [`edit`]'s
 //! module doc comment). Two dependencies only -- [`indicatrix`] for geometry and
-//! [`indicatrix-formats`] for `.asc` read/write and the `.indicatrix` design file's own
+//! [`indicatrix-formats`] for `.asc` read/write and the `.isdd` design file's own
 //! on-disk format -- so `apps/indicatrix-cut` can wire a UI on top of it without this
 //! crate ever needing to know Slint, wgpu, or SQLite exist.
 //!
@@ -42,12 +42,13 @@
 //! - [`yield_metrics`]: the real-unit binding ([`yield_metrics::mm_per_unit`]) and
 //!   the figures built on it -- exact volumetric yield, an estimated carat weight,
 //!   and the design-bigger-than-its-rough check.
-//! - [`native`]: converts a [`Design`] to and from the self-contained `.indicatrix`
-//!   design file (design state `.asc` has no field for at all), and still reads the
-//!   older `.indicatrix.toml` sidecar (legacy `.gemcut.toml` too) paired with a `.asc`. The on-disk document itself --
-//!   schema, TOML encode/decode, path rules, fingerprint -- lives in
+//! - [`native`]: converts a [`Design`] to and from the self-contained `.isdd`
+//!   design file (design state `.asc` has no field for at all; files saved as
+//!   `.indicatrix` before are read the same way), and builds the catalogue `.asc` text
+//!   a save stores next to it ([`native::catalogue_asc`]). The on-disk document itself --
+//!   schema, TOML encode/decode, path rules -- lives in
 //!   `indicatrix_formats::native`; this module owns only the conversions to and from
-//!   [`Design`] and the `load_paired`/`save_paired` pairing built on top of them.
+//!   [`Design`].
 //! - [`optimize`]: the objective ([`optimize::evaluate_objective`]) and
 //!   [`optimize::optimize_design`], a deterministic coordinate search over a
 //!   design's free facet angles that never moves a pinned tier, never proposes
@@ -94,8 +95,8 @@ pub mod manufacturability;
 /// [`material::MaterialSelection`] and the built-in refractive-index/specific-
 /// gravity lookup tables a design resolves its optics against.
 pub mod material;
-/// The `.indicatrix` design file's conversions, plus the older `.asc` + `.indicatrix.toml`
-/// sidecar pairing, which stays readable.
+/// The `.isdd` design file's conversions, plus the catalogue `.asc` text a save stores
+/// next to it.
 ///
 /// See this module's own doc comment for the split with
 /// `indicatrix_formats::native`.
@@ -151,8 +152,9 @@ pub use cutting_sheet::{
 };
 pub use design::{
     ConstraintTier, Design, DesignSolveError, DesignTierCodes, FreshDesignSpec, MissingAnchor,
-    ScheduleMeta, SolveMismatch, TargetResolveError, TierId, TierLabelInfo, TierTarget,
-    compute_tier_labels, convert_legacy_facet_name, is_legacy_123_abc, name_indicates_pavilion,
+    ScheduleMeta, SolveMismatch, StoneRenderEffects, TargetResolveError, TierId, TierLabelInfo,
+    TierTarget, compute_tier_labels, convert_legacy_facet_name, is_legacy_123_abc,
+    name_indicates_pavilion,
 };
 pub use edit::{
     Edit, EditError, History, HistoryEntry, JumpError, RemapRounding, ScheduleState, remap_ratio,
@@ -166,11 +168,7 @@ pub use material::{
     MaterialSelection, ResolvedMaterial, SpecificGravity, built_in_refractive_index,
     built_in_specific_gravity,
 };
-pub use native::{
-    FingerprintCheck, LoadPairedError, LoadPairedResult, NativeDesignFile, PairedSave, SaveError,
-    TierOverlay, asc_path_for_native, check_fingerprint, load_paired, native_path_for_asc,
-    save_paired,
-};
+pub use native::{CatalogueAsc, SaveError, catalogue_asc};
 pub use optics_hints::{
     Risk, critical_angle_deg, crown_window_margin_deg, crown_windowing_risk, retarget_angle_deg,
     tier_margin_deg, windowing_risk,
@@ -180,11 +178,13 @@ pub use optimize::{
     ObjectiveFidelity, ObjectivePreset, ObjectiveWeights, OptimizeCandidate, OptimizeConfig,
     OptimizeOptions, OptimizeOutcome, OptimizeResult, SearchHooks, ShapeTarget, ToneGoal,
     apply_optimize_candidate, apply_optimize_outcome, apply_optimize_result, evaluate_objective,
-    evaluate_objective_under, evaluate_objective_with_tone, evaluate_objective_with_tone_under,
-    free_tier_indices, free_tier_indices_with, optimize_design, optimize_design_with,
+    evaluate_objective_threaded, evaluate_objective_under, evaluate_objective_under_threaded,
+    evaluate_objective_with_tone, evaluate_objective_with_tone_under,
+    evaluate_objective_with_tone_under_threaded, free_tier_indices, free_tier_indices_with,
+    optimize_design, optimize_design_with,
 };
 pub use orbit::{OrbitUnit, expected_orbit, mirror_indices, orbit_units, rotate_indices};
-pub use preform::{PreformShape, PreformSpec};
+pub use preform::{PlaneSet, PreformShape, PreformSpec};
 pub use proportions_windows::{MaterialClass, Metric as ProportionMetric, ShapeClass, Verdict};
 pub use resolve::resolve_after_edit;
 pub use yield_metrics::{

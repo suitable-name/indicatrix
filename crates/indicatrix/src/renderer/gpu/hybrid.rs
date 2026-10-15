@@ -143,6 +143,11 @@ impl HybridSplit {
             };
         }
         let gpu_share = gpu_rate / total_rate;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "floored, non-negative and capped at total_spp, which is a u32"
+        )]
         let gpu_samples = f64::from(total_spp)
             .mul_add(gpu_share, 0.5)
             .floor()
@@ -339,7 +344,7 @@ fn cpu_trace_range(scene: &GpuFrameScene<'_>, sample_offset: u32, spp: u32) -> V
     let num_threads = std::thread::available_parallelism()
         .map_or(4, std::num::NonZero::get)
         .min(num_pixels);
-    let num_threads_u32 = num_threads as u32;
+    let num_threads_u32 = u32::try_from(num_threads).expect("a thread count fits u32");
 
     // Built ONCE for this batch and shared by reference across every worker thread --
     // std::thread::scope guarantees every thread joins before plane_soa goes out of scope.
@@ -376,7 +381,12 @@ fn cpu_trace_range(scene: &GpuFrameScene<'_>, sample_offset: u32, spp: u32) -> V
     });
 
     for (thread_idx, sums) in partials.into_iter().enumerate() {
-        scatter_interleaved(&mut out, thread_idx as u32, num_threads_u32, &sums);
+        scatter_interleaved(
+            &mut out,
+            u32::try_from(thread_idx).expect("a thread index fits u32"),
+            num_threads_u32,
+            &sums,
+        );
     }
     out
 }

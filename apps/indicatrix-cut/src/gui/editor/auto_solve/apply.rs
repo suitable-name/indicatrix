@@ -21,7 +21,7 @@ use crate::{
                 push_proportion_verdicts_from_solved, scaled_viewport_size,
             },
         },
-        render::camera_lighting::contained_request_size,
+        render::camera_lighting::{contained_request_size, view_mode_index},
         show_toast,
         solid_preview::{cut_slider, preview_state::CameraPose},
     },
@@ -113,6 +113,11 @@ impl BackgroundSolveResult {
         elapsed: Duration,
         multi_selected_count: usize,
     ) -> Self {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "gear reference angle (degrees) is stored as f32 in the panel model"
+        )]
+        let gear_angle = design.meta.gear_reference_angle as f32;
         Self {
             elapsed,
             tiers: Vec::new(),
@@ -125,10 +130,7 @@ impl BackgroundSolveResult {
             placements: Vec::new(),
             solved: None,
             too_many_planes: false,
-            gear: (
-                design.meta.gear_teeth_abs(),
-                design.meta.gear_reference_angle as f32,
-            ),
+            gear: (design.meta.gear_teeth_abs(), gear_angle),
             multi_selected_count,
             n_d: 0.0,
             panicked: false,
@@ -400,7 +402,7 @@ fn push_viewport_after_background_solve(
         tools: stone.tools,
         placements: stone.placements,
     };
-    let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
+    let view_mode = view_mode_index(ui.global::<SolidPreviewModel>().get_view_mode());
     // This is the "immediately after the next edit or Solve" call site that
     // `camera_lighting::contained_request_size`'s own doc comment names as still
     // reproducing the picking misregistration if it were skipped: without it, a

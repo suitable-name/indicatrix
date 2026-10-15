@@ -18,7 +18,8 @@ use crate::{
 };
 use indicatrix_cut_core::{Edit, PreformShape};
 use indicatrix_editor::{
-    loading::parse_preform_form, material::parse_yield_form,
+    loading::{parse_preform_form, preform_source_note},
+    material::parse_yield_form,
     view_model::yield_report::preform_y_offset_mm_text,
 };
 use slint::{ComponentHandle, SharedString};
@@ -33,10 +34,13 @@ pub(super) fn push(pcx: &PushCtx<'_>) {
     let design = pcx.design;
     if pcx.delta.preform {
         let preform = &design.preform;
+        // A planned piece shows its bounding box in the Block form; the note under the shape
+        // says where it came from (empty for a block or cylinder).
         model.set_preform_shape_index(match preform.shape {
-            PreformShape::Block => 0,
+            PreformShape::Block | PreformShape::Planes(_) => 0,
             PreformShape::Cylinder { .. } => 1,
         });
+        model.set_preform_source_note(preform_source_note(preform).into());
         model.set_preform_half_width(format!("{:.4}", preform.half_width).into());
         model.set_preform_length_over_width(format!("{:.4}", preform.length_over_width).into());
         model.set_preform_depth(format!("{:.4}", preform.depth).into());

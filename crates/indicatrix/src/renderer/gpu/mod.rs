@@ -26,6 +26,7 @@ pub mod compute;
 pub mod context;
 pub mod determinism_check;
 pub mod layout_check;
+pub mod pipeline_cache;
 pub mod rng_check;
 
 // Geometry/environment self-tests against analytic truth: camera rays, the
@@ -54,8 +55,7 @@ pub mod shading_normal_check;
 // Not a self-test: renders an arbitrary scene with the megakernel every
 // module above verifies, via the dispatch routine `estimator_check` uses.
 pub mod frame;
-// The zoned stones the GPU checks render (`zoning` feature only).
-#[cfg(feature = "zoning")]
+// The zoned stones the GPU checks render.
 pub mod zoned_cases;
 // `shader_validation_tests` used to live here, but that put it behind this module's
 // own `#[cfg(feature = "gpu")]` gate even though it needs no GPU adapter (`naga` is an

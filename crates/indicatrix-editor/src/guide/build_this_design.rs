@@ -633,7 +633,11 @@ fn rebuild(target: &Design, plan: &[PlannedTier]) -> Result<Design, BuildGuideEr
         names.push(planned.recipe.name.clone());
         tiers.push(tier);
     }
-    Ok(Design::new(target.preform, target.meta.clone(), tiers))
+    Ok(Design::new(
+        target.preform.clone(),
+        target.meta.clone(),
+        tiers,
+    ))
 }
 
 /// The tiers of `plan` (by position) whose solved depth is off the original's, with how many

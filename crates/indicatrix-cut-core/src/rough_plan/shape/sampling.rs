@@ -138,7 +138,7 @@ fn rederive_point(j: usize, table: &[(f64, f64)], steps: usize) -> (f64, f64) {
 pub fn sphere_directions(level: usize) -> Vec<[f64; 3]> {
     assert!(level > 0, "level must be positive");
     let mut dirs = Vec::with_capacity(4 * level * level + 2);
-    let lvl = level as i64;
+    let lvl = i64::try_from(level).expect("a sphere level is a small count");
 
     for i in -lvl..=lvl {
         let rem_j = lvl - i.abs();

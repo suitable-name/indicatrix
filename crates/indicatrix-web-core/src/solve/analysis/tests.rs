@@ -204,7 +204,7 @@ fn an_outcome_round_trips_through_its_plain_data() {
 #[test]
 fn every_template_pins_all_its_tiers_so_optimize_says_nothing_is_free() {
     for (i, template) in TEMPLATES.iter().enumerate() {
-        let design = template_design(i as i32 + 1);
+        let design = template_design(i32::try_from(i).expect("a template index fits i32") + 1);
         let toml = design_to_toml(&design).expect("encodes");
         let response = handle_solve(
             &toml,
@@ -233,7 +233,7 @@ fn every_template_pins_all_its_tiers_so_optimize_says_nothing_is_free() {
 #[test]
 fn shift_retarget_through_the_handler_equals_build_proposal_on_every_template() {
     for (i, template) in TEMPLATES.iter().enumerate() {
-        let design = template_design(i as i32 + 1);
+        let design = template_design(i32::try_from(i).expect("a template index fits i32") + 1);
         let toml = design_to_toml(&design).expect("encodes");
         for (fraction, ratio, follow) in [
             (0.0, false, false),
@@ -311,7 +311,7 @@ fn only_the_named_tiers_stay_free_and_the_rest_are_pinned_at_their_masts() {
     assert!(free_before.len() >= 2, "{free_before:?}");
     let keep = free_before[0];
     let params = OptimizeParams {
-        only_tiers: Some(vec![keep as u32]),
+        only_tiers: Some(vec![u32::try_from(keep).expect("a tier index fits u32")]),
         ..OptimizeParams::default()
     };
     let restricted = restricted_design(&design, &params).expect("solves");

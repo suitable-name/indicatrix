@@ -26,6 +26,7 @@ use crate::{
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{Edit, EditError, MaterialSelection};
+use indicatrix_editor::solve_policy::{SolveCostEstimate, should_solve_synchronously_for};
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
@@ -190,44 +191,28 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
             let original_design = st.design.clone();
             // Never the viewport slot: while the dialog is open it can hold the candidate's
             // ghost solve.
-            let original_solved =
-                original_solve_for_snapshot(cached_original_solved(pending.1), &original_design);
+            let inline_solve_ok = solves_inline(&original_design);
+            let original_solved = original_solve_for_snapshot(
+                cached_original_solved(pending.1),
+                &original_design,
+                inline_solve_ok,
+            );
+            // Cache miss on a design too costly to solve here: the masts arrive later.
+            let solve_in_background = original_solved.is_none() && !inline_solve_ok;
 
             match apply_pending_retarget(&mut st, pending, material_change, &anchors) {
-                Ok(applied) => {
-                    // Overwrites any earlier held snapshot; no database write.
-                    super::snapshot::hold_original_before_retarget(
-                        &ui,
+                Ok(applied) => finish_applied_retarget(
+                    &ui,
+                    st,
+                    (&state, &render_ctx, &preview_state, &solid_last_solved),
+                    AppliedRetarget {
+                        applied,
+                        target_name,
                         original_design,
                         original_solved,
-                        &super::snapshot::original_snapshot_label(&target_name),
-                    );
-                    // (`from_retarget_apply` is set inside `hold_original_before_retarget`.)
-                    // `view::
-                    // refresh_all` now takes `Rc<RefCell<EditorState>>` under the
-                    // name `view::refresh_all_now` (see that function's own doc
-                    // comment) -- this call site's own logic is otherwise untouched.
-                    drop(st);
-                    view::refresh_all_now(
-                        &ui,
-                        &render_ctx,
-                        &preview_state,
-                        &solid_last_solved,
-                        &state,
-                        false,
-                    );
-                    ui.global::<RetargetModel>().set_is_open(false);
-                    // A late check result must not repaint a dialog that is gone, and the
-                    // options of a finished search are of no use any more.
-                    reset_check(&ui);
-                    forget_results();
-                    release_modal_viewport(&ui, &render_ctx);
-                    show_toast(
-                        &ui,
-                        &format!("Retargeted {applied} tier(s) for {target_name}."),
-                        "success",
-                    );
-                }
+                        solve_in_background,
+                    },
+                ),
                 Err(RetargetApplyError::Stale) => {
                     show_toast(
                         &ui,
@@ -247,16 +232,99 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
     });
 }
 
+/// What [`finish_applied_retarget`] needs from the apply handler once the edit landed.
+struct AppliedRetarget {
+    /// Tiers the retarget named.
+    applied: usize,
+    /// Display name of the target material, for the snapshot label and the toast.
+    target_name: String,
+    /// The design as it was before the apply.
+    original_design: indicatrix_cut_core::Design,
+    /// Its solve, when one was cheap to get.
+    original_solved: Option<Vec<SolvedTier>>,
+    /// Whether the masts of `original_design` still have to be solved off-thread.
+    solve_in_background: bool,
+}
+
+/// The editor state cell plus the render, preview and solid-solve handles that
+/// `view::refresh_all_now` takes, bundled to keep [`finish_applied_retarget`] short.
+type RefreshHandles<'a> = (
+    &'a Rc<RefCell<EditorState>>,
+    &'a Arc<Mutex<RenderContext>>,
+    &'a Arc<SolidPreviewState>,
+    &'a view::SolidLastSolved,
+);
+
+/// The success arm of the Apply handler: holds the "Original" snapshot, refreshes the
+/// editor, closes the dialog and toasts. `views` is the editor state cell and the three
+/// render handles `view::refresh_all_now` takes.
+fn finish_applied_retarget(
+    ui: &MainWindow,
+    st: std::cell::RefMut<'_, EditorState>,
+    views: RefreshHandles<'_>,
+    done: AppliedRetarget,
+) {
+    let (state, render_ctx, preview_state, solid_last_solved) = views;
+    // Overwrites any earlier held snapshot; no database write.
+    let epoch = super::snapshot::hold_original_before_retarget(
+        ui,
+        done.original_design.clone(),
+        done.original_solved,
+        &super::snapshot::original_snapshot_label(&done.target_name),
+    );
+    if done.solve_in_background {
+        super::snapshot::solve_original_masts_in_background(ui, done.original_design, epoch);
+    }
+    // (`from_retarget_apply` is set inside `hold_original_before_retarget`.)
+    // `view::refresh_all` now takes `Rc<RefCell<EditorState>>` under the
+    // name `view::refresh_all_now` (see that function's own doc
+    // comment) -- this call site's own logic is otherwise untouched.
+    drop(st);
+    view::refresh_all_now(
+        ui,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+        state,
+        false,
+    );
+    ui.global::<RetargetModel>().set_is_open(false);
+    // A late check result must not repaint a dialog that is gone, and the
+    // options of a finished search are of no use any more.
+    reset_check(ui);
+    forget_results();
+    release_modal_viewport(ui, render_ctx);
+    show_toast(
+        ui,
+        &format!(
+            "Retargeted {} tier(s) for {}.",
+            done.applied, done.target_name
+        ),
+        "success",
+    );
+}
+
 /// The original design's solve for the "Original" snapshot: the check run's cached solve of
-/// that very design when it matches the tier count, otherwise a fresh solve of `design`,
-/// otherwise `None` (the snapshot then simply has no old masts).
+/// that very design when it matches the tier count, otherwise -- only when `inline_ok`
+/// ([`solves_inline`]) -- a fresh solve of `design`, otherwise `None` (the snapshot then has
+/// no old masts until `snapshot::solve_original_masts_in_background` fills them). The
+/// un-gated solve this replaces froze the window for 0.5-5.9 s on large designs.
 pub(super) fn original_solve_for_snapshot(
     cached: Option<Vec<SolvedTier>>,
     design: &indicatrix_cut_core::Design,
+    inline_ok: bool,
 ) -> Option<Vec<SolvedTier>> {
     cached
         .filter(|solved| solved.len() == design.tiers.len())
-        .or_else(|| design.solve().ok())
+        .or_else(|| inline_ok.then(|| design.solve().ok()).flatten())
+}
+
+/// Whether `design` is cheap enough to solve on the UI thread, by the same policy the
+/// viewport uses (`view::viewport::solves_inline`): no concave tools, and
+/// [`should_solve_synchronously_for`] with no timing history for this design.
+fn solves_inline(design: &indicatrix_cut_core::Design) -> bool {
+    design.concave_tiers.is_empty()
+        && should_solve_synchronously_for(SolveCostEstimate::of(design), None)
 }
 
 /// Takes the proposal Apply commits. A Shift-mode proposal lives in

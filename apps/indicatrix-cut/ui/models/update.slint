@@ -1,0 +1,32 @@
+// The new-version check: the one-time question, the Preferences switch and "Check Now", and the
+// non-modal notice under the header. Rust (`gui::update_check`) seeds these from the settings,
+// runs the check on a background thread and saves every answer.
+export global UpdateModel {
+    // `true` while the "Check for New Versions?" question is still to be asked. The main window
+    // shows the question only when no other dialog is open (`MainWindow.update_consent_open`).
+    in-out property <bool> consent_pending: false;
+    // The Preferences switch: whether the daily automatic check is on.
+    in-out property <bool> check_enabled: false;
+    // A check is running right now (the Check Now button waits for it).
+    in-out property <bool> checking: false;
+    // One line for the result of the last "Check Now" (empty before the first one).
+    in-out property <string> status_text: "";
+    // The notice under the header: a newer release exists.
+    in-out property <bool> notice_visible: false;
+    in-out property <string> notice_text: "";
+
+    // The question was answered: `true` = "Check Daily", `false` = "Don't Check".
+    callback consent_answered(bool);
+    // The question was closed without an answer (asked again next start).
+    callback consent_dismissed();
+    // The Preferences switch changed (`check_enabled` already holds the new value).
+    callback enabled_changed(bool);
+    // Preferences > "Check Now".
+    callback check_now();
+    // The notice's "View Release": open the release page in the browser.
+    callback view_release();
+    // The notice's "Skip This Version": do not announce this version again.
+    callback skip_release();
+    // The notice's "Later": hide it until the next check.
+    callback later();
+}

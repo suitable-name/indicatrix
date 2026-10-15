@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider roots: only cache/share/ is ever exposed to other apps. -->
+<paths>
+    <cache-path
+        name="share"
+        path="share/" />
+</paths>

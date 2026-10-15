@@ -1,35 +1,28 @@
 //! Tests for native save/export round-tripping, the degenerate-marker header,
-//! plain-English load-outcome text, cached-solve reuse, and autosave's write round trip.
-//! The `.indicatrix` design file's own tests (names, autosave naming, atomic write)
+//! cached-solve reuse, and autosave's write round trip.
+//! The `.isdd` design file's own tests (names, autosave naming, atomic write)
 //! are in [`super::design_tests`].
 
 use super::{
     export::{ScheduleFormat, file_name_for_format, schedule_file_text},
-    open_commit::plain_load_outcome_text,
     open_picker::read_foreign_design,
     save_helpers::{NOT_CLOSED_SOLID_MARKER, degenerate_marker_header},
 };
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{
-    ConstraintTier, Design, FingerprintCheck, FreshDesignSpec, MaterialSelection, PreformSpec,
-    TierOverlay, load_paired, save_paired,
+    ConstraintTier, Design, FreshDesignSpec, MaterialSelection, PreformSpec, catalogue_asc,
+    native::{DesignExtras, design_from_str, design_to_string},
 };
 
 /// Material name/RI override, gear, symmetry and mirror all round-trip through
 /// the exact pair of functions
 /// [`setup_save_native_callback`]/[`setup_open_native_callback`] call
-/// (`indicatrix_cut_core::save_paired`/`load_paired`) -- verified here directly rather
-/// than trusted, since this crate's own wiring exercises gear/symmetry/mirror
-/// persistence only through the editor's own "New Design"/design-settings forms,
-/// not through a dedicated round-trip test. `gear`/`symmetry`/
-/// `mirror` round-trip through the paired `.asc`'s own header (already
-/// exercised, indirectly, by every existing "Open" test in
-/// `indicatrix_cut_core::native`); `material`/`refractive_index_override` round-trip
-/// through the design file's `[material]` table (already
-/// unit-tested in `indicatrix_cut_core::native` directly) -- this test's own
+/// (`indicatrix_cut_core::native::design_to_string`/`design_from_str`) -- verified here
+/// directly rather than trusted, since this crate's own wiring exercises
+/// gear/symmetry/mirror persistence only through the editor's own "New Design"/
+/// design-settings forms, not through a dedicated round-trip test. This test's own
 /// value is confirming the ONE combination this app actually writes (a
-/// design with all four set together, via the same `save_paired`/
-/// `load_paired` this module's own callbacks call) survives intact.
+/// design with all four set together) survives intact.
 #[test]
 fn gear_symmetry_mirror_and_material_all_round_trip_through_save_and_open() {
     let spec = FreshDesignSpec {
@@ -47,10 +40,7 @@ fn gear_symmetry_mirror_and_material_all_round_trip_through_save_and_open() {
         preform: PreformSpec::cylinder(80, 1.4, 1.0, 1.3),
     };
     let mut design = Design::fresh_from_spec(spec);
-    // A schedule with zero tiers exports (and re-solves) fine, but
-    // `indicatrix_formats::asc::parse_asc` refuses to parse an `.asc` with no
-    // facet ('a') records at all -- one real, anchored tier is what a
-    // saved design would actually look like.
+    // One real, anchored tier is what a saved design would actually look like.
     design.tiers.push(ConstraintTier {
         angle_deg: -40.0,
         name: "P1".to_string(),
@@ -61,9 +51,9 @@ fn gear_symmetry_mirror_and_material_all_round_trip_through_save_and_open() {
         detached: Vec::new(),
     });
 
-    let saved =
-        save_paired(&design, "roundtrip.asc", None, None, None).expect("a fresh design must save");
-    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("must load back");
+    let text = design_to_string(&design, None, &DesignExtras::default())
+        .expect("a fresh design must save");
+    let loaded = design_from_str(&text).expect("must load back");
 
     assert_eq!(loaded.design.meta.gear_teeth, 80);
     assert_eq!(loaded.design.meta.symmetry_order, 5);
@@ -92,68 +82,6 @@ fn degenerate_marker_header_stamps_the_reason_when_absent() {
 fn degenerate_marker_header_never_stamps_twice() {
     let headers = vec![format!("{NOT_CLOSED_SOLID_MARKER} -- already noted")];
     assert!(degenerate_marker_header(&headers, "a different message").is_none());
-}
-
-// --- plain_load_outcome_text ---
-
-#[test]
-fn a_clean_match_and_applied_overlay_reads_as_restored() {
-    let text = plain_load_outcome_text(&FingerprintCheck::Match, &TierOverlay::Applied);
-    assert_eq!(text, "Your saved meet constraints were restored.");
-}
-
-#[test]
-fn a_tier_count_mismatch_names_both_counts_even_on_a_clean_fingerprint() {
-    let text = plain_load_outcome_text(
-        &FingerprintCheck::Match,
-        &TierOverlay::SkippedTierCountMismatch {
-            native_tiers: 5,
-            asc_tiers: 6,
-        },
-    );
-    assert!(text.contains('5') && text.contains('6'), "{text}");
-    assert!(
-        !text.contains("fingerprint"),
-        "must read in plain English, not the crate's own diagnostic vocabulary: {text}"
-    );
-}
-
-#[test]
-fn a_fingerprint_mismatch_says_the_asc_changed_and_constraints_were_not_restored() {
-    let text = plain_load_outcome_text(
-        &FingerprintCheck::Mismatch {
-            expected_sha256: "aaaa".to_string(),
-            found_sha256: "bbbb".to_string(),
-        },
-        &TierOverlay::SkippedFingerprintMismatch,
-    );
-    assert!(
-        text.contains("changed since this sidecar was saved"),
-        "{text}"
-    );
-    assert!(text.contains("not restored"), "{text}");
-    assert!(
-        !text.contains("sha256"),
-        "must not leak the technical hash text: {text}"
-    );
-}
-
-#[test]
-fn applying_despite_a_mismatch_says_it_was_at_the_cutters_own_request() {
-    let text = plain_load_outcome_text(
-        &FingerprintCheck::Mismatch {
-            expected_sha256: "aaaa".to_string(),
-            found_sha256: "bbbb".to_string(),
-        },
-        &TierOverlay::AppliedDespiteMismatch,
-    );
-    assert!(text.contains("at your request"), "{text}");
-}
-
-#[test]
-fn a_draft_overlay_on_a_clean_match_names_the_placeholder_masts() {
-    let text = plain_load_outcome_text(&FingerprintCheck::Match, &TierOverlay::AppliedFromDraft);
-    assert!(text.contains("placeholders"), "{text}");
 }
 
 // --- Group 1, cached-solve reuse ---
@@ -447,9 +375,9 @@ fn the_replace_guard_asks_only_when_edits_landed_after_the_decision() {
 // completion callback ever firing) ---
 
 /// The ordinary (non-panicking) path through the now-panic-guarded parse-and-measure
-/// step: a real solved design, written out via `save_paired` the same way Save
-/// itself does, must still land as a brand-new catalogue row with its angle settings
-/// and both attachments (the `.asc` plus its design file) intact -- proving the
+/// step: a real solved design, its catalogue `.asc` built via `catalogue_asc` the same
+/// way Save itself does, must still land as a brand-new catalogue row with its angle
+/// settings and both attachments (the `.asc` plus its design file) intact -- proving the
 /// `catch_file_panic` wrapper added around this step changed nothing about the
 /// ordinary success path. The panic arm itself is not forced here, for the same
 /// reason `catch_file_panic`'s own unit test in `gui::library::local::import::tests`
@@ -457,8 +385,7 @@ fn the_replace_guard_asks_only_when_edits_landed_after_the_decision() {
 /// (`std::panic::catch_unwind` around a deliberately panicking closure) is already
 /// covered directly there, and reused verbatim by `write_back_to_catalogue`.
 /// The self-contained design file Save writes next to the `.asc` and hands to the
-/// catalogue write-back (`save.rs` passes `design_file_text`'s output, not the paired
-/// `.asc` sidecar, whose TOML has no `format` key).
+/// catalogue write-back (`save.rs` passes `design_file_text`'s output).
 fn saved_design_text(design: &indicatrix_cut_core::Design) -> String {
     super::save_helpers::design_file_text(
         design,
@@ -473,11 +400,11 @@ fn saved_design_text(design: &indicatrix_cut_core::Design) -> String {
 fn write_back_to_catalogue_still_creates_a_new_row_through_its_panic_guard() {
     let design = round_brilliant_design();
     design.solve().expect("standard round brilliant solves");
-    let paired = save_paired(&design, "write_back_guard_test.asc", None, None, None)
+    let asc = catalogue_asc(&design, None, None)
         .expect("a closed, solved design must save without a draft fallback");
     let design_text = saved_design_text(&design);
     assert!(
-        paired.draft_reason.is_none(),
+        asc.draft_reason.is_none(),
         "the round-brilliant fixture must not fall back to a draft save"
     );
 
@@ -497,8 +424,8 @@ fn write_back_to_catalogue_still_creates_a_new_row_through_its_panic_guard() {
         &db,
         None,
         "write_back_guard_test.asc",
-        &paired.asc_text,
-        "write_back_guard_test.indicatrix",
+        &asc.asc_text,
+        "write_back_guard_test.isdd",
         &design_text,
     )
     .expect("an ordinary, non-panicking save must still succeed through the panic guard");
@@ -533,7 +460,7 @@ fn write_back_to_catalogue_still_creates_a_new_row_through_its_panic_guard() {
 fn write_back_to_catalogue_declines_to_overwrite_a_design_that_owns_the_url() {
     let design = round_brilliant_design();
     design.solve().expect("standard round brilliant solves");
-    let paired = save_paired(&design, "collide_test.asc", None, None, None).expect("saves");
+    let asc = catalogue_asc(&design, None, None).expect("saves");
     let design_text = saved_design_text(&design);
     let db_path = std::env::temp_dir().join(format!(
         "indicatrix_cut_write_back_collision_test_{}.sqlite",
@@ -571,8 +498,8 @@ fn write_back_to_catalogue_declines_to_overwrite_a_design_that_owns_the_url() {
         &db,
         None,
         "collide_test.asc",
-        &paired.asc_text,
-        "collide_test.indicatrix",
+        &asc.asc_text,
+        "collide_test.isdd",
         &design_text,
     )
     .expect("a collision is an outcome, not an error");

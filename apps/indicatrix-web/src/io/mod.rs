@@ -22,7 +22,7 @@ use crate::app::{
     solve::auto_solve,
     state::WebApp,
 };
-use indicatrix_editor::files::{InputFileKind, paired_asc_index};
+use indicatrix_editor::files::InputFileKind;
 use load::Opened;
 
 /// One opened or dropped file: its name and its bytes.
@@ -47,13 +47,10 @@ pub fn oversize_message(name: &str, size_bytes: f64) -> Option<String> {
 ///
 /// - `.hdr` maps are checked against the browser caps and kept for rendering;
 /// - each file is routed by its content where the name cannot tell
-///   (`InputFileKind::classify`): a `.indicatrix` design file is
-///   self-contained, an older `.indicatrix.toml` / `.gemcut.toml` sidecar is read with
-///   its `.asc`;
-/// - of the designs, a `.indicatrix` file wins, then a sidecar (paired with the `.asc`
-///   it names, `indicatrix_editor::files::paired_asc_index`, or opened alone when it
-///   is self-contained), then a `.asc`, then a `.gem`/`.gcs`; any further design
-///   file is named as ignored;
+///   (`InputFileKind::classify`): an `.isdd` (or legacy `.indicatrix`) design file is
+///   self-contained;
+/// - of the designs, a design file wins, then a `.asc`, then a `.gem`/`.gcs`; any
+///   further design file is named as ignored;
 /// - anything else is named as not supported.
 ///
 /// Replacing a design with unsaved changes asks first, in the Save / Discard / Cancel
@@ -73,7 +70,7 @@ pub fn open_files(ctx: &Ctx, files: Vec<IncomingFile>) {
             ctx,
             MessageKind::Warning,
             &format!(
-                "Not opened (unsupported file type): {}. Open .indicatrix, .asc, .indicatrix.toml, .gem, .gcs or .hdr files.",
+                "Not opened (unsupported file type): {}. Open .isdd, .indicatrix, .asc, .gem, .gcs or .hdr files.",
                 unsupported.join(", ")
             ),
         );
@@ -134,9 +131,6 @@ fn load_best(
     let result = if let Some(at) = position(&[InputFileKind::Design], &designs) {
         let (_, file) = designs.remove(at);
         open_design_file(app, &file)
-    } else if let Some(native_at) = position(&[InputFileKind::Sidecar], &designs) {
-        let (_, native) = designs.remove(native_at);
-        open_sidecar(app, &native, &mut designs)
     } else if let Some(asc_at) = position(&[InputFileKind::Asc], &designs) {
         let (_, asc) = designs.remove(asc_at);
         load::load_asc(&asc.name, &asc.bytes).map(|opened| (opened, asc.name))
@@ -150,53 +144,11 @@ fn load_best(
     (result, ignored)
 }
 
-/// A self-contained `.indicatrix` design file.
+/// A self-contained design file (`.isdd`, or a legacy `.indicatrix`).
 fn open_design_file(app: &mut WebApp, file: &IncomingFile) -> Result<(Opened, String), String> {
     let text = std::str::from_utf8(&file.bytes)
         .map_err(|_| format!("\"{}\" is not a text (UTF-8) design file.", file.name))?;
     load::load_design_file(app, &file.name, text).map(|opened| (opened, file.name.clone()))
-}
-
-/// An older overlay sidecar: with its paired `.asc` when one was opened alongside it
-/// (removed from `others`), else on its own (when it is self-contained).
-fn open_sidecar(
-    app: &mut WebApp,
-    native: &IncomingFile,
-    others: &mut Vec<(InputFileKind, IncomingFile)>,
-) -> Result<(Opened, String), String> {
-    let text = String::from_utf8(native.bytes.clone()).map_err(|_| {
-        format!(
-            "\"{}\" is not a text (UTF-8) .indicatrix.toml sidecar.",
-            native.name
-        )
-    })?;
-    let recorded = indicatrix_cut_core::native::parse_toml_string(&text)
-        .map_err(|e| {
-            format!(
-                "\"{}\" is not a valid .indicatrix.toml sidecar: {e}",
-                native.name
-            )
-        })?
-        .asc_filename;
-    let asc_positions: Vec<usize> = others
-        .iter()
-        .enumerate()
-        .filter(|(_, (kind, _))| *kind == InputFileKind::Asc)
-        .map(|(i, _)| i)
-        .collect();
-    let asc_names: Vec<&str> = asc_positions
-        .iter()
-        .map(|&i| others[i].1.name.as_str())
-        .collect();
-    match paired_asc_index(&recorded, &native.name, &asc_names) {
-        Some(pick) => {
-            let (_, asc) = others.remove(asc_positions[pick]);
-            load::load_pair(app, &native.name, &text, &asc.name, &asc.bytes)
-                .map(|opened| (opened, format!("{} + {}", asc.name, native.name)))
-        }
-        None => load::load_native_alone(app, &native.name, &text)
-            .map(|opened| (opened, native.name.clone())),
-    }
 }
 
 /// Installs an opened design, refreshes everything, solves if small, persists,

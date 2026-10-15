@@ -1,5 +1,5 @@
 import { Theme } from "../theme.slint";
-import { ComboBox, Slider, LineEdit, ScrollView } from "std-widgets.slint";
+import { ComboBox, Slider, LineEdit, ScrollView, CheckBox } from "std-widgets.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { PhysicscolorModel } from "../models/physics_color.slint";
 import { DispersionEditorModel } from "../models/dispersion_editor.slint";
@@ -408,7 +408,7 @@ export component MaterialEditorDialog inherits Rectangle {
             // fill the parent" when width/height aren't both set explicitly) makes this card
             // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
             // of the window instead of sizing to its content. Same idiom, and same reason, as
-            // `settings_dialog.slint` and `import_dialog.slint`. Capped at the backdrop's
+            // `import_dialog.slint` and the export dialog. Capped at the backdrop's
             // height less a 20px margin top and bottom; the body ScrollView takes the
             // overflow so the header and the action buttons stay reachable.
             height: min(content.preferred-height, root.height - 40px);
@@ -433,7 +433,12 @@ export component MaterialEditorDialog inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: 8px;
-                        Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 16px; height: 16px; vertical-alignment: center; }
+                        // Centred by a layout of its own: a fixed-size Image in the row sits at
+                        // the top of its cell.
+                        VerticalLayout {
+                            alignment: center;
+                            Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 16px; height: 16px; }
+                        }
                         Text {
                             text: "Gem Material Editor";
                             font-size: 14px;
@@ -537,9 +542,10 @@ export component MaterialEditorDialog inherits Rectangle {
                 if !GuideModel.shows_advanced() && root.advanced_in_use: AdvancedNote {}
 
                 // 5c. The zones of a zoned material (an adopted "<rough> colour" or a zoned library
-                // material; `zoning` feature). Read-only: the zones come from the rough colour
+                // material). Read-only: the zones come from the rough colour
                 // wizard. Editing the body colour below changes the BASE zone and nothing else.
-                if Zoning.enabled && Zoning.material_zone_rows.length > 0: VerticalLayout {
+                // The checkbox chooses whether the zone geometry scales with the stone width.
+                if Zoning.material_zone_rows.length > 0: VerticalLayout {
                     spacing: 4px;
                     Text {
                         text: "Zones";
@@ -548,7 +554,17 @@ export component MaterialEditorDialog inherits Rectangle {
                         color: Theme.text-secondary;
                     }
                     Text {
-                        text: "This material has colour zones. Changing the colour below changes the base zone.";
+                        text: "This material has color zones. Changing the color below changes the base zone.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                    CheckBox {
+                        text: "Zone Geometry Relative to Stone Size";
+                        checked <=> Zoning.material_relative_to_stone;
+                    }
+                    Text {
+                        text: "Ticked, the zones grow and shrink with the stone width setting. Unticked, they keep their size in millimetres.";
                         font-size: 10px;
                         color: Theme.text-muted;
                         wrap: word-wrap;
@@ -608,7 +624,7 @@ export component MaterialEditorDialog inherits Rectangle {
                         SegmentPill {
                             width: 76px;
                             text: "Fantasy";
-                            hint: "Pick the body colour from the swatches or any colour you like. The program finds the closest colour the model can show.";
+                            hint: "Pick the body color from the swatches or any color you like. The program finds the closest color the model can show.";
                             selected: !PhysicscolorModel.active;
                             picked => {
                                 // Physics -> Fantasy returns the preset to show (a recipe-seeded
@@ -619,7 +635,7 @@ export component MaterialEditorDialog inherits Rectangle {
                         SegmentPill {
                             width: 76px;
                             text: "Physics";
-                            hint: "Build the colour from a host crystal and the elements that colour it, as in the real stone.";
+                            hint: "Build the color from a host crystal and the elements that color it, as in the real stone.";
                             selected: PhysicscolorModel.active;
                             picked => {
                                 // The first switch solves the current fantasy color into the
@@ -664,7 +680,7 @@ export component MaterialEditorDialog inherits Rectangle {
                                 width: 100px;
                                 height: 26px;
                                 text: "Pick\u{2026}";
-                                hint: "Open the colour editor: choose the tone, saturation and hue of the body colour for a stone of this size. Saving keeps the full colour, not just the closest swatch.";
+                                hint: "Open the color editor: choose the tone, saturation and hue of the body color for a stone of this size. Saving keeps the full color, not just the closest swatch.";
                                 fill: Theme.surface-raised;
                                 hover_fill: Theme.surface-control-hover;
                                 font_size: 10px;
@@ -677,7 +693,7 @@ export component MaterialEditorDialog inherits Rectangle {
                                 }
                             }
                             Text {
-                                text: "Swatches and previews show the colour at 7 mm; it deepens in a larger stone.";
+                                text: "Swatches and previews show the color at 7 mm; it deepens in a larger stone.";
                                 font-size: 9px;
                                 color: Theme.text-muted;
                                 vertical-alignment: center;
@@ -686,7 +702,7 @@ export component MaterialEditorDialog inherits Rectangle {
                             }
                         }
                         if root.fantasy_picker_open : LchEditor {
-                            apply_hint: "Use this colour for the material. Save the material to keep it.";
+                            apply_hint: "Use this color for the material. Save the material to keep it.";
                             applied => { root.fantasy_picker_open = false; }
                             cancelled => { root.fantasy_picker_open = false; }
                         }

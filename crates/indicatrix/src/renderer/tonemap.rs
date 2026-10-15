@@ -252,6 +252,10 @@ mod tests {
             self.0 = x;
             x
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the test generator yields a value in 0..=1; f32 is the colour precision"
+        )]
         fn next_f32(&mut self) -> f32 {
             (f64::from(self.next_u32()) / f64::from(u32::MAX)) as f32
         }

@@ -50,7 +50,13 @@ pub(super) fn edge_px(scale: f32) -> u32 {
     } else {
         1.0
     };
-    ((LOGICAL_EDGE as f32 * scale).round() as u32).clamp(MIN_EDGE_PX, MAX_EDGE_PX)
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scale is finite and positive, so the rounded edge is non-negative; the clamp below bounds it"
+    )]
+    let edge = (LOGICAL_EDGE as f32 * scale).round() as u32;
+    edge.clamp(MIN_EDGE_PX, MAX_EDGE_PX)
 }
 
 /// The key of every row, indexed by position: `keys[0]` is "Start", `keys[p]` step `p`.
@@ -312,7 +318,10 @@ mod tests {
     fn the_least_recently_used_picture_goes_first() {
         let mut cache = ThumbCache::<u32>::new(3);
         for n in 0..3 {
-            cache.store_ready(key(n, n as u64), n as u32);
+            cache.store_ready(
+                key(n, u64::try_from(n).expect("loop index fits u64")),
+                u32::try_from(n).expect("loop index fits u32"),
+            );
         }
         // Using picture 0 makes picture 1 the oldest.
         assert_eq!(cache.lookup(&key(0, 0)), Lookup::Ready(0));

@@ -11,9 +11,10 @@ use crate::{
         external_links::open_external_url,
         library::{
             detail::{export_diagram_file_via_source, load_diagram_detail_via_source},
+            read_access::with_read_db,
             search::{
-                refresh_diagram_list, refresh_diagram_list_via_source,
-                refresh_diagram_list_via_source_debounced,
+                bump_search_seq, cancel_pending_searches, is_current_search, refresh_diagram_list,
+                refresh_diagram_list_via_source, refresh_diagram_list_via_source_debounced,
             },
             tutorial_state::{NarrowingMemory, library_is_narrowed, search_event},
         },
@@ -53,9 +54,52 @@ pub(in crate::gui) fn reset_search_and_filter_ui_inputs(ui: &MainWindow) {
     model.set_id_filter_label(SharedString::new());
 }
 
+/// Everything the library's first paint reads from the database, gathered by
+/// [`read_initial_library_data`] on a worker.
+struct InitialLibraryData {
+    shape_opts: Vec<String>,
+    gear_opts: Vec<String>,
+    ranges: Option<AttributeRanges>,
+    tag_names: Vec<String>,
+    /// A failed `get_total_count` is kept as a failure rather than swallowed into a
+    /// plain `0`, which would read back as "the library is empty" rather than "the
+    /// count query failed" -- indistinguishable from a genuinely empty database.
+    total_count: Result<usize, String>,
+}
+
+/// The queries the library's first paint needs, in one pass over `db`.
+fn read_initial_library_data(db: &Database) -> InitialLibraryData {
+    let mut shape_opts = vec!["All Shapes".to_string()];
+    if let Ok(shapes) = db.get_unique_shapes() {
+        shape_opts.extend(shapes);
+    }
+    let mut gear_opts = vec!["All Gears".to_string()];
+    if let Ok(gears) = db.get_unique_gears() {
+        gear_opts.extend(gears);
+    }
+    InitialLibraryData {
+        shape_opts,
+        gear_opts,
+        ranges: db.get_attribute_ranges().ok(),
+        tag_names: db
+            .list_tags()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| t.name)
+            .collect(),
+        total_count: db.get_total_count().map_err(|e| e.to_string()),
+    }
+}
+
 /// Loads the shape/gear filter dropdown options and the initial diagram list from
 /// the database. Split out of `run_gui` purely to keep that function under clippy's
 /// function-length lint.
+///
+/// The queries run on a worker over a read-only connection and the result is applied
+/// from the event loop, so the window can paint (with "Loading library..." in the status
+/// line and an empty list) instead of waiting for them (perf review UI-6). A newer
+/// search or library switch that lands first makes the late result stale, and it is
+/// dropped.
 pub(in crate::gui) fn load_filter_options_and_initial_list(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
@@ -64,58 +108,74 @@ pub(in crate::gui) fn load_filter_options_and_initial_list(
     // (`remote::setup_library_source_callbacks`'s `idx < 0` branch), where the box/
     // dropdowns/chip may still show whatever the just-left remote session had.
     reset_search_and_filter_ui_inputs(ui);
-    // Both queries run, and the lock is released, BEFORE either result touches the
-    // UI -- a poisoned lock's `unwrap_or_else(PoisonError::into_inner)` (this crate's
-    // existing pattern for a `Mutex` no caller can meaningfully "fix" by not
-    // recovering it) is not enough on its own if the guard is still held while a
-    // Slint property set runs, since a panic in a signal handler reached from that
-    // set would then poison the lock while it's already borrowed.
-    let (shape_opts, gear_opts) = {
-        let db_guard = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut shape_opts = vec!["All Shapes".to_string()];
-        if let Ok(shapes) = db_guard.get_unique_shapes() {
-            shape_opts.extend(shapes);
-        }
-        let mut gear_opts = vec!["All Gears".to_string()];
-        if let Ok(gears) = db_guard.get_unique_gears() {
-            gear_opts.extend(gears);
-        }
-        drop(db_guard);
-        (shape_opts, gear_opts)
-    };
-    let shape_model: Vec<SharedString> = shape_opts
-        .into_iter()
-        .map(std::convert::Into::into)
-        .collect();
+    // A debounced search still pending from before would bump the sequence after this load
+    // captured it and drop the start-up list as stale.
+    cancel_pending_searches();
+    let seq = bump_search_seq();
     ui.global::<LibraryModel>()
-        .set_shape_options(ModelRc::new(VecModel::from(shape_model)));
-    let gear_model: Vec<SharedString> = gear_opts
-        .into_iter()
-        .map(std::convert::Into::into)
-        .collect();
-    ui.global::<LibraryModel>()
-        .set_gear_options(ModelRc::new(VecModel::from(gear_model)));
+        .set_status_message("Loading library...".into());
+    let db = Arc::clone(db);
+    let ui_weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let data = with_read_db(&db, read_initial_library_data);
+        // The queued closure holds the vault weakly: a strong clone parked in the event
+        // queue would keep the database file open for a window that is already gone.
+        let db_weak = Arc::downgrade(&db);
+        drop(db);
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            if let Some(db) = db_weak.upgrade() {
+                apply_initial_library_data(&ui, &db, data, is_current_search(seq));
+            }
+        });
+    });
+}
 
-    sync_range_bounds_to_ui(ui, db);
-    sync_tag_vocabulary_to_ui(ui, db);
+/// The UI half of [`load_filter_options_and_initial_list`]: dropdown options, range
+/// bounds and tag vocabulary first (the list query reads the range filter off `ui`),
+/// then the first list query and the status line.
+///
+/// The options, range bounds and tag vocabulary always land (idempotent, last writer
+/// wins). Only the list query and the status line depend on `is_current`: a newer search
+/// already owns the list then, and a stale result must not replace it. When not current,
+/// the range filters the cutter may already have narrowed are preserved, not reset.
+fn apply_initial_library_data(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    data: InitialLibraryData,
+    is_current: bool,
+) {
+    let to_model = |names: Vec<String>| -> ModelRc<SharedString> {
+        let names: Vec<SharedString> = names.into_iter().map(Into::into).collect();
+        ModelRc::new(VecModel::from(names))
+    };
+    let library = ui.global::<LibraryModel>();
+    library.set_shape_options(to_model(data.shape_opts));
+    library.set_gear_options(to_model(data.gear_opts));
+    library.set_all_tags(to_model(data.tag_names));
+    if let Some(ranges) = &data.ranges {
+        if is_current {
+            apply_attribute_ranges_to_ui(ui, ranges);
+        } else {
+            apply_attribute_range_bounds_preserving_filters(ui, ranges);
+        }
+    }
+    if !is_current {
+        if library.get_status_message() == "Loading library..." {
+            library.set_status_message(SharedString::new());
+        }
+        return;
+    }
     refresh_diagram_list(ui, db, "", "All Shapes", "All Gears");
 
-    // A failed `get_total_count` is handled explicitly rather than swallowed into a
-    // plain `0`, which would read back as "the library is empty" rather than "the
-    // count query failed" -- indistinguishable from a genuinely empty database.
-    let total_count_result = db
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get_total_count();
-    match total_count_result {
+    match data.total_count {
         Ok(total_count) => {
-            ui.global::<LibraryModel>().set_status_message(
+            library.set_status_message(
                 format!("Database loaded: {total_count} diagrams available.").into(),
             );
         }
         Err(e) => {
             warn!("get_total_count failed during initial load: {e}");
-            ui.global::<LibraryModel>().set_status_message(
+            library.set_status_message(
                 "Database loaded, but the diagram count is unavailable.".into(),
             );
         }
@@ -137,11 +197,8 @@ pub(in crate::gui) fn load_filter_options_and_initial_list(
 /// keeps the Slint side needing no new struct type at all, just one more `[string]`
 /// property alongside `shape_options`/`gear_options`.
 pub(in crate::gui) fn sync_tag_vocabulary_to_ui(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
-    let tags = db
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .list_tags()
-        .unwrap_or_default();
+    // Own read-only connection: no wait behind a worker that holds the shared lock.
+    let tags = with_read_db(db, |db| db.list_tags().unwrap_or_default());
     let names: Vec<SharedString> = tags.into_iter().map(|t| t.name.into()).collect();
     ui.global::<LibraryModel>()
         .set_all_tags(ModelRc::new(VecModel::from(names)));
@@ -180,17 +237,6 @@ pub fn sync_range_bounds_to_ui(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
     apply_attribute_ranges_to_ui(ui, &ranges);
 }
 
-/// [`sync_range_bounds_to_ui`]'s counterpart -- fetches then applies via
-/// [`apply_attribute_range_bounds_preserving_filters`] instead of the reset variant.
-/// The right call after a write a cutter did not ask to have their range filters
-/// cleared for (e.g. `gui::library::detail`'s own metadata-save refresh).
-pub fn sync_range_bounds_to_ui_preserving_filters(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
-    let Some(ranges) = fetch_attribute_ranges(db) else {
-        return;
-    };
-    apply_attribute_range_bounds_preserving_filters(ui, &ranges);
-}
-
 /// The `Database` read half of [`sync_range_bounds_to_ui`], with no `ui` dependency --
 /// split out so `gui::library`'s post-import/rename/delete refresh can run this on a
 /// background thread (see that module's own doc comment on `refresh_after_library_change`
@@ -198,10 +244,17 @@ pub fn sync_range_bounds_to_ui_preserving_filters(ui: &MainWindow, db: &Arc<Mute
 /// perceptible freeze against a several-thousand-design library) and only marshal the
 /// cheap [`apply_attribute_ranges_to_ui`] step back onto the UI thread.
 pub fn fetch_attribute_ranges(db: &Arc<Mutex<Database>>) -> Option<AttributeRanges> {
-    db.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get_attribute_ranges()
-        .ok()
+    // Own read-only connection: no wait behind a worker that holds the shared lock.
+    with_read_db(db, |db| db.get_attribute_ranges().ok())
+}
+
+/// A catalogue range bound (stored as `f64`) as the `f32` a Slint slider property takes.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Slint slider properties are f32; catalogue bounds are small values in the normal float range"
+)]
+const fn to_f32(value: f64) -> f32 {
+    value as f32
 }
 
 /// The `ui.set_*` half of [`sync_range_bounds_to_ui`] -- see [`fetch_attribute_ranges`]'s
@@ -216,31 +269,31 @@ pub fn fetch_attribute_ranges(db: &Arc<Mutex<Database>>) -> Option<AttributeRang
 /// a cutter had already narrowed them to.
 pub fn apply_attribute_ranges_to_ui(ui: &MainWindow, ranges: &AttributeRanges) {
     ui.global::<LibraryModel>()
-        .set_ri_bounds_min(ranges.ri.0 as f32);
+        .set_ri_bounds_min(to_f32(ranges.ri.0));
     ui.global::<LibraryModel>()
-        .set_ri_bounds_max(ranges.ri.1 as f32);
+        .set_ri_bounds_max(to_f32(ranges.ri.1));
     ui.global::<LibraryModel>()
-        .set_ri_filter_min(ranges.ri.0 as f32);
+        .set_ri_filter_min(to_f32(ranges.ri.0));
     ui.global::<LibraryModel>()
-        .set_ri_filter_max(ranges.ri.1 as f32);
+        .set_ri_filter_max(to_f32(ranges.ri.1));
 
     ui.global::<LibraryModel>()
-        .set_lw_bounds_min(ranges.lw_ratio.0 as f32);
+        .set_lw_bounds_min(to_f32(ranges.lw_ratio.0));
     ui.global::<LibraryModel>()
-        .set_lw_bounds_max(ranges.lw_ratio.1 as f32);
+        .set_lw_bounds_max(to_f32(ranges.lw_ratio.1));
     ui.global::<LibraryModel>()
-        .set_lw_filter_min(ranges.lw_ratio.0 as f32);
+        .set_lw_filter_min(to_f32(ranges.lw_ratio.0));
     ui.global::<LibraryModel>()
-        .set_lw_filter_max(ranges.lw_ratio.1 as f32);
+        .set_lw_filter_max(to_f32(ranges.lw_ratio.1));
 
     ui.global::<LibraryModel>()
-        .set_volume_bounds_min(ranges.volume.0 as f32);
+        .set_volume_bounds_min(to_f32(ranges.volume.0));
     ui.global::<LibraryModel>()
-        .set_volume_bounds_max(ranges.volume.1 as f32);
+        .set_volume_bounds_max(to_f32(ranges.volume.1));
     ui.global::<LibraryModel>()
-        .set_volume_filter_min(ranges.volume.0 as f32);
+        .set_volume_filter_min(to_f32(ranges.volume.0));
     ui.global::<LibraryModel>()
-        .set_volume_filter_max(ranges.volume.1 as f32);
+        .set_volume_filter_max(to_f32(ranges.volume.1));
 
     ui.global::<LibraryModel>()
         .set_facets_bounds_min(ranges.facets.0 as f32);
@@ -281,7 +334,7 @@ fn clamp_filter_range(current: (f32, f32), bounds: (f32, f32)) -> (f32, f32) {
 pub fn apply_attribute_range_bounds_preserving_filters(ui: &MainWindow, ranges: &AttributeRanges) {
     let model = ui.global::<LibraryModel>();
 
-    let ri_bounds = (ranges.ri.0 as f32, ranges.ri.1 as f32);
+    let ri_bounds = (to_f32(ranges.ri.0), to_f32(ranges.ri.1));
     model.set_ri_bounds_min(ri_bounds.0);
     model.set_ri_bounds_max(ri_bounds.1);
     let (ri_min, ri_max) = clamp_filter_range(
@@ -291,7 +344,7 @@ pub fn apply_attribute_range_bounds_preserving_filters(ui: &MainWindow, ranges: 
     model.set_ri_filter_min(ri_min);
     model.set_ri_filter_max(ri_max);
 
-    let lw_bounds = (ranges.lw_ratio.0 as f32, ranges.lw_ratio.1 as f32);
+    let lw_bounds = (to_f32(ranges.lw_ratio.0), to_f32(ranges.lw_ratio.1));
     model.set_lw_bounds_min(lw_bounds.0);
     model.set_lw_bounds_max(lw_bounds.1);
     let (lw_min, lw_max) = clamp_filter_range(
@@ -301,7 +354,7 @@ pub fn apply_attribute_range_bounds_preserving_filters(ui: &MainWindow, ranges: 
     model.set_lw_filter_min(lw_min);
     model.set_lw_filter_max(lw_max);
 
-    let volume_bounds = (ranges.volume.0 as f32, ranges.volume.1 as f32);
+    let volume_bounds = (to_f32(ranges.volume.0), to_f32(ranges.volume.1));
     model.set_volume_bounds_min(volume_bounds.0);
     model.set_volume_bounds_max(volume_bounds.1);
     let (volume_min, volume_max) = clamp_filter_range(
@@ -346,18 +399,18 @@ fn clear_recent_import_filter(ui: &MainWindow) {
 /// The Shape drop-down's current choice, the way the list refresh takes it.
 fn selected_shape(ui: &MainWindow) -> SharedString {
     let library = ui.global::<LibraryModel>();
-    library
-        .get_shape_options()
-        .row_data(library.get_selected_shape_index() as usize)
+    usize::try_from(library.get_selected_shape_index())
+        .ok()
+        .and_then(|index| library.get_shape_options().row_data(index))
         .unwrap_or_default()
 }
 
 /// The Gear drop-down's current choice, the way the list refresh takes it.
 fn selected_gear(ui: &MainWindow) -> SharedString {
     let library = ui.global::<LibraryModel>();
-    library
-        .get_gear_options()
-        .row_data(library.get_selected_gear_index() as usize)
+    usize::try_from(library.get_selected_gear_index())
+        .ok()
+        .and_then(|index| library.get_gear_options().row_data(index))
         .unwrap_or_default()
 }
 

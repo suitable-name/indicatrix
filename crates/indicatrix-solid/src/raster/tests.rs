@@ -75,7 +75,7 @@ fn two_quads_mesh() -> SolidMesh {
             DVec3::new(half_extent, half_extent, z),
             DVec3::new(-half_extent, half_extent, z),
         ];
-        let base = mesh.positions.len() as u32;
+        let base = u32::try_from(mesh.positions.len()).expect("a test mesh is tiny");
         for c in corners {
             mesh.positions.push(c);
             mesh.normals.push(normal);
@@ -218,14 +218,14 @@ fn a_facet_index_past_the_end_of_facet_base_colors_falls_back_to_base_color() {
 #[test]
 fn project_point_matches_internal_project() {
     let camera = Camera::new(0.5, 0.3, 4.0, 42.0);
-    let p_vec = glam::Vec3::new(0.5, -0.2, 0.8);
-    let p_dvec = DVec3::new(0.5, -0.2, 0.8);
+    let point_f32 = glam::Vec3::new(0.5, -0.2, 0.8);
+    let point_f64 = DVec3::new(0.5, -0.2, 0.8);
     let width = 128u32;
     let height = 96u32;
 
-    let res_pub = project_point(&camera, p_vec, width, height).expect("must project");
+    let res_pub = project_point(&camera, point_f32, width, height).expect("must project");
     let res_int =
-        render::project(&camera, p_dvec, width as f32, height as f32).expect("must project");
+        render::project(&camera, point_f64, width as f32, height as f32).expect("must project");
 
     // The public wrapper delegates, so the two agree exactly, not just closely.
     assert_eq!(res_pub.0.to_bits(), res_int.0.to_bits());
@@ -235,7 +235,7 @@ fn project_point_matches_internal_project() {
     // Behind camera returns None
     let behind = glam::Vec3::new(0.0, 0.0, 10.0);
     assert!(project_point(&camera, behind, width, height).is_none());
-    assert!(project_point(&camera, p_vec, 0, height).is_none());
+    assert!(project_point(&camera, point_f32, 0, height).is_none());
 }
 
 #[test]
@@ -346,13 +346,18 @@ fn box_shared_edge() -> (Camera, usize, (i32, i32)) {
     let side = usize::from(!probe.pick.contains(&1));
     assert!(probe.pick.contains(&5), "the +Z facet must be visible");
     assert!(
-        probe.pick.contains(&(side as u32 + 1)),
+        probe.pick.contains(&(u32::from(side == 1) + 1)),
         "one of the side facets must be visible"
     );
     let x = if side == 0 { 1.0 } else { -1.0 };
     let (sx, sy, _) = render::project(&camera, DVec3::new(x, 0.0, 1.0), 128.0, 128.0)
         .expect("the edge midpoint is in front of the camera");
-    (camera, side, (sx.round() as i32, sy.round() as i32))
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a pixel position inside the 128x128 probe frame"
+    )]
+    let spot = (sx.round() as i32, sy.round() as i32);
+    (camera, side, spot)
 }
 
 /// Renders the unit box from [`box_shared_edge`]'s camera with `style`.
@@ -372,7 +377,9 @@ fn render_box_edge(camera: &Camera, style: SolidStyle) -> SolidRasterizer {
 /// Whether any pixel in the three columns around `(x, y)` is exactly `color`.
 fn edge_window_has(rasterizer: &SolidRasterizer, (x, y): (i32, i32), color: [u8; 3]) -> bool {
     (x - 1..=x + 1).any(|column| {
-        let index = (y as usize * rasterizer.width as usize + column as usize) * 4;
+        let row = usize::try_from(y).expect("the probe pixel is inside the frame");
+        let column = usize::try_from(column).expect("the probe window is inside the frame");
+        let index = (row * rasterizer.width as usize + column) * 4;
         rasterizer.color[index..index + 3] == color
     })
 }
@@ -388,7 +395,7 @@ fn provisional_facets_overpaint_a_shared_edge_against_a_selected_facet() {
             &camera,
             SolidStyle {
                 selected,
-                provisional: vec![provisional_id as u32],
+                provisional: vec![u32::try_from(provisional_id).expect("a facet id")],
                 ..SolidStyle::default()
             },
         );
@@ -441,7 +448,7 @@ fn moved_facets_are_outlined_but_lose_a_shared_edge_to_a_selected_facet() {
             &camera,
             SolidStyle {
                 selected,
-                moved: vec![moved_id as u32],
+                moved: vec![u32::try_from(moved_id).expect("a facet id")],
                 ..SolidStyle::default()
             },
         );
@@ -753,7 +760,7 @@ fn two_pieces_one_facet_mesh(visible: bool) -> SolidMesh {
             DVec3::new(x1, 0.5, 0.0),
             DVec3::new(x0, 0.5, 0.0),
         ];
-        let base = mesh.positions.len() as u32;
+        let base = u32::try_from(mesh.positions.len()).expect("a test mesh is tiny");
         for c in corners {
             mesh.positions.push(c);
             mesh.normals.push(DVec3::Z);

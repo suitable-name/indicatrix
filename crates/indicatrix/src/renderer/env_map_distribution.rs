@@ -127,6 +127,11 @@ impl Distribution1D {
     /// than one this distribution itself drew.
     pub fn pdf(&self, x: f32) -> f32 {
         let n = self.n();
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the clamped fraction times n is non-negative and below n"
+        )]
         let offset = ((x.clamp(0.0, 0.999_999_94)) * n as f32) as usize;
         self.bucket_pdf(offset.min(n - 1))
     }
@@ -236,6 +241,11 @@ impl Distribution2D {
     /// The pdf (w.r.t. the unit-square measure) at an arbitrary `(u, v)`, independent of
     /// [`Self::sample`].
     pub fn pdf(&self, u: f32, v: f32) -> f32 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the clamped fraction times the height is non-negative and below the height"
+        )]
         let row = ((v.clamp(0.0, 0.999_999_94)) * self.height as f32) as usize;
         let row = row.min(self.height - 1);
         self.marginal.pdf(v) * self.conditional[row].pdf(u)

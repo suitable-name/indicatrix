@@ -1,6 +1,6 @@
-//! This design's catalogue write-back once a save's `.indicatrix` file is already on
+//! This design's catalogue write-back once a save's `.isdd` file is already on
 //! disk: builds the same [`indicatrix_vault::local::ImportedAsc`] a re-import of
-//! the design's `.asc` and its `.indicatrix` file would, then updates the design's
+//! the design's `.asc` and its `.isdd` file would, then updates the design's
 //! own row (or inserts a new one) -- see [`write_back_to_catalogue`]'s own doc comment for exactly what gets
 //! overwritten versus preserved.
 
@@ -45,7 +45,7 @@ pub(super) enum CatalogueWriteBack {
 /// catalogue-write failure here must never be read as "the save failed").
 ///
 /// Builds the exact same [`indicatrix_vault::local::ImportedAsc`] an Import of the
-/// design's `.asc` with its `.indicatrix` file beside it would build
+/// design's `.asc` with its `.isdd` file beside it would build
 /// ([`indicatrix_vault::local::import_asc`]) plus the same measured proportions/shape
 /// an import derives ([`crate::gui::library::local::apply_measured_metadata`]) --
 /// this is deliberately the SAME parse-and-measure path, not a second, independently
@@ -55,7 +55,7 @@ pub(super) enum CatalogueWriteBack {
 /// # What gets overwritten versus preserved
 ///
 /// - `source_entry_id: Some(id)`, `id` still a real row: `angle_settings_table`/
-///   `attached_files` (the `.asc`, the `.indicatrix` design file and the attachments and
+///   `attached_files` (the `.asc`, the `.isdd` design file and the attachments and
 ///   `[meta]` fields that file carries) and every geometry-derived
 ///   column (`refractive_index`/`index_gear`/`facets_count`/`symmetry_order`/
 ///   `mirror_symmetry`/the measured `lw`/`hw`/`cw`/`pw`/`volume` ratios/`shape`) are

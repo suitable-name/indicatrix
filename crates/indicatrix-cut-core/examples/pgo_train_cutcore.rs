@@ -5,7 +5,7 @@
 //! doc comment (`src/lib.rs`) for "the pieces" this exercises. `indicatrix`'s own
 //! `pgo_train` example trains the geometry/solver/renderer crate directly; this one
 //! trains the editor-core layer built on top of it: [`Design`] construction,
-//! [`Design::solve`], `.asc` export, the `.indicatrix` design file save/load round
+//! [`Design::solve`], `.asc` export, the `.isdd` design file save/load round
 //! trip, [`resolve_after_edit`], and [`optimize_design`]'s search loop.
 //!
 //! For each built-in template in [`templates::TEMPLATES`] (five small designs, all
@@ -15,7 +15,7 @@
 //! -- see `indicatrix_cut_core::optimize`'s own measured cost table for why this one
 //! design dominates this whole file's runtime): `Design::solve` ->
 //! `to_asc_schedule_from_solved` -> `indicatrix_formats::asc::to_asc_string` ->
-//! `native::save_paired` (the catalogue's `.asc`) -> `native::design_to_string` ->
+//! `native::catalogue_asc` (the catalogue's `.asc`) -> `native::design_to_string` ->
 //! `native::design_from_str` -> `resolve_after_edit` for one
 //! `Edit::MoveTier` -> `optimize_design` with a tiny evaluation budget.
 //!
@@ -37,9 +37,9 @@ use indicatrix::{
     optics::materials::GemMaterial,
 };
 use indicatrix_cut_core::{
-    Design, Edit, OptimizeConfig, PreformSpec, SearchHooks, free_tier_indices,
+    Design, Edit, OptimizeConfig, PreformSpec, SearchHooks, catalogue_asc, free_tier_indices,
     native::{DesignExtras, design_from_str, design_to_string},
-    optimize_design, resolve_after_edit, save_paired, templates,
+    optimize_design, resolve_after_edit, templates,
 };
 use std::time::Instant;
 
@@ -97,7 +97,7 @@ fn pick_adoptable_free_tier(design: &Design) -> Option<usize> {
 /// folding a checksum of everything it touches into `checksum`.
 ///
 /// `original_asc` is the real `.asc` text `design` was imported from, if any (for
-/// `save_paired`'s preserve-original-text path); `None` for a template built
+/// `catalogue_asc`'s preserve-original-text path); `None` for a template built
 /// straight from [`templates::TemplateSpec::tiers`], which never had one.
 ///
 /// `force_free_tier`, when `true`, adopts one tier's constraint away from
@@ -134,8 +134,8 @@ fn train_one_design(
         indicatrix_formats::asc::to_asc_string(&schedule).expect("training design writes");
     *checksum = (asc_text.len() as f64).mul_add(1e-3, *checksum);
 
-    let saved = save_paired(design, format!("{name}.asc"), original_asc, None, None)
-        .unwrap_or_else(|e| panic!("{name}: save_paired failed: {e}"));
+    let saved = catalogue_asc(design, original_asc, None)
+        .unwrap_or_else(|e| panic!("{name}: catalogue_asc failed: {e}"));
     *checksum = (saved.asc_text.len() as f64).mul_add(1e-3, *checksum);
 
     let design_text = design_to_string(design, None, &DesignExtras::default())

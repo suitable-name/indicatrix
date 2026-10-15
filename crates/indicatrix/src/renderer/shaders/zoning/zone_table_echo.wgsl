@@ -1,4 +1,4 @@
-// Layout self-test shader for the zone table (`zoning` feature only). Standalone test
+// Layout self-test shader for the zone table. Standalone test
 // target: `renderer::gpu::layout_check::run_zone_table` concatenates this file with
 // `01_zone_table.wgsl` (which declares the structs), uploads a populated `GpuZoneTable`, has
 // this shader copy every NAMED field (never the `_pad` fields) into a second buffer, and

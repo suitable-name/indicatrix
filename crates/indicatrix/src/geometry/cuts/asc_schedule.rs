@@ -67,9 +67,49 @@ impl StandardGemCuts {
     ///   fabricate facets for the ones that don't.
     #[must_use]
     pub fn from_asc_schedule(schedule: &AscSchedule) -> Vec<GpuFacetPlane> {
+        let (planes, _) = Self::raw_asc_planes(schedule, schedule.gear_reference_angle);
+        dedup_planes(planes)
+    }
+
+    /// Cumulative facet-plane count of `schedule.tiers[0..=i]` for every `i`: entry `i` is
+    /// exactly `from_asc_schedule` of the schedule cut down to its first `i + 1` tiers,
+    /// length only, with `gear_reference_angle` standing in for the schedule's own.
+    ///
+    /// One pass instead of `n` prefix schedules. Equal by construction, not by
+    /// measurement: each tier's raw planes depend on that tier alone, and
+    /// [`dedup_planes`] keeps a plane or drops it from the planes kept before it
+    /// alone, so the planes kept from the first `i + 1` tiers are the same set whether
+    /// or not later tiers follow. The count is how many survive among the raw planes of
+    /// those tiers.
+    #[must_use]
+    pub fn asc_tier_plane_boundaries(
+        schedule: &AscSchedule,
+        gear_reference_angle: f64,
+    ) -> Vec<usize> {
+        let (planes, raw_ends) = Self::raw_asc_planes(schedule, gear_reference_angle);
+        let keep = dedup_keep_mask(&planes);
+        let mut kept_before = Vec::with_capacity(keep.len() + 1);
+        kept_before.push(0usize);
+        for &kept in &keep {
+            kept_before.push(kept_before[kept_before.len() - 1] + usize::from(kept));
+        }
+        raw_ends.into_iter().map(|end| kept_before[end]).collect()
+    }
+
+    /// Every tier's planes in tier order, before deduplication, and the end position in
+    /// that list of each tier's run. The azimuth uses `gear_reference_angle`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the schedule's f64 angles, masts and indices become the f32 GPU plane data; all are small normal-range values"
+    )]
+    fn raw_asc_planes(
+        schedule: &AscSchedule,
+        gear_reference_angle: f64,
+    ) -> (Vec<GpuFacetPlane>, Vec<usize>) {
         let gear_teeth = (schedule.gear_teeth_abs().max(1)) as f32;
-        let gear_reference_angle = schedule.gear_reference_angle as f32;
+        let gear_reference_angle = gear_reference_angle as f32;
         let mut planes = Vec::with_capacity(schedule.facet_plane_count());
+        let mut ends = Vec::with_capacity(schedule.tiers.len());
 
         for tier in &schedule.tiers {
             let is_crown = tier_is_crown_side(tier.angle_deg);
@@ -86,6 +126,7 @@ impl StandardGemCuts {
                     Vec3::new(0.0, -cos_theta, sin_theta)
                 };
                 planes.push(GpuFacetPlane::new(n, d));
+                ends.push(planes.len());
                 continue;
             }
 
@@ -99,9 +140,10 @@ impl StandardGemCuts {
                 };
                 planes.push(GpuFacetPlane::new(n, d));
             }
+            ends.push(planes.len());
         }
 
-        dedup_planes(planes)
+        (planes, ends)
     }
 
     /// Builds a validated B-Rep solid directly from a parsed `.asc` schedule.
@@ -187,6 +229,18 @@ impl StandardGemCuts {
 /// `planes` positionally against the tier that produced them, and substituting a
 /// later tier's plane into an earlier tier's slot would silently reattribute it.
 pub(super) fn dedup_planes(planes: Vec<GpuFacetPlane>) -> Vec<GpuFacetPlane> {
+    let keep = dedup_keep_mask(&planes);
+    planes
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(plane, kept)| kept.then_some(plane))
+        .collect()
+}
+
+/// Which of `planes` [`dedup_planes`] keeps, position for position: a plane is kept
+/// exactly when no earlier KEPT plane coincides with it, so the answer for a prefix of
+/// `planes` is the prefix of the answer for all of them.
+fn dedup_keep_mask(planes: &[GpuFacetPlane]) -> Vec<bool> {
     // Relative to the larger of the two offsets (floored at `1.0`, the common
     // sub-unit mast range every real schedule up to now has used): a schedule
     // authored at a larger `ScaleReference` has proportionally larger masts, and
@@ -196,9 +250,10 @@ pub(super) fn dedup_planes(planes: Vec<GpuFacetPlane>) -> Vec<GpuFacetPlane> {
     // Below the `1.0` floor this is exactly the old ~5e-4 absolute quantum.
     const OFFSET_REL_EPSILON: f32 = 1.0 / 2048.0;
 
-    let mut kept: Vec<GpuFacetPlane> = Vec::with_capacity(planes.len());
+    let mut kept: Vec<&GpuFacetPlane> = Vec::with_capacity(planes.len());
+    let mut mask = Vec::with_capacity(planes.len());
     for plane in planes {
-        let pn = plane_normal_f64(&plane);
+        let pn = plane_normal_f64(plane);
         let is_duplicate = kept.iter().any(|k| {
             let offset_scale = k.d.abs().max(plane.d.abs()).max(1.0);
             normals_coincide(plane_normal_f64(k), pn)
@@ -207,8 +262,9 @@ pub(super) fn dedup_planes(planes: Vec<GpuFacetPlane>) -> Vec<GpuFacetPlane> {
         if !is_duplicate {
             kept.push(plane);
         }
+        mask.push(!is_duplicate);
     }
-    kept
+    mask
 }
 
 /// The plane's stored `f32` normal widened to `f64`.

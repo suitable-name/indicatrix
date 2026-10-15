@@ -175,7 +175,8 @@ fn render_cpu(shot: &Shot, size: u32, samples_per_pixel: u32) -> Vec<u8> {
             let (planes, plane_soa, material, camera) = (&planes, &plane_soa, &material, &camera);
             handles.push(scope.spawn(move || {
                 let mut thread_rows = Vec::new();
-                for y in (t as u32..size).step_by(threads) {
+                for y in (u32::try_from(t).expect("a worker index fits u32")..size).step_by(threads)
+                {
                     let mut row = Vec::with_capacity(size as usize);
                     for x in 0..size {
                         let pixel = y * size + x;
@@ -232,7 +233,7 @@ fn png_bytes(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
     let block_count = raw.len().div_ceil(65_535).max(1);
     for (i, block) in raw.chunks(65_535).enumerate() {
         zlib.push(u8::from(i + 1 == block_count)); // BFINAL, BTYPE = stored
-        let len = block.len() as u16;
+        let len = u16::try_from(block.len()).expect("a stored block holds at most 65535 bytes");
         zlib.extend_from_slice(&len.to_le_bytes());
         zlib.extend_from_slice(&(!len).to_le_bytes());
         zlib.extend_from_slice(block);
@@ -252,7 +253,11 @@ fn png_bytes(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
 }
 
 fn push_chunk(png: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
-    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    png.extend_from_slice(
+        &u32::try_from(data.len())
+            .expect("a PNG chunk fits u32")
+            .to_be_bytes(),
+    );
     let start = png.len();
     png.extend_from_slice(&kind);
     png.extend_from_slice(data);
@@ -499,21 +504,21 @@ the two controls the editor exposes.
         let samples_per_pixel = env_or("INDICATRIX_GALLERY_SPP", GALLERY_SAMPLES_PER_PIXEL);
         let force = std::env::var_os("INDICATRIX_GALLERY_FORCE").is_some();
         println!("{size}x{size} px, {samples_per_pixel} spp, {MAX_BOUNCES} bounces");
-        let mut renderer: Option<GpuFrameRenderer> = None;
+        let mut gpu: Option<GpuFrameRenderer> = None;
 
         let dir = gallery_dir();
         fs::create_dir_all(&dir).expect("gallery directory must be creatable");
         let mut index = String::from(INDEX_HEADER);
         let shots = gallery_shots();
         let (mut rendered, mut kept) = (0usize, 0usize);
-        for (n, shot) in shots.iter().enumerate() {
-            let path = dir.join(shot.file_name());
+        for (n, entry) in shots.iter().enumerate() {
+            let path = dir.join(entry.file_name());
             if path.exists() && !force {
                 kept += 1;
                 println!("[{}/{}] kept {}", n + 1, shots.len(), path.display());
             } else {
                 let started = Instant::now();
-                let rgb = render_gpu_resilient(&mut renderer, shot, size, samples_per_pixel);
+                let rgb = render_gpu_resilient(&mut gpu, entry, size, samples_per_pixel);
                 fs::write(&path, png_bytes(size, size, &rgb))
                     .expect("gallery image must be writable");
                 rendered += 1;
@@ -525,7 +530,7 @@ the two controls the editor exposes.
                     started.elapsed().as_secs_f32()
                 );
             }
-            index.push_str(&describe(shot));
+            index.push_str(&describe(entry));
             index.push('\n');
             // Rewritten after every image, so an interrupted run still leaves a complete
             // index for what is on disk.

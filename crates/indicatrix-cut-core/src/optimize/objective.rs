@@ -4,13 +4,13 @@
 //! [`evaluate_objective`] itself. See the parent module's doc comment for the
 //! measured per-evaluation cost this is built against.
 
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 use indicatrix::{
     color::metrics::{
-        FaceUpTone, PROFILE_AZIMUTHS_DEG, TILT_ANGLES_DEG, evaluate_full_axis_profile_at_azimuth,
-        evaluate_gem_optical_metrics, evaluate_gem_optical_metrics_with_tone,
+        FaceUpTone, TILT_ANGLES_DEG, evaluate_all_axes_profiles_geom_threaded,
+        evaluate_gem_optical_metrics_geom_core, evaluate_gem_optical_metrics_with_tone_geom_core,
     },
-    geometry::GpuFacetPlane,
+    geometry::{GpuFacetPlane, StoneGeometry},
     optics::{materials::GemMaterial, raytracer::LightingPreset},
 };
 
@@ -257,7 +257,9 @@ pub struct ObjectiveComponents {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectiveFidelity {
     /// A single canonical pose (table-up, `cam_yaw = 0`) -- one call to
-    /// [`evaluate_gem_optical_metrics`], ~1.9 ms. Carries NO tilt information at all
+    /// `evaluate_gem_optical_metrics`, ~1.9 ms (measured before the Fire-less path: this
+    /// objective skips the Fire and scintillation tracing it never reads, so a call is
+    /// cheaper than that). Carries NO tilt information at all
     /// (a stone can look perfect table-up and window badly at 30 degrees) -- traded
     /// away deliberately so a search can afford many more candidates per unit
     /// wall-clock time. Intended for [`super::optimize_design`]'s inner search loop
@@ -277,10 +279,14 @@ pub enum ObjectiveFidelity {
 /// exactly the sign convention `GpuFacetPlane::to_halfspace_f64` documents on
 /// itself -- `d = -m` here recovers the same plane, narrowed to `f32` for the
 /// raytracer.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the plane offset is narrowed to f32 for the raytracer, the GPU/storage precision"
+)]
 pub(super) fn to_gpu_planes(planes: &[(DVec3, f64)]) -> Vec<GpuFacetPlane> {
     planes
         .iter()
-        .map(|&(n, m)| GpuFacetPlane::new(Vec3::new(n.x as f32, n.y as f32, n.z as f32), -m as f32))
+        .map(|&(n, m)| GpuFacetPlane::new(n.as_vec3(), -m as f32))
         .collect()
 }
 
@@ -300,6 +306,25 @@ pub fn evaluate_objective(
     fidelity: ObjectiveFidelity,
 ) -> ObjectiveComponents {
     evaluate_objective_under(planes, material, fidelity, CANONICAL_LIGHTING_PRESET)
+}
+
+/// [`evaluate_objective`] with the `Full` sweep capped at `max_threads` (`None` = the
+/// machine, `Some(1)` = serial). For a caller that runs several evaluations side by side;
+/// bit-identical to the uncapped call.
+#[must_use]
+pub fn evaluate_objective_threaded(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+    max_threads: Option<usize>,
+) -> ObjectiveComponents {
+    evaluate_objective_under_threaded(
+        planes,
+        material,
+        fidelity,
+        CANONICAL_LIGHTING_PRESET,
+        max_threads,
+    )
 }
 
 /// [`evaluate_objective`] plus the face-up tone, under [`CANONICAL_LIGHTING_PRESET`].
@@ -328,9 +353,29 @@ pub fn evaluate_objective_with_tone_under(
     fidelity: ObjectiveFidelity,
     preset: LightingPreset,
 ) -> (ObjectiveComponents, FaceUpTone) {
+    evaluate_objective_with_tone_under_threaded(planes, material, fidelity, preset, None)
+}
+
+/// [`evaluate_objective_with_tone_under`] with the `Full` sweep capped at `max_threads`
+/// (`None` = the machine, `Some(1)` = serial on the calling thread).
+///
+/// For a caller that already runs several evaluations side by side (the AI trainer's
+/// environments) and must keep its threads times the sweep's inside the core count.
+/// `Fast` is one pose and ignores the cap. Bit-identical to the uncapped call: the cap only
+/// changes how the sweep's poses are spread over threads.
+#[must_use]
+pub fn evaluate_objective_with_tone_under_threaded(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+    preset: LightingPreset,
+    max_threads: Option<usize>,
+) -> (ObjectiveComponents, FaceUpTone) {
     let environment = preset.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
-    let (m, tone) = evaluate_gem_optical_metrics_with_tone(
-        planes,
+    // The `_core` path skips Fire and scintillation, which this objective never reads; the
+    // three components and the tone are bit-identical to the full path's.
+    let (m, tone) = evaluate_gem_optical_metrics_with_tone_geom_core(
+        StoneGeometry::planes_only(planes),
         material,
         0.0,
         90.0f32.to_radians(),
@@ -342,11 +387,24 @@ pub fn evaluate_objective_with_tone_under(
             extinction_pct: m.extinction_pct,
             tilt_brilliance_pct: m.brilliance_pct,
         },
-        ObjectiveFidelity::Full => {
-            evaluate_objective_under(planes, material, ObjectiveFidelity::Full, preset)
-        }
+        ObjectiveFidelity::Full => evaluate_objective_under_threaded(
+            planes,
+            material,
+            ObjectiveFidelity::Full,
+            preset,
+            max_threads,
+        ),
     };
     (components, tone)
+}
+
+/// `sum / n` narrowed to the `f32` the objective components hold.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a mean percentage lies in 0..=100; f32 is the report precision"
+)]
+fn mean_pct(sum: f64, n: f64) -> f32 {
+    (sum / n) as f32
 }
 
 /// [`evaluate_objective`] lit by `preset` at the canonical light pose
@@ -358,11 +416,25 @@ pub fn evaluate_objective_under(
     fidelity: ObjectiveFidelity,
     preset: LightingPreset,
 ) -> ObjectiveComponents {
+    evaluate_objective_under_threaded(planes, material, fidelity, preset, None)
+}
+
+/// [`evaluate_objective_under`] with the `Full` sweep capped at `max_threads` (`None` = the
+/// machine, `Some(1)` = serial). `Fast` is one pose and ignores the cap. Bit-identical to
+/// the uncapped call.
+#[must_use]
+pub fn evaluate_objective_under_threaded(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+    preset: LightingPreset,
+    max_threads: Option<usize>,
+) -> ObjectiveComponents {
     let environment = preset.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
     match fidelity {
         ObjectiveFidelity::Fast => {
-            let m = evaluate_gem_optical_metrics(
-                planes,
+            let m = evaluate_gem_optical_metrics_geom_core(
+                StoneGeometry::planes_only(planes),
                 material,
                 0.0,
                 90.0f32.to_radians(),
@@ -379,21 +451,27 @@ pub fn evaluate_objective_under(
             let mut extinction_sum = 0.0f64;
             let mut windowing_sum = 0.0f64;
             let mut n = 0u32;
-            for &azimuth in &PROFILE_AZIMUTHS_DEG {
-                let (brilliance, extinction, windowing) =
-                    evaluate_full_axis_profile_at_azimuth(planes, material, azimuth, environment);
+            // One batch of all 724 poses; the axes come back in `PROFILE_AZIMUTHS_DEG`
+            // order, so the serial f64 sums below add in the same order as before.
+            let profiles = evaluate_all_axes_profiles_geom_threaded(
+                StoneGeometry::planes_only(planes),
+                material,
+                environment,
+                max_threads,
+            );
+            for profile in &profiles {
                 for i in 0..TILT_ANGLES_DEG.len() {
-                    brilliance_sum += f64::from(brilliance[i]);
-                    extinction_sum += f64::from(extinction[i]);
-                    windowing_sum += f64::from(windowing[i]);
+                    brilliance_sum += f64::from(profile.brilliance[i]);
+                    extinction_sum += f64::from(profile.extinction[i]);
+                    windowing_sum += f64::from(profile.windowing[i]);
                     n += 1;
                 }
             }
             let n = f64::from(n.max(1));
             ObjectiveComponents {
-                windowing_pct: (windowing_sum / n) as f32,
-                extinction_pct: (extinction_sum / n) as f32,
-                tilt_brilliance_pct: (brilliance_sum / n) as f32,
+                windowing_pct: mean_pct(windowing_sum, n),
+                extinction_pct: mean_pct(extinction_sum, n),
+                tilt_brilliance_pct: mean_pct(brilliance_sum, n),
             }
         }
     }

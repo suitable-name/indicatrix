@@ -31,6 +31,10 @@ impl Xorshift32 {
     }
 
     /// Uniform float in `[0, 1)`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the quotient is in [0, 1], well inside f32 range"
+    )]
     fn next_f32(&mut self) -> f32 {
         (f64::from(self.next_u32()) / f64::from(u32::MAX)) as f32
     }
@@ -277,7 +281,7 @@ fn path_signature_boundary_survives_inside_one_facet() {
         spp: 1,
         path_sig: None,
     };
-    let with = GBuffers {
+    let with_sig = GBuffers {
         path_sig: Some(&sig),
         ..without
     };
@@ -299,7 +303,7 @@ fn path_signature_boundary_survives_inside_one_facet() {
         "premise: colour alone must smear this boundary: original={original_jump:.4}, smeared={smeared_jump:.4}"
     );
 
-    let kept = denoiser.denoise(&with, &params);
+    let kept = denoiser.denoise(&with_sig, &params);
     let kept_jump = (kept[right_idx] - kept[left_idx]).length();
     assert!(
         kept_jump > original_jump * 0.95,
@@ -315,7 +319,7 @@ fn path_signature_boundary_survives_inside_one_facet() {
     let cleaned = denoiser.denoise(
         &GBuffers {
             color: &noisy,
-            ..with
+            ..with_sig
         },
         &params,
     );
@@ -345,7 +349,7 @@ fn high_sample_count_approaches_identity() {
     let mut facet_id = vec![0i32; len];
     for (i, c) in color.iter_mut().enumerate() {
         *c = Vec3::new(rng.next_f32(), rng.next_f32(), rng.next_f32());
-        facet_id[i] = (i % 3) as i32;
+        facet_id[i] = i32::try_from(i % 3).expect("a remainder below 3");
     }
     let depth = vec![1.0f32; len];
     let normal = vec![Vec3::Z; len];
@@ -412,7 +416,7 @@ fn uniform_image_is_unchanged() {
     let mut depth = vec![0.0f32; len];
     let mut normal = vec![Vec3::Z; len];
     for i in 0..len {
-        facet_id[i] = (rng.next_u32() % 4) as i32;
+        facet_id[i] = (rng.next_u32() % 4).cast_signed();
         depth[i] = rng.next_f32();
         let jitter = Vec3::new(rng.next_signed(), rng.next_signed(), 1.0).normalize();
         normal[i] = jitter;
@@ -459,7 +463,7 @@ fn filtering_is_deterministic() {
     let mut depth = vec![0.0f32; len];
     for i in 0..len {
         color[i] = Vec3::new(rng.next_f32(), rng.next_f32(), rng.next_f32());
-        facet_id[i] = (rng.next_u32() % 5) as i32;
+        facet_id[i] = (rng.next_u32() % 5).cast_signed();
         depth[i] = rng.next_f32();
         normal[i] = Vec3::new(rng.next_signed() * 0.1, rng.next_signed() * 0.1, 1.0).normalize();
     }
@@ -684,7 +688,7 @@ fn parallel_denoise_is_bit_identical_across_thread_counts() {
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
-            facet_id[idx] = ((x / 6 + y / 4) % 7) as i32;
+            facet_id[idx] = i32::try_from((x / 6 + y / 4) % 7).expect("a remainder below 7");
             depth[idx] = rng.next_f32() * 3.0;
             normal[idx] =
                 Vec3::new(rng.next_signed() * 0.4, rng.next_signed() * 0.4, 1.0).normalize();

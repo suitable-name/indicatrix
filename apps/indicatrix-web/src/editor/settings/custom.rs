@@ -79,7 +79,7 @@ fn save_and_use(ctx: &Ctx) {
                 MessageKind::Success,
                 &format!(
                     "'{material_name}' saved and set as this design's material. It is kept \
-                     with the design's .indicatrix file, color included."
+                     with the design's .isdd file, color included."
                 ),
             );
         }

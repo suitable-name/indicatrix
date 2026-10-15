@@ -53,7 +53,7 @@ pub(super) struct Layers<'a> {
 fn mix(dst: u8, src: u8, weight: u32) -> u8 {
     let total = 25_500;
     let value = (u32::from(dst) * (total - weight) + u32::from(src) * weight + total / 2) / total;
-    value as u8
+    u8::try_from(value).expect("a weighted mix of two bytes is at most 255")
 }
 
 /// Moves the covered pixels of `out` towards [`ROUGH_TINT`] by [`ROUGH_TINT_PERCENT`].
@@ -160,10 +160,13 @@ pub(super) fn outline_region(
 
 /// Paints the pixel `(x, y)` when it is inside the image.
 fn put(out: &mut [u8], size: (u32, u32), x: i32, y: i32, color: [u8; 3]) {
-    if x < 0 || y < 0 || x as u32 >= size.0 || y as u32 >= size.1 {
+    let (Ok(px), Ok(py)) = (u32::try_from(x), u32::try_from(y)) else {
+        return;
+    };
+    if px >= size.0 || py >= size.1 {
         return;
     }
-    let at = ((y as usize) * (size.0 as usize) + x as usize) * 4;
+    let at = ((py as usize) * (size.0 as usize) + px as usize) * 4;
     if let Some(pixel) = out.get_mut(at..at + 3) {
         pixel.copy_from_slice(&color);
     }
@@ -211,6 +214,10 @@ fn clip_segment(
     if near > far {
         return None;
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the pixel-coordinate precision; the clipped point lies inside the image box"
+    )]
     let point = |t: f64| (t.mul_add(dx, from.0) as f32, t.mul_add(dy, from.1) as f32);
     Some((point(near), point(far)))
 }
@@ -233,6 +240,10 @@ pub(super) fn draw_line(
     let Some((from, to)) = clip_segment(from, to, low, high) else {
         return;
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the clipped segment lies inside the image box, so its length in pixels fits i32"
+    )]
     let steps = (to.0 - from.0)
         .abs()
         .max((to.1 - from.1).abs())
@@ -240,8 +251,14 @@ pub(super) fn draw_line(
         .max(1.0) as i32;
     for step in 0..=steps {
         let t = step as f32 / steps as f32;
-        let x = t.mul_add(to.0 - from.0, from.0).round() as i32;
-        let y = t.mul_add(to.1 - from.1, from.1).round() as i32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a point on the clipped segment lies inside the image box, so it fits i32"
+        )]
+        let (x, y) = (
+            t.mul_add(to.0 - from.0, from.0).round() as i32,
+            t.mul_add(to.1 - from.1, from.1).round() as i32,
+        );
         for dy in -reach..=reach {
             for dx in -reach..=reach {
                 put(out, size, x + dx, y + dy, color);
@@ -258,6 +275,10 @@ pub(super) fn draw_dot(
     radius: i32,
     color: [u8; 3],
 ) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a dot centre is a pixel coordinate near the image, far inside i32 (the cast saturates)"
+    )]
     let (cx, cy) = (centre.0.round() as i32, centre.1.round() as i32);
     for dy in -radius..=radius {
         for dx in -radius..=radius {

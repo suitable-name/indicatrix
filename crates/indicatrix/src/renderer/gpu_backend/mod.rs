@@ -192,7 +192,7 @@ mod stub;
 mod tests;
 #[cfg(feature = "gpu")]
 mod turnstile;
-#[cfg(all(test, feature = "gpu", feature = "zoning"))]
+#[cfg(all(test, feature = "gpu"))]
 mod zoned_tests;
 
 #[cfg(feature = "gpu")]
@@ -263,27 +263,11 @@ pub struct GpuBatchItem<'a> {
 /// [`crate::renderer::cpu_frame::trace_pixels_interleaved_geom`], i.e. a
 /// `HybridSplit::cpu_only` split. A pure function of the scene so it is unit-tested
 /// without an adapter.
-#[must_use]
-#[cfg(not(feature = "zoning"))]
-pub const fn scene_routes_to_gpu(
-    material: &GemMaterial,
-    geom: StoneGeometry<'_>,
-    fluorescence: &Fluorescence,
-    lighting: LightingPreset,
-) -> bool {
-    material.gpu_supported()
-        && geom.is_convex()
-        && fluorescence.is_empty()
-        && !lighting.is_uv_lamp()
-}
-
-/// [`scene_routes_to_gpu`] in a `zoning` build: the same rule, but not `const`.
 ///
-/// `GemMaterial::gpu_supported` inspects a zoned material's zone list (mesh shells,
+/// Not `const`: `GemMaterial::gpu_supported` inspects a zoned material's zone list (mesh shells,
 /// scattering and oversized band sets are CPU only; this is also how a zoned material the
 /// GPU cannot render stays off it instead of silently rendering its base zone).
 #[must_use]
-#[cfg(feature = "zoning")]
 pub fn scene_routes_to_gpu(
     material: &GemMaterial,
     geom: StoneGeometry<'_>,
@@ -416,10 +400,9 @@ mod routing_tests {
         }
     }
 
-    /// `zoning` build: a zoned stone the GPU zone kernels can render routes to the GPU; one
+    /// A zoned stone the GPU zone kernels can render routes to the GPU; one
     /// with a mesh-shell zone, or a scattering one, stays on the CPU tracer instead of
     /// silently rendering its base zone on the GPU.
-    #[cfg(feature = "zoning")]
     #[test]
     fn scene_routes_to_gpu_declines_a_zoned_stone_the_kernels_cannot_render() {
         use crate::optics::{

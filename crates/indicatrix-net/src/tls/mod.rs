@@ -473,9 +473,18 @@ pub fn append_to_allowlist(path: &Path, fp: &Fingerprint, label: &str) -> Result
 mod tests {
     use super::*;
 
+    /// A fingerprint whose byte `i` is `i + shift`, so two shifts give distinct values.
+    fn patterned_fingerprint(shift: u8) -> Fingerprint {
+        std::array::from_fn(|i| {
+            u8::try_from(i)
+                .expect("a fingerprint has 32 bytes")
+                .wrapping_add(shift)
+        })
+    }
+
     #[test]
     fn fingerprint_hex_round_trips() {
-        let fp: Fingerprint = std::array::from_fn(|i| i as u8);
+        let fp: Fingerprint = patterned_fingerprint(0);
         let hex = fingerprint_to_hex(&fp);
         assert_eq!(hex.len(), 64);
         assert_eq!(fingerprint_from_hex(&hex), Some(fp));
@@ -503,7 +512,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("allowlist.txt");
-        let fp: Fingerprint = std::array::from_fn(|i| i as u8);
+        let fp: Fingerprint = patterned_fingerprint(0);
         std::fs::write(
             &path,
             format!(
@@ -517,7 +526,7 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert!(list.contains(&fp));
 
-        let other: Fingerprint = std::array::from_fn(|i| (i as u8).wrapping_add(1));
+        let other: Fingerprint = patterned_fingerprint(1);
         assert!(!list.contains(&other));
 
         std::fs::remove_dir_all(&dir).ok();
@@ -563,8 +572,8 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("allowlist.txt");
-        let fp: Fingerprint = std::array::from_fn(|i| i as u8);
-        let evil_fp: Fingerprint = std::array::from_fn(|i| (i as u8).wrapping_add(1));
+        let fp: Fingerprint = patterned_fingerprint(0);
+        let evil_fp: Fingerprint = patterned_fingerprint(1);
         let label = format!(
             "laptop\r\n{}  # not really trusted",
             fingerprint_to_hex(&evil_fp)
@@ -594,7 +603,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("allowlist.txt");
-        let existing: Fingerprint = std::array::from_fn(|i| i as u8);
+        let existing: Fingerprint = patterned_fingerprint(0);
         // Deliberately no trailing `\n` -- exactly the hand-edited shape described above.
         std::fs::write(
             &path,
@@ -602,7 +611,7 @@ mod tests {
         )
         .unwrap();
 
-        let new_fp: Fingerprint = std::array::from_fn(|i| (i as u8).wrapping_add(1));
+        let new_fp: Fingerprint = patterned_fingerprint(1);
         append_to_allowlist(&path, &new_fp, "new-client").unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -627,7 +636,7 @@ mod tests {
             std::process::id()
         ));
         let path = dir.join("nested").join("allowlist.txt");
-        let fp: Fingerprint = std::array::from_fn(|i| i as u8);
+        let fp: Fingerprint = patterned_fingerprint(0);
 
         append_to_allowlist(&path, &fp, "laptop").unwrap();
         let list = Allowlist::load(&path).unwrap();

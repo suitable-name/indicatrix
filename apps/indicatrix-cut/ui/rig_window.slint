@@ -159,18 +159,18 @@ export component RigWindow inherits Window {
                         model: root.rig_names;
                         current-index <=> root.rig_index;
                         enabled: !root.busy && root.rig_names.length > 0;
-                        accessible-label: "Camera rig";
+                        accessible-label: "Camera Rig";
                         selected(value) => { root.rig_selected(root.rig_index); }
                     }
                 }
                 RoughPill {
-                    text: "New rig";
+                    text: "New Rig";
                     hint: "Start a new rig with the default eight views, then edit and save it.";
                     enabled: !root.busy;
                     clicked => { root.new_rig(); }
                 }
                 RoughPill {
-                    text: "Delete rig";
+                    text: "Delete Rig";
                     hint: "Remove the picked rig from the stored rigs.";
                     enabled: !root.busy && root.rig_names.length > 0;
                     clicked => { root.delete_rig(); }
@@ -239,20 +239,20 @@ export component RigWindow inherits Window {
                         editable: !root.busy;
                         value <=> root.gen_elevation;
                     }
-                    RoughField {
-                        label: root.gen_ortho ? "Scale (px/mm)" : "Focal length (px)";
+                    rough-field-gen-ortho := RoughField {
+                        label: root.gen_ortho ? "Scale (px/mm)" : "Focal Length (px)";
                         hint: "The focal length in pixels, or for an orthographic (telecentric) lens its scale in pixels per millimetre.";
                         editable: !root.busy;
                         value <=> root.gen_scale;
                     }
                     RoughField {
-                        label: "Image width (px)";
+                        label: "Image Width (px)";
                         hint: "The photos' width in pixels.";
                         editable: !root.busy;
                         value <=> root.gen_width;
                     }
                     RoughField {
-                        label: "Image height (px)";
+                        label: "Image Height (px)";
                         hint: "The photos' height in pixels.";
                         editable: !root.busy;
                         value <=> root.gen_height;
@@ -260,7 +260,7 @@ export component RigWindow inherits Window {
                     VerticalLayout {
                         alignment: end;
                         spacing: 2px;
-                        RoughPill {
+                        rough-pill-gen-ortho := RoughPill {
                             text: root.gen_ortho ? "Orthographic" : "Pinhole";
                             hint: "Whether the generated views use a pinhole camera or an orthographic (telecentric) lens.";
                             active: root.gen_ortho;
@@ -268,7 +268,7 @@ export component RigWindow inherits Window {
                             clicked => { root.gen_ortho = !root.gen_ortho; }
                         }
                         RoughPill {
-                            text: "Fill the 8 views";
+                            text: "Fill the 8 Views";
                             hint: "Replace the views below with the default layout: +X, -X, +Y and -Y, each from an upper and a lower camera, all looking at the origin.";
                             enabled: !root.busy;
                             clicked => { root.fill_layout(); }
@@ -318,8 +318,9 @@ export component RigWindow inherits Window {
 
                             for row[i] in root.view_rows: HorizontalLayout {
                                 spacing: 2px;
-                                height: 26px;
-                                for field[j] in row.fields: LineEdit {
+                                // The std LineEdit is 32 px high; a shorter row overlapped the next.
+                                height: 32px;
+                                for field[j] in row.fields: line-edit-field-labels := LineEdit {
                                     width: j == 0 ? 100px : 64px;
                                     text: field;
                                     enabled: !root.busy;
@@ -329,7 +330,7 @@ export component RigWindow inherits Window {
                                 VerticalLayout {
                                     width: 90px;
                                     alignment: center;
-                                    RoughPill {
+                                    rough-pill-orthographic := RoughPill {
                                         text: row.orthographic ? "Orthographic" : "Pinhole";
                                         hint: "Switch this view between a pinhole camera and an orthographic (telecentric) lens. Its Scale is then the focal length in pixels or the pixels per millimetre.";
                                         active: row.orthographic;
@@ -346,7 +347,7 @@ export component RigWindow inherits Window {
                     spacing: 8px;
                     alignment: start;
                     RoughPill {
-                        text: "Save rig";
+                        text: "Save Rig";
                         hint: "Store this rig in the settings file under its name. Changing a view's pose clears the rig's calibration, because it described the old poses.";
                         active: true;
                         enabled: !root.busy;
@@ -411,7 +412,7 @@ export component RigWindow inherits Window {
                                     value <=> root.cube_n;
                                 }
                                 RoughField {
-                                    label: "Focal length known to (%)";
+                                    label: "Focal Length Known to (%)";
                                     hint: "How well the focal lengths in the rig are known, in percent. Small when you know them (the scale check then means something), larger when they are rough guesses.";
                                     editable: !root.busy;
                                     value <=> root.focal_sigma;
@@ -420,7 +421,7 @@ export component RigWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 6px;
                                 Text {
-                                    text: "Coated diagonal runs along:";
+                                    text: "Coated Diagonal Runs Along:";
                                     font-size: 10px;
                                     color: Theme.text-muted;
                                     vertical-alignment: center;
@@ -432,7 +433,7 @@ export component RigWindow inherits Window {
                                         model: ["X", "Y", "Z"];
                                         current-index <=> root.diag_axis_index;
                                         enabled: !root.busy;
-                                        accessible-label: "Axis the coated diagonal is parallel to";
+                                        accessible-label: "Axis the Coated Diagonal Is Parallel To";
                                     }
                                 }
                                 RoughPill {
@@ -473,7 +474,7 @@ export component RigWindow inherits Window {
                                     }
                                     VerticalLayout {
                                         alignment: center;
-                                        RoughPill {
+                                        rough-pill-loaded := RoughPill {
                                             text: slot.loaded ? "Replace..." : "Load...";
                                             hint: "Pick the cube photo of this view (PNG or JPEG).";
                                             enabled: !root.busy;
@@ -496,7 +497,7 @@ export component RigWindow inherits Window {
                                     clicked => { root.calibrate(); }
                                 }
                                 RoughPill {
-                                    text: "Save calibrated rig";
+                                    text: "Save Calibrated Rig";
                                     hint: root.can_save_calibrated ? "Store the refined poses and focal lengths, with the measured accuracy, in the picked rig." : "Calibrate first.";
                                     enabled: !root.busy && root.can_save_calibrated;
                                     clicked => { root.save_calibrated(); }
@@ -559,12 +560,12 @@ export component RigWindow inherits Window {
                             clicked => { root.mode_index = 5; root.mode_changed(5); }
                         }
                         RoughPill {
-                            text: "Undo click";
+                            text: "Undo Click";
                             hint: "Take back the last click of the chosen tool in this view.";
                             clicked => { root.undo_click(); }
                         }
                         RoughPill {
-                            text: "Clear view";
+                            text: "Clear View";
                             hint: "Remove every mark in this view.";
                             clicked => { root.clear_view(); }
                         }

@@ -1,0 +1,55 @@
+// A Material-3-style switch. Unlike the std-widgets `Switch` it never writes its own
+// state: `checked` stays bound to the setting and the owner flips it in `toggled`, so
+// a setting that Rust refuses cannot leave the switch showing the wrong state.
+import { Theme } from "../theme.slint";
+
+export component Toggle inherits Rectangle {
+    in property <bool> checked: false;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    width: 52px;
+    height: Theme.touch;
+    opacity: root.enabled ? 1.0 : Theme.disabled-content;
+    accessible-role: AccessibleRole.switch;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.toggled(!root.checked);
+        }
+    }
+
+    track := Rectangle {
+        width: 52px;
+        height: 32px;
+        border-radius: 16px;
+        background: root.checked ? Theme.primary : Theme.surface-highest;
+        border-width: root.checked ? 0px : 2px;
+        border-color: Theme.outline;
+
+        animate background {
+            duration: 150ms;
+        }
+
+        thumb := Rectangle {
+            width: root.checked ? 24px : 16px;
+            height: self.width;
+            x: root.checked ? 24px : 8px;
+            border-radius: self.width / 2;
+            background: root.checked ? Theme.on-primary : Theme.outline;
+
+            animate x, width {
+                duration: 150ms;
+            }
+        }
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.toggled(!root.checked);
+        }
+    }
+}

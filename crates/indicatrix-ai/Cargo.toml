@@ -1,0 +1,39 @@
+[package]
+name = "indicatrix-ai"
+version = "0.7.2"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Suitable-Name"]
+license = "MIT"
+publish = false
+description = "Reinforcement learning environments, neural policy models, and inference pipelines for gemstone cut optimization and material retargeting."
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cast_precision_loss = { level = "allow" }
+cast_sign_loss = { level = "allow" }
+cast_possible_wrap = { level = "allow" }
+cast_possible_truncation = { level = "allow" }
+float_cmp = { level = "allow" }
+inline_always = { level = "allow" }
+implicit_hasher = { level = "allow" }
+struct_excessive_bools = { level = "allow" }
+result_large_err = { level = "allow" }
+similar_names = { level = "allow" }
+
+[dependencies]
+indicatrix = { path = "../indicatrix" }
+indicatrix-cut-core = { path = "../indicatrix-cut-core" }
+indicatrix-editor = { path = "../indicatrix-editor" }
+glam = "=0.34.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+burn = { version = "0.22.0", features = ["autodiff", "flex", "wgpu"] }
+
+[dev-dependencies]
+divan = "0.1.21"
+
+[[bench]]
+name = "env_step"
+harness = false

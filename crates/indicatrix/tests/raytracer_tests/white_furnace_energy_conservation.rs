@@ -312,6 +312,10 @@ fn concave_fixture_white_furnace_energy_conservation_holds() {
         )
     });
     let truncated = exit_split_truncated_energy_take();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the truncated-energy fraction is a small ratio compared in f32"
+    )]
     let truncated_fraction = (truncated / (f64::from(count) * 8.0)) as f32;
 
     let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);

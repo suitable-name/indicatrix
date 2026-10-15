@@ -128,7 +128,7 @@ pub struct History {
     /// [`Self::redo`] never remove or reorder entries here: this is a trail of
     /// what was done, not a stack of what could still be replayed, so undoing an
     /// edit does not erase it from the record. Bounded to [`Self::MAX_LOG_ENTRIES`]
-    /// so an old design's native sidecar `[history]` table cannot grow forever.
+    /// so an old design's `[history]` table cannot grow forever.
     /// A coalesced run ([`Self::apply_coalescing`]) updates its own single entry in
     /// place on every merge rather than appending one per nudge, matching how it
     /// already collapses to a single undo step.
@@ -346,7 +346,7 @@ impl History {
 
     /// The bounded trail of human-readable edit descriptions recorded by
     /// [`Self::apply`]/[`Self::apply_coalescing`], oldest first -- see [`Self::log`]'s
-    /// own doc comment. Feeds a native sidecar's `[history]` table (via
+    /// own doc comment. Feeds a design file's `[history]` table (via
     /// `indicatrix_cut_core::native::SaveExtras::history_entries`).
     #[must_use]
     pub fn description_log(&self) -> &[String] {

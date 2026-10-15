@@ -40,7 +40,12 @@ where
     D: serde::Deserializer<'de>,
 {
     let raw = <f64 as serde::Deserialize>::deserialize(deserializer)?;
-    Ok(clamp_surface_glare(raw as f32))
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the stored precision; a hand-edited glare value is clamped to 0..=1 right after"
+    )]
+    let narrowed = raw as f32;
+    Ok(clamp_surface_glare(narrowed))
 }
 
 #[cfg(test)]

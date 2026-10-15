@@ -169,6 +169,22 @@ pub(super) fn install(controller: Rc<JobController>) {
     CONTROLLER.with(|cell| *cell.borrow_mut() = Some(controller));
 }
 
+/// Forgets the controller a previous main window installed (its database, render context and
+/// settings writer). See `gui::window_release`.
+pub fn release_window_state() {
+    let old = CONTROLLER.with(|cell| cell.borrow_mut().take());
+    drop(old);
+}
+
+/// Names this module's holder in `out` while it is still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub fn note_holders(out: &mut Vec<&'static str>) {
+    if CONTROLLER.with(|cell| cell.borrow().is_some()) {
+        out.push("render_jobs::controller CONTROLLER (vault, render context)");
+    }
+}
+
 /// Runs `f` with the controller, or returns `None` when there is none (not set up yet, or
 /// called off the UI thread). The controller is cloned out first, so `f` may call
 /// `with_controller` again.
@@ -247,6 +263,24 @@ impl JobController {
                 false
             }
         }
+    }
+
+    /// Drops the colour zones stored beside the deleted job `id`, so they do not
+    /// wait for the next startup prune. A failure is logged only; the prune removes the row later.
+    fn forget_job_zoning(&self, id: i64) {
+        let outcome = crate::gui::rough_colour::store::delete_job_zoning(&self.db(), id);
+        if let Err(error) = outcome {
+            tracing::warn!("The colour zones of render job {id} were not removed: {error:#}");
+        }
+    }
+
+    /// The ids of the Done and Cancelled jobs, read before they are deleted.
+    fn finished_job_ids(&self) -> Vec<i64> {
+        self.load_metas()
+            .iter()
+            .filter(|meta| matches!(meta.state.as_str(), "done" | "cancelled"))
+            .map(|meta| meta.job_id)
+            .collect()
     }
 
     // ---- What the window shows -------------------------------------------------------
@@ -405,10 +439,9 @@ impl JobController {
                 return None;
             }
         };
-        // Zoning builds: the frozen scene carries no colour zones; they were stored beside the
+        // The frozen scene carries no colour zones; they were stored beside the
         // job when it was queued and are put back here. Unreadable zones fail the job instead of
         // rendering the stone in its base colour.
-        #[cfg(feature = "zoning")]
         let job = {
             let mut job = job;
             let attached =
@@ -597,7 +630,9 @@ impl JobController {
             // A state this version does not know: only Delete is offered.
             if command == JobCommand::Delete {
                 let result = self.db().delete_render_job(id);
-                self.checked("The render job could not be deleted", result);
+                if self.checked("The render job could not be deleted", result) {
+                    self.forget_job_zoning(id);
+                }
             }
             self.refresh();
             return;
@@ -619,7 +654,9 @@ impl JobController {
             CommandEffect::StopRunning(reason) => self.stop_running(id, reason),
             CommandEffect::Delete => {
                 let result = self.db().delete_render_job(id);
-                self.checked("The render job could not be deleted", result);
+                if self.checked("The render job could not be deleted", result) {
+                    self.forget_job_zoning(id);
+                }
             }
             CommandEffect::MoveToFront { requeue } => {
                 let ids: Vec<i64> = metas.iter().map(|meta| meta.job_id).collect();
@@ -722,8 +759,14 @@ impl JobController {
 
     /// Clear Finished: remove the Done and Cancelled jobs.
     pub fn clear_finished(&self) {
+        // The ids are read first: after the delete the jobs (and their ids) are gone.
+        let finished = self.finished_job_ids();
         let result = self.db().delete_finished_render_jobs();
-        self.checked("The finished jobs could not be removed", result);
+        if self.checked("The finished jobs could not be removed", result) {
+            for id in finished {
+                self.forget_job_zoning(id);
+            }
+        }
         self.refresh();
     }
 

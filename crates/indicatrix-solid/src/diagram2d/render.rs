@@ -8,7 +8,8 @@ use super::{
     labels::{draw_panel_labels, draw_text, text_size},
     layout::{
         PanelLayout, compute_layout, compute_single_panel_layout, crown_project, crown_visible,
-        facet_normals, pavilion_project, pavilion_visible, profile_project, profile_visible,
+        facet_normals, narrow, pavilion_project, pavilion_visible, profile_project,
+        profile_visible,
     },
     legend::{draw_index_wheel, draw_selected_index_radials, draw_symmetry_and_mirror_lines},
     simplify_ring,
@@ -476,10 +477,11 @@ fn draw_panel_edges(
 ) {
     let is_selected = |facet_id: usize| style.selected.get(facet_id).copied().unwrap_or(false);
     let is_pending = |facet_id: usize| style.pending.get(facet_id).copied().unwrap_or(false);
-    let is_hovered = |facet_id: usize| style.hovered == Some(facet_id as u32);
-    let is_selected_facet = |facet_id: usize| style.selected_facet == Some(facet_id as u32);
-    let is_multi_selected = |facet_id: usize| style.multi_selected.contains(&(facet_id as u32));
-    let is_moved = |facet_id: usize| style.moved.contains(&(facet_id as u32));
+    let facet_key = |facet_id: usize| u32::try_from(facet_id).expect("a facet id fits in u32");
+    let is_hovered = |facet_id: usize| style.hovered == Some(facet_key(facet_id));
+    let is_selected_facet = |facet_id: usize| style.selected_facet == Some(facet_key(facet_id));
+    let is_multi_selected = |facet_id: usize| style.multi_selected.contains(&facet_key(facet_id));
+    let is_moved = |facet_id: usize| style.moved.contains(&facet_key(facet_id));
 
     for pass in [
         EdgePass::Ordinary,
@@ -537,5 +539,5 @@ fn draw_panel_edges(
 }
 
 const fn to_vec3(v: DVec3) -> Vec3 {
-    Vec3::new(v.x as f32, v.y as f32, v.z as f32)
+    Vec3::new(narrow(v.x), narrow(v.y), narrow(v.z))
 }

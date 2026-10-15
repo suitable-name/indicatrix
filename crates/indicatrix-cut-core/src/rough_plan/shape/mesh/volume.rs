@@ -61,12 +61,14 @@ impl RoughMesh {
     /// bit-identical. With `prune` false every triangle is returned to be clipped.
     fn clip_candidates(&self, origin: DVec3, cuts: &[Cut], prune: bool) -> Vec<(u32, bool)> {
         if !prune || self.bvh.is_empty() {
-            return (0..self.tris.len() as u32).map(|t| (t, true)).collect();
+            return (0..super::geometry::index_u32(self.tris.len()))
+                .map(|t| (t, true))
+                .collect();
         }
         let slack = 1e-9 * (self.hi - self.lo).max_element();
         let mut found: Vec<(u32, bool)> = Vec::new();
-        let mut stack: Vec<(u32, bool)> = vec![(0, false)];
-        while let Some((index, inside)) = stack.pop() {
+        let mut pending: Vec<(u32, bool)> = vec![(0, false)];
+        while let Some((index, inside)) = pending.pop() {
             let node = &self.bvh[index as usize];
             let mut inside = inside;
             if !inside {
@@ -91,8 +93,8 @@ impl RoughMesh {
                 let leaf = &self.order[node.first as usize..(node.first + node.count) as usize];
                 found.extend(leaf.iter().map(|&t| (t, !inside)));
             } else {
-                stack.push((node.first, inside));
-                stack.push((node.first + 1, inside));
+                pending.push((node.first, inside));
+                pending.push((node.first + 1, inside));
             }
         }
         found.sort_unstable();
@@ -128,7 +130,7 @@ impl RoughMesh {
     /// [`clip_candidates`](Self::clip_candidates). With `prune` false, all of them.
     fn crossing_triangles(&self, origin: DVec3, cut: &Cut, prune: bool) -> Vec<u32> {
         if !prune || self.bvh.is_empty() {
-            return (0..self.tris.len() as u32).collect();
+            return (0..super::geometry::index_u32(self.tris.len())).collect();
         }
         let slack = 1e-9 * (self.hi - self.lo).max_element();
         let positive = cut.n.cmpge(DVec3::ZERO);

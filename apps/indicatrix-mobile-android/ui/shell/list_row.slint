@@ -1,0 +1,87 @@
+// A list row: leading icon, title, supporting text and a trailing slot (put a
+// `Toggle`, a chevron or a `Text` inside the row). At least 56 px tall; grows with the
+// system font scale.
+import { Theme } from "../theme.slint";
+import { Icon } from "icon.slint";
+import { StateLayer } from "state_layer.slint";
+
+export component ListRow inherits Rectangle {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> supporting: "";
+    in property <bool> enabled: true;
+    // Whether tapping the row does something (a row that only hosts a switch sets this
+    // to false and lets the switch take the tap).
+    in property <bool> tappable: true;
+    in property <bool> divider: false;
+    callback clicked();
+
+    min-height: Theme.row-height;
+    opacity: root.enabled ? 1.0 : Theme.disabled-content;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.supporting == "" ? root.title : root.title + ", " + root.supporting;
+    accessible-enabled: root.enabled;
+
+    StateLayer {
+        pressed: touch.pressed;
+        hovered: touch.has-hover;
+        enabled: root.enabled && root.tappable;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled && root.tappable;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-lg;
+        padding-right: Theme.space-lg;
+        padding-top: Theme.space-sm;
+        padding-bottom: Theme.space-sm;
+        spacing: Theme.space-lg;
+
+        if root.icon.width > 0: Rectangle {
+            width: 24px;
+
+            Icon {
+                source: root.icon;
+                tint: Theme.on-surface-variant;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.title;
+                color: Theme.on-surface;
+                font-size: Theme.text-body-large;
+                overflow: elide;
+            }
+
+            if root.supporting != "": Text {
+                text: root.supporting;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body;
+                wrap: word-wrap;
+            }
+        }
+
+        // The trailing slot.
+        HorizontalLayout {
+            alignment: end;
+            cross-axis-alignment: center;
+            spacing: Theme.space-sm;
+            @children
+        }
+    }
+
+    if root.divider: Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.outline-variant;
+    }
+}

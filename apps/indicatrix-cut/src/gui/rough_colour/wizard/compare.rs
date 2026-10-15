@@ -70,6 +70,11 @@ pub fn lab_to_srgb8(lab: [f64; 3]) -> [u8; 3] {
             f64::mul_add(-0.204_025_9, y, 0.055_643_4 * x),
         ),
     ];
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the byte value is rounded and clamped to 0..=255 before the cast"
+    )]
     let encode = |channel: f64| {
         let channel = channel.clamp(0.0, 1.0);
         let encoded = if channel <= 0.003_130_8 {
@@ -97,6 +102,10 @@ pub fn linear_to_lab(rgb: [f32; 3]) -> [f64; 3] {
 
 /// The CIEDE2000 difference between an observed and a predicted linear value.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a CIEDE2000 difference is stored as f32; values are in the normal float range"
+)]
 pub fn delta_e_pixel(observed: [f32; 3], predicted: [f32; 3]) -> f32 {
     delta_e_2000(linear_to_lab(observed), linear_to_lab(predicted)) as f32
 }
@@ -157,6 +166,11 @@ pub fn stats(mut values: Vec<f32>) -> DeltaStats {
     }
     values.sort_by(f32::total_cmp);
     let n = values.len();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "q is in 0..=1, so the rounded rank is between 0 and n - 1"
+    )]
     let at = |q: f64| values[(((n - 1) as f64) * q).round() as usize];
     DeltaStats {
         count: n,
@@ -174,7 +188,7 @@ pub fn stats_text(stats: &DeltaStats) -> String {
         return "Nothing to compare in this view.".to_owned();
     }
     format!(
-        "Colour difference (CIEDE2000): median {:.1}, 95 % under {:.1}, worst {:.1} ({} pixels).",
+        "Color difference (CIEDE2000): median {:.1}, 95 % under {:.1}, worst {:.1} ({} pixels).",
         stats.median, stats.p95, stats.max, stats.count
     )
 }
@@ -200,7 +214,7 @@ pub fn lovo_rows(report: &LovoReport, view_names: &[String]) -> Vec<TextRow> {
     }
     rows.push(TextRow {
         text: format!(
-            "Median {:.1} dE, worst {:.1} dE. This is the honest accuracy of the colour.",
+            "Median {:.1} dE, worst {:.1} dE. This is the honest accuracy of the color.",
             report.median_delta_e, report.max_delta_e
         ),
         warn: report.max_delta_e > 2.0 * WARN_DELTA_E,
@@ -227,8 +241,8 @@ pub const fn reason_text(reason: ChoiceReason) -> &'static str {
 #[must_use]
 pub const fn model_name(kind: ModelKind) -> &'static str {
     match kind {
-        ModelKind::Chromophore => "Chromophore model (A)",
-        ModelKind::SmoothBasis => "Smooth spectrum model (B)",
+        ModelKind::Chromophore => "Chromophore Model (A)",
+        ModelKind::SmoothBasis => "Smooth Spectrum Model (B)",
     }
 }
 
@@ -282,7 +296,7 @@ pub fn illuminant_name(illuminant: Illuminant) -> String {
 #[must_use]
 pub fn zone_name(zone: usize) -> String {
     if zone == 0 {
-        "Base zone".to_owned()
+        "Base Zone".to_owned()
     } else {
         format!("Zone {zone}")
     }
@@ -346,7 +360,7 @@ pub fn warning_rows(fit: &ColourFit) -> Vec<TextRow> {
 pub fn zoned_prompt(fit: &ColourFit) -> Option<String> {
     fit.suggest_zoning.then(|| {
         format!(
-            "This looks zoned. The difference between photos and render is not random noise (structure score {:.2}). Add zones?",
+            "This looks zoned. The difference between photos and render is not random noise (structure score {:.2}). Add Zones?",
             fit.structured_score
         )
     })
@@ -392,6 +406,7 @@ pub(super) mod fixtures {
             effective_params: 7.0,
             aic: 24.0,
             iterations: 5,
+            iterations_per_stage: vec![2, 2, 1],
             converged: true,
             seed_costs: vec![],
             at_bound: vec!["Zone 1 amplitude 3".to_owned()],
@@ -468,6 +483,10 @@ mod tests {
             let lab = srgb_to_lab(srgb);
             let bytes = lab_to_srgb8(lab);
             for c in 0..3 {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "the test colours are in 0..=1, so the rounded byte value is 0..=255"
+                )]
                 let want = (srgb[c] * 255.0_f64).round() as i32;
                 assert!(
                     (i32::from(bytes[c]) - want).abs() <= 1,
@@ -535,7 +554,7 @@ mod tests {
     fn the_model_table_names_the_choice() {
         let rows = model_rows(&sample_fit().comparison);
         assert_eq!(rows.len(), 2);
-        assert!(rows[0].text.starts_with("Smooth spectrum model (B)"));
+        assert!(rows[0].text.starts_with("Smooth Spectrum Model (B)"));
         assert!(rows[1].text.contains("the only model fitted"));
     }
 
@@ -546,8 +565,8 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "Base zone, 7 mm, A",
-                "Base zone, 7 mm, D65",
+                "Base Zone, 7 mm, A",
+                "Base Zone, 7 mm, D65",
                 "Zone 1, 7 mm, D65",
                 "Zone 1, 12 mm, A",
             ]
@@ -574,7 +593,7 @@ mod tests {
         assert_eq!(illuminant_name(Illuminant::D65), "D65");
         assert_eq!(illuminant_name(Illuminant::Planckian(2856.0)), "A");
         assert_eq!(illuminant_name(Illuminant::Planckian(4000.0)), "4000 K");
-        assert_eq!(zone_name(0), "Base zone");
+        assert_eq!(zone_name(0), "Base Zone");
         assert_eq!(zone_name(2), "Zone 2");
     }
 }

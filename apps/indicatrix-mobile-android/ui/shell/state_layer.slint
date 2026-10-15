@@ -1,0 +1,16 @@
+// The translucent overlay a pressed or hovered control shows. Place it below the
+// control's `TouchArea` and bind `pressed` / `hovered` to that area's properties.
+import { Theme } from "../theme.slint";
+
+export component StateLayer inherits Rectangle {
+    in property <bool> pressed: false;
+    in property <bool> hovered: false;
+    in property <bool> enabled: true;
+    in property <color> tint: Theme.on-surface;
+
+    background: !root.enabled ? transparent : (root.pressed ? root.tint.with-alpha(Theme.state-pressed) : (root.hovered ? root.tint.with-alpha(Theme.state-hover) : transparent));
+
+    animate background {
+        duration: 100ms;
+    }
+}

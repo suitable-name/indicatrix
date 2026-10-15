@@ -18,7 +18,7 @@ exporting a design of your own.
 2. [Browsing the Catalogue and Viewing a Design](02-catalogue-and-viewing.md)
    — searching and filtering, the 3D viewport's controls, and the
    tilt-performance graph.
-3. [Loading a Design Into the Editor and Understanding the Tier List](03-loading-and-tier-list.md)
+3. [Loading a Design into the Editor and Understanding the Tier List](03-loading-and-tier-list.md)
    — cutting-instructions terms, loading a design, starting a new one, and
    every tier-list column.
 4. [Editing Tiers](04-editing-tiers.md) — the tabbed inspector, the tier
@@ -31,12 +31,12 @@ exporting a design of your own.
    vs. Material, the Design Settings panel, and the automated Retarget
    proposal (plus the manual procedure behind it) for re-cutting a
    design's angles for a different material.
-7. [Creating a New Design From Scratch: A Worked Example](07-new-design-worked-example.md)
+7. [Creating a New Design from Scratch: A Worked Example](07-new-design-worked-example.md)
    — a full walkthrough building an 8-fold stone tier by tier.
 8. [Deep Solve, Optimize, Adopt, and Apply](08-deep-solve-optimize-adopt.md)
    — verifying a solve against catalogue proportions, every Optimize
-   control (weights, budget/starts/seed, Polish, Only selected tiers, Preview),
-   Adopt/Adopt all/Adopt sel., and fixing a tier whose solve is uncertain.
+   control (weights, budget/starts/seed, Polish, Only Selected Tiers, Preview),
+   Adopt/Adopt All/Adopt Sel., and fixing a tier whose solve is uncertain.
 9. [Rendering and Export](09-rendering-and-export.md) — exporting a
    still image, and how local and remote computation hand off while you
    work.
@@ -45,8 +45,8 @@ exporting a design of your own.
     final picture transfer, how many pictures a catalogue batch keeps in
     flight on it, HDR scenes, and troubleshooting a connection gone quiet.
 11. [Saving and File Formats](11-saving-and-file-formats.md) — `.asc`
-    versus this app's own `.indicatrix` design file (and the older
-    `.indicatrix.toml` sidecars that still open), and where your files go.
+    versus this app's own `.isdd` design file (old `.indicatrix` files still
+    open), and where your files go.
 12. [Troubleshooting and Limitations](12-troubleshooting-and-limitations.md)
     — a consolidated symptom/cause/fix table, where to find the app's log
     file and how to raise its verbosity, and every current limitation in
@@ -69,7 +69,7 @@ exporting a design of your own.
     circle, disc, sphere): adding and editing them in the tier table and the
     inspector's concave form, how they print on the cutting sheet and in the
     schedule, how they show in the solid view and the render, what `.asc`,
-    `.gcs` and `.indicatrix` keep of them, and the limitations.
+    `.gcs` and `.isdd` keep of them, and the limitations.
 17. [Preferences and Accessibility](17-preferences-and-accessibility.md) — Edit →
     Preferences...: the Simple/Advanced interface, UI scale, high contrast, larger
     drag handles for touch screens and pens, the Snap and Slice buttons the app
@@ -89,14 +89,14 @@ exporting a design of your own.
     button: the cutting steps one page at a time, the angle and indices in large type,
     the stone after each step, the index wheel, done marks and index ticks that are
     kept for the design in your library, "Changed since you marked it", and Reset
-    progress.
+    Progress.
 21. [Angle Sweeps](21-angle-sweeps.md) — Edit → Angle Sweep...: trying one tier's
     angle over a range, choosing the tier, range and step, the optional tilt
     averages, reading the table and the chart, making an angle the tier's real angle
     in one undo step, copying or saving the rows as CSV, and the limitations.
 22. [Tutorials and the Welcome Tour](22-tutorials.md) — Help → Tutorials...:
     short guided lessons inside the program, the tutorial browser (sections, search,
-    Done marks, Reset progress), how a tutorial starts, the guide panel, the welcome
+    Done marks, Reset Progress), how a tutorial starts, the guide panel, the welcome
     dialog a new user sees first, and where progress is kept.
 23. [Render Jobs](23-render-jobs.md) — File → Render Jobs...: collecting still
     pictures and tilt videos with Add to Queue, the Render Jobs window, Start Queue
@@ -115,7 +115,7 @@ exporting a design of your own.
   — every built-in material's refractive index, birefringence, optical
   character, dispersion, and color.
 
-## How to read this manual
+## How to Read This Manual
 
 You do not need to read this front to back. Four common starting points:
 
@@ -136,7 +136,7 @@ Whatever your starting point, Chapter 12 and the appendices are there when
 something goes wrong or you need to look up a term, a shortcut, or a
 material's numbers.
 
-## Help inside the app
+## Help Inside the App
 
 You do not need to leave the program to read this manual. **Help → User Manual**
 opens it in a window of its own, built into the program, so it is the same text as
@@ -148,6 +148,6 @@ opens in your browser.
 
 Many panels carry a small **?** button. It opens the manual at the section about that
 panel. **Help → Glossary** opens a short dialog with every term of Appendix A and a
-search box; its **Open in the manual** button goes to the appendix itself. **Open
-manual folder** in the help window's toolbar shows the Markdown files on disk, if you
+search box; its **Open in the Manual** button goes to the appendix itself. **Open
+Manual Folder** in the help window's toolbar shows the Markdown files on disk, if you
 want to print them or keep a copy.

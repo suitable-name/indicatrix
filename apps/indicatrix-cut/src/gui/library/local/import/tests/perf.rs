@@ -171,11 +171,11 @@ fn write_catalogue_derived_corpus(db: &Arc<Mutex<Database>>, dir: &std::path::Pa
     written
 }
 
-/// Writes a couple of real `.asc` + older `.indicatrix.toml` sidecar pairs (the format
-/// earlier builds saved): a solved
+/// Writes a couple of real `.asc` + `.isdd` design-file pairs: a solved
 /// [`indicatrix_cut_core::design::Design`] from one of `indicatrix_cut_core::templates::TEMPLATES`,
-/// written out via `indicatrix_cut_core::native::save_paired`.
-fn write_sidecar_pairs(dir: &std::path::Path) {
+/// the `.asc` built via `indicatrix_cut_core::native::catalogue_asc` and the design file
+/// via `indicatrix_cut_core::native::design_to_string`.
+fn write_design_pairs(dir: &std::path::Path) {
     for (i, spec) in indicatrix_cut_core::templates::TEMPLATES
         .iter()
         .take(2)
@@ -195,21 +195,18 @@ fn write_sidecar_pairs(dir: &std::path::Path) {
             .solve()
             .unwrap_or_else(|e| panic!("template {:?} failed to solve: {e:?}", spec.name));
         let asc_filename = format!("template_{i}.asc");
-        let paired = indicatrix_cut_core::native::save_paired(
-            &design,
-            asc_filename.clone(),
-            None,
-            None,
-            None,
-        )
-        .unwrap_or_else(|e| panic!("save_paired for template {:?}: {e}", spec.name));
-        std::fs::write(dir.join(&asc_filename), &paired.asc_text)
+        let asc = indicatrix_cut_core::native::catalogue_asc(&design, None, None)
+            .unwrap_or_else(|e| panic!("catalogue_asc for template {:?}: {e}", spec.name));
+        std::fs::write(dir.join(&asc_filename), &asc.asc_text)
             .unwrap_or_else(|e| panic!("write {asc_filename}: {e}"));
-        std::fs::write(
-            dir.join(format!("template_{i}.indicatrix.toml")),
-            &paired.native_toml,
+        let design_text = indicatrix_cut_core::native::design_to_string(
+            &design,
+            None,
+            &indicatrix_cut_core::native::DesignExtras::default(),
         )
-        .unwrap_or_else(|e| panic!("write template_{i}.indicatrix.toml: {e}"));
+        .unwrap_or_else(|e| panic!("design_to_string for template {:?}: {e}", spec.name));
+        std::fs::write(dir.join(format!("template_{i}.isdd")), design_text)
+            .unwrap_or_else(|e| panic!("write template_{i}.isdd: {e}"));
     }
 }
 
@@ -218,7 +215,7 @@ fn write_sidecar_pairs(dir: &std::path::Path) {
 /// original), opens it with [`Database::new`] (running the real
 /// `migrate_blob_columns_last` 12-step rebuild against real pre-migration data),
 /// builds a corpus of catalogue-derived `.asc` files plus every adversarial input
-/// plus a couple of older sidecar pairs plus one garbage sidecar plus one 0-byte
+/// plus a couple of design-file pairs plus one garbage design file plus one 0-byte
 /// `.asc`, imports the whole directory recursively, verifies every imported row
 /// reads back through every path the library itself uses, then imports the SAME
 /// directory again to exercise the collision/merge path.
@@ -254,19 +251,19 @@ fn manual_import_stress_against_the_migrated_scratch_catalogue() {
     let corpus_dir = temp_dir_for_test("scratch_corpus");
     let catalogue_written = write_catalogue_derived_corpus(&db, &corpus_dir);
     write_named_files(&corpus_dir, ADVERSARIAL_ASC_INPUTS);
-    write_sidecar_pairs(&corpus_dir);
-    std::fs::write(corpus_dir.join("garbage_sidecar.asc"), VALID_ASC)
-        .expect("write garbage_sidecar.asc");
+    write_design_pairs(&corpus_dir);
+    std::fs::write(corpus_dir.join("garbage_design.asc"), VALID_ASC)
+        .expect("write garbage_design.asc");
     std::fs::write(
-        corpus_dir.join("garbage_sidecar.indicatrix.toml"),
+        corpus_dir.join("garbage_design.isdd"),
         "\u{0}not valid toml {{{",
     )
-    .expect("write garbage_sidecar.indicatrix.toml");
+    .expect("write garbage_design.isdd");
     std::fs::write(corpus_dir.join("zero_byte.asc"), []).expect("write zero_byte.asc");
 
     eprintln!(
         "manual scratch-catalogue import stress: {catalogue_written} catalogue-derived .asc + \
-         {} adversarial inputs + 2 template sidecar pairs + 1 garbage sidecar + 1 zero-byte file, \
+         {} adversarial inputs + 2 template design pairs + 1 garbage design file + 1 zero-byte file, \
          corpus at {}",
         ADVERSARIAL_ASC_INPUTS.len(),
         corpus_dir.display()
@@ -306,7 +303,7 @@ fn manual_import_stress_against_the_migrated_scratch_catalogue() {
     let _ = std::fs::remove_file(&db_path);
 }
 
-/// Probe (second): the exact same adversarial/sidecar/garbage/zero-byte
+/// Probe (second): the exact same adversarial/design-pair/garbage/zero-byte
 /// corpus [`manual_import_stress_against_the_migrated_scratch_catalogue`] builds
 /// (minus the catalogue-derived files, since a fresh database has no rows to
 /// reconstruct them from), imported into a brand-new empty database instead of a
@@ -323,14 +320,14 @@ fn manual_import_stress_against_a_fresh_empty_db() {
 
     let corpus_dir = temp_dir_for_test("empty_stress_corpus");
     write_named_files(&corpus_dir, ADVERSARIAL_ASC_INPUTS);
-    write_sidecar_pairs(&corpus_dir);
-    std::fs::write(corpus_dir.join("garbage_sidecar.asc"), VALID_ASC)
-        .expect("write garbage_sidecar.asc");
+    write_design_pairs(&corpus_dir);
+    std::fs::write(corpus_dir.join("garbage_design.asc"), VALID_ASC)
+        .expect("write garbage_design.asc");
     std::fs::write(
-        corpus_dir.join("garbage_sidecar.indicatrix.toml"),
+        corpus_dir.join("garbage_design.isdd"),
         "\u{0}not valid toml {{{",
     )
-    .expect("write garbage_sidecar.indicatrix.toml");
+    .expect("write garbage_design.isdd");
     std::fs::write(corpus_dir.join("zero_byte.asc"), []).expect("write zero_byte.asc");
 
     let outcome = run_import_catching_panics(&db, &corpus_dir).unwrap_or_else(|panic_msg| {

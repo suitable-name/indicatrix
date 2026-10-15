@@ -101,6 +101,10 @@ pub(in crate::optics::raytracer) fn entry_eigenmode_selection(
 /// p_mode_hero_frac` (standard importance-sampling `target / p_sample`, unbiased for
 /// any valid `p_sample`), polarized along the drawn mode's own eigenaxis (`o_hat`/
 /// `e_hat`, always real -- an entry interface's transmitted side never evanesces).
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names; sol_s_hero/sol_p_hero are the established s/p polarisation solution names; p_o_raw/p_e_raw are the established ordinary/extraordinary mode-power names"
+)]
 pub(super) fn apply_uniaxial_entry_bounce(
     ubctx: &UniaxialBounceContext<'_, '_>,
     ray: BounceRay,
@@ -237,6 +241,10 @@ pub(super) fn apply_uniaxial_entry_bounce(
 /// The reflect branch's per-channel loop, extracted from [`apply_uniaxial_entry_bounce`]
 /// to keep that function under clippy's function-length lint. `inc_frame` is the
 /// caller's already-built [`EntryIncidenceFrame`] -- see that type's own doc comment.
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e and sol_s_k/sol_p_k are the established ordinary/extraordinary and s/p names"
+)]
 fn apply_uniaxial_entry_reflect_channels(
     ubctx: &UniaxialBounceContext<'_, '_>,
     inc_frame: &uniaxial_fresnel::EntryIncidenceFrame,
@@ -263,6 +271,27 @@ fn apply_uniaxial_entry_reflect_channels(
     }
 }
 
+/// Unpolarized entry-transmit density `1 - R_unpol` for one channel's `(n_o, n_e)` pair,
+/// clamped to the shared PDF bounds.
+#[expect(
+    clippy::similar_names,
+    reason = "sol_s_k/sol_p_k are the established s/p polarisation solution names"
+)]
+fn entry_transmit_unpol_density(
+    inc_frame: &uniaxial_fresnel::EntryIncidenceFrame,
+    n_o_k: f32,
+    n_e_k: f32,
+    c_axis: Vec3,
+    frame: &uniaxial_fresnel::UniaxialFrame,
+) -> f32 {
+    let (sol_s_k, sol_p_k) = uniaxial_fresnel::entry_solve_pair_with_incidence(
+        inc_frame, 1.0, n_o_k, n_e_k, c_axis, frame,
+    );
+    let mueller_k =
+        uniaxial_fresnel::jones_to_mueller(sol_s_k.r_s, sol_p_k.r_s, sol_s_k.r_p, sol_p_k.r_p);
+    (1.0 - mueller_k.col(0)[0]).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX)
+}
+
 /// The transmit branch's per-channel loop (chromatic-termination geometry check plus
 /// the closed-form mode-power amplitude deposit), extracted from
 /// [`apply_uniaxial_entry_bounce`] for the same reason as
@@ -278,6 +307,10 @@ struct EntryTransmitMode {
     r_branch: f32,
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names; sol_s_k/sol_p_k are the established s/p polarisation solution names; t_s_row/t_p_row are the established s/p polarisation transmission names"
+)]
 fn apply_uniaxial_entry_transmit_channels(
     ubctx: &UniaxialBounceContext<'_, '_>,
     inc_frame: &uniaxial_fresnel::EntryIncidenceFrame,
@@ -343,17 +376,7 @@ fn apply_uniaxial_entry_transmit_channels(
                 // `t_unpol_k` the matching case below folds in); only its radiance
                 // ends here. See `apply_refract_channel`'s scalar counterpart.
                 let n_e_k = ctx.material.extraordinary_index_at(ctx.lambdas[k], n_o_k);
-                let (sol_s_k, sol_p_k) = uniaxial_fresnel::entry_solve_pair_with_incidence(
-                    inc_frame, 1.0, n_o_k, n_e_k, c_axis, frame,
-                );
-                let mueller_k = uniaxial_fresnel::jones_to_mueller(
-                    sol_s_k.r_s,
-                    sol_p_k.r_s,
-                    sol_s_k.r_p,
-                    sol_p_k.r_p,
-                );
-                let t_unpol_k = (1.0 - mueller_k.col(0)[0]).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
-                path_pdf[k] *= t_unpol_k;
+                path_pdf[k] *= entry_transmit_unpol_density(inc_frame, n_o_k, n_e_k, c_axis, frame);
             } else {
                 path_pdf[k] = 0.0;
             }

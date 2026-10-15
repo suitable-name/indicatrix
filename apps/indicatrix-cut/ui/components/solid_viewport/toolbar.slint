@@ -9,6 +9,8 @@ import { GuideModel } from "../../models/guide.slint";
 import { HelpTopics } from "../../models/help.slint";
 import { HelpButton } from "../help_button.slint";
 import { PillButton, ModePill } from "../pill_button.slint";
+import { ParametersButtons } from "../parameters_panel/toolbar_buttons.slint";
+import { PreviewBadge } from "../material_chip.slint";
 // A running catalogue-wide batch (tilt sweep or preview render) sets
 // `ctx.export_active`, which suspends the live tracer exactly like an explicit
 // pause -- this strip folds that into a banner so a frozen Path-traced/Both
@@ -75,6 +77,7 @@ component CutSlider inherits Rectangle {
             overflow: elide;
         }
         cut_slider := Slider {
+            accessible-label: "Cut Step";
             width: 66px;
             minimum: 0;
             // The last position is "Finished", this many steps in, so the control has a
@@ -108,11 +111,22 @@ component CutSlider inherits Rectangle {
     }
 }
 
+// The Parameters dock's three tab buttons (Stone, Lighting & Environment, Render & Output) in the
+// toolbar's pill size and colours: the Edit view opens the same dock the Live Render view does.
+// Each layout below mounts the group at the end of one row, before the "?" button when that row
+// has it. About 100px wide.
+component ParametersPills inherits ParametersButtons {
+    side: 28px;
+    glyph: 13px;
+    idle_fill: Theme.bg-input;
+    idle_border: Theme.border-subtle;
+}
+
 // The "?" button at the end of the toolbar's first row: the manual page for the Solid view,
 // or for the Diagram while that mode shows.
 component ToolbarHelp inherits VerticalLayout {
     alignment: center;
-    HelpButton {
+    help-button-view-mode := HelpButton {
         topic: SolidPreviewModel.view_mode == 3 ? HelpTopics.diagram-view : HelpTopics.solid-view;
         hint: SolidPreviewModel.view_mode == 3
             ? "Open the manual page on the Diagram view"
@@ -136,7 +150,7 @@ component ModePills inherits HorizontalLayout {
     }
     ModePill {
         width: root.tight ? 92px : 110px;
-        text: "Path-traced";
+        text: "Path-Traced";
         hint: "The realistic light-traced picture, the same one the Live Render tab shows.";
         selected: SolidPreviewModel.view_mode == 1;
         highlighted: GuideModel.highlight_target == "view_modes";
@@ -234,6 +248,11 @@ component ViewPills inherits HorizontalLayout {
 // two-way properties (the "Reset View" pill resets them).
 component ToolPills inherits HorizontalLayout {
     in property <bool> tight: false;
+    // Which pills this row mounts: 0 every pill, 1 without the Diagram's Crown / Pavilion /
+    // Profile enlarge pills, 2 only those three. The narrow toolbar puts them on a row of their
+    // own, because in Diagram mode all of them plus the Parameters buttons are wider than the
+    // 380px the Edit viewport is guaranteed.
+    in property <int> part: 0;
     in-out property <float> diagram_zoom: 1.0;
     in-out property <length> diagram_pan_x: 0px;
     in-out property <length> diagram_pan_y: 0px;
@@ -247,7 +266,7 @@ component ToolPills inherits HorizontalLayout {
     // `GemViewportView`'s own button, shared via
     // `TiltModel.toggle_dialog()`. An advanced tool: hidden in Simple mode, locked with the
     // other advanced actions while a guide runs.
-    if GuideModel.shows_advanced(): PillButton {
+    if GuideModel.shows_advanced() && root.part != 2: PillButton {
         width: root.tight ? 76px : 82px;
         text: "Tilt Curve";
         hint: GuideModel.allows_advanced()
@@ -263,7 +282,7 @@ component ToolPills inherits HorizontalLayout {
     // the Solid view -- shown only there, since Path-traced/Both/Diagram
     // either don't draw the preform at all (the path tracer) or handle
     // it separately (Diagram's own facet labels).
-    if SolidPreviewModel.view_mode == 0: PillButton {
+    if SolidPreviewModel.view_mode == 0 && root.part != 2: PillButton {
         width: root.tight ? 68px : 96px;
         text: "Preform";
         hint: "Show or hide the rough's own bounding planes (the preform) in the Solid view. See the glossary.";
@@ -275,7 +294,7 @@ component ToolPills inherits HorizontalLayout {
     // Snapping for the angle and depth drag handles on the selected facet
     // (`ManipulateModel`): lit while snapping is on. Shown in every mode that draws the
     // handles: Solid, Path-traced, Both and the Diagram view.
-    PillButton {
+    if root.part != 2: PillButton {
         width: root.tight ? 46px : 64px;
         text: "Snap";
         hint: "Snapping for the angle and depth handles on the selected facet: coarse by default (0.1 degree, 0.01 mast), fine while you hold Shift, none when this is off. The index handle always moves in whole teeth.";
@@ -290,7 +309,7 @@ component ToolPills inherits HorizontalLayout {
 
     // Slice: cut a new facet with the mouse (`ManipulateModel`, shortcut S). Lit
     // while the tool is on; shown in the three modes that draw the stone.
-    if SolidPreviewModel.view_mode != 3: PillButton {
+    if SolidPreviewModel.view_mode != 3 && root.part != 2: PillButton {
         width: root.tight ? 46px : 64px;
         text: "Slice";
         hint: "Cut a new facet with the mouse (shortcut S): drag a line across the stone and the part to the right of your drag is cut away. Nothing is kept until you press Keep.";
@@ -305,7 +324,7 @@ component ToolPills inherits HorizontalLayout {
 
     // #29: Diagram mode's own zoom/pan reset -- shown only in Diagram mode,
     // where Front/Top (the shared orbit camera's poses) don't apply.
-    if SolidPreviewModel.view_mode == 3: PillButton {
+    if SolidPreviewModel.view_mode == 3 && root.part != 2: PillButton {
         width: 76px;
         text: "Reset View";
         font_size: 11px;
@@ -327,7 +346,7 @@ component ToolPills inherits HorizontalLayout {
     // their own label anyway. See `ui/models/solid_preview.slint`'s
     // `diagram_enlarged_panel` doc comment for the Rust-side handoff
     // this still needs (this pass owns only the Slint side).
-    if SolidPreviewModel.view_mode == 3: PillButton {
+    if SolidPreviewModel.view_mode == 3 && root.part != 1: PillButton {
         width: root.tight ? 52px : 58px;
         text: "Crown";
         font_size: 11px;
@@ -336,7 +355,7 @@ component ToolPills inherits HorizontalLayout {
         checkable: true;
         clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 0 ? -1 : 0; }
     }
-    if SolidPreviewModel.view_mode == 3: PillButton {
+    if SolidPreviewModel.view_mode == 3 && root.part != 1: PillButton {
         width: root.tight ? 60px : 68px;
         text: "Pavilion";
         font_size: 11px;
@@ -345,7 +364,7 @@ component ToolPills inherits HorizontalLayout {
         checkable: true;
         clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 1 ? -1 : 1; }
     }
-    if SolidPreviewModel.view_mode == 3: PillButton {
+    if SolidPreviewModel.view_mode == 3 && root.part != 1: PillButton {
         width: root.tight ? 54px : 62px;
         text: "Profile";
         font_size: 11px;
@@ -358,13 +377,15 @@ component ToolPills inherits HorizontalLayout {
 
 // The toolbar re-flows by its own width (it is explicitly x/y/width-positioned
 // at 100% of the viewport, so reading `root.width` here is not a binding loop):
-//   wide   (>= 1400px)  one row: Cut, modes, views, tools.
-//   medium (980-1400)   two rows: [Cut, modes, tools] and [views].
-//   low    (620-980)    three rows: [Cut, modes], [views], [tools].
-//   narrow (< 620)      four rows of tighter pills: Cut, modes, views, tools.
-// The widths are the pills' own sums (about 1380px / 980px / 610px / 380px); the "?" help
+//   wide   (>= 1500px)  one row: Cut, modes, views, tools, Parameters buttons.
+//   medium (980-1500)   two rows: [Cut, modes, tools] and [views, Parameters buttons].
+//   low    (620-980)    three rows: [Cut, modes], [views], [tools, Parameters buttons].
+//   narrow (< 620)      four rows of tighter pills: modes, views, tools, Parameters buttons (the Cut row
+//                       above them while a cut shows).
+// The widths are the pills' own sums (about 1480px / 980px / 610px / 380px); the "?" help
 // button at the end of the first row is 28 px of each (the medium and narrow limits were
-// 940 and 600 before it was added).
+// 940 and 600 before it was added), and the Parameters buttons (about 100 px) went into the
+// rows that had room, with the wide limit raised from 1400px by their width.
 // `top_height` is the rows' total height, for the hint strip that sits under
 // them (`ManipulateHintBar.toolbar_height`).
 export component SolidViewportToolbar inherits VerticalLayout {
@@ -383,7 +404,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
     in-out property <length> diagram_pan_x: 0px;
     in-out property <length> diagram_pan_y: 0px;
 
-    property <bool> wide: root.width >= 1400px;
+    property <bool> wide: root.width >= 1500px;
     property <bool> narrow: root.width < 620px;
     property <bool> medium: !root.wide && root.width >= 980px;
     property <bool> low: !root.wide && !root.medium && !root.narrow;
@@ -395,7 +416,8 @@ export component SolidViewportToolbar inherits VerticalLayout {
     property <bool> has_cut: SolidPreviewModel.view_mode != 3 && SolidPreviewModel.cut_step_count > 0 && (SolidPreviewModel.has_solid || SolidPreviewModel.view_mode == 1 || SolidPreviewModel.tier_cutoff != -1);
     // The pill rows' height (28px rows, 6px between rows), for the hint strip
     // that goes under them.
-    out property <length> top_height: root.wide ? 28px : (root.medium ? 62px : (root.low ? 96px : (root.has_cut ? 130px : 96px)));
+    // (Narrow: modes, views, tools and the Parameters row, plus the cut slider's row when it shows.)
+    out property <length> top_height: root.wide ? 28px : (root.medium ? 62px : (root.low ? 96px : (root.has_cut && SolidPreviewModel.view_mode != 3 ? 164px : 130px)));
 
     // The "Not solved" banner takes precedence over mesh_cache status when the shown
     // solid is stale. A running catalogue-wide batch outranks both: while
@@ -423,6 +445,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
         }
         // Filler: keeps the pills at their own width.
         Rectangle { horizontal-stretch: 1; }
+        ParametersPills { }
         ToolbarHelp { }
     }
 
@@ -444,6 +467,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
             spacing: 8px;
             ViewPills { }
             Rectangle { horizontal-stretch: 1; }
+            ParametersPills { }
         }
     }
 
@@ -469,6 +493,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
                 diagram_pan_y <=> root.diagram_pan_y;
             }
             Rectangle { horizontal-stretch: 1; }
+            ParametersPills { }
         }
     }
 
@@ -496,34 +521,54 @@ export component SolidViewportToolbar inherits VerticalLayout {
             spacing: 8px;
             ToolPills {
                 tight: true;
+                part: 1;
                 diagram_zoom <=> root.diagram_zoom;
                 diagram_pan_x <=> root.diagram_pan_x;
                 diagram_pan_y <=> root.diagram_pan_y;
             }
             Rectangle { horizontal-stretch: 1; }
         }
+        // The Parameters buttons take the last row: beside the tool pills they need about 356px,
+        // and at the 720px minimum window the viewport is only about 345px wide, so the third
+        // button ran past the window edge. Diagram mode shares the row with the enlarge pills
+        // (Crown / Pavilion / Profile), which leave room for them.
+        HorizontalLayout {
+            spacing: 8px;
+            if SolidPreviewModel.view_mode == 3: ToolPills {
+                tight: true;
+                part: 2;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            ParametersPills { }
+        }
     }
 
-    if root.status_text != "": Rectangle {
-        height: 22px;
-        background: Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
+    // Bottom group: the preview badge (when the picture uses a preview material) above the
+    // status line, so the rows above keep their own space-between placement.
+    VerticalLayout {
+        spacing: 4px;
+        if ViewportModel.previewing: PreviewBadge { row_height: 28px; }
+        if root.status_text != "": Rectangle {
+            height: 22px;
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
 
-        accessible-role: AccessibleRole.text;
-        accessible-label: root.status_text;
+            accessible-role: AccessibleRole.text;
+            accessible-label: root.status_text;
 
-        Text {
-            text: root.status_text;
-            font-size: 11px;
-            color: Theme.text-secondary;
-            horizontal-alignment: left;
-            vertical-alignment: center;
-            x: 8px;
-            width: parent.width - 16px;
-            height: parent.height;
-            overflow: elide;
+            Text {
+                text: root.status_text;
+                font-size: 11px;
+                color: Theme.text-secondary;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+                x: 8px;
+                width: parent.width - 16px;
+                height: parent.height;
+                overflow: elide;
+            }
         }
     }
 }

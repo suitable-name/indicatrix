@@ -1,5 +1,4 @@
-//! Zone geometry for the colour fit (plan 2026-10-09, section 7.3; lane G1). Only built with the
-//! `zoning` feature. No user interface: the window code calls these functions.
+//! Zone geometry for the colour fit (plan 2026-10-09, section 7.3; lane G1). No user interface: the window code calls these functions.
 //!
 //! The pieces, all pure and deterministic (fixed iteration caps, no randomness, no hashed
 //! collections in results):

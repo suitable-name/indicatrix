@@ -411,14 +411,15 @@ fn hull_faces(pts: &[DVec3], eps: f64) -> Option<Vec<Face>> {
         if !visible.contains(&true) {
             continue;
         }
-        let (seen, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut faces)
+        let (lit_faces, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut faces)
             .into_iter()
             .zip(visible)
-            .partition(|&(_, seen)| seen);
-        let lit: BTreeSet<(usize, usize)> = seen.iter().flat_map(|(f, _)| f.edges()).collect();
+            .partition(|&(_, is_visible)| is_visible);
+        let lit: BTreeSet<(usize, usize)> = lit_faces.iter().flat_map(|(f, _)| f.edges()).collect();
         faces = rest.into_iter().map(|(f, _)| f).collect();
         faces.extend(
-            seen.iter()
+            lit_faces
+                .iter()
                 .flat_map(|(f, _)| f.edges())
                 .filter(|&(a, b)| !lit.contains(&(b, a)))
                 .map(|(a, b)| Face::new(pts, a, b, index)),

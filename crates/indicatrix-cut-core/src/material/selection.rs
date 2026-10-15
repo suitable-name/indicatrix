@@ -143,7 +143,8 @@ impl MaterialSelection {
     /// `refractive_index_override` as a flat (non-dispersive) Cauchy fit at exactly
     /// the typed value, then the `body_color_override` via
     /// `GemMaterial::with_body_color`. With neither set, `gem` comes back
-    /// unchanged.
+    /// unchanged. A zoned material takes the refractive-index
+    /// override only: its colour is its zones, so a body-colour override is ignored.
     ///
     /// The ONE place a design's selection turns a looked-up material into the stone
     /// the optimizer, tilt curve, live render and export all see -- every
@@ -154,11 +155,20 @@ impl MaterialSelection {
     #[must_use]
     pub fn apply_overrides(&self, mut gem: GemMaterial) -> GemMaterial {
         if let Some(n_d) = self.refractive_index_override {
-            gem.dispersion = DispersionModel::Cauchy {
-                a: n_d as f32,
-                b: 0.0,
-                c: 0.0,
-            };
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the material storage precision; a refractive index is in the normal float range"
+            )]
+            let a = n_d as f32;
+            gem.dispersion = DispersionModel::Cauchy { a, b: 0.0, c: 0.0 };
+        }
+        // A zoned material's colour is its zones; the base zone is edited in the material
+        // editor. A body-colour override would be a silent no-op for the colour (the zoned
+        // tracer ignores `absorption`) and would flip the unit to `ModelUnit`, which breaks the
+        // "zoned materials are PerMm only" invariant and mis-scales the zone geometry. So only
+        // the refractive-index override applies to a zoned material.
+        if gem.zoning.is_some() {
+            return gem;
         }
         if let Some(bands) = self
             .body_color_bands_override

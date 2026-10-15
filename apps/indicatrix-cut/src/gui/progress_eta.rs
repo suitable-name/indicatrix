@@ -153,11 +153,21 @@ pub fn format_eta(eta: Option<Duration>) -> String {
     let Some(remaining) = eta else {
         return String::new();
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the value is rounded and at least 1.0 above; an ETA never nears u64::MAX seconds"
+    )]
     let total_secs = remaining.as_secs_f64().round().max(1.0) as u64;
 
     if total_secs < 60 {
         format!("about {total_secs} s left")
     } else if total_secs < 3600 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "total_secs is below 3600, so the rounded minute count is a small positive value"
+        )]
         let minutes = (total_secs as f64 / 60.0).round() as u64;
         format!("about {minutes} min left")
     } else {

@@ -144,6 +144,7 @@ fn clear_outputs(host: &Rc<Host>) {
     model.set_loaded_banner("".into());
     model.set_save_name_open(false);
     model.set_confirm_replace_open(false);
+    model.set_confirm_overwrite_open(false);
     model.set_results_unsaved(false);
     model.set_face_from_view_armed(false);
     model.set_progress_fraction(0.0);

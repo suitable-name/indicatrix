@@ -1,6 +1,6 @@
 # 10. Remote Worker Setup
 
-## What you will do
+## What You Will Do
 
 This chapter covers connecting the app to its one remote: a **coordinator**
 (`indicatrix-worker serve`, a server that other machines — "workers" — join,
@@ -22,13 +22,15 @@ version that listed several workers keep the **first** one — the one the
 app was already rendering with — and drop the rest; the log names what was
 dropped.)
 
-## Why use a remote worker
+## Why Use a Remote Worker
 
 Rendering — especially a high-resolution export, or a live view with many
 samples per pixel — is faster on a more powerful machine. A remote worker
 lets you point this app at another computer (or a render server) on your
 network and have it do some or all of the rendering work, while you keep
 working here.
+
+![An export running with the Final Picture Only transfer, next to the load graphs of the remote machine that renders it.](../../../../assets/hybrid_remote_rendering.png)
 
 ## Certificates
 
@@ -38,20 +40,20 @@ the worker software's own certificate-issuing command produces; you cannot
 substitute other certificate files. There are two ways to get this folder
 into the app.
 
-### Option A: enter the folder manually
+### Option A: Enter the Folder Manually
 
 If you already have a bundle folder (someone gave it to you, or you
 generated it yourself on the worker side), type or paste its path into the
 **Certificate bundle folder** field, or click **Browse...** to pick it
 with a folder dialog.
 
-### Option B: redeem an enrollment token
+### Option B: Redeem an Enrollment Token
 
 If instead you have an **enrollment address** and a short-lived **token**
 (starting `GW1-...`) from whoever manages the worker:
 
 1. Click **Remote** in the top toolbar to open the **Remote Coordinator**
-   panel, then **Set up remote coordinator** (or the edit icon of the one
+   panel, then **Set Up Remote Coordinator** (or the edit icon of the one
    already configured).
 2. Paste the enrollment address into **Enrollment address (host:port, from
    "cert issue-token")**.
@@ -74,7 +76,9 @@ for, which could mean a wrong address, or something intercepting the
 connection. Confirm the correct address with whoever gave you the token
 before trying again.
 
-## Setting up the remote coordinator
+## Setting Up the Remote Coordinator
+
+![The Remote Coordinator dialog with an endpoint entered.](../../../../assets/remote_coordinator.png)
 
 In the **Remote Coordinator** panel, fill in the form:
 
@@ -82,43 +86,48 @@ In the **Remote Coordinator** panel, fill in the form:
 - **Address (host:port)** — the coordinator's viewer port, e.g.
   `render-server:7878`.
 - **Certificate bundle folder** (see above).
-- **Live stream** — Live progressive (stream improving previews) or
-  Final only (wait for the finished image).
+- **Live Transfer** — one choice for how the remote's share comes back while you look
+  at the stone: **Progressive (Full Data)** streams improving previews,
+  **Full Data, When Finished** waits for the finished samples, and **Final Picture
+  (Denoised)** sends only finished, denoised frames. (Earlier versions had a separate
+  "Live stream" and "Live Transfer"; a remote saved with either keeps its meaning and
+  they are now this one control.) The Render & Output tab shows it read-only in its
+  Compute section, with an **Open Remote Settings...** link to this form.
 - **Cadence (ms)** — how often the remote sends an updated preview during
   a live render (default 500ms; the remote may enforce a slower floor than
   you ask for).
-- **Preview scale** — Full, Half, Quarter (the default), or a custom
+- **Preview Scale** — Full, Half, Quarter (the default), or a custom
   percentage, for how large a preview image the remote streams back while
   you're actively moving the camera.
-- **Export transfer (default)** — Full data or Final picture only; the
+- **Export Transfer (Default)** — Full Data or Final Picture Only; the
   starting choice of the export dialog's and the tilt video's **Transfer**
   row (see below).
 
 Click **Save**. The panel then shows the configured remote with **Test
-connection**, **Mirror library to local**, an edit icon and a remove
+Connection**, **Mirror Library to Local**, an edit icon and a remove
 (**×**) button. Removing it makes every render local again.
 
-## Transfer: full data or final picture
+## Transfer: Full Data or Final Picture
 
 How the remote's result travels back to you is a separate choice from
 *where* the rendering happens:
 
-- **Full data** (the default) — the remote sends raw radiance, and your own
+- **Full Data** (the default) — the remote sends raw radiance, and your own
   CPU/GPU keep contributing samples to the same image (Local + Remote).
   This works with every remote.
-- **Final picture only** — the remote renders the whole image, tone-maps
+- **Final Picture Only** — the remote renders the whole image, tone-maps
   and (live view) denoises it itself — with the same denoiser and tone curve
   this app uses — and sends finished pictures: far less data over a slow home
   link. For a still export or tilt video (not the live view), your own CPU/GPU
-  can still pitch in: **Final-picture exports: this machine renders a share
-  too**, in Rendering Settings next to Live Compute (on by default, greyed
+  can still pitch in: **Final-Picture Exports: This Machine Renders a Share
+  Too**, in the Render & Output tab's Compute section next to Live Compute (on by default, greyed
   out without a remote configured), has your computer trace a reserved tail
   of the sample budget alongside the remote — but only when that export's
   Compute choice is Local + Remote — and upload its share for the coordinator
   to fold in before tone-mapping. If your share doesn't arrive in time, the
   coordinator quietly renders that tail itself instead, so a slow or
   interrupted local machine never stalls or breaks the export. Every current
-  coordinator offers Final picture only, whether it renders itself or through
+  coordinator offers Final Picture Only, whether it renders itself or through
   joined workers. If a remote answers that it cannot, the app falls back to
   full data once, with a note, and does not ask that remote again until you
   reconnect or re-save it.
@@ -134,14 +143,14 @@ Where the choice lives:
   profile an all-local export would carry. If the final picture fails
   under Local + Remote, the image is rendered with full data instead; under
   Remote only it fails.
-- **Live view** — **Live Transfer** in the Rendering Settings, next to Live
-  Compute. With **Final picture** the settled image is the remote's alone:
+- **Live view** — the remote's **Live transfer** (above), shown in the Render & Output
+  tab next to Live Compute. With **Final picture** the settled image is the remote's alone:
   your own GPU/CPU pause after the handoff (as with Remote only), because
   finished 8-bit frames cannot be combined with your own samples.
 
-## Testing the connection
+## Testing the Connection
 
-Click **Test connection**. While it runs, the button shows "Testing...".
+Click **Test Connection**. While it runs, the button shows "Testing...".
 On success you'll see something like "Compatible -- coordinator (3
 workers) (protocol v16)" (or "CPU, 16 threads" / a GPU description for a
 coordinator that renders on its own with `--render` and has no workers
@@ -169,16 +178,16 @@ A coordinator also caps the memory its in-progress jobs may use
 "coordinator busy" and is handled like any other failed remote request:
 with Local + Remote it finishes on your own computer.
 
-## Browsing the remote's library, and mirroring it locally
+## Browsing the Remote's Library, and Mirroring It Locally
 
 The panel's **Library** row switches between **Local** and **Remote**:
 
 - **Remote** switches the catalogue panel (Chapter 2) to show the remote's
   design library instead of your own local one. A badge next to the status
   line always shows which library you're currently browsing.
-- **Mirror library to local** pulls the remote's entire design library
+- **Mirror Library to Local** pulls the remote's entire design library
   down into your own local database, with its own progress bar and a
-  **Cancel mirror** button while it runs.
+  **Cancel Mirror** button while it runs.
 
 While browsing a remote library, **Load Selected** (Chapter 3) fetches
 that design's original `.asc` cutting-instructions file straight from the
@@ -191,11 +200,11 @@ a placeholder. Mirroring to local first is still worthwhile if you want an
 offline copy or plan to edit the same design repeatedly without a network
 round trip each time.
 
-## Catalogue batches on the remote
+## Catalogue Batches on the Remote
 
 The catalogue's batch tools — **Generate Previews** (one design, a filtered
 set or the whole library) and **Compute Tilt Curves** (Chapters 2 and 14) —
-send their work to the remote too, whenever Live Compute is **Remote only** or
+send their work to the remote too, whenever Live Compute is **Remote Only** or
 **Local + Remote**. A preview is one small picture per view and a tilt sweep
 is one request per design, and a remote renders one of them in a fraction of
 the time the request needs to travel there and back. So the app does not send
@@ -203,7 +212,7 @@ one and wait for the answer before the next: it keeps **several pictures in
 flight on the remote at once**, each rendered whole by one of the
 coordinator's machines, and writes each as it arrives.
 
-How many is the **Remote lanes for batches** setting in the Remote
+How many is the **Remote Lanes for Batches** setting in the Remote
 Coordinator panel (1 to 32, default 4). It is saved the moment you change it
 and read when a batch starts, so a batch already running keeps the count it
 began with. A coordinator with several joined workers wants more lanes than
@@ -211,7 +220,7 @@ one with a single machine; beyond roughly one lane per worker slot a higher
 number only queues pictures on the coordinator. If the remote fails pictures
 repeatedly, each lane backs off on its own (and with **Local + Remote** your
 own computer renders the pictures the remote could not, exactly as before).
-With **Local only**, no lane is used.
+With **Local Only**, no lane is used.
 
 **Batched previews.** Against a single worker (not a coordinator), Generate
 Previews does not send one picture per request. Each lane keeps one connection
@@ -220,20 +229,20 @@ open for the whole run and sends the pictures in **requests of several at once**
 one is still rendering, so the worker's graphics card always has work queued
 instead of idling between pictures. The worker returns each finished picture
 (the same picture your own computer would have made), and the app saves it as it
-arrives. **Pictures per preview request** in the same panel sets the request size
+arrives. **Pictures per Preview Request** in the same panel sets the request size
 (1 to 32, default 10). Because the batching already keeps a graphics card busy,
 a worker with a graphics card uses **2 lanes** unless you have set the lane count
 yourself; a CPU worker or a coordinator keeps the default of 4. A coordinator
 does not take batches: against one, previews are sent one picture at a time as
 before. Tilt-curve batches are not batched.
 
-## Denoise and sample budget
+## Denoise and Sample Budget
 
 One setting applies to remote rendering generally, not per-worker:
 
-- **Denoise merged image** — a toggle for whether the combined
+- **Denoise Merged Image** — a toggle for whether the combined
   local+remote image gets denoised (grain removed) before display. With
-  **Live Transfer: Final picture** the remote denoises its pictures itself,
+  a **Live Transfer** of **Final Picture** the remote denoises its pictures itself,
   the same way.
 
 There is no separate remote sample budget any more: the live view's
@@ -260,7 +269,7 @@ default the coordinator spreads exports over all its idle workers but keeps
 the live view on a single lane for the quickest response; its operator can
 change that.
 
-## When a worker "goes silent"
+## When a Worker "Goes Silent"
 
 If the app sends work to your remote worker and gets no response at all —
 not even a routine status update — for too long, you'll see a message
@@ -278,7 +287,7 @@ This does not necessarily mean anything is broken:
 - With **Local + Remote** selected (Chapter 9), the app automatically
   finishes the job locally and tells you it happened, keeping every sample
   the remote worker had already completed.
-- With **Remote only** selected, there is no local fallback — the render
+- With **Remote Only** selected, there is no local fallback — the render
   or export simply fails, and you'll need to either fix the worker or
   switch to a mode that includes local computation.
 
@@ -293,7 +302,7 @@ Once you've confirmed the worker is reachable again, just retry — with
 Local + Remote selected, the app will pick it back up on the next attempt
 without any further configuration.
 
-## Next steps
+## Next Steps
 
 Continue to Chapter 11 for how the app saves your work and the file
 formats it uses, or Chapter 12 for a consolidated troubleshooting list.

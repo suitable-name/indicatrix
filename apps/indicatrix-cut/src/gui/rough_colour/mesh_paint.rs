@@ -1,5 +1,4 @@
-//! Painting the polished windows on the 3D mesh of the Rough Planner's rough view (`zoning`
-//! feature only).
+//! Painting the polished windows on the 3D mesh of the Rough Planner's rough view.
 //!
 //! The wizard's Surfaces step paints on the photo (a brush back-projected through each pixel's
 //! first mesh hit). This module is the same brush on the 3D view: a click in the view becomes a
@@ -65,8 +64,7 @@ pub fn triangles_under_brush(mesh: &RoughMesh, ray: &MeshRay, radius_mm: f64) ->
     let radius = radius_mm.max(0.0);
     let vertices = mesh.vertices();
     let mut out = vec![hit.triangle];
-    for (index, tri) in mesh.triangles().iter().enumerate() {
-        let index = index as u32;
+    for (index, tri) in (0_u32..).zip(mesh.triangles().iter()) {
         if index == hit.triangle {
             continue;
         }
@@ -121,7 +119,7 @@ mod tests {
 
     /// The triangles of the +z face, found by their planes (the mesh may number them its own way).
     fn top_face(mesh: &RoughMesh) -> Vec<u32> {
-        (0..mesh.triangles().len() as u32)
+        (0..u32::try_from(mesh.triangles().len()).expect("test mesh has few triangles"))
             .filter(|&t| mesh.triangle_plane(t).0.z > 0.9)
             .collect()
     }
@@ -191,7 +189,7 @@ mod tests {
         let list: Vec<u32> = windows.iter().copied().collect();
         let map = surface_map(SurfaceChoice::Frosted(0.2), None, &list);
         let frosted = SurfaceClass::Frosted { roughness: 0.2 };
-        for t in 0..mesh.triangles().len() as u32 {
+        for t in 0..u32::try_from(mesh.triangles().len()).expect("test mesh has few triangles") {
             let expected = if painted.contains(&t) {
                 SurfaceClass::Polished
             } else {

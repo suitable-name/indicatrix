@@ -1,15 +1,76 @@
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { ViewportModel } from "../../models/viewport.slint";
+import { EditorModel } from "../../models/editor.slint";
 import { IconButton } from "../icon_button.slint";
-import { DesignLightingSection } from "design_lighting_section.slint";
-import { SettingLabel } from "setting_label.slint";
 
-// Named Lighting Presets. A preset bundles light yaw/pitch, exposure, the
-// lighting-rig selection, and camera distance -- deliberately NOT camera
-// yaw/pitch, so applying one never spins the gem out from under the user.
-// Ends with the "Lighting for this design" group (`DesignLightingSection`): the
-// lighting a design remembers for itself, kept apart from this list of named presets.
+// The one-line "name it and keep it" row of the Lighting tab: a text field that already holds a
+// suggested name (selected, so typing replaces it) and a check button. Used by the saved-lighting
+// list below and by the Camera block's "Save view" (the lighting plus the camera pose). The caller
+// fills `name` with `ViewportModel.suggest_lighting_name()` before the row appears, and clears
+// it afterwards. Enter confirms, like the button.
+export component SaveNameRow inherits HorizontalLayout {
+    in-out property <string> name;
+    in property <string> placeholder: "Name this lighting...";
+    // The accessible name of the text field.
+    in property <string> field_label: "Name for the Saved Lighting";
+    in property <string> confirm_hint: "Save under this name";
+    callback accepted(string);
+
+    spacing: 6px;
+    init => {
+        name_edit.focus();
+        name_edit.select-all();
+    }
+
+    Rectangle {
+        horizontal-stretch: 1;
+        height: 26px;
+        background: Theme.surface-raised;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-cyan;
+
+        name_edit := LineEdit {
+            width: 100%;
+            height: 100%;
+            text <=> root.name;
+            placeholder-text: root.placeholder;
+            accessible-label: root.field_label;
+            // While typing here, the window's single-key shortcuts (`?`, Ctrl+Z) stay out.
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            accepted => {
+                if root.name != "" {
+                    root.accepted(root.name);
+                }
+            }
+        }
+    }
+
+    IconButton {
+        width: 26px;
+        height: 26px;
+        icon: @image-url("../../icons/check.svg");
+        hint: root.name == "" ? "Type a name first" : root.confirm_hint;
+        enabled: root.name != "";
+        tint: Theme.text-on-accent;
+        hover_fill: Theme.accent-cyan-hover;
+        lit: true;
+        lit_tint: Theme.text-on-accent;
+        clicked => {
+            if root.name != "" {
+                root.accepted(root.name);
+            }
+        }
+    }
+}
+
+// Saved lighting: the named looks you can bring back with one click. A saved lighting is a
+// complete look -- the lighting rig, the light direction, exposure, surface glare, backdrop, head
+// shadow and the HDR map, plus the camera distance -- but deliberately not the way you are turned
+// around the stone (only "Save view" in the Camera block keeps that too), so applying one never
+// spins the gem out from under you. The Lighting tab mounts the "This design" block
+// (`DesignLightingSection`) as its own group after this one.
 export component LightingPresetsSection inherits VerticalLayout {
     property <bool> adding_preset: false;
     property <string> new_preset_name: "";
@@ -18,71 +79,48 @@ export component LightingPresetsSection inherits VerticalLayout {
 
     spacing: 6px;
     HorizontalLayout {
-        alignment: space-between;
         spacing: 6px;
-        SettingLabel {
-            text: "Lighting Presets";
-            hint: "Lighting Presets: named lightings you can bring back with one click. A preset keeps the light direction, the exposure, the lighting choice and the camera distance, but not the way you are turned around the stone. Use the save button to add the current lighting.";
+        Text {
+            horizontal-stretch: 1;
+            text: "Click a name to use that lighting.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+            wrap: word-wrap;
         }
 
-        IconButton {
+        icon-button-adding-preset := IconButton {
             icon: @image-url("../../icons/save.svg");
-            hint: root.adding_preset ? "Cancel saving a new preset" : "Save the current lighting as a new preset";
+            hint: root.adding_preset
+                ? "Cancel saving the lighting"
+                : "Save the lighting you see now (rig, light, exposure, glare, backdrop, head shadow and environment map) under a name. It does not keep the way you are turned around the stone; use Save view in the Camera block for that.";
             checkable: true;
             lit: root.adding_preset;
             tint: Theme.accent-cyan;
             clicked => {
+                EditorModel.text_focus = false;
                 root.adding_preset = !root.adding_preset;
-                root.new_preset_name = "";
+                root.new_preset_name = root.adding_preset ? ViewportModel.suggest_lighting_name() : "";
             }
         }
     }
 
-    // Inline "save current lighting as new preset" row
-    if root.adding_preset: HorizontalLayout {
-        spacing: 6px;
-
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 26px;
-            background: Theme.surface-raised;
-            border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: Theme.accent-cyan;
-
-            LineEdit {
-                width: 100%;
-                height: 100%;
-                text <=> root.new_preset_name;
-                placeholder-text: "New preset name...";
-                accessible-label: "New lighting preset name";
-            }
-        }
-
-        IconButton {
-            width: 26px;
-            height: 26px;
-            icon: @image-url("../../icons/check.svg");
-            hint: root.new_preset_name == "" ? "Type a name first" : "Save the preset under this name";
-            enabled: root.new_preset_name != "";
-            tint: Theme.text-on-accent;
-            hover_fill: Theme.accent-cyan-hover;
-            lit: true;
-            lit_tint: Theme.text-on-accent;
-            clicked => {
-                if (root.new_preset_name != "") {
-                    ViewportModel.save_lighting_preset(root.new_preset_name);
-                    root.adding_preset = false;
-                    root.new_preset_name = "";
-                }
-            }
+    // Inline "save the current lighting under a name" row
+    if root.adding_preset: SaveNameRow {
+        name <=> root.new_preset_name;
+        confirm_hint: "Save the lighting under this name";
+        accepted(name) => {
+            ViewportModel.save_lighting_preset(name);
+            // The field leaves the window while focused, which drops its own focus handler.
+            EditorModel.text_focus = false;
+            root.adding_preset = false;
+            root.new_preset_name = "";
         }
     }
 
-    // Preset rows: click the name to apply; pencil/check to rename (user
-    // presets only); trash to delete (user presets only). Built-in presets
-    // never show rename/delete since the Rust side refuses those operations
-    // on them anyway.
+    // Saved-lighting rows: click the name to apply; pencil/check to rename (your own only);
+    // trash to delete (your own only). Built-in ones never show rename/delete since the Rust
+    // side refuses those operations on them anyway.
     for preset[idx] in ViewportModel.lighting_presets: Rectangle {
         height: 28px;
         border-radius: Theme.radius-sm;
@@ -95,10 +133,10 @@ export component LightingPresetsSection inherits VerticalLayout {
             padding-right: 4px;
             spacing: 4px;
 
-            Rectangle {
+            rectangle-name := Rectangle {
                 horizontal-stretch: 1;
                 accessible-role: AccessibleRole.button;
-                accessible-label: "Apply lighting preset " + preset.name;
+                accessible-label: "Use Saved Lighting "+ preset.name;
                 accessible-enabled: root.renaming_index != idx;
                 accessible-action-default => {
                     if root.renaming_index != idx {
@@ -106,7 +144,7 @@ export component LightingPresetsSection inherits VerticalLayout {
                     }
                 }
 
-                Tooltip { text: @markdown("Apply this preset: the light, the exposure and the camera distance it saved."); }
+                Tooltip { text: @markdown("Use this lighting: the rig, light, exposure, glare, backdrop, head shadow, environment map and camera distance it saved."); }
 
                 apply_focus := FocusScope {
                     enabled: root.renaming_index != idx;
@@ -144,26 +182,34 @@ export component LightingPresetsSection inherits VerticalLayout {
                     border-width: 1px;
                     border-color: Theme.accent-cyan;
 
-                    LineEdit {
+                    line-edit-name := LineEdit {
                         width: 100%;
                         height: 100%;
                         text <=> root.rename_text;
-                        accessible-label: "New name for lighting preset " + preset.name;
+                        accessible-label: "New Name for Saved Lighting "+ preset.name;
+                        changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                        accepted => {
+                            if (root.rename_text != "") {
+                                ViewportModel.rename_lighting_preset(idx, root.rename_text);
+                            }
+                            EditorModel.text_focus = false;
+                            root.renaming_index = -1;
+                        }
                     }
                 }
             }
 
-            // "Usable for export" toggle. Shown for EVERY preset, built-ins
+            // "Usable for export" toggle. Shown for EVERY saved lighting, built-ins
             // included (unlike rename/delete below): whether a lighting mood
             // is worth re-rendering under is a matter of taste, not identity.
-            IconButton {
+            icon-button-export-usable := IconButton {
                 width: 20px;
                 height: 20px;
                 icon: @image-url("../../icons/save.svg");
                 glyph: 10px;
                 hint: preset.export_usable
                     ? "In the export dialog's list of lightings. Click to take it out."
-                    : "Add this preset to the export dialog's list of lightings.";
+                    : "Add this lighting to the export dialog's list of lightings.";
                 checkable: true;
                 lit: preset.export_usable;
                 tint: Theme.text-muted;
@@ -176,7 +222,7 @@ export component LightingPresetsSection inherits VerticalLayout {
                 height: 20px;
                 icon: @image-url("../../icons/pencil.svg");
                 glyph: 10px;
-                hint: "Rename this preset";
+                hint: "Rename this saved lighting";
                 tint: Theme.text-muted;
                 hover_fill: Theme.border-dialog;
                 clicked => {
@@ -197,6 +243,7 @@ export component LightingPresetsSection inherits VerticalLayout {
                     if (root.rename_text != "") {
                         ViewportModel.rename_lighting_preset(idx, root.rename_text);
                     }
+                    EditorModel.text_focus = false;
                     root.renaming_index = -1;
                 }
             }
@@ -206,13 +253,11 @@ export component LightingPresetsSection inherits VerticalLayout {
                 height: 20px;
                 icon: @image-url("../../icons/trash.svg");
                 glyph: 10px;
-                hint: "Delete this preset";
+                hint: "Delete this saved lighting";
                 tint: Theme.danger;
                 hover_fill: Theme.danger-surface-hover;
                 clicked => { ViewportModel.delete_lighting_preset(idx); }
             }
         }
     }
-
-    DesignLightingSection { }
 }

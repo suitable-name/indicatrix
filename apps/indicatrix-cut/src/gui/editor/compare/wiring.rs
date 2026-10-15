@@ -74,6 +74,15 @@ pub(in crate::gui) fn close_compare_window() {
     host::close_window(true);
 }
 
+/// Forgets what a previous main window left behind: the entry handles, the live session and the
+/// pop-out window itself. A kept window would otherwise be reused by the next main window with the
+/// previous one's callbacks (their `MainWindow` handle is gone). See `gui::window_release`.
+pub(in crate::gui::editor) fn release_window_state() {
+    let deps = ENTRY_DEPS.with(|cell| cell.borrow_mut().take());
+    drop(deps);
+    host::release();
+}
+
 /// The Retarget dialog is still open after its popped-out session went away: the
 /// pane takes the (current) proposal back.
 fn restore_embedded_if_open(ui: &MainWindow) {

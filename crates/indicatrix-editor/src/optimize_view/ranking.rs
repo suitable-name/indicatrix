@@ -155,7 +155,7 @@ pub fn optimize_run_status(result: &OptimizeResult, elapsed_secs: Option<f32>) -
     match result.candidates.first() {
         None if outcome.evaluations == 0 => format!(
             "Nothing could be changed with these settings: no tier was free to move. Check \
-             \"Only selected tiers\" and the angle ranges.{notes}"
+             \"Only Selected Tiers\" and the angle ranges.{notes}"
         ),
         None => format!(
             "No better arrangement found in {} evaluation(s){}{time}. The tiers it was allowed to \
@@ -448,7 +448,7 @@ mod tests {
             text.starts_with("Nothing could be changed with these settings"),
             "{text}"
         );
-        assert!(text.contains("Only selected tiers"), "{text}");
+        assert!(text.contains("Only Selected Tiers"), "{text}");
     }
 
     #[test]

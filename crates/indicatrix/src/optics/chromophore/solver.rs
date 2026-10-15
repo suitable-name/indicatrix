@@ -11,6 +11,10 @@
 //!   `alpha_m(lambda) = base + sum_i c_i * S_i,m(lambda)` plus `exp` and the XYZ weighting (IVCT
 //!   pairs are evaluated through their pairing law). Items start on a coarse log grid
 //!   (24 / 8x8 / 6x6x6), then a Levenberg-Marquardt refinement in log space runs (cap 20).
+//! - The amount bounds are those the resolver applies: an item's upper bound follows the treated
+//!   valence split of its treatment combination, and the free items of a multi-element
+//!   chromophore are scaled down together where they exceed its `conc_max` (locked partners use
+//!   up part of it). The returned recipe is passed through [`ColorRecipe::clamp_amounts`].
 //! - The winner is re-scored through [`resolve`] (WYSIWYG); if the band budget moved `dE00` by
 //!   more than 0.5, up to 5 further LM iterations use the budgeted tensor as the forward model.
 //! - Ties (`|dcost| < 1e-9`): fewer items, then lexicographic ids. No wall clock in the decision
@@ -43,6 +47,15 @@ use crate::{
     },
     optics::absorption::{AbsorptionBand, legacy_rgb_bands},
 };
+
+/// A solver value (`f64`) as the `f32` the band and CMF types take.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "bands and CMF inputs are f32; wavelengths, widths and peaks are in the normal float range"
+)]
+const fn f32_of(value: f64) -> f32 {
+    value as f32
+}
 
 /// Maximum forward evaluations per solve before capping.
 pub const MAX_EVALS: usize = 40_000;
@@ -222,7 +235,7 @@ impl Observer {
         let mut white_y = 0.0;
         for i in 0..N {
             let lambda = 380.0 + i as f64;
-            let cmf = cie_1931_cmf(lambda as f32);
+            let cmf = cie_1931_cmf(f32_of(lambda));
             let s = ill.spectral_power(lambda);
             for k in 0..3 {
                 w[k][i] = s * f64::from(cmf[k]);
@@ -366,6 +379,15 @@ struct Item {
     quad: Option<Vec<f64>>,
 }
 
+/// The summed bound of one multi-element chromophore (`HostData::summed_caps`): its free items
+/// may add up to `cap` at most, as the resolver scales them down together beyond that.
+struct SumCap {
+    /// `(index into Model::items, factor from the item's unit into the chromophore's unit)`.
+    items: Vec<(usize, f64)>,
+    /// The chromophore's `conc_max` minus the converted amounts of its locked elements (>= 0).
+    cap: f64,
+}
+
 /// The linear forward model of one (subset, treatment combination).
 struct Model<'h> {
     host: Option<&'h HostData>,
@@ -379,16 +401,42 @@ struct Model<'h> {
     amounts: BTreeMap<String, f64>,
     /// Sum of the locked end-member fractions.
     locked_em_sum: f64,
+    /// Summed bounds of the multi-element chromophores that have a free item.
+    sum_caps: Vec<SumCap>,
+    /// The free amounts after the summed caps (allocated once, refilled per call).
+    c_capped: Vec<f64>,
     scratch: Vec<f64>,
 }
 
 impl Model<'_> {
+    /// Fills `c_capped` with `c`, scaled down where the free items of a multi-element chromophore
+    /// add up to more than its cap (the same rule as `HostData::cap_summed_amounts`, which the
+    /// resolver applies).
+    fn capped(&mut self, c: &[f64]) {
+        self.c_capped.clear();
+        self.c_capped.extend_from_slice(c);
+        for cap in &self.sum_caps {
+            let sum: f64 = cap
+                .items
+                .iter()
+                .map(|&(idx, factor)| self.c_capped[idx] * factor)
+                .sum();
+            if sum > cap.cap * (1.0 + 1e-9) {
+                let scale = if cap.cap > 0.0 { cap.cap / sum } else { 0.0 };
+                for &(idx, _) in &cap.items {
+                    self.c_capped[idx] *= scale;
+                }
+            }
+        }
+    }
+
     /// Evaluates the model at free amounts `c`.
     fn eval(&mut self, ctx: &Ctx<'_>, c: &[f64]) -> Result<Resid, Cancelled> {
         ctx.tick()?;
+        self.capped(c);
         self.scratch.clear();
         self.scratch.extend_from_slice(&self.base);
-        for (item, &ci) in self.items.iter().zip(c) {
+        for (item, &ci) in self.items.iter().zip(&self.c_capped) {
             for (a, s) in self.scratch.iter_mut().zip(&item.spectrum) {
                 *a += ci * s;
             }
@@ -613,6 +661,8 @@ impl<'a> Search<'a> {
                 locked.insert(id.clone(), amount.clamp(0.0, host.element_conc_max(id)));
             }
         }
+        // The resolver scales locked elements of a multi-element chromophore down together too.
+        host.cap_summed_amounts(&mut locked);
         Self {
             cat,
             host,
@@ -858,7 +908,13 @@ impl<'a> Search<'a> {
 
         let mut items = Vec::new();
         for id in ids {
-            let c_max = host.element_conc_max(id);
+            // The bound under the combination's treated split (the strike lowers the copper bound
+            // of a glass to the colloid's), as the resolver clamps. A free id always has a positive
+            // untreated bound, and the log grid needs `c_min > 0`, so a zero falls back to it.
+            let mut c_max = host.element_conc_max_split(id, &treated0.split);
+            if c_max <= 0.0 {
+                c_max = host.element_conc_max(id);
+            }
             items.push(Item {
                 id: (*id).clone(),
                 end_member: host.end_members.iter().any(|m| &m.id == *id),
@@ -871,6 +927,8 @@ impl<'a> Search<'a> {
             });
         }
 
+        let sum_caps = self.sum_caps(&items);
+        let c_capped = Vec::with_capacity(items.len());
         Model {
             host: Some(host),
             modes: self.modes,
@@ -880,8 +938,43 @@ impl<'a> Search<'a> {
             treated: Some(treated0),
             amounts,
             locked_em_sum,
+            sum_caps,
+            c_capped,
             scratch: Vec::with_capacity(len),
         }
+    }
+
+    /// The summed caps of the multi-element chromophores (`HostData::summed_caps`) that have at
+    /// least one free item: the free items with their factor into the chromophore's unit, and
+    /// the chromophore's `conc_max` minus what its locked elements already use.
+    fn sum_caps(&self, items: &[Item]) -> Vec<SumCap> {
+        let host = self.host;
+        let mut out = Vec::new();
+        for (chromo, n_own) in host.summed_caps() {
+            let Some(max) = chromo.conc_max else { continue };
+            let mut free = Vec::new();
+            let mut cap = max;
+            for (pos, element) in chromo.elements.iter().enumerate() {
+                if chromo.elements[..pos].contains(element) {
+                    continue;
+                }
+                let Some(factor) = host.to_unit_factor(element, n_own) else {
+                    continue;
+                };
+                if let Some(idx) = items.iter().position(|item| &item.id == element) {
+                    free.push((idx, factor));
+                } else if let Some(&locked) = self.locked.get(element) {
+                    cap -= locked.max(0.0) * factor;
+                }
+            }
+            if !free.is_empty() {
+                out.push(SumCap {
+                    items: free,
+                    cap: cap.max(0.0),
+                });
+            }
+        }
+        out
     }
 
     /// Coarse log grid, then LM, for one (subset, treatments).
@@ -956,6 +1049,10 @@ impl<'a> Search<'a> {
         Ok(self.candidate(&model, &r, &c, combo.to_vec()))
     }
 
+    /// The recipe of the locks and the free amounts `c` under `treatments`. It ends with
+    /// [`ColorRecipe::clamp_amounts`], so the reported amounts are the ones the resolver uses (the
+    /// bounds under the treated split and the summed caps of multi-element chromophores), which
+    /// the linear model applied to its free amounts the same way.
     fn make_recipe(&self, ids: &[String], c: &[f64], treatments: &[String]) -> ColorRecipe {
         let mut recipe = ColorRecipe::new(&self.host.id, self.cat.data_version);
         recipe.reference_path_mm = self.req.ref_path_mm;
@@ -968,6 +1065,7 @@ impl<'a> Search<'a> {
                 recipe.set_amount(id, v);
             }
         }
+        recipe.clamp_amounts(self.cat);
         recipe
     }
 
@@ -1072,6 +1170,10 @@ impl<'a> Search<'a> {
 }
 
 /// Upper bound on the evaluations of one grid + LM candidate of `size` items.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "size indexes the GRID_POINTS array, so it is a tiny item count"
+)]
 const fn candidate_bound(size: usize) -> usize {
     GRID_POINTS[size - 1].pow(size as u32) + 2 + LM_ITERS * (size + 4)
 }
@@ -1131,7 +1233,7 @@ fn unit_spectrum_of(
             "uniaxial" => vec![(0, weight(&["o"], 0.0)), (1, weight(&["e"], 0.0))],
             _ => vec![(0, weight(&["o"], 1.0))],
         };
-        let shape = AbsorptionBand::energy(band.centre_nm as f32, fwhm as f32, 1.0);
+        let shape = AbsorptionBand::energy(f32_of(band.centre_nm), f32_of(fwhm), 1.0);
         for (mode, w) in targets {
             if w <= 0.0 || mode >= modes {
                 continue;
@@ -1222,6 +1324,8 @@ pub fn solve_fantasy_lab(
         treated: None,
         amounts: BTreeMap::new(),
         locked_em_sum: 0.0,
+        sum_caps: Vec::new(),
+        c_capped: Vec::with_capacity(3),
         scratch: Vec::with_capacity(N),
     };
     let n = 3;
@@ -1260,7 +1364,7 @@ pub fn solve_fantasy_lab(
         .collect();
     let r = model.eval(&ctx, &peaks)?;
     Ok(FantasySolution {
-        peaks: [peaks[0] as f32, peaks[1] as f32, peaks[2] as f32],
+        peaks: [f32_of(peaks[0]), f32_of(peaks[1]), f32_of(peaks[2])],
         delta_e: ctx.metrics(&r).0,
     })
 }
@@ -1492,6 +1596,10 @@ fn lm_body(
 /// # Errors
 ///
 /// [`Cancelled`] if `cancel` was set during the solve.
+///
+/// # Panics
+///
+/// Never in practice: it panics only if the small constant `BODY_BANDS` exceeded `u32::MAX`.
 pub fn solve_body_color(
     target: &BodyColorTarget,
     cancel: &AtomicBool,
@@ -1502,7 +1610,7 @@ pub fn solve_body_color(
         1.0
     };
     let lab = crate::color::body_color::lch_to_lab(target.lch);
-    let ctx = Ctx::new(cancel, lab, None, 1.0, path as f32);
+    let ctx = Ctx::new(cancel, lab, None, 1.0, f32_of(path));
     let model = BodyModel::new(&ctx);
     let lo = BODY_OD_MIN.ln();
     let hi = BODY_OD_MAX.ln();
@@ -1510,7 +1618,7 @@ pub fn solve_body_color(
 
     // Coarse grid, first digit slowest; the best BODY_SEEDS points (earlier wins ties).
     let mut seeds: Vec<(f64, [f64; BODY_BANDS])> = Vec::with_capacity(BODY_SEEDS + 1);
-    let total = 3_usize.pow(BODY_BANDS as u32);
+    let total = 3_usize.pow(u32::try_from(BODY_BANDS).expect("BODY_BANDS is a small constant"));
     for code in 0..total {
         let mut u = [0.0; BODY_BANDS];
         let mut rest = code;
@@ -1543,7 +1651,7 @@ pub fn solve_body_color(
     }
     let (delta_e, od) = best.unwrap_or((f64::INFINITY, [0.0; BODY_BANDS]));
     Ok(BodyColorSolution {
-        amplitudes_per_mm: od.map(|o| (o / path) as f32),
+        amplitudes_per_mm: od.map(|o| f32_of(o / path)),
         delta_e,
         reachable: delta_e <= 1.0,
         evals: ctx.evals(),
@@ -1604,6 +1712,46 @@ mod tests {
     }
 
     #[test]
+    fn linear_model_scales_summed_amounts_down_like_resolve() {
+        // Andalusite V3+ / Cr3+ bounds V + Cr together at 0.5 wt% V2O3.
+        let cancel = AtomicBool::new(false);
+        let lab_target = [60.0, 10.0, -10.0];
+        let ctx = Ctx::new(&cancel, lab_target, None, 1.0, 5.0);
+        let host = cat().host("andalusite").expect("andalusite");
+        let names = ["Cr", "V"].map(String::from);
+        let ids: Vec<&String> = names.iter().collect();
+
+        let req = SolveRequest::new("andalusite", lab_target, 5.0);
+        let search = Search::new(cat(), host, &req, &ctx);
+        let mut model = search.build_model(&ids, &[]);
+        assert_eq!(model.sum_caps.len(), 1, "one multi-element chromophore");
+        let over = model.eval(&ctx, &[0.4, 0.4]).expect("eval");
+        assert!(
+            model.c_capped.iter().all(|c| (c - 0.25).abs() < 1e-9),
+            "{:?}",
+            model.c_capped
+        );
+        let at_cap = model.eval(&ctx, &[0.25, 0.25]).expect("eval");
+        assert!(over.iter().zip(&at_cap).all(|(a, b)| (a - b).abs() < 1e-6));
+
+        // A locked partner uses up part of the cap: V locked at 0.3 leaves 0.2 for Cr.
+        let locked = [("V".to_string(), 0.3)];
+        let req = SolveRequest {
+            locked: &locked,
+            ..SolveRequest::new("andalusite", lab_target, 5.0)
+        };
+        let search = Search::new(cat(), host, &req, &ctx);
+        let cr = [names[0].clone()];
+        let mut model = search.build_model(&[&cr[0]], &[]);
+        model.eval(&ctx, &[0.4]).expect("eval");
+        assert!(
+            (model.c_capped[0] - 0.2).abs() < 1e-9,
+            "{:?}",
+            model.c_capped
+        );
+    }
+
+    #[test]
     fn cr_only_target_selects_exactly_cr() {
         let mut r = ColorRecipe::new("corundum", cat().data_version);
         r.set_amount("Cr", 0.3);
@@ -1660,7 +1808,7 @@ mod tests {
         let peaks = [0.4_f32, 1.8, 0.9];
         let bands = legacy_rgb_bands(peaks);
         let col = body_color(
-            |l| bands.iter().map(|b| f64::from(b.evaluate(l as f32))).sum(),
+            |l| bands.iter().map(|b| f64::from(b.evaluate(f32_of(l)))).sum(),
             1.0,
             Illuminant::D65,
         );
@@ -1687,7 +1835,7 @@ mod tests {
     fn body_lab(amplitudes: [f32; 7], path_mm: f64) -> [f64; 3] {
         let bands = crate::optics::absorption::body_color_bands(amplitudes);
         body_color(
-            |l| bands.iter().map(|b| f64::from(b.evaluate(l as f32))).sum(),
+            |l| bands.iter().map(|b| f64::from(b.evaluate(f32_of(l)))).sum(),
             path_mm,
             Illuminant::D65,
         )

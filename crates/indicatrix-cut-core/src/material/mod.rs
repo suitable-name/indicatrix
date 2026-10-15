@@ -64,8 +64,8 @@ pub use catalogue::{MaterialCatalogue, MaterialEntry, MaterialKind};
 pub use color::{ActiveColor, ColorMode, RecipeHistory};
 pub use library_row::{
     LibraryMaterial, absorption_bands_from_json, absorption_bands_to_json,
-    crystal_system_from_name, crystal_system_name, optical_character_from_name,
-    optical_character_name, with_library_bands,
+    biaxial_character_from_deltas, crystal_system_from_name, crystal_system_name, is_biaxial,
+    optical_character_from_name, optical_character_name, with_library_bands,
 };
 pub use selection::{
     BuiltinMaterials, MaterialLookup, MaterialSelection, ResolvedMaterial,

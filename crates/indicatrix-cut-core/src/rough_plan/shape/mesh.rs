@@ -385,9 +385,14 @@ impl RoughMesh {
         if let Some(&(first, _)) = crossings.first() {
             let [a, b, c] = tris[first as usize].map(|v| verts[v as usize]);
             let at = (a + b + c) / 3.0;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "centimetre coordinates of a mesh vertex centroid, far inside the i64 range"
+            )]
+            let first_at = at.to_array().map(|x| (x * 100.0).round() as i64);
             return Err(MeshError::SelfIntersecting {
                 count: crossings.len(),
-                first_at: at.to_array().map(|x| (x * 100.0).round() as i64),
+                first_at,
             });
         }
         orient_shells(&verts, &mut tris, lo);

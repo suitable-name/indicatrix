@@ -15,7 +15,7 @@ that file name is not a statement about which term is preferred.
 consistent about a few of these. "Mast," "depth," and "scale value" all
 refer to the same underlying number in different places: **mast** is what
 a cutting machine's gauge reads and what the tier list's MAST column
-shows; **scale value** is what you type into an **Exact scale value**
+shows; **scale value** is what you type into an **Exact Scale Value**
 tier's own field; and **depth** shows up in prose (including this manual)
 as a plain-language stand-in for either. They are the same number, not
 three different measurements. Similarly, "block" and "tier group" both
@@ -29,8 +29,8 @@ dispersion and more fire (diamond is about 55, a crown glass about 64). The
 Material Editor shows it live when you type a refractive-index curve as
 coefficients (Chapter 6).
 
-**Anchor** — A tier whose scale is stated directly (Meets: **Exact scale
-value**) rather than derived from meeting other facets. Every block (crown,
+**Anchor** — A tier whose scale is stated directly (Meets: **Exact Scale
+Value**) rather than derived from meeting other facets. Every block (crown,
 pavilion, girdle) needs at least one anchor, or its overall size has
 nothing to be measured against.
 
@@ -103,9 +103,9 @@ curve as Sellmeier or Cauchy coefficients (Chapter 6).
 **Extinction** — The percentage of a stone's face reading as dark, dead
 shadow rather than bright; one of the app's optical performance readouts.
 
-**Face-up tone** — The lightness `L*` and colour strength `C*` of the light a
+**Face-up tone** — The lightness `L*` and color strength `C*` of the light a
 stone returns face-up, worked out from how far that light travelled through the
-body colour, under the lighting preset of the run. Shown in the Optimize tab's
+body color, under the lighting rig of the run. Shown in the Optimize tab's
 Tone column and swatches.
 
 **Facet** — One flat cut face of a stone. A single tier normally describes
@@ -114,8 +114,8 @@ a whole symmetric family of identical facets (an orbit), not just one.
 **Fire** — A unitless index of spectral flare (the rainbow-colored flashes
 caused by dispersion); one of the app's optical performance readouts.
 
-**Free tier** — A tier whose Meets constraint is **Unspecified vertex** or
-**Named facet(s)** — its depth is derived by the solver from where its
+**Free tier** — A tier whose Meets constraint is **Unspecified Vertex** or
+**Named Facet(s)** — its depth is derived by the solver from where its
 plane meets its neighbours, rather than stated directly.
 
 **Gear** — The cutting machine's dividing head: the number of possible
@@ -125,8 +125,29 @@ count). Changing a design's gear remaps every tier's indices (Chapter 6).
 **Girdle** — The narrow band at a stone's widest point, separating crown
 from pavilion.
 
+**Head shadow** — How much of the sky your own head hides when you look
+straight down at a stone: the dark table reflections a face-up stone really shows.
+A 0–30° setting in the Lighting & Environment tab's Observer section (default 16°).
+It applies to the lit models and is saved with every saved lighting and with a
+design's own lighting (Chapter 2).
+
+**Inclusion haze** — A milky veil inside the stone, from clean to milky, drawn by
+scattering light from tiny inclusions. One of the four per-design material effects
+of the Stone tab (Chapter 2).
+
 **Index** — The position on the cutting machine's dividing head (its
 "gear") where a facet is cut.
+
+**Lighting rig** — One of the thirteen ways of lighting the stone in the live view
+and in renders: the lit models (light tent, grading tray and others), the Studio rigs
+and the daylight rigs. Picked in the Lighting & Environment tab (Chapter 2). A rig is
+only the lights; **Saved lighting** stores a rig together with everything else about
+the look.
+
+**Material effects** — The four settings of the Stone tab that belong to the
+individual stone and are saved in its design: Inclusion Haze, Crystal Axis
+Orientation, Frosted Girdle and Edge Rounding. A new design starts with all of them
+off (Chapter 2).
 
 **Mast** — The solved distance of a facet's plane from the centre, along
 its own normal — the number a cutting machine's mast gauge would read.
@@ -146,23 +167,42 @@ angles to improve windowing, extinction, and tilt brilliance (Chapter 8).
 
 **Orbit** — The complete set of index positions a symmetric tier occupies.
 
+**Output defaults** — The settings the Export and Tilt Video dialogs open with: the
+ones of your last run (size, samples, bounces, color space, compute, transfer). Shown
+in the Render & Output tab and remembered whenever a run starts (Chapter 9).
+
+**Parameters dock** — The right-hand panel with three tabs: Stone, Lighting &
+Environment and Render & Output. Open from the toolbar buttons, the View menu, the
+command palette or Ctrl+Alt+1/2/3, in the Live Render view and in the Edit view
+(Chapter 2).
+
 **Pavilion** — The block of a stone below the girdle, usually culminating
 in a culet or point.
 
 **Pin** — The button that freezes a tier's current solved mast as a new
-**Exact scale value** anchor, converting a free tier back into a pinned
+**Exact Scale Value** anchor, converting a free tier back into a pinned
 one — the reverse of Adopt (Chapter 3, Chapter 8).
 
-**Pinned tier** — A tier whose Meets constraint is **Exact scale value** —
+**Pinned tier** — A tier whose Meets constraint is **Exact Scale Value** —
 its size is a stated number, not derived. Every tier loaded from a real
 `.asc` file starts pinned.
+
+**Planned piece** — The sawn piece of rough a planned stone comes from, clipped by
+the rough's outline, as the editor's preform. See Chapter 15, From a Result to the
+Bench.
 
 **Pleochroism** — A material showing different colors (dichroism for two,
 trichroism for three) depending on the direction light travels through it,
 relative to its crystal axes.
 
 **Preform** — The rough shape a design is cut from before faceting (for
-example, a cylinder).
+example, a cylinder), or the planned piece of rough the Rough Planner hands over
+with **Open in Editor**.
+
+**Preview As...** — The Stone tab's view-only way to look at the stone in another
+material. The design keeps its own material; an amber badge says "Previewing" on every
+surface the picture reaches, and **Back to Design** returns. It never starts by itself
+(Chapter 6).
 
 **Refractive index (RI)** — A measure of how strongly a material bends
 light, expressed as n at a reference wavelength (this manual, like the
@@ -191,6 +231,12 @@ solved masts, taken by **Snapshot Design**, for diffing against with
 **Compare to Snapshot** later in the same session. Never saved to disk
 (Chapter 14).
 
+**Saved lighting** — A named, complete lighting look: the lighting rig, light
+direction, exposure, surface glare, backdrop, head shadow, the HDR environment map if
+any and optionally the camera pose. Seven come with the app; your own are added to the
+list and can be marked "usable for" export (Chapters 2 and 9). Formerly "Lighting
+Presets".
+
 **Scintillation** — The percentage measure of sparkle as light and stone
 move relative to each other; one of the app's optical performance
 readouts.
@@ -205,6 +251,11 @@ Editor accepts one-term and three-term fits (Chapter 6).
 **Solved / stale** — A design is "solved" once Solve has successfully run
 against its current tier list; it becomes "stale" the moment any further
 edit changes that tier list, until Solve runs again (Chapter 5).
+
+**Stone width** — The width of the stone across the girdle in millimetres: the
+design's girdle diameter, set in the Stone tab (the same value as the Preform tab's
+Girdle Diameter). It sets how deep a colored stone's color looks; when it is not set
+the colors are shown for 7 mm (Chapters 2 and 6).
 
 **Table** — The large, flat facet at the top of the crown.
 
@@ -232,7 +283,7 @@ rather than reflective, caused by light leaking straight through the
 pavilion instead of totally internally reflecting; one of the app's
 optical performance readouts.
 
-## Next steps
+## Next Steps
 
 Appendix B lists the app's keyboard shortcuts; Appendix C tables every
 built-in render material's optical properties.

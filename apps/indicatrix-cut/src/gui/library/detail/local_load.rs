@@ -1,13 +1,14 @@
 //! Builds the detail pane and 3D viewport from a design in the LOCAL database.
 //!
-//! The detail pane, angle table and attachment list are pushed synchronously. The
+//! The detail pane, angle table and attachment list (names and sizes only, read
+//! without any attachment bytes) are pushed synchronously. The
 //! viewport's planes are not: resolving them parses the design file and runs a full
 //! solve (0.01 ms to 5.9 s), so [`load_diagram_detail`] hands that to a worker
 //! thread and applies the result from the event loop -- unless a later click
 //! superseded it first.
 
 use super::{
-    planes::{ReconstructedPlanesInput, apply_reconstructed_planes},
+    planes::{DesignFileMaterial, ReconstructedPlanesInput, apply_reconstructed_planes},
     shared::{
         catalogue_material_guess, format_optional_proportion, sides_from_rows, standard_codes,
     },
@@ -15,10 +16,10 @@ use super::{
 use crate::{
     AngleItem, DiagramDetailData, FileItem, LibraryModel, MainWindow, TiltModel, ViewportModel,
     bridge::render_thread::RenderContext,
+    gui::{editor::CataloguePlanes, library::read_access::with_read_db},
 };
-use indicatrix::geometry::plane::GpuFacetPlane;
-use indicatrix_vault::{db::sqlite::Database, model::entry::FullDiagramRecord};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use indicatrix_vault::{db::sqlite::Database, model::entry::FullDiagramMeta};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -55,19 +56,44 @@ fn planes_still_wanted(is_newest_load: bool, selected_entry_id: i32, entry_id: i
     is_newest_load && i64::from(selected_entry_id) == entry_id
 }
 
-/// A one-line status-message note rather than a persistent badge: a proper
-/// "Derived from: <title>" chip on `detail_header.slint` would need a new field on
-/// `DiagramDetailData` (`ui/types.slint`) or a new `LibraryModel` property
-/// (`ui/models/library.slint`), plus re-exporting it through `app.slint`'s own
-/// `export {}` list before Rust can reach it -- this status-message note is the
-/// cheaper stand-in until that lands. `None`/an error both mean "no recorded
-/// source" here (a design that was never re-imported, or whose recorded source row
-/// was since deleted), matching `get_derived_from_title`'s own doc comment.
-fn note_derived_from_if_any(ui: &MainWindow, db: &Database, entry_id: i64) {
-    if let Some((_, title)) = db.get_derived_from_title(entry_id).ok().flatten() {
-        ui.global::<LibraryModel>()
-            .set_status_message(format!("Derived from: {title}").into());
-    }
+/// Everything the detail pane reads from the database, fetched in one pass over a
+/// read-only connection so the UI thread neither waits on the shared writer lock nor
+/// reads any attachment bytes (perf review UI-5): `meta` carries each attachment's name
+/// and size only.
+struct DetailFetch {
+    meta: FullDiagramMeta,
+    shape_options: Vec<SharedString>,
+    shape_index: i32,
+    /// `Database::get_preview_material`: reads only the `preview_material` column,
+    /// never the two cached preview PNGs.
+    cached_curve_material: Option<String>,
+    /// Title of the design this one was derived from, when one is recorded.
+    derived_from_title: Option<String>,
+}
+
+/// Reads `entry_id`'s detail-pane data from `db`; `Ok(None)` when the row is gone.
+fn fetch_detail(db: &Database, entry_id: i64) -> anyhow::Result<Option<DetailFetch>> {
+    let Some(meta) = db.get_diagram_full_meta(entry_id)? else {
+        return Ok(None);
+    };
+    let (shape_options, shape_index) =
+        crate::gui::library::local::build_shape_picker_options(db, meta.shape.as_deref());
+    let cached_curve_material = db.get_preview_material(entry_id).ok().flatten();
+    // `None`/an error both mean "no recorded source" (a design that was never
+    // re-imported, or whose recorded source row was since deleted), matching
+    // `get_derived_from_title`'s own doc comment.
+    let derived_from_title = db
+        .get_derived_from_title(entry_id)
+        .ok()
+        .flatten()
+        .map(|(_, title)| title);
+    Ok(Some(DetailFetch {
+        meta,
+        shape_options,
+        shape_index,
+        cached_curve_material,
+        derived_from_title,
+    }))
 }
 
 /// Pushes the shape-picker options/current-index (`detail_header.slint`'s pencil
@@ -85,10 +111,15 @@ fn note_derived_from_if_any(ui: &MainWindow, db: &Database, entry_id: i64) {
 /// design's cached preview/tilt-curve artifacts were actually generated under --
 /// `Database::get_preview_material` is that value (set once, at first preview
 /// generation, via `Database::ensure_preview_material`, and reused forever after --
-/// see that method's own doc comment). An empty string ("no
+/// see that method's own doc comment; a design whose file names a material has the
+/// name written over instead, `Database::set_preview_material`). An empty string ("no
 /// cached material on file yet") is exactly `cached_curve_material_is_stale`'s own
 /// documented "never stale" case, so `unwrap_or_default` here needs no
 /// special-casing.
+///
+/// The derived-from note is a one-line status message rather than a persistent badge: a
+/// proper chip on `detail_header.slint` would need a new `DiagramDetailData` field or
+/// `LibraryModel` property re-exported through `app.slint`'s `export {}` list.
 ///
 /// Returns the `Option<String>` (not `unwrap_or_default`'d away
 /// immediately) so the caller can ALSO feed it to `apply_catalogue_material` as
@@ -96,55 +127,28 @@ fn note_derived_from_if_any(ui: &MainWindow, db: &Database, entry_id: i64) {
 /// refractive-index nearest-match guess -- see its doc comment.
 fn push_shape_picker_and_cached_material(
     ui: &MainWindow,
-    db: &Database,
-    entry_id: i64,
-    shape: Option<&str>,
+    shape_options: Vec<SharedString>,
+    shape_index: i32,
+    cached_curve_material: Option<String>,
+    derived_from_title: Option<String>,
 ) -> Option<String> {
-    let (shape_options, shape_index) =
-        crate::gui::library::local::build_shape_picker_options(db, shape);
     ui.global::<LibraryModel>()
         .set_shape_picker_options(ModelRc::new(VecModel::from(shape_options)));
     ui.global::<LibraryModel>()
         .set_shape_picker_current_index(shape_index);
-
-    // `get_preview_material` reads only the `preview_material` column, never the two
-    // cached preview PNGs `get_preview_images` would also load and decode just to
-    // discard here.
-    let cached_curve_material = db.get_preview_material(entry_id).ok().flatten();
     ui.global::<TiltModel>()
         .set_cached_curve_material(cached_curve_material.clone().unwrap_or_default().into());
-    note_derived_from_if_any(ui, db, entry_id);
+    if let Some(title) = derived_from_title {
+        ui.global::<LibraryModel>()
+            .set_status_message(format!("Derived from: {title}").into());
+    }
     cached_curve_material
 }
 
-/// [`crate::gui::editor::resolve_catalogue_planes`] as the planes/gear-teeth/
-/// reference-angle triple `super::planes::planes_gear_and_reference_angle` takes --
-/// the SAME resolution (design file first, angle table as the fallback) the preview
-/// and tilt batches use, so this view's stone and a record's cached thumbnails and
-/// tilt curves never describe different geometry.
-///
-/// Parses the design file and solves it: call it from a worker thread, never the UI
-/// thread.
-///
-/// `gui::editor` (`mod editor;`, `gui/mod.rs`) is declared unconditionally -- this
-/// crate's `library` module already depends on it elsewhere (e.g.
-/// `editor::material_lookup`, imported by `super::shared`).
-/// [`crate::gui::editor::resolve_catalogue_planes`]'s own signature still avoids
-/// naming `indicatrix_cut_core::Design` so this module never needs one either.
-fn resolve_catalogue_planes_for_entry(full: &FullDiagramRecord) -> (Vec<GpuFacetPlane>, u32, f32) {
-    let resolved = crate::gui::editor::resolve_catalogue_planes(full);
-    (
-        resolved.planes,
-        resolved.gear_teeth,
-        resolved.gear_reference_angle,
-    )
-}
-
-/// The detail pane's header fields for `full`, cloned so `full` stays whole for the
-/// planes worker.
-fn detail_data(full: &FullDiagramRecord) -> DiagramDetailData {
+/// The detail pane's header fields for `full`.
+fn detail_data(full: &FullDiagramMeta) -> DiagramDetailData {
     DiagramDetailData {
-        id: full.entry_id as i32,
+        id: i32::try_from(full.entry_id).unwrap_or(i32::MAX),
         title: full.title.clone().into(),
         url: full.url.clone().into(),
         designer: full.designer_info.clone().unwrap_or_default().into(),
@@ -174,7 +178,7 @@ fn detail_data(full: &FullDiagramRecord) -> DiagramDetailData {
 /// facet/angle/index label (see `sides_from_rows`'s own doc comment), computed over
 /// the already order_idx-ordered `full.angle_settings` (`entries.rs`'s own
 /// `ORDER BY order_idx ASC`).
-fn angle_items(full: &FullDiagramRecord) -> Vec<AngleItem> {
+fn angle_items(full: &FullDiagramMeta) -> Vec<AngleItem> {
     let sides = sides_from_rows(
         full.angle_settings
             .iter()
@@ -191,7 +195,7 @@ fn angle_items(full: &FullDiagramRecord) -> Vec<AngleItem> {
         .zip(sides)
         .zip(codes)
         .map(|((a, side), code)| AngleItem {
-            order_idx: a.order_index as i32,
+            order_idx: a.order_index.cast_signed(),
             side,
             code: code.into(),
             facet: a.facet.clone().into(),
@@ -204,11 +208,13 @@ fn angle_items(full: &FullDiagramRecord) -> Vec<AngleItem> {
 }
 
 /// The attachment list's rows for `full`.
-fn file_items(full: &FullDiagramRecord) -> Vec<FileItem> {
+fn file_items(full: &FullDiagramMeta) -> Vec<FileItem> {
     full.attached_files
         .iter()
         .map(|f| {
-            let size_kb = f.content.len() as f64 / 1024.0;
+            // `f.size` is SQL `length(content)`, the byte count the old
+            // `content.len()` gave.
+            let size_kb = f.size as f64 / 1024.0;
             FileItem {
                 name: f.name.clone().into(),
                 url: f.url.clone().into(),
@@ -227,34 +233,40 @@ pub(super) fn load_diagram_detail(
     render_ctx: &Arc<Mutex<RenderContext>>,
     entry_id: i64,
 ) {
-    let db = match db_mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    // Own read-only connection, metadata-only record: no attachment bytes are read and
+    // the shared writer lock is not taken (it is only the fallback for `:memory:`).
+    let fetched = with_read_db(db_mutex, |db| fetch_detail(db, entry_id));
 
-    match db.get_diagram_full(entry_id) {
-        Ok(Some(full)) => {
+    match fetched {
+        Ok(Some(fetched)) => {
+            let DetailFetch {
+                meta,
+                shape_options,
+                shape_index,
+                cached_curve_material,
+                derived_from_title,
+            } = fetched;
             ui.global::<LibraryModel>()
-                .set_current_detail(detail_data(&full));
+                .set_current_detail(detail_data(&meta));
             ui.global::<LibraryModel>()
-                .set_current_angles(ModelRc::new(VecModel::from(angle_items(&full))));
+                .set_current_angles(ModelRc::new(VecModel::from(angle_items(&meta))));
             ui.global::<LibraryModel>()
-                .set_current_files(ModelRc::new(VecModel::from(file_items(&full))));
+                .set_current_files(ModelRc::new(VecModel::from(file_items(&meta))));
             ui.global::<LibraryModel>()
-                .set_selected_entry_id(entry_id as i32);
+                .set_selected_entry_id(i32::try_from(entry_id).unwrap_or(i32::MAX));
 
             // Shape picker, cached-curve-material readout and the derived-from note --
             // split into a helper purely to keep this function under clippy's
             // function-length lint; see that helper's own doc comment.
-            let cached_curve_material =
-                push_shape_picker_and_cached_material(ui, &db, entry_id, full.shape.as_deref());
-            // Every remaining use of `db` is done -- drop the lock explicitly rather
-            // than holding it across the worker's spawn, the same "don't hold a mutex
-            // longer than its last use" discipline this crate's other long-lived-guard
-            // call sites already follow.
-            drop(db);
+            let cached_curve_material = push_shape_picker_and_cached_material(
+                ui,
+                shape_options,
+                shape_index,
+                cached_curve_material,
+                derived_from_title,
+            );
 
-            spawn_planes_resolution(ui, render_ctx, full, cached_curve_material);
+            spawn_planes_resolution(ui, db_mutex, render_ctx, meta, cached_curve_material);
         }
         Ok(None) => {
             ui.global::<LibraryModel>()
@@ -277,10 +289,15 @@ struct ResolvedPlanes {
     index_gear: Option<String>,
     refractive_index: Option<String>,
     preview_material: Option<String>,
-    /// The planes, gear teeth and reference angle -- or why resolving them
-    /// panicked. A design file that merely fails to read or solve is not an error
-    /// here: `resolve_catalogue_planes` falls back to the angle table for it.
-    planes: Result<(Vec<GpuFacetPlane>, u32, f32), String>,
+    /// The planes, gear teeth and reference angle, with the material and girdle
+    /// diameter the design file records -- or why resolving them panicked. A design file
+    /// that merely fails to read or solve is not an error here:
+    /// [`crate::gui::editor::resolve_catalogue_planes`] falls back to the angle table for
+    /// it, the SAME resolution (design file first) the preview and tilt batches use, so
+    /// this view's stone and a record's cached thumbnails and tilt curves never describe
+    /// different geometry. It parses and solves the design file: it runs on the worker
+    /// thread, never the UI thread.
+    planes: Result<CataloguePlanes, String>,
 }
 
 /// Resolves `full`'s planes on a worker thread and draws them from the event loop,
@@ -293,28 +310,40 @@ struct ResolvedPlanes {
 /// resolving anything.
 fn spawn_planes_resolution(
     ui: &MainWindow,
+    db_mutex: &Arc<Mutex<Database>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
-    full: FullDiagramRecord,
+    meta: FullDiagramMeta,
     preview_material: Option<String>,
 ) {
     let sequence = DETAIL_LOADS.begin();
     let ui_weak = ui.as_weak();
     let render_ctx = Arc::clone(render_ctx);
+    let db_mutex = Arc::clone(db_mutex);
     let spawned = std::thread::Builder::new()
         .name("catalogue-planes".to_string())
         .spawn(move || {
             if !DETAIL_LOADS.is_current(sequence) {
                 return;
             }
-            let planes =
-                crate::gui::library::local::catch_file_panic(std::panic::AssertUnwindSafe(|| {
-                    resolve_catalogue_planes_for_entry(&full)
-                }));
+            // The design file is an attachment, so the planes resolution needs the
+            // full record; reading its blobs is done here, off the UI thread and on a
+            // read-only connection of its own.
+            let entry_id = meta.entry_id;
+            let full = with_read_db(&db_mutex, |db| db.get_diagram_full(entry_id));
+            let planes = match full {
+                Ok(Some(full)) => {
+                    crate::gui::library::local::catch_file_panic(std::panic::AssertUnwindSafe(
+                        || crate::gui::editor::resolve_catalogue_planes(&full),
+                    ))
+                }
+                Ok(None) => Err("the design no longer exists".to_string()),
+                Err(e) => Err(format!("the design could not be read: {e}")),
+            };
             let resolved = ResolvedPlanes {
-                entry_id: full.entry_id,
-                shape: full.shape,
-                index_gear: full.index_gear,
-                refractive_index: full.refractive_index,
+                entry_id,
+                shape: meta.shape,
+                index_gear: meta.index_gear,
+                refractive_index: meta.refractive_index,
                 preview_material,
                 planes,
             };
@@ -343,8 +372,8 @@ fn apply_resolved_planes(
     ) {
         return;
     }
-    let real_design = match resolved.planes {
-        Ok(planes) => planes,
+    let catalogue = match resolved.planes {
+        Ok(catalogue) => catalogue,
         Err(message) => {
             error!(
                 "Resolving the planes of diagram #{} failed: {message}",
@@ -356,6 +385,14 @@ fn apply_resolved_planes(
             return;
         }
     };
+    // The design file's material and size, for the viewport to draw the stone as the
+    // editor and the exports do (`planes::apply_catalogue_material`).
+    let design_material = DesignFileMaterial::from(&catalogue);
+    let real_design = (
+        catalogue.planes,
+        catalogue.gear_teeth,
+        catalogue.gear_reference_angle,
+    );
     apply_reconstructed_planes(
         ui,
         render_ctx,
@@ -369,6 +406,7 @@ fn apply_resolved_planes(
             refractive_index: resolved.refractive_index.as_deref(),
             preview_material: resolved.preview_material.as_deref(),
             real_design: Some(real_design),
+            design_material,
         },
     );
     request_live_solid_redraw(ui);

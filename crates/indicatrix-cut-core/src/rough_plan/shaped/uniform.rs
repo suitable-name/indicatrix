@@ -168,6 +168,10 @@ impl DesignEval<'_> {
                 continue;
             }
             let value = self.norm.f * (k * k * k);
+            #[expect(
+                clippy::float_cmp,
+                reason = "exact tie-break: equal values must prefer the lower orientation, deterministically"
+            )]
             let wins = best.is_none_or(|(v, o)| value > v || (value == v && orient < o));
             if value > 0.0 && wins {
                 best = Some((value, orient));

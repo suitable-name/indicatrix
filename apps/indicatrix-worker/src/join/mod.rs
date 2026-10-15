@@ -221,12 +221,12 @@ pub fn run_slot(slot: usize, target: &JoinTarget, setup: &WorkerSetup, stop: &At
 
 /// Sleeps `delay` in short steps, returning early once `stop` is set.
 fn sleep_unless_stopped(delay: Duration, stop: &AtomicBool) {
-    let step = Duration::from_millis(200);
+    let slice = Duration::from_millis(200);
     let mut left = delay;
     while !left.is_zero() && !stop.load(Ordering::Relaxed) {
-        let now = left.min(step);
-        thread::sleep(now);
-        left -= now;
+        let nap = left.min(slice);
+        thread::sleep(nap);
+        left -= nap;
     }
 }
 

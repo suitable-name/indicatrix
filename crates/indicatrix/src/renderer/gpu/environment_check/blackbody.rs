@@ -40,6 +40,11 @@ pub fn build_blackbody_cases() -> Vec<BlackbodyCase> {
     let temps = [
         1000.0f32, 1500.0, 2000.0, 3200.0, 5000.0, 6500.0, 6600.0, 8000.0, 10_000.0,
     ];
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the constant (780 - 380) / 15 = 26.67 is positive; truncating to 26 steps is the intent"
+    )]
     let lambda_steps = ((780.0 - 380.0) / 15.0) as u32;
     for step in 0..=lambda_steps {
         let lambda = (step as f32).mul_add(15.0, 380.0);
@@ -105,7 +110,9 @@ pub fn run_blackbody(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<B
         &pipeline,
         &[(2, &in_buf), (3, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("a check case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

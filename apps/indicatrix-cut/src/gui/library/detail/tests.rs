@@ -2,11 +2,22 @@
 //! logic shared across the detail module's local/remote load paths.
 
 use super::{
-    planes::planes_gear_and_reference_angle,
+    planes::{DesignFileMaterial, apply_catalogue_material, planes_gear_and_reference_angle},
     shared::{count_angles_for_mode, parse_catalogue_angle_deg, sides_from_rows, standard_codes},
 };
-use crate::AngleItem;
-use indicatrix::geometry::plane::GpuFacetPlane;
+use crate::{
+    AngleItem,
+    bridge::render_thread::RenderContext,
+    gui::{
+        batch::test_records::angle_table_record,
+        editor::{material_lookup::material_for_refractive_index, resolve_catalogue_planes},
+    },
+};
+use indicatrix::{geometry::plane::GpuFacetPlane, optics::materials::GemMaterial};
+use indicatrix_cut_core::{
+    material::MaterialSelection,
+    native::{CustomMaterialSnapshot, gem_material_from_custom_snapshot},
+};
 use slint::{ModelRc, VecModel};
 
 // --- parse_catalogue_angle_deg / sides_from_rows ---
@@ -483,4 +494,117 @@ fn filtered_row_count_agrees_with_sides_from_rows_on_a_real_schedule() {
     assert_eq!(count_angles_for_mode(&angles, 0), 7); // All
     assert_eq!(count_angles_for_mode(&angles, 1), 2); // Pavilion: 1, 2
     assert_eq!(count_angles_for_mode(&angles, 2), 4); // Crown: A, B, C, T
+}
+
+// --- apply_catalogue_material ---
+
+/// A design file naming `name`.
+fn file_naming(name: &str, girdle_mm: Option<f64>) -> DesignFileMaterial {
+    DesignFileMaterial {
+        selection: Some(MaterialSelection {
+            name: Some(name.to_string()),
+            ..MaterialSelection::none()
+        }),
+        custom_snapshot: None,
+        girdle_mm,
+    }
+}
+
+/// The design file's material, with its overrides, comes before the persisted preview
+/// material and the refractive index, and the stone is drawn at the file's girdle diameter.
+#[test]
+fn the_design_files_material_and_size_come_before_the_persisted_material() {
+    let mut ctx = RenderContext::default();
+    let selection = MaterialSelection {
+        name: Some("Sapphire".to_string()),
+        ..MaterialSelection::none()
+    }
+    .with_body_color(Some([0.2, 0.4, 2.8]));
+    let design = DesignFileMaterial {
+        selection: Some(selection.clone()),
+        custom_snapshot: None,
+        girdle_mm: Some(9.0),
+    };
+
+    let name = apply_catalogue_material(&mut ctx, Some("1.54"), Some("Quartz"), &design);
+
+    assert_eq!(name.as_deref(), Some("Sapphire"));
+    assert_eq!(ctx.material_name, "Sapphire");
+    assert!(ctx.material_unresolved.is_none());
+    assert_eq!(
+        ctx.material_override,
+        Some(selection.apply_overrides(GemMaterial::by_name("Sapphire").expect("a built-in")))
+    );
+    assert_eq!(ctx.stone_width_mm, 9.0);
+}
+
+/// With no design file (the remote route) or a file that names no material, the persisted
+/// preview material answers first, then the refractive index; the width stays the default.
+#[test]
+fn without_a_file_material_the_persisted_material_then_the_refractive_index_apply() {
+    for design in [DesignFileMaterial::default(), file_naming("  ", None)] {
+        let mut ctx = RenderContext::default();
+        let name = apply_catalogue_material(&mut ctx, Some("1.54"), Some("Quartz"), &design);
+        assert_eq!(name.as_deref(), Some("Quartz"));
+        assert_eq!(ctx.stone_width_mm, 0.0);
+
+        let by_index = apply_catalogue_material(&mut ctx, Some("1.76"), None, &design);
+        assert_eq!(
+            by_index,
+            material_for_refractive_index(1.76).map(|(name, _)| name)
+        );
+        assert!(by_index.is_some());
+        assert!(ctx.material_unresolved.is_none());
+        assert_eq!(ctx.stone_width_mm, 0.0);
+    }
+}
+
+/// A file naming a material that resolves nowhere (no such custom material, no snapshot) is
+/// not refused here: the persisted material answers, and the size still follows the file.
+#[test]
+fn a_file_material_that_resolves_nowhere_falls_through_to_the_persisted_one() {
+    let mut ctx = RenderContext::default();
+    let design = file_naming("Deleted Custom Garnet", Some(8.0));
+
+    let name = apply_catalogue_material(&mut ctx, Some("1.54"), Some("Quartz"), &design);
+
+    assert_eq!(name.as_deref(), Some("Quartz"));
+    assert_eq!(ctx.stone_width_mm, 8.0);
+}
+
+/// A custom material of the render context answers to the file's name (case-insensitively,
+/// over the built-ins); one it lacks is rebuilt from the file's own snapshot.
+#[test]
+fn a_file_naming_a_custom_material_uses_the_contexts_one_or_its_own_snapshot() {
+    let garnet = GemMaterial::new_custom("My Garnet", 1.74, 0.02, 0.0, [0.0; 3]);
+    let mut ctx = RenderContext {
+        custom_materials: std::sync::Arc::new(vec![garnet.clone()]),
+        ..RenderContext::default()
+    };
+    let name = apply_catalogue_material(&mut ctx, None, None, &file_naming("my garnet", None));
+    assert_eq!(name.as_deref(), Some("my garnet"));
+    assert_eq!(ctx.material_override, Some(garnet));
+
+    let snapshot = CustomMaterialSnapshot::new(1.74, 0.02, 0.0, None, "Cubic", "Isotropic");
+    let mut ctx = RenderContext::default();
+    let design = DesignFileMaterial {
+        custom_snapshot: Some(snapshot.clone()),
+        ..file_naming("Lost Garnet", None)
+    };
+    let name = apply_catalogue_material(&mut ctx, None, None, &design);
+    assert_eq!(name.as_deref(), Some("Lost Garnet"));
+    assert_eq!(
+        ctx.material_override,
+        Some(gem_material_from_custom_snapshot("Lost Garnet", &snapshot))
+    );
+}
+
+/// The angle-table path has no design file: its resolution converts to nothing.
+#[test]
+fn the_angle_table_resolution_carries_no_file_material() {
+    let resolved = resolve_catalogue_planes(&angle_table_record());
+    let design = DesignFileMaterial::from(&resolved);
+    assert!(design.selection.is_none());
+    assert!(design.custom_snapshot.is_none());
+    assert_eq!(design.stone_width_mm(), 0.0);
 }

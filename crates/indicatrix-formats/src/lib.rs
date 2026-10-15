@@ -8,11 +8,10 @@
 //!
 //! - [`asc`]: `GemCAD`'s `.asc` cutting-instructions text format. Read and write support,
 //!   verified against a real-world corpus of 5,759 files.
-//! - [`native`]: `apps/indicatrix-cut`'s own self-contained `.indicatrix` design file
-//!   ([`native::design`]) and the older `.indicatrix.toml` overlay sidecar it replaced
-//!   (legacy `.gemcut.toml` files still load) -- the on-disk schemas, TOML
-//!   encode/decode, path rules, and paired-`.asc` fingerprint for text files that carry
-//!   design state `.asc` itself has no field for. Converting to and from the actual
+//! - [`native`]: `apps/indicatrix-cut`'s own self-contained `.isdd` design file
+//!   ([`native::design`]; files saved as `.indicatrix` before are read the same way) --
+//!   the on-disk schema, TOML encode/decode and path rules for a text file that carries
+//!   a whole design, including state `.asc` itself has no field for. Converting to and from the actual
 //!   in-memory editor design is `indicatrix-cut-core`'s job, not this module's -- see
 //!   its own module doc comment for the split.
 //! - [`gcs`]: Gem Cut Studio's `.gcs` XML design format, per the format published in
@@ -25,7 +24,7 @@
 //!
 //! Each format module pulls in only what it needs: [`asc`], [`gcs`], and [`gem`] have
 //! zero runtime dependencies, while [`native`] depends on `serde`/`toml` (its on-disk
-//! encoding) and `sha2` (its fingerprint) -- see that module's own doc comment.
+//! encoding) and `sha2` (its attachment hashes) -- see that module's own doc comment.
 //! Anything shared across more than one format's module belongs at this crate root
 //! rather than inside a single format module: the Windows-1252 text decoding the
 //! `.gem` and `.gcs` readers share lives in a private `encoding` module.
@@ -44,9 +43,9 @@ pub mod gcs;
 ///
 /// See the module's own doc comment for the layout and what is still open.
 pub mod gem;
-/// `apps/indicatrix-cut`'s own `.indicatrix` design file format and the older
-/// `.indicatrix.toml` sidecar.
+/// `apps/indicatrix-cut`'s own `.isdd` design file format (the earlier `.indicatrix`
+/// extension is still read).
 ///
-/// Schemas, TOML encode/decode, path rules, and the sidecar's paired-`.asc` fingerprint --
-/// see the module's own doc comment for the format choice and its conventions.
+/// Schemas, TOML encode/decode and path rules -- see the module's own doc comment for
+/// the format choice and its conventions.
 pub mod native;

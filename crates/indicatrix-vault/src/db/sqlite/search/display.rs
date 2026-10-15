@@ -273,7 +273,7 @@ impl Database {
                 },
             )?;
             let raw_page_was_full = raw_page.len() == limit_usize;
-            offset += raw_page.len() as i64;
+            offset = offset.saturating_add(i64::try_from(raw_page.len()).unwrap_or(i64::MAX));
 
             for item in raw_page {
                 if self.item_satisfies_performance_filters(item.id, &range.performance) {
@@ -320,9 +320,8 @@ impl Database {
         let bound: Vec<&dyn rusqlite::ToSql> =
             params.iter().map(std::convert::AsRef::as_ref).collect();
         let excluded: i64 = stmt.query_row(bound.as_slice(), |r| r.get(0))?;
-        // A SQL COUNT(*) is never negative (workspace-wide `cast_sign_loss` = "allow"
-        // covers this cast; see Cargo.toml).
-        Ok(excluded as usize)
+        // A SQL COUNT(*) is never negative, so the fallback is unreachable.
+        Ok(usize::try_from(excluded).unwrap_or_default())
     }
 
     /// The real, uncapped count of designs matching `query`/`shape_filter`/
@@ -361,7 +360,8 @@ impl Database {
             let bound: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(std::convert::AsRef::as_ref).collect();
             let count: i64 = stmt.query_row(bound.as_slice(), |r| r.get(0))?;
-            return Ok(count as usize);
+            // A SQL COUNT(*) is never negative, so the fallback is unreachable.
+            return Ok(usize::try_from(count).unwrap_or_default());
         }
 
         // `display_cap: 0` -- nothing is ever collected into the walk's `Vec`, only
@@ -429,7 +429,7 @@ impl Database {
                 },
             )?;
             let raw_page_was_full = raw_page.len() == limit_usize;
-            offset += raw_page.len() as i64;
+            offset = offset.saturating_add(i64::try_from(raw_page.len()).unwrap_or(i64::MAX));
             for item in raw_page {
                 if range.performance.is_empty()
                     || self.item_satisfies_performance_filters(item.id, &range.performance)

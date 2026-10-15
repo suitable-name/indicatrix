@@ -37,7 +37,6 @@ mod material;
 mod tests;
 mod transport;
 mod wavefront;
-#[cfg(feature = "zoning")]
 mod zoning;
 
 pub use camera::{CameraUniform, GpuCameraParams, GpuHitRecord, GpuRay};
@@ -48,7 +47,6 @@ pub use material::{
 };
 pub use transport::{GpuTransportParams, studio_model, transport_env_mode};
 pub use wavefront::GpuWavefrontParams;
-#[cfg(feature = "zoning")]
 pub use zoning::{
     GPU_SOFT_SUBDIV, GpuZoneAbsorption, GpuZoneDecline, GpuZoneHeader, GpuZoneShape, GpuZoneTable,
     ZONE_FLAG_FULL, ZONE_FLAG_WIDE, gpu_zoning_decline,

@@ -1,6 +1,6 @@
-# 7. Creating a New Design From Scratch: A Worked Example
+# 7. Creating a New Design from Scratch: A Worked Example
 
-## What you will do
+## What You Will Do
 
 This chapter walks through building a simple design from nothing, tier by
 tier, putting Chapters 3-6 together in practice. It builds an 8-fold round
@@ -32,7 +32,7 @@ While the guide is open:
   girdle: quick-add Girdle names the tier "Girdle" and adds no indices). **Next** on a
   step you have not done does it for you (it types the listed values into the same form,
   so **Ctrl+Z** undoes it); the optional yield step, whose girdle diameter is your own
-  stone's, shows **Skip step** instead, which moves on without it. **Back**
+  stone's, shows **Skip Step** instead, which moves on without it. **Back**
   returns to the previous step. The two reading steps -- checking the orbits
   (Step 8) and the closing note -- wait for **Next** (**Finish** on the closing
   note) instead.
@@ -41,7 +41,7 @@ While the guide is open:
   table's per-row actions and the inspector tabs' contents. Selecting rows
   stays possible. Closing the guide with the
   x in its corner unlocks everything.
-- The Simple interface leaves **Exact scale value** out of the Meets list for a
+- The Simple interface leaves **Exact Scale Value** out of the Meets list for a
   new tier. The steps that ask for it (the girdle, the pavilion, the crown and
   the table) therefore show the Advanced controls while they are current, and
   say so in their explanation. The girdle step also names the **Girdle Facet
@@ -70,19 +70,21 @@ Steps 2 to 5. If you
 just want the finished stone, the New Design dialog's "Standard Round
 Brilliant" template creates a verified eight-tier round brilliant in one step,
 and its oval, cushion, emerald and princess neighbours do the same for those
-outlines (see "Starting from a shape instead" below).
+outlines (see "Starting from a Shape Instead" below).
 
-## Step 1: The New Design dialog
+## Step 1: The New Design Dialog
 
 Click **New Design...** on the command bar (or File -> New Design..., or the
 empty state's **New Design...** card) to open the New Design dialog. Its
 "Start From" section is a template gallery in three sections -- Shapes,
-Round variants and teaching designs, and Blank. For this walkthrough, choose
+Round Variants and Teaching Designs, and Blank. For this walkthrough, choose
 the **Empty** card (the single card under "Blank") and build the tiers by hand
 below, so you see every step; the form then shows the full set of fields
 listed next. Picking a stone such as "Standard Round Brilliant" instead seeds
 its finished tier table immediately and shows a shorter form (material, index
-gear and stone width); see "Starting from a shape instead" below.
+gear and stone width); see "Starting from a Shape Instead" below.
+
+![The New Design dialog.](../../../../assets/new_design_dialog.png)
 
 - **Preform Shape**: Cylinder.
 - **Half-Width / Length-Width / Depth**: `1.50` / `1.00` / `1.50` -- a
@@ -92,7 +94,7 @@ gear and stone width); see "Starting from a shape instead" below.
 - **Symmetry Order**: `8`.
 - **Mirror**: on.
 - **Starting Material**: `(none)` -- you can change this any time afterward
-  in the Design Settings panel (Chapter 6), including to a custom catalogue
+  in the Stone tab of the Parameters dock (Chapter 6), including to a custom catalogue
   material.
 
 Click **Create** (or press Enter while the form is valid). This replaces the
@@ -103,14 +105,14 @@ choices remains editable afterward through the Design Settings panel
 (gear/symmetry/mirror) or the tier form itself. If a field does not parse, the
 dialog stays open with your values and a message naming the field.
 
-### Starting from a shape instead
+### Starting from a Shape Instead
 
 The cards with a picture are ready-made stones. The five under **Shapes** are the
 everyday outlines: the **Standard Round Brilliant** (8-fold), an **Oval
 Brilliant** (2-fold, length to width 1.35), a **Cushion Brilliant** (4-fold), an
 **Emerald Step Cut** (2-fold, three steps on the crown and three on the
 pavilion, length to width 1.4) and a **Princess Cut** (a 4-fold square
-brilliant). **Round variants and teaching designs** keeps the shallow and deep
+brilliant). **Round Variants and Teaching Designs** keeps the shallow and deep
 round brilliants and the two teaching designs. Each card shows a small solid
 picture of its stone (drawn in the background the first time you open the dialog,
 so the picture tile may be empty for a moment) and a "Designed for ..." line: the
@@ -170,13 +172,13 @@ facet position per repeat, evenly spaced, is:
 (96 / 8 = 12 teeth apart.) You will reuse this same list of eight indices for
 every symmetric tier in this example.
 
-## Step 2: The girdle (add this first)
+## Step 2: The Girdle (Add This First)
 
 The girdle goes in first: its half-width sets the size of the whole stone,
 and it is the anchor of the girdle block. Each of the three blocks (girdle,
-pavilion, crown) needs an anchor of its own, an **Exact scale value** tier --
+pavilion, crown) needs an anchor of its own, an **Exact Scale Value** tier --
 this step gives the girdle's, Steps 3 and 4 the pavilion's and the crown's (see
-Chapter 3's "Anchors and blocks").
+Chapter 3's "Anchors and Blocks").
 
 **The girdle angle must be exactly 90.0, not 0.0.** This app classifies a
 tier's block from its angle (Chapter 3): 90 degrees is Girdle,
@@ -190,12 +192,12 @@ girdle band.
 1. Click **+ Add Tier** (the hint over the viewport, the command bar, or the
    tier table's toolbar), which opens the inspector's Tier tab in Add mode.
    **Angle (deg)**: `90.0` -- or click **Girdle Facet Preset**, which sets
-   the angle to 90 and Meets to Exact scale value 1.0 in one click.
-2. **Meets**: **Exact scale value**. Type the girdle's half-width, here
+   the angle to 90 and Meets to Exact Scale Value 1.0 in one click.
+2. **Meets**: **Exact Scale Value**. Type the girdle's half-width, here
    `1.0`. This is the anchor of the girdle block. At 90 degrees the facet's
    normal points straight out from the centre, so this scale value is
    genuinely a half-width, the way it reads: the girdle is 2.0 wide, flat to
-   flat. (The Simple interface leaves **Exact scale value** out of the Meets
+   flat. (The Simple interface leaves **Exact Scale Value** out of the Meets
    list for a new tier, so the guide's step shows the Advanced controls. If
    you work without the guide, click the **Girdle Facet Preset**, which sets
    it for you, or switch to Advanced to pick it from the list.)
@@ -207,7 +209,7 @@ Check the tier table's own CODE column (just left of ANGLE; Chapter 3) reads
 **G1** for this row before moving on -- that is your confirmation the girdle classified
 the way you intended.
 
-## Step 3: Pavilion main facets
+## Step 3: Pavilion Main Facets
 
 Eight facets, one per repeat, angled steeply below the girdle.
 
@@ -227,23 +229,23 @@ meets alone: it needs one stated number in each block.
    default (1.54), whose critical angle is 40.5 degrees, so `40.0` sits just
    below it: the P1 row reads **-0.5°** in red (Windows). That is expected
    for now; Step 6 picks a real material and fixes it.
-2. **Meets**: **Exact scale value**, typing `0.56`. This is the anchor of
+2. **Meets**: **Exact Scale Value**, typing `0.56`. This is the anchor of
    the pavilion block. At 40.0 degrees it puts the culet, the point at the
    bottom, about 0.73 below the centre, and the pavilion's top edge about 0.11
    above the centre where it meets the girdle's flat face. (The Simple
-   interface leaves **Exact scale value** out of the Meets list for a new
+   interface leaves **Exact Scale Value** out of the Meets list for a new
    tier, so the guide's step shows the Advanced controls; if you work without
    the guide, switch to Advanced.)
 3. **Name**: `P1`.
 4. **Indices**: `0, 12, 24, 36, 48, 60, 72, 84`.
 5. Click **Add Tier**.
 
-## Step 4: Crown main facets
+## Step 4: Crown Main Facets
 
 Eight facets, one per repeat, angled above the girdle.
 
 1. **Angle (deg)**: a starting value such as `34.5`.
-2. **Meets**: **Exact scale value**, typing `0.70`. This is the anchor of the
+2. **Meets**: **Exact Scale Value**, typing `0.70`. This is the anchor of the
    crown block. At 34.5 degrees the crown's plane meets the girdle's flat
    face about 0.16 above the centre. The girdle band is the gap between the
    pavilion's top edge and the crown's lower edge on that face: about 0.054
@@ -260,12 +262,12 @@ and the angles in degrees, the pavilion's top edge on the girdle face is at
 the other so the crown's edge stays above the pavilion's, or the girdle band
 gets thinner and finally vanishes.
 
-## Step 5: The table
+## Step 5: The Table
 
 One flat facet at the top, not indexed around the gear.
 
 1. **Angle (deg)**: `0.0`.
-2. **Meets**: **Exact scale value**, typing `0.46`. A flat table faces
+2. **Meets**: **Exact Scale Value**, typing `0.46`. A flat table faces
    straight up, so its scale value is simply its height above the centre.
    0.46 makes the table about 57 percent as wide as the stone, with a crown
    about 0.30 high. (As in Steps 3 and 4, the guide's step shows the Advanced
@@ -274,7 +276,7 @@ One flat facet at the top, not indexed around the gear.
 4. **Indices**: leave blank.
 5. Click **Add Tier**.
 
-**Why not Unspecified vertex?** That meet cuts the table until its plane passes
+**Why not Unspecified Vertex?** That meet cuts the table until its plane passes
 through some vertex of the facets already there. This crown has only its eight
 main facets, which meet in a single point at the top, so the next vertex below
 that point is the girdle's top edge: the table would sink to the girdle and cut
@@ -293,10 +295,10 @@ the blank's floor. If you refine the pavilion later and make it steeper or
 deeper, the stone will reach the floor and the blank will clip it: make the
 blank deeper first, in the inspector's Preform tab.
 
-## Step 6: Pick a real material
+## Step 6: Pick a Real Material
 
-In the Design Settings panel (Chapter 6), set **Material** to, say,
-`Diamond`, and click **Apply Material**. Watch the **Effective RI**/
+Open the **Stone** tab of the Parameters dock (View menu, or Ctrl+Alt+1; Chapter 6) and
+set **Material** to, say, `Diamond`. It applies at once, as one undo step. Watch the **Effective RI**/
 **Critical Angle** readouts update, and re-check the pavilion tier's MARGIN
 column at the new (higher) RI -- diamond's critical angle (~24.4 degrees) is
 much smaller than the legacy 1.54 default's (40.5 degrees), so the P1 row
@@ -304,7 +306,7 @@ turns from red to green and reads **+15.6°** (Safe). If you picked a lower-RI
 material instead, you might see it stay at Marginal or Windows; adjust the
 pavilion angle if so, per Chapter 6's retargeting walkthrough.
 
-## Step 7: Solve and check
+## Step 7: Solve and Check
 
 1. Click **Solve**.
 2. Read the status strip (Chapter 5):
@@ -314,8 +316,8 @@ pavilion angle if so, per Chapter 6's retargeting walkthrough.
      step 8.
    - `<Block> has no anchor: add a tier with an exact scale value.` -- that
      block still has no anchor, for example because one of the Meets
-     entries in Steps 2 to 5 was left on **Named facet(s)** or **Unspecified
-     vertex**. Set one tier of that block to **Exact scale value** (or add one
+     entries in Steps 2 to 5 was left on **Named Facet(s)** or **Unspecified
+     vertex**. Set one tier of that block to **Exact Scale Value** (or add one
      more such tier, for the pavilion a pavilion depth or culet-point
      dimension) and Solve again, or use the tier table's own **Add Anchor**
      button on one of that block's rows. The guide leaves the tier form and the
@@ -326,33 +328,35 @@ pavilion angle if so, per Chapter 6's retargeting walkthrough.
      meeting the wrong neighbour, or an angle too shallow to intersect its
      neighbours, is the usual cause.
 
-## Step 8: Check the orbits
+## Step 8: Check the Orbits
 
 For each multi-index tier (girdle, pavilion mains, crown mains), check the
 **ORBIT** column reads `orbit x8`. If it instead reads something like `6/8
 orbit` in bold amber, an index position is missing or inconsistent --
 compare the tier's Indices field against the intended list.
 
-## Step 9: Optional -- yield and rendering
+## Step 9: Optional -- Yield and Rendering
 
 1. On the inspector's Preform tab (Chapter 4), in its Yield section, set
    **Girdle Diameter (mm)** to a real size (e.g. the girdle half-width you
    set in Step 2, doubled and converted to millimetres). Leave **Specific
    Gravity Override** blank: the carat-weight estimate then uses the
-   specific gravity of the material you set in Design Settings in Step 6
-   (Diamond). Neither field changes the render. Click **Apply Yield
+   specific gravity of the material you set in the Stone tab in Step 6
+   (Diamond). The Girdle Diameter is the same value as the Stone tab's **Stone
+   Width (mm)**; it sets how deep a colored stone's color looks, so for a colorless
+   Diamond it changes nothing you can see, and the Specific Gravity Override never
+   changes the render. Click **Apply Yield
    Inputs**, then Solve again --
    Volumetric Yield and Est. Carat Weight show values, and the
    same tab's Proportions group shows table %, crown height, pavilion
    depth, total depth, and length-to-width for this stone. (With auto-solve
    on, the solve happens by itself.)
-2. Switch to the Live Render tab to see the stone rendered -- with "Linked
-   to design" on (the default), it already shows the Diamond you picked in
-   Step 6. Pick a lighting preset and check the brilliance/windowing/
+2. Switch to the Live Render tab to see the stone rendered -- it already shows the Diamond
+   you picked in Step 6. Pick a lighting rig (the Lighting & Environment tab) and check the brilliance/windowing/
    extinction readouts. (The in-app guide completes this step on Apply Yield
    Inputs and lists the Live Render visit on its closing step.)
 
-## Step 10: A note on manufacturability
+## Step 10: A Note on Manufacturability
 
 Every index above lands exactly on a real gear tooth by construction (they
 are all multiples of 12 on a 96-tooth gear), so this example should not
@@ -362,7 +366,7 @@ Settings panel's gear combo, review the remap confirmation's red-highlighted
 rows (Chapter 6) before confirming -- a lossy remap (e.g. 96 to 80 teeth) can
 introduce exactly this kind of off-tooth index.
 
-## Next steps
+## Next Steps
 
 Continue to Chapter 8 to learn Deep Solve, Optimize, Adopt, and Apply -- the
 tools for verifying and improving a design once it closes.

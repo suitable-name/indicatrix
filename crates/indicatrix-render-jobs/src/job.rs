@@ -277,6 +277,10 @@ pub struct TiltVideoJob {
 /// Which metric overlays a tilt video draws.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the saved job file and the overlay check boxes; the fields are independent switches"
+)]
 pub struct OverlaySelection {
     /// The brilliance curve.
     pub brilliance: bool,

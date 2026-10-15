@@ -233,7 +233,7 @@ pub(super) fn start(host: &Rc<Host>) {
     let unit = MeshUnit::from_index(host.window.global::<RoughPlanModel>().get_mesh_unit_index());
     let request = PickerRequest {
         kind: PickerKind::OpenFile,
-        title: Some("Import rough from a mesh file".to_string()),
+        title: Some("Import Rough from a Mesh File".to_string()),
         filters: vec![PickerFilter {
             label: "Mesh (OBJ, STL, PLY)".to_string(),
             extensions: ["obj", "stl", "ply"].map(str::to_string).to_vec(),

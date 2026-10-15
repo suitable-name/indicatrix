@@ -1,0 +1,33 @@
+import { ScrollView } from "std-widgets.slint";
+import { ModelSection } from "model-section.slint";
+import { DatasetSection } from "dataset-section.slint";
+import { MaterialSection } from "material-section.slint";
+import { HyperSection } from "hyper-section.slint";
+import { CheckpointSection } from "checkpoint-section.slint";
+import { ApplicationSection } from "application-section.slint";
+
+// The setup column: scrolls as a whole, 300 px wide.
+export component SetupPanel inherits ScrollView {
+    callback tier-requested(string);
+    callback load-requested();
+    callback import-requested();
+    width: 316px;
+    horizontal-stretch: 0;
+    horizontal-scrollbar-policy: always-off;
+
+    VerticalLayout {
+        width: root.visible-width;
+        padding-right: 10px;
+        spacing: 10px;
+        alignment: start;
+        ModelSection { tier-requested(c) => { root.tier-requested(c); } }
+        DatasetSection { }
+        MaterialSection { }
+        HyperSection { }
+        CheckpointSection {
+            load-requested => { root.load-requested(); }
+            import-requested => { root.import-requested(); }
+        }
+        ApplicationSection { }
+    }
+}

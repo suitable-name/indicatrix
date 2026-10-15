@@ -118,7 +118,7 @@ fn the_optimize_lesson_can_be_played() {
 
 #[test]
 fn the_optimize_tab_says_what_the_lesson_says_it_says() {
-    assert!(preset_labels().contains(&"Low windowing"));
+    assert!(preset_labels().contains(&"Low Windowing"));
     // "Vary anchored tiers" starts ticked on a design where every tier is pinned.
     let sim = Sim::start(&StartingState::Template(STANDARD));
     assert!(default_vary_anchored(&sim.session.design));

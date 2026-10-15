@@ -177,7 +177,7 @@ whole trace:
   (section 3.1); a material without one has no fluorescence.
 - **Fluorescence** is described in section 3.1.
 - **Physical chromophore mode (`optics::chromophore`).** Custom materials can specify a physical
-  gem recipe (`ColorRecipe`) combining a host crystal (24 supported hosts) with real mineralogical
+  gem recipe (`ColorRecipe`) combining a host crystal (23 supported hosts) with real mineralogical
   chromophores (transition metals, intervalence charge-transfer pairs, radiation centres). The CPU
   forward model resolves the recipe into $\le 8$ energy-domain Gaussian bands
   (`BandShape::GaussianEnergy`) per eigenmode (ordinary, extraordinary, and optional beta ray for

@@ -66,7 +66,7 @@ pub const SHEET_EXPORTED: &str = "sheet_exported";
 /// The diagram PNG was exported.
 pub const DIAGRAM_EXPORTED: &str = "diagram_exported";
 
-/// The design was saved to its `.indicatrix` file.
+/// The design was saved to its `.isdd` file.
 pub const DESIGN_SAVED: &str = "design_saved";
 
 /// A different design replaced the open one: New Design, Load Selected or Open.
@@ -107,7 +107,7 @@ pub const COEFFICIENT_MATERIAL_SAVED: &str = "coefficient_material_saved";
 /// The Live Render tab was shown.
 pub const LIVE_RENDER_OPENED: &str = "live_render_opened";
 
-/// A lighting preset was chosen in the Live Render toolbar.
+/// A lighting rig was chosen, in the Live Render toolbar or the Lighting & Environment tab.
 pub const LIGHTING_PRESET_CHOSEN: &str = "lighting_preset_chosen";
 
 /// The lighting on screen was saved for the open design.

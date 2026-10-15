@@ -1,4 +1,4 @@
-import { Slider, ComboBox } from "std-widgets.slint";
+import { Slider, ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { PerformanceFilterRow } from "../types.slint";
 import { LibraryModel } from "../models/library.slint";
@@ -14,7 +14,7 @@ import { TouchButton } from "touch_button.slint";
 // One attribute's min/max range control: a label + current "min – max" readout above
 // two stacked sliders (Slint has no built-in dual-handle slider, so two single-handle
 // ones -- following the existing single-value-slider convention from
-// `material_editor_dialog.slint`/`settings_dialog.slint`). Each slider's own `minimum`/
+// `material_editor_dialog.slint` and the Parameters panel's `SliderRow`). Each slider's own `minimum`/
 // `maximum` is the *data* bound, so its whole travel communicates the real range
 // present in the catalogue rather than an arbitrary fixed scale. Dragging one handle
 // past the other pushes the other along, so `value_min` can never exceed `value_max`.
@@ -51,7 +51,12 @@ component RangeRow inherits VerticalLayout {
 
             HorizontalLayout {
                 spacing: 5px;
-                Image { source: root.icon; colorize: root.accent; width: 11px; height: 11px; vertical-alignment: center; }
+                // Centred by a layout of its own: a fixed-size Image in the row sits at the top of
+                // its cell (`vertical-alignment` only places the picture inside the Image).
+                VerticalLayout {
+                    alignment: center;
+                    Image { source: root.icon; colorize: root.accent; width: 11px; height: 11px; }
+                }
                 Text { text: root.label; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
             }
 
@@ -66,7 +71,7 @@ component RangeRow inherits VerticalLayout {
         }
     }
 
-    Slider {
+    slider-label := Slider {
         minimum: root.bound_min;
         maximum: root.bound_max;
         value <=> root.value_min;
@@ -78,7 +83,7 @@ component RangeRow inherits VerticalLayout {
             root.changed();
         }
     }
-    Slider {
+    slider-label-2 := Slider {
         minimum: root.bound_min;
         maximum: root.bound_max;
         value <=> root.value_max;
@@ -104,7 +109,7 @@ component RangeRow inherits VerticalLayout {
 //
 // Keyboard: the panel takes the focus when it opens, Tab walks every control, Escape closes
 // it. The "?" in the header opens the manual page on the filters. The Simple interface leaves
-// out the two buttons that start whole-library work ("Compute missing tilt curves" and the
+// out the two buttons that start whole-library work ("Compute Missing Tilt Curves" and the
 // "Regenerate for filtered set" section).
 export component FilterPanel inherits PopupWindow {
     // Add-performance-filter form local draft state
@@ -159,7 +164,11 @@ export component FilterPanel inherits PopupWindow {
     // Content-driven height: matches whatever `content` (the padded VerticalLayout
     // below) actually needs, instead of defaulting to the height of whatever this
     // popup happens to be anchored to.
-    height: content.preferred-height;
+    // Capped to what the window leaves below the header (`panel_max_height`, set by the header):
+    // the panel's body is a `ScrollView`, so a short window scrolls it instead of pushing
+    // the lower controls out of the window.
+    in property <length> panel_max_height: 100000px;
+    height: min(content.preferred-height, root.panel_max_height);
 
     Rectangle {
         background: Theme.popup-surface;
@@ -170,7 +179,7 @@ export component FilterPanel inherits PopupWindow {
         drop-shadow-color: Theme.modal-shadow;
         drop-shadow-offset-y: 6px;
         accessible-role: AccessibleRole.groupbox;
-        accessible-label: "Advanced filters";
+        accessible-label: "Advanced Filters";
 
         // Escape closes the panel from the keyboard; the panel takes the focus as it opens.
         panel_focus := FocusScope {
@@ -183,7 +192,13 @@ export component FilterPanel inherits PopupWindow {
                 reject
             }
 
+        // The body scrolls when the popup is capped to the window (`panel_max_height`).
+        panel_scroll := ScrollView {
         content := VerticalLayout {
+        // Fixed (not `visible-width`): the popup height depends on this layout's
+        // preferred height, which would loop through the scroll bar. 14px leaves room
+        // for the vertical scroll bar.
+        width: root.width - 14px;
         padding: 16px;
         spacing: 14px;
 
@@ -193,7 +208,10 @@ export component FilterPanel inherits PopupWindow {
 
             HorizontalLayout {
                 spacing: 8px;
-                Image { source: @image-url("../icons/ruler.svg"); colorize: Theme.accent-cyan; width: 15px; height: 15px; vertical-alignment: center; }
+                VerticalLayout {
+                    alignment: center;
+                    Image { source: @image-url("../icons/ruler.svg"); colorize: Theme.accent-cyan; width: 15px; height: 15px; }
+                }
                 Text { text: "Advanced Filters"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
             }
 
@@ -221,7 +239,7 @@ export component FilterPanel inherits PopupWindow {
                     }
 
                     close_btn := TouchButton {
-                        label: "Close the filters";
+                        label: "Close the Filters";
                         hint: "Close this panel (Esc). The filters you set stay on.";
                         ring_radius: 12px;
                         clicked => { root.close(); }
@@ -262,7 +280,7 @@ export component FilterPanel inherits PopupWindow {
         }
 
         RangeRow {
-            label: "Volume (vol/w³)";
+            label: "Volume (Vol/W³)";
             hint: "Volume divided by width cubed: how much stone there is for its width. A bigger number is a deeper, heavier cut.";
             icon: @image-url("../icons/bar-chart.svg");
             accent: Theme.accent-emerald;
@@ -296,7 +314,7 @@ export component FilterPanel inherits PopupWindow {
             spacing: 5px;
 
             ToggleRow {
-                text: "RI Match (current material)";
+                text: "RI Match (Current Material)";
                 hint: "Find designs whose refractive index is close to one value, for example the material you are cutting. It works together with the range above.";
                 checked: LibraryModel.ri_tolerance_enabled;
                 label_color: Theme.accent-emerald;
@@ -327,14 +345,14 @@ export component FilterPanel inherits PopupWindow {
                         border-width: 1px;
                         border-color: Theme.border-subtle;
                         use_current_txt := Text {
-                            text: "Use current material";
+                            text: "Use Current Material";
                             font-size: 9px;
                             color: Theme.text-secondary;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
                         use_current_touch := TouchButton {
-                            label: "Use current material";
+                            label: "Use Current Material";
                             hint: "Set the centre to the refractive index of the material the viewport is showing.";
                             ring_radius: 3px;
                             clicked => {
@@ -349,7 +367,7 @@ export component FilterPanel inherits PopupWindow {
                     minimum: LibraryModel.ri_bounds_min;
                     maximum: LibraryModel.ri_bounds_max;
                     value <=> LibraryModel.ri_tolerance_center;
-                    accessible-label: "RI match centre";
+                    accessible-label: "RI Match Centre";
                     changed => { LibraryModel.filters_changed(); }
                 }
                 Text { text: "Tolerance (\u{b1})"; font-size: 9px; color: Theme.text-muted; }
@@ -357,7 +375,7 @@ export component FilterPanel inherits PopupWindow {
                     minimum: 0.001;
                     maximum: (LibraryModel.ri_bounds_max - LibraryModel.ri_bounds_min) / 2;
                     value <=> LibraryModel.ri_tolerance_value;
-                    accessible-label: "RI match tolerance, plus or minus";
+                    accessible-label: "RI Match Tolerance, Plus or Minus";
                     changed => { LibraryModel.filters_changed(); }
                 }
             }
@@ -367,7 +385,7 @@ export component FilterPanel inherits PopupWindow {
 
         // --- SHOW IGNORED DESIGNS TOGGLE ---
         ToggleRow {
-            text: "Show ignored designs";
+            text: "Show Ignored Designs";
             hint: "Include the designs you marked Ignored. They show dimmed, with an amber border.";
             checked: LibraryModel.show_ignored;
             toggled => {
@@ -387,7 +405,7 @@ export component FilterPanel inherits PopupWindow {
         // is no local import to distinguish from), so this toggle is greyed out
         // and refuses clicks while `RemoteWorkerModel.library_is_remote`.
         ToggleRow {
-            text: "My designs only";
+            text: "My Designs Only";
             hint: RemoteWorkerModel.library_is_remote
                 ? "\"My designs\" applies to the library on this computer only."
                 : "Show only the designs you imported yourself, not the wider catalogue.";
@@ -433,7 +451,7 @@ export component FilterPanel inherits PopupWindow {
                 content-width: tag_row.preferred-width;
                 tag_row := HorizontalLayout {
                     spacing: 4px;
-                    for tag_name[idx] in LibraryModel.all_tags: ChipToggle {
+                    for tag_name[idx] in LibraryModel.all_tags: chip-toggle-l444 := ChipToggle {
                         text: tag_name;
                         hint: LibraryModel.active_tag_filter_name == tag_name
                             ? "Stop showing only designs tagged " + tag_name + "."
@@ -459,12 +477,15 @@ export component FilterPanel inherits PopupWindow {
             Rectangle {
                 height: tilt_perf_header.preferred-height;
                 accessible-role: AccessibleRole.text;
-                accessible-label: "Tilt performance filters";
+                accessible-label: "Tilt Performance Filters";
                 accessible-description: "Keep designs by how they look when tilted, for example windowing at most 20 percent.";
                 Tooltip { text: @markdown("Keep designs by how bright, dark or see-through they look when tilted, for example \"windowing at most 20 %, worst case within ±45° of face-up\". The figures come from each design's tilt curves. See the glossary."); }
                 tilt_perf_header := HorizontalLayout {
                     spacing: 5px;
-                    Image { source: @image-url("../icons/bar-chart.svg"); colorize: Theme.accent-purple; width: 11px; height: 11px; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("../icons/bar-chart.svg"); colorize: Theme.accent-purple; width: 11px; height: 11px; }
+                    }
                     Text { text: "Tilt Performance"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
                 }
             }
@@ -493,7 +514,7 @@ export component FilterPanel inherits PopupWindow {
                         background: perf_remove_touch.has_hover ? Theme.danger-surface-hover : transparent;
                         Text { text: "×"; font-size: 12px; color: Theme.danger; horizontal-alignment: center; vertical-alignment: center; }
                         perf_remove_touch := TouchButton {
-                            label: "Remove this tilt filter: " + root.perf_metric_label(row.metric_index) + " " + root.perf_bound_label(row.bound_index) + " " + (Math.round(row.threshold_pct * 10) / 10) + " percent";
+                            label: "Remove This Tilt Filter: " + root.perf_metric_label(row.metric_index) + " " + root.perf_bound_label(row.bound_index) + " " + (Math.round(row.threshold_pct * 10) / 10) + " percent";
                             hint: "Remove this filter.";
                             ring_radius: 4px;
                             clicked => {
@@ -534,7 +555,7 @@ export component FilterPanel inherits PopupWindow {
                         border-width: 1px;
                         border-color: Theme.accent-amber;
                         Text {
-                            text: "Compute missing tilt curves";
+                            text: "Compute Missing Tilt Curves";
                             font-size: 9px;
                             font-weight: 600;
                             color: Theme.accent-amber;
@@ -542,7 +563,7 @@ export component FilterPanel inherits PopupWindow {
                             vertical-alignment: center;
                         }
                         compute_now_touch := TouchButton {
-                            label: "Compute missing tilt curves";
+                            label: "Compute Missing Tilt Curves";
                             hint: "Work out the tilt curves of every design that has none yet, in the background. This can take a while for a large library.";
                             ring_radius: 3px;
                             clicked => { root.close(); LibraryModel.compute_missing_tilt_curves(); }
@@ -561,13 +582,13 @@ export component FilterPanel inherits PopupWindow {
                     ComboBox {
                         model: ["Brilliance", "Extinction", "Windowing"];
                         current-index <=> root.perf_draft_metric;
-                        accessible-label: "Tilt figure";
+                        accessible-label: "Tilt Figure";
                         accessible-description: "Brilliance is the light returned, extinction the dark patches, windowing the see-through patches.";
                     }
                     ComboBox {
                         model: ["at most", "at least"];
                         current-index <=> root.perf_draft_bound;
-                        accessible-label: "At most or at least";
+                        accessible-label: "At Most or at Least";
                     }
                 }
                 Text { text: "Threshold: " + (Math.round(root.perf_draft_threshold * 10) / 10) + "%"; font-size: 9px; color: Theme.text-muted; }
@@ -575,24 +596,24 @@ export component FilterPanel inherits PopupWindow {
                     minimum: 0;
                     maximum: 100;
                     value <=> root.perf_draft_threshold;
-                    accessible-label: "Threshold in percent";
+                    accessible-label: "Threshold in Percent";
                 }
-                Text { text: "Tilt radius: \u{b1}" + (Math.round(root.perf_draft_radius * 10) / 10) + "\u{b0}"; font-size: 9px; color: Theme.text-muted; }
+                Text { text: "Tilt Radius: \u{b1}" + (Math.round(root.perf_draft_radius * 10) / 10) + "\u{b0}"; font-size: 9px; color: Theme.text-muted; }
                 Slider {
                     minimum: 0;
                     maximum: 90;
                     value <=> root.perf_draft_radius;
-                    accessible-label: "Tilt radius in degrees";
+                    accessible-label: "Tilt Radius in Degrees";
                 }
                 ComboBox {
                     model: ["worst", "mean"];
                     current-index <=> root.perf_draft_aggregate;
-                    accessible-label: "Worst case or mean";
+                    accessible-label: "Worst Case or Mean";
                     accessible-description: "Judge the worst tilt inside the radius, or the average of all of them.";
                 }
                 TipButton {
                     text: "+ Add Filter";
-                    reader_label: "Add the tilt filter";
+                    reader_label: "Add the Tilt Filter";
                     hint: "Add the filter described above, for example windowing at most 20 percent, worst case within 45 degrees of face-up.";
                     clicked => {
                         LibraryModel.performance_filter_add({
@@ -633,7 +654,7 @@ export component FilterPanel inherits PopupWindow {
 
         if GuideModel.shows_advanced(): VerticalLayout {
             spacing: 6px;
-            Text { text: "Regenerate for filtered set"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+            Text { text: "Regenerate for Filtered Set"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
             TipButton {
                 text: "Regenerate Previews";
                 hint: "Draw the front and top pictures again for the designs the filters show now. Useful after a change to the renderer or a material.";
@@ -646,6 +667,7 @@ export component FilterPanel inherits PopupWindow {
                 icon: @image-url("../icons/bar-chart.svg");
                 clicked => { LibraryModel.regenerate_tilt_curves_for_filtered_set(); }
             }
+        }
         }
         }
         }

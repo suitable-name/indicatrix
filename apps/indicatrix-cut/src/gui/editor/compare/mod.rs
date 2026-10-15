@@ -52,6 +52,9 @@ mod session;
 mod tests;
 mod wiring;
 
+#[cfg(feature = "ui-harness")]
+pub use host::harness_window;
+
 use super::{state::EditorState, view::SolidLastSolved};
 use crate::{
     MainWindow, bridge::render_thread::RenderContext,
@@ -67,7 +70,14 @@ use std::{
 pub(in crate::gui::editor) use metrics::snapshot_summary;
 pub(in crate::gui::editor) use origins::VariantSide;
 pub(in crate::gui) use wiring::close_compare_window;
-pub(in crate::gui::editor) use wiring::open_variants_compare;
+pub(in crate::gui::editor) use wiring::{open_variants_compare, release_window_state};
+
+/// Whether the pop-out window, the main-window handle or a live session is still kept (the
+/// UI harness's holder report; see `gui::window_release::live_holders`).
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui::editor) fn window_is_kept() -> bool {
+    host::holds_state()
+}
 
 /// Wires the compare window's three entry points (`MainWindow`'s own
 /// `CompareModel.open_retarget`/`open_optimize`/`open_snapshot`) and the Retarget

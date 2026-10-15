@@ -123,7 +123,7 @@ export component TierTableToolbar inherits VerticalLayout {
                     text <=> EditorModel.tier_filter_text;
                     placeholder-text: "Filter tiers by name, index, block or strategy...";
                     font-size: 10px;
-                    accessible-label: "Filter tiers";
+                    accessible-label: "Filter Tiers";
                     accessible-description: "Type part of a name, an index, a block or a strategy. Tiers that do not match are dimmed.";
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
                 }
@@ -189,7 +189,7 @@ export component TierTableToolbar inherits VerticalLayout {
         Rectangle { horizontal-stretch: 1; }
         if root.advanced: CompactButton {
             width: 64px;
-            text: "Adopt all";
+            text: "Adopt All";
             hint: GuideModel.allows_tier_table() ? "Adopt every tier's imported meet at once, as one Undo step. See the glossary." : GuideModel.locked_hint;
             enabled: GuideModel.allows_tier_table();
             clicked => { EditorModel.adopt_all(); }
@@ -224,13 +224,13 @@ export component TierTableToolbar inherits VerticalLayout {
         padding-left: 4px;
         padding-right: 4px;
         spacing: 6px;
-        Text { text: "Quick add:"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
+        Text { text: "Quick Add:"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
         CompactButton {
             width: 46px;
             text: "Table";
             ink: Theme.accent-emerald;
             hint: GuideModel.allows_tier_table() ? "Add a Table tier (0\u{b0}, pinned to an exact scale value) -- a starting anchor for the crown. See the glossary." : GuideModel.locked_hint;
-            enabled: GuideModel.allows_tier_table();
+            enabled: GuideModel.allows_tier_table() && !EditorModel.tier_name_taken(EditorModel.tiers, "Table");
             clicked => { EditorModel.save_tier(-1, "0", 2, "0.32", "Table", ""); }
         }
         CompactButton {
@@ -238,7 +238,7 @@ export component TierTableToolbar inherits VerticalLayout {
             text: "Girdle";
             ink: Theme.accent-emerald;
             hint: GuideModel.allows_tier_table() ? "Add a Girdle tier (90\u{b0}, pinned to an exact scale value = half-width) -- 90\u{b0} is required for a real girdle band. See the glossary." : GuideModel.locked_hint;
-            enabled: GuideModel.allows_tier_table();
+            enabled: GuideModel.allows_tier_table() && !EditorModel.tier_name_taken(EditorModel.tiers, "Girdle");
             clicked => { EditorModel.save_tier(-1, "90", 2, "1", "Girdle", ""); }
         }
         CompactButton {
@@ -246,7 +246,7 @@ export component TierTableToolbar inherits VerticalLayout {
             text: "Culet";
             ink: Theme.accent-emerald;
             hint: GuideModel.allows_tier_table() ? "Add a Culet tier (a flat pavilion facet, pinned to an exact scale value) -- a starting anchor for the pavilion. See the glossary." : GuideModel.locked_hint;
-            enabled: GuideModel.allows_tier_table();
+            enabled: GuideModel.allows_tier_table() && !EditorModel.tier_name_taken(EditorModel.tiers, "Culet");
             clicked => { EditorModel.save_tier(-1, "-0", 2, "0.88", "Culet", ""); }
         }
         Rectangle { horizontal-stretch: 1; }
@@ -285,37 +285,37 @@ export component TierTableToolbar inherits VerticalLayout {
                 width: 60px;
                 placeholder: "Step";
                 hint: "The name for the ladder: the tiers are called Step1, Step2 and so on if you type Step.";
-                reader_label: "Ladder name";
+                reader_label: "Ladder Name";
             }
             step_start_edit := TipField {
                 width: 44px;
                 placeholder: "start\u{b0}";
                 hint: "The angle of the first tier, in degrees. Blank is 0.";
-                reader_label: "Start angle in degrees";
+                reader_label: "Start Angle in Degrees";
             }
             step_delta_edit := TipField {
                 width: 44px;
                 placeholder: "step\u{b0}";
                 hint: "How much each tier's angle changes from the one before it, in degrees. Blank is 0.";
-                reader_label: "Step in degrees";
+                reader_label: "Step in Degrees";
             }
             step_count_edit := TipField {
                 width: 32px;
                 placeholder: "N";
                 hint: "How many tiers to generate.";
-                reader_label: "Number of tiers";
+                reader_label: "Number of Tiers";
             }
             step_indices_edit := TipField {
                 width: 70px;
                 placeholder: "indices";
                 hint: "The index positions every generated tier uses, for example 96, 16, 32.";
-                reader_label: "Index positions";
+                reader_label: "Index Positions";
             }
             step_anchor_edit := TipField {
                 width: 50px;
                 placeholder: "anchor";
                 hint: "An exact scale value to pin the first tier to. Leave it blank to let the first tier meet an existing anchor elsewhere in the design.";
-                reader_label: "Anchor scale value";
+                reader_label: "Anchor Scale Value";
             }
             CompactButton {
                 width: 60px;
@@ -357,7 +357,7 @@ export component TierTableToolbar inherits VerticalLayout {
                 opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
                 Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Later changes to the first tier move the others by the same steps. See the glossary.") : @markdown("\{GuideModel.locked_hint}"); }
                 CheckBox {
-                    text: "Keep linked";
+                    text: "Keep Linked";
                     enabled: GuideModel.allows_tier_table();
                     checked <=> root.keep_linked;
                 }
@@ -366,14 +366,14 @@ export component TierTableToolbar inherits VerticalLayout {
         }
         HorizontalLayout {
             spacing: 4px;
-            Text { text: "Mirror current tier ("; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
+            Text { text: "Mirror Current Tier ("; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
             mirror_suffix_edit := TipField {
                 width: 30px;
                 text: "'";
                 hint: "The text added to the mirrored tier's name, so it does not clash with the original.";
-                reader_label: "Name suffix for the mirrored tier";
+                reader_label: "Name Suffix for the Mirrored Tier";
             }
-            Text { text: ") to other block:"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
+            Text { text: ") to Other Block:"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
             CompactButton {
                 width: 56px;
                 text: "Mirror";
@@ -429,7 +429,7 @@ export component TierTableToolbar inherits VerticalLayout {
         // Ctrl-clicked group for Optimize without disturbing other tiers.
         if root.advanced: CompactButton {
             width: 64px;
-            text: "Adopt sel.";
+            text: "Adopt Sel.";
             hint: GuideModel.allows_tier_table() ? "Adopt the imported meet of every selected tier, as one Undo step. See the glossary." : GuideModel.locked_hint;
             enabled: GuideModel.allows_tier_table();
             clicked => { EditorModel.adopt_selected(); }
@@ -444,7 +444,7 @@ export component TierTableToolbar inherits VerticalLayout {
             width: 54px;
             placeholder: "deg";
             hint: "How many degrees to move every selected tier's angle by. You can type arithmetic, for example 0.5+0.25. Press Enter, or Offset, to apply.";
-            reader_label: "Offset in degrees";
+            reader_label: "Offset in Degrees";
             accepted => {
                 if offset_edit.text != "" && TierTableModel.offset_selected(root.keyboard_focus_index, offset_edit.text) {
                     offset_edit.text = "";

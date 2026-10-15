@@ -2,6 +2,7 @@ import { ComboBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { AppModel } from "../models/app_model.slint";
 import { GuideModel } from "../models/guide_model.slint";
+import { VerdictBadge, VerdictModel } from "verdict_badge.slint";
 
 // One view-tab pill (Render / Solid / Diagram).
 component TabPill inherits Rectangle {
@@ -120,6 +121,12 @@ export component Header inherits Rectangle {
         // Filler: takes the slack, so the controls sit at the right edge.
         Rectangle { horizontal-stretch: 1; }
 
+        // The overall verdict on the open design; hidden until there is something to judge.
+        if VerdictModel.level >= 0 && AppModel.has-design: VerticalLayout {
+            alignment: center;
+            VerdictBadge {}
+        }
+
         Text {
             text: "Material";
             overflow: elide;
@@ -188,6 +195,10 @@ export component Header inherits Rectangle {
                 vertical-alignment: center;
             }
             Rectangle { horizontal-stretch: 1; }
+            if VerdictModel.level >= 0 && AppModel.has-design: VerticalLayout {
+                alignment: center;
+                VerdictBadge {}
+            }
             VerticalLayout {
                 alignment: center;
                 ViewTabs {}

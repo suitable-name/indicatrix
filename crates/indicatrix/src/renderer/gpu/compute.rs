@@ -139,20 +139,26 @@ pub fn create_compute_pipeline_cached(
 /// compiled kernels across the several large pipelines one session builds (the
 /// material-class specialisations of the same 5,000-line megakernel share most of their
 /// intermediate work). On every other backend, and on a device created without the
-/// feature, this returns `None` and pipeline creation is unchanged. The cache starts
-/// empty and lives as long as the device; persisting [`wgpu::PipelineCache::get_data`]
-/// across runs, which is what removes the cold-start compile, is left to the caller.
+/// feature, this returns `None` and pipeline creation is unchanged. The cache
+/// lives as long as the device and is seeded from the blob
+/// [`pipeline_cache::persist`](super::pipeline_cache) wrote on an earlier run (when the
+/// application enabled persistence), which removes the cold-start compile.
 #[must_use]
-pub fn create_pipeline_cache(device: &wgpu::Device) -> Option<wgpu::PipelineCache> {
+pub fn create_pipeline_cache(
+    device: &wgpu::Device,
+    adapter_info: &wgpu::AdapterInfo,
+) -> Option<wgpu::PipelineCache> {
     if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         return None;
     }
-    // SAFETY: `data` is `None`, so there is no externally supplied blob whose provenance
-    // the driver would have to trust; the cache starts empty.
+    let blob = super::pipeline_cache::load_blob(adapter_info);
+    // SAFETY: `data` is either `None` or a blob this crate wrote from `get_data` into a
+    // directory the application chose; `fallback: true` makes wgpu validate it against
+    // the driver/device and discard it (empty cache) when stale or corrupt.
     let cache = unsafe {
         device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
             label: Some("indicatrix gpu pipeline cache"),
-            data: None,
+            data: blob.as_deref(),
             fallback: true,
         })
     };

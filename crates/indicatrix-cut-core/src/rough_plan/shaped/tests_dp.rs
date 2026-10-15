@@ -540,6 +540,11 @@ fn plain_model() -> RoughModel {
 }
 
 /// The number of cells a run of `len_mm` covers along `axis`: `len = g * unit - kerf`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the rounded ratio is a small non-negative cell count"
+)]
 fn cells_of(grid: &ShapedGrid, axis: usize, len_mm: f64) -> usize {
     ((len_mm + grid.kerf_mm) / grid.unit[axis]).round() as usize
 }

@@ -16,7 +16,7 @@ use crate::{
                 tier_items_from_solved_with_warnings, yield_report_texts_from_solved,
             },
         },
-        render::camera_lighting::contained_request_size,
+        render::camera_lighting::{contained_request_size, view_mode_index},
         solid_preview::{
             cut_slider,
             preview_state::{CameraPose, ReplanRequest, SolidLastSolved, SolidPreviewState},
@@ -172,7 +172,7 @@ pub(in crate::gui::editor) fn submit_preview_replan_chained(
     let selected_tier = usize::try_from(ui.global::<EditorModel>().get_selected_tier_index())
         .ok()
         .filter(|&index| index < design.tiers.len() + design.concave_tiers.len());
-    let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
+    let view_mode = view_mode_index(ui.global::<SolidPreviewModel>().get_view_mode());
     // See `refresh_viewport`'s identical call, just above,
     // for why -- this is the post-edit path `contained_request_size`'s own doc
     // comment names as still needing the same treatment.
@@ -305,6 +305,14 @@ pub(in crate::gui::editor) fn push_solved_preview(
     ui.global::<EditorModel>().set_status_is_problem(is_problem);
     ui.global::<EditorModel>()
         .set_solve_state(if is_problem { "failed" } else { "solved" }.into());
+    // The facet count belongs to the same solve as the verdict: a stale edit reset it to 0, and
+    // a verdict of "solved" with no facets would be shown otherwise.
+    ui.global::<EditorModel>().set_facet_count(
+        i32::try_from(crate::gui::editor::view::facet_count_from_solved(
+            design, solved,
+        ))
+        .unwrap_or(i32::MAX),
+    );
     // A third route to "solved" (after `refresh_all` and the background solve's
     // own completion): let the guide's "Solve and check" step see it, AFTER the
     // verdict above is in place.

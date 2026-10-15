@@ -1,0 +1,142 @@
+import { Switch, ListView } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { UiState } from "../state.slint";
+import { Section, InfoRow } from "../components/section.slint";
+
+// One species of the spectrum: name, refractive index, critical angle; selected marker.
+component MaterialRow inherits Rectangle {
+    in property <string> name;
+    in property <float> n_d;
+    in property <float> critical_deg;
+    in property <bool> has_preset;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback activated();
+    private property <string> tip: root.name + ": refractive index " + root.n_d.to-fixed(3) + ", critical angle " + root.critical_deg.to-fixed(1) + " degrees." + (root.has_preset ? "" : " No built-in preset, a neutral stone of this index is used.");
+
+    height: 28px;
+    border-radius: 4px;
+    opacity: root.enabled ? 1.0 : 0.5;
+    background: root.selected ? TrainerTheme.bg-selected
+        : (ta.pressed && root.enabled) ? TrainerTheme.bg-card-pressed
+        : (ta.has-hover && root.enabled) ? TrainerTheme.bg-card-hover : transparent;
+    border-width: fs.has-focus ? 2px : 0px;
+    border-color: TrainerTheme.focus-ring;
+    accessible-role: radio-button;
+    accessible-label: root.name + ", refractive index " + root.n_d.to-fixed(3);
+    accessible-checked: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.activated(); } }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.selected ? "●" : "○";
+                color: root.selected ? TrainerTheme.accent-cyan : TrainerTheme.text-muted;
+                font-size: 11px;
+            }
+        }
+        Text {
+            text: root.name + (root.has_preset ? "" : " *");
+            color: TrainerTheme.text-primary;
+            font-size: 12px;
+            font-weight: root.selected ? 700 : 500;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: "n " + root.n_d.to-fixed(3) + " · " + root.critical_deg.to-fixed(1) + "°";
+            color: TrainerTheme.text-secondary;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == " " || e.text == "\n" { root.activated(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { fs.focus(); root.activated(); }
+    }
+    Tooltip { text: @markdown("\{root.tip}"); }
+}
+
+export component MaterialSection inherits Section {
+    title: "MATERIAL";
+    // The target applies in Retarget mode with a fixed (non universal) spectrum.
+    private property <bool> target_active: TrainingController.model_mode == 1
+        && !TrainingController.is_universal_spectrum;
+
+    InfoRow {
+        label: "Source";
+        value: TrainingController.source_material == "" ? "—"
+            : TrainingController.source_material + " (n " + TrainingController.source_ri.to-fixed(3) + ")";
+    }
+    Switch {
+        text: "Universal Spectrum";
+        checked: TrainingController.is_universal_spectrum;
+        enabled: UiState.can_command && TrainingController.model_mode == 1;
+        accessible-label: "Universal spectrum";
+        toggled => { TrainingController.toggle_spectrum_mode(); }
+        Tooltip { text: @markdown("On: every episode draws a new target material from the whole spectrum (Retarget mode). Off: train for the one target below. Rebuilds the environments."); }
+    }
+    Text {
+        text: TrainingController.spectrum_text;
+        color: TrainerTheme.text-muted;
+        font-size: 11px;
+        wrap: word-wrap;
+    }
+    Text {
+        text: TrainingController.model_mode == 0
+            ? "Optimizer mode scores the stone in its own material."
+            : TrainingController.is_universal_spectrum
+            ? "The target varies per episode. Turn the universal spectrum off to fix one."
+            : "Target: " + TrainingController.target_material + " (n " + TrainingController.target_ri.to-fixed(3) + ")";
+        color: TrainerTheme.text-secondary;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+    Rectangle {
+        height: 176px;
+        background: TrainerTheme.bg-input;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: TrainerTheme.border-subtle;
+        clip: true;
+        ListView {
+            for m in TrainingController.materials: MaterialRow {
+                name: m.name;
+                n_d: m.n_d;
+                critical_deg: m.critical_deg;
+                has_preset: m.has_preset;
+                selected: m.name == TrainingController.target_material;
+                enabled: UiState.can_command && root.target_active;
+                activated => { TrainingController.select_target_material(m.name); }
+            }
+        }
+        if TrainingController.materials.length == 0: Text {
+            text: "No materials listed.";
+            color: TrainerTheme.text-muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    Text {
+        text: "* No built-in preset, a neutral stone of that index is used.";
+        color: TrainerTheme.text-muted;
+        font-size: 10px;
+        wrap: word-wrap;
+    }
+}

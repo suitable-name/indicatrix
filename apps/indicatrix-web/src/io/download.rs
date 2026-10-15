@@ -12,10 +12,8 @@ const REVOKE_AFTER: Duration = Duration::from_secs(30);
 
 /// MIME type of a `.asc` download.
 pub const MIME_ASC: &str = "text/plain;charset=utf-8";
-/// MIME type of a `.indicatrix` design file download.
+/// MIME type of an `.isdd` design file download.
 pub const MIME_DESIGN: &str = DESIGN_MIME_TYPE;
-/// MIME type of an older `.indicatrix.toml` sidecar download.
-pub const MIME_TOML: &str = "application/toml;charset=utf-8";
 /// MIME type of the cutting sheet.
 pub const MIME_HTML: &str = "text/html;charset=utf-8";
 /// MIME type of the diagram.

@@ -241,14 +241,14 @@ impl<'a> MeetNameResolver<'a> {
         // Legacy 123-ABC resolution: "1" -> pavilion tier named "P1" (or "PF1");
         // "A" -> crown tier named "C1", "B" -> "C2".
         if !token.is_empty() && token.chars().all(|c| c.is_ascii_digit()) {
-            let p_cand = format!("P{token}");
-            if let Some(i) = self.name_match(&p_cand)
+            let pavilion_name = format!("P{token}");
+            if let Some(i) = self.name_match(&pavilion_name)
                 && self.blocks[i] == Block::Pavilion
             {
                 return TokenResolution::Tiers(vec![i]);
             }
-            let pf_cand = format!("PF{token}");
-            if let Some(i) = self.name_match(&pf_cand)
+            let pavilion_f_name = format!("PF{token}");
+            if let Some(i) = self.name_match(&pavilion_f_name)
                 && self.blocks[i] == Block::Pavilion
             {
                 return TokenResolution::Tiers(vec![i]);

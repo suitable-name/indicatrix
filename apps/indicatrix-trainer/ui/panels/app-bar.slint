@@ -1,0 +1,130 @@
+import { Button, Spinner, ProgressIndicator } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { UiState } from "../state.slint";
+import { StatusPill } from "../components/status-pill.slint";
+
+// The top bar: brand, run state, device, busy strip and the run commands.
+export component AppBar inherits Rectangle {
+    callback reset-requested();
+    height: 52px;
+    background: TrainerTheme.bg-surface;
+    border-radius: TrainerTheme.radius;
+    border-width: 1px;
+    border-color: TrainerTheme.border-subtle;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 12px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: "◆";
+                    color: TrainerTheme.accent-cyan;
+                    font-size: 18px;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: "Indicatrix Trainer";
+                    color: TrainerTheme.text-primary;
+                    font-size: 15px;
+                    font-weight: 800;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            StatusPill {
+                status: TrainingController.status;
+                tip: TrainingController.status == "Stopped" ? "The training worker has ended. Use Restart Worker in the banner."
+                    : TrainingController.status == "Stopping" ? "Finishing the current update before the worker ends."
+                    : "Run state of the training worker.";
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Button {
+                text: TrainingController.device_switching ? "Switching…"
+                    : TrainingController.device_name + "  ⇄";
+                enabled: UiState.can_command && TrainingController.device_known
+                    && !TrainingController.device_switching;
+                accessible-label: "Compute device: " + TrainingController.device_name + ". Activate to switch between GPU and CPU.";
+                clicked => { TrainingController.toggle_device(); }
+                Tooltip {
+                    text: @markdown("Compute device for the network. Click to switch between GPU and CPU. The weights are kept, the Adam moments restart. The environment always runs on the CPU.");
+                }
+            }
+        }
+        // Busy strip
+        HorizontalLayout {
+            spacing: 8px;
+            horizontal-stretch: 1;
+            if UiState.busy: VerticalLayout {
+                alignment: center;
+                Spinner {
+                    indeterminate: true;
+                    width: 20px;
+                    height: 20px;
+                    accessible-label: "Working";
+                }
+            }
+            if UiState.busy: Text {
+                text: TrainingController.busy_text;
+                color: TrainerTheme.text-secondary;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+                accessible-role: text;
+                accessible-label: "Working: " + TrainingController.busy_text;
+            }
+            if !UiState.busy: Rectangle { }
+        }
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: TrainingController.is_training ? "⏸ Pause" : "▶ Start";
+                    primary: !TrainingController.is_training;
+                    enabled: TrainingController.is_training ? UiState.can_command : UiState.can_start;
+                    accessible-label: TrainingController.is_training ? "Pause training" : "Start training";
+                    clicked => {
+                        if TrainingController.is_training { TrainingController.pause_training(); }
+                        else { TrainingController.start_training(); }
+                    }
+                    Tooltip {
+                        text: @markdown("Start or pause continuous training. Shortcut: F5. Start needs a loaded data set.");
+                    }
+                }
+                Button {
+                    text: "⏭ Step";
+                    enabled: UiState.can_start && !TrainingController.is_training;
+                    accessible-label: "Run one training iteration";
+                    clicked => { TrainingController.step_training(); }
+                    Tooltip { text: @markdown("Run exactly one iteration (rollout and update), then stop. Shortcut: F6."); }
+                }
+                Button {
+                    text: "↺ Reset";
+                    enabled: UiState.can_command;
+                    accessible-label: "Reset the run";
+                    clicked => { root.reset-requested(); }
+                    Tooltip { text: @markdown("Restart the counters, statistics and collected labels. The weights are kept."); }
+                }
+            }
+        }
+    }
+    if UiState.busy: ProgressIndicator {
+        indeterminate: true;
+        x: 8px;
+        y: parent.height - 4px;
+        width: parent.width - 16px;
+        height: 3px;
+    }
+}

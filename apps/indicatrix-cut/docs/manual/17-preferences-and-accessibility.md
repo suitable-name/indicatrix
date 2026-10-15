@@ -1,6 +1,6 @@
 # 17. Preferences and Accessibility
 
-## What you will do
+## What You Will Do
 
 Some choices are about you and your screen, not about one design: how many controls
 you want to see, how big everything is, whether the colors are easy to read, and
@@ -12,10 +12,12 @@ automatically and comes back the next time you start the app.
 ## Opening Preferences
 
 Choose **Edit → Preferences...**, or press **Ctrl+,** (Ctrl and the comma key). The
-dialog has four sections: Interface, Appearance, Direct manipulation and Tutorials.
+dialog has five sections: Interface, Appearance, Direct Manipulation, Updates and Tutorials.
 Press **Escape**, click **Done**, click the × in the corner, or click outside the
 dialog to close it. The shortcut does nothing while you are typing in a text field,
 so a comma in a name stays a comma.
+
+![The Preferences dialog.](../../../../assets/preferences.png)
 
 While a guide or tutorial step has locked them (the worked example in Chapter 7, the
 tutorials in Chapter 22), the menu item, the shortcut and the Simple | Advanced pill
@@ -40,27 +42,29 @@ A brand-new installation starts in **Simple**. If you already used the app befor
 this switch existed, you stay in **Advanced** and see exactly what you saw before.
 
 In the two viewports and their dialogs, Simple mode hides the **Tilt Curve** and
-**Save View Preset** buttons; in Settings, Preview Image Size, Preview Samples, Motion
-Preview Resolution, Live Compute and Live Transfer, Local Compute, Max Ray Bounces and
-the Tilt Performance Curve panel (Chapter 2); and in the tilt video export, Max Ray
-Bounces, Color Space, Transfer and the folder-name template (Chapter 14). A hidden
-setting keeps its value and still applies. When one of the hidden render settings is
-not at its default, Settings says "Some advanced settings are in use. Switch to
-Advanced to see them."
+**Save Lighting** buttons; in the Parameters dock's Render & Output tab, Library
+Thumbnails (Preview Image Size and Preview Samples), Motion Preview Resolution, the
+Compute section (Live Compute with its live transfer, Local Compute), Max Ray Bounces
+and the Tilt Performance Curve panel (Chapter 2); in the Stone tab, the RI Override;
+and in the tilt video export, Max Ray Bounces, Color Space, Transfer and the
+folder-name template (Chapter 14). A hidden setting keeps its value and still
+applies. When one of the hidden render settings is not at its default, the tab says
+"Some advanced settings are in use. Switch to Advanced to see them." The Reset This
+Tab button restores a tab's defaults in both modes, hidden settings included.
 
 In the editor, Simple mode hides these (each one is listed again in the chapter
 where it is described):
 
 - **Tier table and Tier tab** (Chapters 3 and 4): the Schedule tab; the MAST, SOLVE,
-  ORBIT and IMPORTED columns; Pin, Detach and Adopt all; Steps and Mirror; the
-  table filter; the imported-meet line; and "Exact scale value" in the Meets list
+  ORBIT and IMPORTED columns; Pin, Detach and Adopt All; Steps and Mirror; the
+  table filter; the imported-meet line; and "Exact Scale Value" in the Meets list
   (it is shown when the tier already uses it). The Optimize tab's advanced controls
   are hidden too. In History and Variants, the per-row save-as-variant icon and
-  "Compare text" are hidden. The Tier tab's "+ Add Concave Tier" and Offset stay
+  "Compare Text" are hidden. The Tier tab's "+ Add Concave Tier" and Offset stay
   visible.
 - **Command bar** (Chapter 3): Deep Solve, Snapshot, Compare, Tilt Curves and
   + Concave. The Export button's menu drops its Gem Cut Studio (.gcs) entry.
-- **Design settings panel** (Chapter 6): RI Override, Symmetry Order, Mirror and
+- **Design settings panel** (Chapter 6): Symmetry Order, Mirror and
   Apply Symmetry, Extra Header Lines, Footnotes, Gear Ref. Angle and the
   printed-proportions row; in the gear remap dialog, Rounding. When a hidden control
   holds a value, the panel says "Some advanced settings are in use. Switch to
@@ -71,13 +75,13 @@ where it is described):
   Sweep; and the three Regenerate entries of the Library menu.
 - **Top toolbar** (Chapter 1): the Remote button, until a remote worker is set up
   or a remote library is showing.
-- **Library** (Chapter 2): the Advanced Filters panel's "Compute missing tilt
-  curves" button and its "Regenerate for filtered set" section, and the detail
+- **Library** (Chapter 2): the Advanced Filters panel's "Compute Missing Tilt
+  Curves" button and its "Regenerate for Filtered Set" section, and the detail
   header's Export .gcs button.
 
 - **Dialogs**: the Export Render Image dialog (Chapter 9) leaves out Compute, Max Ray
-  Bounces, Color Space, Transfer and the lighting-preset fan-out. The remote worker
-  dialog (Chapter 10) leaves out the live-stream mode, the update interval, the
+  Bounces, Color Space, Transfer and the saved-lighting fan-out. The remote worker
+  dialog (Chapter 10) leaves out the live transfer, the update interval, the
   preview scale, the default export transfer and the number of lanes a batch keeps
   busy. Retarget (Chapter 14) leaves out Crown Handling and the Optimize objective,
   range and effort. The material editor (Chapter 6) leaves out the birefringence
@@ -92,15 +96,15 @@ where it is described):
 All of these only hide the control. A tier, setting or file that already uses one
 keeps working exactly as before.
 
-## Denoise live view
+## Denoise Live View
 
-Preferences has a **Denoise live view** switch (on by default) that smooths the grain
-out of the live picture while it builds up; it is the same switch as **Denoise merged
-image** in the remote worker dialog (Chapter 10), so changing one changes the other.
+Preferences has a **Denoise Live View** switch (on by default) that smooths the grain
+out of the live picture while it builds up; it is the same switch as **Denoise Merged
+Image** in the remote worker dialog (Chapter 10), so changing one changes the other.
 
-## Interface scale
+## Interface Scale
 
-**Interface scale** makes everything in the windows larger or smaller. The choices
+**Interface Scale** makes everything in the windows larger or smaller. The choices
 are **Automatic** (follow your operating system's display scaling, which is what the
 app always did before), 75 %, 90 %, 100 %, 110 %, 125 %, 150 %, 175 % and 200 %.
 
@@ -111,9 +115,9 @@ uses the same scale, so a scaled window still hits what it shows.
 If you have set the `SLINT_SCALE_FACTOR` environment variable yourself, your value is
 used and this choice is ignored.
 
-## High contrast
+## High Contrast
 
-The **High contrast** switch changes the colors to near-black backgrounds, white text,
+The **High Contrast** switch changes the colors to near-black backgrounds, white text,
 clearly visible borders and bright accent colors, for easier reading in bright rooms
 or with low vision. It takes effect **immediately**, in the main window and in the
 Compare and Rough Planner windows, including ones you open later.
@@ -140,21 +144,21 @@ A few colors keep their own value on purpose, because they stand for something:
 
 The backgrounds and labels around these colors do follow the switch.
 
-## Direct manipulation
+## Direct Manipulation
 
-**Larger handles** makes the angle, depth and index handles on the Solid viewport
+**Larger Handles** makes the angle, depth and index handles on the Solid viewport
 (Chapter 13) about 60 % bigger, and makes the area you can grab around each one just
 as much bigger. It is meant for touch screens and pens, where a fingertip is far
 less precise than a mouse. A touch screen also has no "hover", so with larger
 handles on, the line under the toolbar tells you what the three handles do as soon
 as you select a facet, instead of waiting for you to point at one.
 
-**Snap to gear steps when dragging** is the same setting as the **Snap** button in the
+**Snap to Gear Steps When Dragging** is the same setting as the **Snap** button in the
 Solid view's toolbar: when it is on, dragging the angle and depth handles snaps to
 round steps, and when it is off the handles move freely. Change it in either place
 and the other follows.
 
-### What the app remembers
+### What the App Remembers
 
 - **Snap** (above) is remembered, so a session starts the way you left it.
 - The Slice tool's **Symmetric** button is remembered: whether a new facet is
@@ -162,16 +166,30 @@ and the other follows.
 - The Slice tool itself is **not** remembered. While it is on, a left drag draws a
   line instead of turning the stone, so every session starts with it off.
 
+## Updates
+
+The first time the app is idle after this feature arrived, it asks once whether it may
+check for new versions. If you choose **Check Daily**, the app asks GitHub's public release
+list at most once a day, when it starts, whether a newer release than yours exists. The
+only thing sent is the request itself (it names the app and its version, as every web
+request names its program); no design, setting or personal data is sent. Nothing is
+downloaded or installed: a newer release shows a slim notice under the header with **View
+Release** (opens the release page in your browser), **Skip This Version** and **Later**. If
+GitHub cannot be reached, the daily check says nothing. **Don't Check** never contacts
+GitHub. Preferences has a **Check for New Versions** switch to change your mind and a
+**Check Now** button that checks at once and tells you the result, including "up to date" or
+why it failed.
+
 ## Tutorials
 
-- **Reset tutorial progress** forgets which tutorials you have already finished, so
+- **Reset Tutorial Progress** forgets which tutorials you have already finished, so
   they offer themselves again.
-- **Show the welcome tour again** brings back the first-run tour that new
+- **Show the Welcome Tour Again** brings back the first-run tour that new
   installations get once.
 
 Each button confirms what it did with a short line under it.
 
-## Keyboard and screen readers
+## Keyboard and Screen Readers
 
 Every button, switch, list and field of the dialogs and windows can be reached with
 **Tab** and **Shift+Tab**, and pressed with **Space** or **Enter**; the control that has
@@ -194,7 +212,7 @@ header of a dialog opens the manual page for it.
 - Icon buttons are at least 20 pixels square, and a screen reader hears every button's
   name, whether a switch is on, and which list row is selected.
 
-## Where your choices are stored
+## Where Your Choices Are Stored
 
 All of these go into the same settings file as your render and remote settings
 (Chapter 1 shows where it lives). The keys are listed in

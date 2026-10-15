@@ -15,12 +15,12 @@ pub const AXIS_NAMES: [&str; 6] = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
 
 /// The labels of the six nudge fields, in the order of [`Nudge::from_texts`].
 pub const NUDGE_LABELS: [&str; 6] = [
-    "Turn about rig X (deg)",
-    "Turn about rig Y (deg)",
-    "Turn about rig Z (deg)",
-    "Shift along rig X (mm)",
-    "Shift along rig Y (mm)",
-    "Shift along rig Z (mm)",
+    "Turn About Rig X (deg)",
+    "Turn About Rig Y (deg)",
+    "Turn About Rig Z (deg)",
+    "Shift Along Rig X (mm)",
+    "Shift Along Rig Y (mm)",
+    "Shift Along Rig Z (mm)",
 ];
 
 /// The default dropdown picks: mesh +Z along rig +Z, mesh +X along rig +X.
@@ -66,6 +66,18 @@ impl Nudge {
     }
 }
 
+/// The rotation part of the start (mesh axis `z_axis` along rig +Z, `x_axis` along rig +X), or
+/// why the two dropdown picks cannot make one: an index outside [`AXIS_NAMES`], or both picks
+/// along the same mesh axis (`+X` with `-X` included). The dropdowns check this as soon as one
+/// changes; [`start_transform`] checks it again when Align starts.
+pub fn axis_frame(z_axis: usize, x_axis: usize) -> Result<Rigid, String> {
+    let (Some(z), Some(x)) = (axis_vector(z_axis), axis_vector(x_axis)) else {
+        return Err("Pick one of the six axes for each direction.".to_owned());
+    };
+    Rigid::from_axes(z, x, DVec3::ZERO)
+        .ok_or_else(|| "The two axes must lie along different mesh axes.".to_owned())
+}
+
 /// The starting transform from the mesh frame to the rig frame: mesh axis `z_axis` along rig
 /// +Z, mesh axis `x_axis` (its part across the first) along rig +X, the mesh centre
 /// `mesh_centre` at the rig origin, then `nudge` applied about the rig's axes.
@@ -75,11 +87,7 @@ pub fn start_transform(
     mesh_centre: DVec3,
     nudge: &Nudge,
 ) -> Result<Rigid, String> {
-    let (Some(z), Some(x)) = (axis_vector(z_axis), axis_vector(x_axis)) else {
-        return Err("Pick one of the six axes for each direction.".to_owned());
-    };
-    let base = Rigid::from_axes(z, x, DVec3::ZERO)
-        .ok_or_else(|| "The two axes must lie along different mesh axes.".to_owned())?;
+    let base = axis_frame(z_axis, x_axis)?;
     let [turn_x, turn_y, turn_z] = nudge.turn_deg.map(f64::to_radians);
     let turn = DQuat::from_rotation_z(turn_z)
         * DQuat::from_rotation_y(turn_y)
@@ -126,6 +134,19 @@ mod tests {
     }
 
     #[test]
+    fn the_dropdown_check_accepts_every_pair_on_different_mesh_axes_and_nothing_else() {
+        for z in 0..AXIS_NAMES.len() {
+            for x in 0..AXIS_NAMES.len() {
+                // Indices 2k and 2k + 1 are the two directions of one mesh axis.
+                let same_line = z / 2 == x / 2;
+                assert_eq!(axis_frame(z, x).is_err(), same_line, "z {z}, x {x}");
+            }
+        }
+        assert!(axis_frame(6, 0).is_err());
+        assert!(axis_frame(0, usize::MAX).is_err());
+    }
+
+    #[test]
     fn the_nudge_shifts_and_turns_about_the_rig_axes() {
         let nudge = Nudge {
             turn_deg: [0.0, 0.0, 90.0],
@@ -151,7 +172,7 @@ mod tests {
         assert!(
             Nudge::from_texts(&bad)
                 .unwrap_err()
-                .contains("Shift along rig X")
+                .contains("Shift Along Rig X")
         );
         assert_eq!(Nudge::from_texts(&[]).unwrap(), Nudge::default());
     }

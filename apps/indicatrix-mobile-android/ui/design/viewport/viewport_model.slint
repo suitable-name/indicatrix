@@ -1,0 +1,96 @@
+// The data and callbacks between Rust and the design viewport (`design_viewport.slint`).
+//
+// Direction rule (as in `models.slint`): Rust -> Slint is properties, Slint -> Rust is
+// callbacks. Geometry is in the viewport's own logical pixels: Rust maps the raster
+// through the pan and zoom (`ViewTransform`) and hands over finished rectangles and
+// handle positions, so this file holds no layout math. A global is visible to Rust only
+// if `app.slint`'s `export { ... }` names it.
+export global ViewportModel {
+    // ---- shared with the other Design lanes --------------------------------------
+    // 0 Solid, 1 Diagram, 2 Render. Rust owns the value; the chips set it first for
+    // instant feedback and report the choice through `view-mode-chosen`.
+    in-out property <int> view-mode: 0;
+    // A tap picked a tier (-1: it cleared the selection). The tier list follows
+    // `TiersModel.selected-tier`; this is only a nudge to scroll it into view.
+    callback tier-picked(int);
+
+    // ---- the picture ---------------------------------------------------------------
+    in property <image> frame;
+    in property <bool> has-frame: false;
+    // Where the raster sits in the viewport (contain fit, pan and zoom applied).
+    in property <length> image-x: 0px;
+    in property <length> image-y: 0px;
+    in property <length> image-width: 0px;
+    in property <length> image-height: 0px;
+    // A picture is being drawn.
+    in property <bool> busy: false;
+    // One line over the picture: the drag or Slice hint, else why the picture is stale.
+    in property <string> hint-text: "";
+
+    // ---- the long-press card -------------------------------------------------------
+    in property <bool> info-visible: false;
+    in property <string> info-text: "";
+
+    // ---- the manipulation handles --------------------------------------------------
+    in property <bool> handles-visible: false;
+    // The Handles chip.
+    in property <bool> handles-on: true;
+    // 1.0, or the large-handle factor.
+    in property <float> handle-scale: 1.0;
+    // The facet centroid the handles fan out from, and each tip (viewport px).
+    in property <length> anchor-x: 0px;
+    in property <length> anchor-y: 0px;
+    in property <length> angle-x: 0px;
+    in property <length> angle-y: 0px;
+    in property <length> depth-x: 0px;
+    in property <length> depth-y: 0px;
+    in property <length> index-x: 0px;
+    in property <length> index-y: 0px;
+    // The stem from the anchor to each tip: its length and its angle in degrees.
+    in property <length> angle-len: 0px;
+    in property <float> angle-deg: 0.0;
+    in property <length> depth-len: 0px;
+    in property <float> depth-deg: 0.0;
+    in property <length> index-len: 0px;
+    in property <float> index-deg: 0.0;
+    // A tier with no index positions has no index handle.
+    in property <bool> index-visible: true;
+    // The handle being dragged: -1 none, 0 angle, 1 depth, 2 index.
+    in property <int> active-handle: -1;
+
+    // ---- the Slice tool ------------------------------------------------------------
+    in property <bool> slice-mode: false;
+    in property <bool> slice-symmetric: true;
+    // A provisional tier exists: Keep, Flip and Discard are offered.
+    in property <bool> slice-session: false;
+    // Keep would add a facet that touches the stone.
+    in property <bool> slice-keep-ok: false;
+    // The line being drawn: start point, length and angle in degrees.
+    in property <bool> line-visible: false;
+    in property <length> line-x: 0px;
+    in property <length> line-y: 0px;
+    in property <length> line-len: 0px;
+    in property <float> line-deg: 0.0;
+
+    // ---- Slint -> Rust --------------------------------------------------------------
+    // The viewport's size changed.
+    callback view-resized(length, length);
+    // A raw pointer event: kind (0 down, 1 up, 2 move, 3 cancel), button (0 left,
+    // 1 right, 2 other), touch finger id (0 for a mouse), position in the viewport.
+    callback pointer(int, int, int, length, length);
+    // The mouse wheel turned: delta-y, position.
+    callback scrolled(length, length, length);
+    // A two-finger gesture: phase (0 begin, 1 update, 2 end), cumulative scale, centre.
+    callback pinch(int, float, length, length);
+    // The Solid / Diagram / Render segmented control.
+    callback view-mode-chosen(int);
+    // A camera pill: 0 Front, 1 Top, 2 Bottom, 3 Left, 4 Right, 5 Fit, 6 Reset.
+    callback camera-chosen(int);
+    callback handles-toggled();
+    callback slice-toggled();
+    callback symmetric-toggled();
+    callback slice-keep();
+    callback slice-flip();
+    callback slice-discard();
+    callback info-closed();
+}

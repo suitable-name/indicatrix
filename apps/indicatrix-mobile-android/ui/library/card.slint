@@ -1,0 +1,323 @@
+// The two ways the Library shows a design: a card (`GridCard`) and a 64 px row
+// (`ListCard`). The parent positions and sizes both. A tap opens the design (or toggles
+// the selection in selection mode); a press held for 450 ms starts the selection.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "../shell/icon.slint";
+import { StateLayer } from "../shell/state_layer.slint";
+import { LibraryCardData } from "library_model.slint";
+
+// Sizes shared by the card and the grid that places them.
+export global CardMetrics {
+    // The thumbnail's height as a share of the card's width.
+    out property <float> thumb-ratio: 0.8;
+    // The height of the text block under the thumbnail: title, designer, subtitle and
+    // the tag row, with a generous line height so a large system font still fits.
+    out property <length> info-height: 2 * Theme.space-md + (Theme.text-title + 2 * Theme.text-body + Theme.text-label) * 1.4 + 22px + 3 * 2px;
+    out property <length> row-height: 64px;
+}
+
+// A tap area that also reports a long press. The press timer runs only while the
+// finger is down and has not moved into a scroll (a scroll cancels the press).
+component PressArea inherits Rectangle {
+    callback tapped();
+    callback long-pressed();
+    out property <bool> pressed: touch.pressed;
+    out property <bool> has-hover: touch.has-hover;
+
+    property <bool> fired: false;
+
+    Timer {
+        interval: 450ms;
+        running: touch.pressed && !root.fired;
+        triggered => {
+            root.fired = true;
+            root.long-pressed();
+        }
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.fired = false;
+            }
+        }
+
+        clicked => {
+            if (!root.fired) {
+                root.tapped();
+            }
+        }
+    }
+}
+
+// A small rounded label for a tag.
+component TagPill inherits Rectangle {
+    in property <string> text;
+
+    height: 22px;
+    width: min(lay.preferred-width, 96px);
+    border-radius: 11px;
+    background: Theme.secondary-container;
+
+    lay := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+
+        Text {
+            text: root.text;
+            color: Theme.on-secondary-container;
+            font-size: Theme.text-label;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// The round mark of selection mode: empty, or filled with a check.
+component SelectMark inherits Rectangle {
+    in property <bool> on: false;
+
+    width: 24px;
+    height: 24px;
+    border-radius: 12px;
+    background: root.on ? Theme.primary : Theme.surface.with-alpha(0.85);
+    border-width: 2px;
+    border-color: root.on ? Theme.primary : Theme.outline;
+
+    if root.on: Icon {
+        source: Icons.check;
+        tint: Theme.on-primary;
+        glyph: 16px;
+    }
+}
+
+export component GridCard inherits Rectangle {
+    in property <LibraryCardData> data;
+    in property <bool> selecting: false;
+    callback tapped();
+    callback long-pressed();
+
+    background: Theme.surface-container;
+    border-radius: Theme.radius-lg;
+    border-width: root.data.selected ? 2px : 1px;
+    border-color: root.data.selected ? Theme.primary : Theme.outline-variant;
+    clip: true;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.data.title + ", " + root.data.subtitle;
+    accessible-checkable: root.selecting;
+    accessible-checked: root.data.selected;
+
+    property <length> thumb-h: root.width * CardMetrics.thumb-ratio;
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.thumb-h;
+        background: Theme.surface-high;
+        opacity: root.data.ignored ? 0.5 : 1.0;
+
+        if root.data.has-thumb: Image {
+            x: 8px;
+            y: 8px;
+            width: parent.width - 16px;
+            height: parent.height - 16px;
+            source: root.data.thumb;
+            image-fit: contain;
+        }
+
+        if !root.data.has-thumb: Icon {
+            source: Icons.design;
+            tint: Theme.outline;
+            glyph: 40px;
+        }
+    }
+
+    if root.selecting: SelectMark {
+        x: 8px;
+        y: 8px;
+        on: root.data.selected;
+    }
+
+    if root.data.ignored: Rectangle {
+        x: root.width - self.width - 8px;
+        y: 8px;
+        width: hidden-label.preferred-width + 16px;
+        height: 22px;
+        border-radius: 11px;
+        background: Theme.surface.with-alpha(0.85);
+
+        hidden-label := Text {
+            text: "Ignored";
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-label;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    Rectangle {
+        x: 0px;
+        y: root.thumb-h;
+        width: root.width;
+        height: root.height - root.thumb-h;
+        opacity: root.data.ignored ? 0.6 : 1.0;
+
+        VerticalLayout {
+            padding-left: Theme.space-md;
+            padding-right: Theme.space-md;
+            padding-top: Theme.space-md;
+            spacing: 2px;
+            alignment: start;
+
+            Text {
+                text: root.data.title;
+                color: Theme.on-surface;
+                font-size: Theme.text-title;
+                font-weight: 500;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.data.designer;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.data.subtitle;
+                color: Theme.primary;
+                font-size: Theme.text-label;
+                font-weight: 500;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                height: 22px;
+                spacing: 4px;
+                alignment: start;
+
+                for tag in root.data.tags: TagPill {
+                    text: tag;
+                }
+            }
+        }
+    }
+
+    StateLayer {
+        pressed: press.pressed;
+        hovered: press.has-hover;
+        border-radius: root.border-radius;
+    }
+
+    press := PressArea {
+        tapped => {
+            root.tapped();
+        }
+        long-pressed => {
+            root.long-pressed();
+        }
+    }
+}
+
+export component ListCard inherits Rectangle {
+    in property <LibraryCardData> data;
+    in property <bool> selecting: false;
+    callback tapped();
+    callback long-pressed();
+
+    background: root.data.selected ? Theme.secondary-container.with-alpha(0.6) : transparent;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.data.title + ", " + root.data.subtitle;
+    accessible-checkable: root.selecting;
+    accessible-checked: root.data.selected;
+
+    HorizontalLayout {
+        padding-left: Theme.space-lg;
+        padding-right: Theme.space-lg;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: Theme.space-lg;
+
+        Rectangle {
+            width: 48px;
+            background: Theme.surface-high;
+            border-radius: Theme.radius-sm;
+            clip: true;
+            opacity: root.data.ignored ? 0.5 : 1.0;
+
+            if root.data.has-thumb: Image {
+                x: 2px;
+                y: 2px;
+                width: parent.width - 4px;
+                height: parent.height - 4px;
+                source: root.data.thumb;
+                image-fit: contain;
+            }
+
+            if !root.data.has-thumb: Icon {
+                source: Icons.design;
+                tint: Theme.outline;
+                glyph: 24px;
+            }
+
+            if root.selecting: SelectMark {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                on: root.data.selected;
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            opacity: root.data.ignored ? 0.6 : 1.0;
+
+            VerticalLayout {
+                alignment: center;
+
+                Text {
+                    text: root.data.title;
+                    color: Theme.on-surface;
+                    font-size: Theme.text-body-large;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.data.designer == "" ? root.data.subtitle : root.data.designer + " · " + root.data.subtitle;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-body;
+                    overflow: elide;
+                }
+            }
+        }
+
+        if root.data.ignored: Text {
+            text: "Ignored";
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-label;
+            vertical-alignment: center;
+        }
+    }
+
+    Rectangle {
+        y: root.height - 1px;
+        height: 1px;
+        background: Theme.outline-variant;
+    }
+
+    StateLayer {
+        pressed: press.pressed;
+        hovered: press.has-hover;
+    }
+
+    press := PressArea {
+        tapped => {
+            root.tapped();
+        }
+        long-pressed => {
+            root.long-pressed();
+        }
+    }
+}

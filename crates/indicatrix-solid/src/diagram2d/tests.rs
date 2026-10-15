@@ -49,16 +49,19 @@ fn crown_index_wheel_places_index_0_at_top_and_index_24_at_three_oclock() {
     let phi0 = 2.0 * std::f32::consts::PI * 0.0 / gear_teeth;
     let phi24 = 2.0 * std::f32::consts::PI * 24.0 / gear_teeth;
 
-    let (su0, sv0) = wheel_direction(phi0, false);
-    assert!(su0.abs() < 1e-5, "index 0 must have no horizontal offset");
-    assert!(sv0 > 0.99, "index 0 must point straight up (screen_up > 0)");
-
-    let (su24, sv24) = wheel_direction(phi24, false);
+    let (right0, up0) = wheel_direction(phi0, false);
     assert!(
-        su24 > 0.99,
+        right0.abs() < 1e-5,
+        "index 0 must have no horizontal offset"
+    );
+    assert!(up0 > 0.99, "index 0 must point straight up (screen_up > 0)");
+
+    let (right24, up24) = wheel_direction(phi24, false);
+    assert!(
+        right24 > 0.99,
         "index 24 must point straight right (3 o'clock)"
     );
-    assert!(sv24.abs() < 1e-5, "index 24 must have no vertical offset");
+    assert!(up24.abs() < 1e-5, "index 24 must have no vertical offset");
 }
 
 /// The pavilion panel mirrors the horizontal axis, so the same index lands on
@@ -68,12 +71,12 @@ fn crown_index_wheel_places_index_0_at_top_and_index_24_at_three_oclock() {
 fn pavilion_index_wheel_mirrors_the_horizontal_axis() {
     let gear_teeth = 96.0f32;
     let phi24 = 2.0 * std::f32::consts::PI * 24.0 / gear_teeth;
-    let (su24, sv24) = wheel_direction(phi24, true);
+    let (right24, up24) = wheel_direction(phi24, true);
     assert!(
-        su24 < -0.99,
+        right24 < -0.99,
         "index 24 must point left (9 o'clock) when mirrored"
     );
-    assert!(sv24.abs() < 1e-5);
+    assert!(up24.abs() < 1e-5);
 }
 
 /// A closed box's crown/pavilion/profile panels each pick back the expected
@@ -385,8 +388,9 @@ fn the_three_panel_frame_carries_its_layout() {
     for (index, panel) in layout.panels.iter().enumerate() {
         assert!((panel.center_x - 100.0_f32.mul_add(index as f32, 50.0)).abs() < 1e-3);
         assert!(panel.scale > 0.0 && panel.wheel_radius_px > 0.0);
-        assert_eq!(panel.clip.0, 100 * index as i32);
-        assert_eq!(panel.clip.2, 100 * (index as i32 + 1) - 1);
+        let column = i32::try_from(index).expect("a panel index fits in i32");
+        assert_eq!(panel.clip.0, 100 * column);
+        assert_eq!(panel.clip.2, 100 * (column + 1) - 1);
     }
     assert_eq!(layout.panel(PanelKind::Pavilion), Some(&layout.panels[1]));
 }
@@ -469,9 +473,21 @@ fn project_point_lands_on_the_pixels_the_panel_drew() {
 
     // A point on the +Y face, projected on the crown panel, picks that facet back.
     let (fx, fy, _) = project_point(DVec3::new(0.2, 0.6, 0.2), crown);
-    assert_eq!(frame.pick_at(fx as u32, fy as u32), Some(2));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the projected point lies inside the frame, so it is a small non-negative pixel"
+    )]
+    let (crown_col, crown_row) = (fx as u32, fy as u32);
+    assert_eq!(frame.pick_at(crown_col, crown_row), Some(2));
     let (bx, by, _) = project_point(DVec3::new(0.2, -0.6, 0.2), pavilion);
-    assert_eq!(frame.pick_at(bx as u32, by as u32), Some(3));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the projected point lies inside the frame, so it is a small non-negative pixel"
+    )]
+    let (pavilion_col, pavilion_row) = (bx as u32, by as u32);
+    assert_eq!(frame.pick_at(pavilion_col, pavilion_row), Some(3));
 }
 
 #[test]

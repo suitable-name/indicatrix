@@ -13,7 +13,7 @@ import { TiltVideoExportSection } from "performance_graph/tilt_video_export_sect
 export component PerformanceGraphDialog inherits Rectangle {
     // Azimuth-0 ("canonical") sweep -- see `graph_*_extra_axes` below for the other
     // three. Kept as its own flat property (rather than folded into a 4-row array)
-    // because `settings_dialog.slint`'s mini tilt chart also binds to this exact
+    // because the Parameters panel's mini tilt chart also binds to this exact
     // property; this dialog must not change what it means.
     in property <[float]> graph_brilliance: TiltModel.graph_brilliance;
     in property <[float]> graph_extinction: TiltModel.graph_extinction;
@@ -216,7 +216,12 @@ export component PerformanceGraphDialog inherits Rectangle {
                     spacing: 3px;
                     HorizontalLayout {
                         spacing: 8px;
-                        Image { source: @image-url("../icons/trend-up.svg"); colorize: Theme.text-primary; width: 16px; height: 16px; vertical-alignment: center; }
+                        // Centred by a layout of its own: a fixed-size Image in the row sits at
+                        // the top of its cell.
+                        VerticalLayout {
+                            alignment: center;
+                            Image { source: @image-url("../icons/trend-up.svg"); colorize: Theme.text-primary; width: 16px; height: 16px; }
+                        }
                         Text {
                             text: "Tilt Performance Curve Analysis";
                             font-size: 15px;
@@ -439,7 +444,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                         ActionButton {
                             width: 130px;
                             height: 22px;
-                            text: "Re-render fresh";
+                            text: "Re-Render Fresh";
                             hint: "Trace the tilt curve again with the material that is loaded now, instead of the one the saved curve was made with.";
                             fill: Theme.notice-accent;
                             hover_fill: Theme.notice-accent-hover;
@@ -481,7 +486,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                     spacing: 8px;
 
                     // Brilliance Channel Toggle
-                    ChipToggle {
+                    chip-toggle-narrow := ChipToggle {
                         text: root.narrow ? "Brilliance" : "Brilliance % (Light Return)";
                         hint: "Show or hide the brilliance line: how much of the light that enters the stone comes back out through the top.";
                         active: root.show_brilliance;
@@ -492,7 +497,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                     }
 
                     // Windowing Channel Toggle
-                    ChipToggle {
+                    chip-toggle-narrow-2 := ChipToggle {
                         text: root.narrow ? "Windowing" : "Windowing % (TIR Leakage)";
                         hint: "Show or hide the windowing line: how much light leaks straight through the stone instead of reflecting inside it.";
                         active: root.show_windowing;
@@ -503,7 +508,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                     }
 
                     // Extinction Channel Toggle
-                    ChipToggle {
+                    chip-toggle-narrow-3 := ChipToggle {
                         text: root.narrow ? "Extinction" : "Extinction % (Shadows)";
                         hint: "Show or hide the extinction line: how much of the stone looks dark, where it shows the viewer's own head or the room instead of light.";
                         active: root.show_extinction;
@@ -569,7 +574,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                 HorizontalLayout {
                     spacing: 6px;
 
-                    for label[idx] in root.axis_labels : ChipToggle {
+                    for label[idx] in root.axis_labels : chip-toggle-narrow-4 := ChipToggle {
                         text: root.narrow ? root.axis_short_labels[idx] : label;
                         hint: "Plot the sweep seen from the " + root.axis_short_labels[idx] + " direction around the stone.";
                         active: root.selected_axis_index == idx;

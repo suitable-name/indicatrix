@@ -242,6 +242,10 @@ fn a_design_without_tools_keeps_its_exact_flat_vertices_and_extents() {
         plain.length_caliper.to_bits()
     );
     assert_eq!(extents.height.to_bits(), plain.total_height.to_bits());
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the hull storage precision; the test mirrors the production narrowing"
+    )]
     let expected: Vec<[f32; 3]> = verts
         .iter()
         .map(|v| [v.x as f32, v.y as f32, v.z as f32])

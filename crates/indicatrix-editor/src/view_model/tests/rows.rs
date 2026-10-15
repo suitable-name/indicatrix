@@ -380,7 +380,10 @@ fn cutting_rows_emit_second_lines_in_cutting_order() {
     let order = design.cutting_order();
     assert_eq!(rows.len(), order.len());
     for (position, (row, tier_ref)) in rows.iter().zip(&order).enumerate() {
-        assert_eq!(row.order_idx, position as i32);
+        assert_eq!(
+            row.order_idx,
+            i32::try_from(position).expect("a test row position fits i32")
+        );
         match *tier_ref {
             TierRef::Flat(_) => assert_eq!(row.second_line, None),
             TierRef::Concave(i) => assert_eq!(
@@ -506,7 +509,10 @@ fn tier_rows_append_concave_rows_with_their_tool_line() {
     );
     for (i, row) in concave.iter().enumerate() {
         assert_eq!(row.kind, TierRowKind::Concave);
-        assert_eq!(row.index, i as i32);
+        assert_eq!(
+            row.index,
+            i32::try_from(i).expect("a test row index fits i32")
+        );
         assert_eq!(row.tool_line, concave_tool_line(&design.concave_tiers[i]));
     }
     assert_eq!(concave[0].block, "Pavilion");

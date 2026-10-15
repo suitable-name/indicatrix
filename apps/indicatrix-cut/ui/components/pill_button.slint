@@ -1,6 +1,6 @@
 import { Theme } from "../theme.slint";
 
-// The small text buttons of the viewport toolbars and of the render settings dialog, drawn by
+// The small text buttons of the viewport toolbars and of the Parameters panel, drawn by
 // hand but built once, so every one of them has the same hover, the same tooltip, the same
 // keyboard reach (Tab, then Space or Enter) and the same screen-reader wording:
 //
@@ -9,7 +9,7 @@ import { Theme } from "../theme.slint";
 //                      tells a screen reader it is a toggle.
 //   * `ModePill`    -- one of a group where exactly one is chosen (Solid, Path-traced, Both,
 //                      Diagram). Announced as a radio button.
-//   * `SegmentPill` -- the same idea for the stretching segments of the settings dialog
+//   * `SegmentPill` -- the same idea for the stretching segments of the Parameters panel
 //                      (Render Resolution, Ray Bounces, ...), in the dialog's cyan.
 //
 // A tooltip (`hint`) is required of every caller: one plain sentence saying what the button
@@ -154,7 +154,7 @@ export component ModePill inherits Rectangle {
     }
 }
 
-// One segment of a row of equal choices in the render settings dialog. Stretches to share the
+// One segment of a row of equal choices in the Parameters panel. Stretches to share the
 // row with its neighbours (`horizontal-stretch`); `selected` fills it with the dialog's cyan.
 export component SegmentPill inherits Rectangle {
     in property <string> text;

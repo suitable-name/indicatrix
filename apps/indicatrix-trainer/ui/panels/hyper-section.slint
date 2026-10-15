@@ -1,0 +1,108 @@
+import { Button, LineEdit } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { UiState } from "../state.slint";
+import { Section, InfoRow } from "../components/section.slint";
+
+// A labelled text field of the edit form.
+component Field inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+    in-out property <string> value;
+    spacing: 8px;
+    Text {
+        text: root.label;
+        color: TrainerTheme.text-secondary;
+        font-size: 12px;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+    }
+    LineEdit {
+        text <=> root.value;
+        width: 120px;
+        font-size: 12px;
+        horizontal-alignment: right;
+        accessible-label: root.label + ". " + root.hint;
+        Tooltip { text: @markdown("\{root.hint}"); }
+    }
+}
+
+export component HyperSection inherits Section {
+    title: "HYPERPARAMETERS";
+
+    if !TrainingController.hyper_editing: VerticalLayout {
+        spacing: 6px;
+        InfoRow {
+            label: "Parallel Environments";
+            value: TrainingController.has_metrics || TrainingController.worker_count > 0
+                ? TrainingController.worker_count + " of " + TrainingController.max_workers + " max" : "—";
+        }
+        InfoRow { label: "Rollout Steps"; value: TrainingController.rollout_size > 0 ? TrainingController.rollout_size : "—"; }
+        InfoRow { label: "Mini-batch"; value: TrainingController.batch_size > 0 ? TrainingController.batch_size : "—"; }
+        InfoRow { label: "Epochs"; value: TrainingController.epochs > 0 ? TrainingController.epochs : "—"; }
+        InfoRow { label: "Learning Rate"; value: TrainingController.learning_rate > 0 ? TrainingController.learning_rate : "—"; }
+        Button {
+            text: "Edit…";
+            enabled: UiState.can_command && TrainingController.worker_count > 0;
+            accessible-label: "Edit the hyperparameters";
+            clicked => { TrainingController.begin_edit_hyperparams(); }
+            Tooltip { text: @markdown("Change the training settings. They apply between iterations; a new worker count rebuilds the environments."); }
+        }
+    }
+    if TrainingController.hyper_editing: VerticalLayout {
+        spacing: 6px;
+        Field {
+            label: "Workers";
+            hint: "Parallel environments, 1 to \{TrainingController.max_workers}. This machine has \{TrainingController.core_count} cores.";
+            value <=> TrainingController.edit_workers;
+        }
+        Field {
+            label: "Rollout Steps";
+            hint: "Environment steps collected per update, at least 1.";
+            value <=> TrainingController.edit_rollout;
+        }
+        Field {
+            label: "Mini-batch";
+            hint: "Samples per gradient step, at least 1.";
+            value <=> TrainingController.edit_batch;
+        }
+        Field {
+            label: "Epochs";
+            hint: "Passes over the collected labels per update, at least 1.";
+            value <=> TrainingController.edit_epochs;
+        }
+        Field {
+            label: "Learning Rate";
+            hint: "Step size of the optimizer, a positive number such as 0.0003.";
+            value <=> TrainingController.edit_lr;
+        }
+        Text {
+            text: "Workers: 1 to " + TrainingController.max_workers + " (" + TrainingController.core_count + " cores here)";
+            color: TrainerTheme.text-muted;
+            font-size: 10px;
+            wrap: word-wrap;
+        }
+        if TrainingController.hyper_error != "": Text {
+            text: TrainingController.hyper_error;
+            color: TrainerTheme.sev-error;
+            font-size: 12px;
+            wrap: word-wrap;
+            accessible-role: text;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+            Button {
+                text: "Cancel";
+                accessible-label: "Cancel editing";
+                clicked => { TrainingController.cancel_edit_hyperparams(); }
+            }
+            Button {
+                text: "Apply";
+                primary: true;
+                accessible-label: "Apply the hyperparameters";
+                clicked => { TrainingController.apply_hyperparams(); }
+            }
+        }
+    }
+}

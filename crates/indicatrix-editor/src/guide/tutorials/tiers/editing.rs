@@ -24,7 +24,7 @@ pub fn guides() -> Vec<Guide> {
 fn cheater_offset() -> Guide {
     Guide::new(
         "tiers-cheater-offset",
-        "Cheater offset",
+        "Cheater Offset",
         "Record a small azimuth correction on a tier, to make up for a machine error or an off-tooth cut.",
         GuideCategory::Tiers,
     )
@@ -88,7 +88,7 @@ fn cheater_offset() -> Guide {
 fn tier_notes() -> Guide {
     Guide::new(
         "tiers-tier-notes",
-        "Tier notes",
+        "Tier Notes",
         "Attach a short note to a tier, such as check the meet here, and see it travel with the tier.",
         GuideCategory::Tiers,
     )
@@ -148,7 +148,7 @@ fn tier_notes() -> Guide {
 fn duplicate_a_tier() -> Guide {
     Guide::new(
         "tiers-duplicate",
-        "Duplicate a tier",
+        "Duplicate a Tier",
         "Copy a tier right below itself, then change the copy: the quickest way to add a second ring.",
         GuideCategory::Tiers,
     )
@@ -198,7 +198,7 @@ fn duplicate_a_tier() -> Guide {
 fn move_a_tier() -> Guide {
     Guide::new(
         "tiers-move",
-        "Move a tier",
+        "Move a Tier",
         "Change the cutting order by moving a tier up or down the table.",
         GuideCategory::Tiers,
     )
@@ -261,7 +261,7 @@ fn move_a_tier() -> Guide {
 fn delete_a_tier() -> Guide {
     Guide::new(
         "tiers-delete",
-        "Delete a tier",
+        "Delete a Tier",
         "Remove a tier from the table, and bring it back with Undo.",
         GuideCategory::Tiers,
     )
@@ -314,7 +314,7 @@ fn delete_a_tier() -> Guide {
 fn multi_select() -> Guide {
     Guide::new(
         "tiers-multi-select",
-        "Multi-select",
+        "Multi-Select",
         "Tick several tiers and change or delete them together.",
         GuideCategory::Tiers,
     )
@@ -383,7 +383,7 @@ fn multi_select() -> Guide {
         )
         .actions([
             "Clear in the bar drops the group without touching a tier.",
-            "Adopt sel. (Advanced) adopts the imported meets of the ticked tiers only.",
+            "Adopt Sel. (Advanced) adopts the imported meets of the ticked tiers only.",
         ])
         .why("Every control is unlocked again."),
     )

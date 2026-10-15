@@ -1,0 +1,431 @@
+// The Checks tab: the verdict (Good, Check or Problem) with the findings behind it and a Fix
+// button where the shared code offers a one-step fix, the proportions table, the preform
+// and yield inputs, and the weight estimate.
+//
+// The verdict needs a solve that matches the design; until then the card says what is
+// missing (`PropsModel.checks-note`) and only the preform fields work. The tab fills its
+// parent.
+import { Theme } from "../../theme.slint";
+import { Shell } from "../../models.slint";
+import { PageScroll } from "../../shell/page_scroll.slint";
+import { ListRow } from "../../shell/list_row.slint";
+import { StateLayer } from "../../shell/state_layer.slint";
+import { InfoButton } from "../../shell/info.slint";
+import { PrimaryButton, TonalButton, TextButton } from "../../shell/buttons.slint";
+import { PropsModel, WarningItem, ProportionItem } from "props_model.slint";
+import { SectionHeader, SettingBlock, NumberField, MetricLine } from "props_parts.slint";
+import { NumberSheet } from "number_sheet.slint";
+import { TiltSheet } from "tilt_sheet.slint";
+
+// Side padding around a card.
+component Inset inherits HorizontalLayout {
+    padding-left: Theme.space-lg;
+    padding-right: Theme.space-lg;
+    padding-top: Theme.space-xs;
+    padding-bottom: Theme.space-xs;
+
+    @children
+}
+
+// The big answer. Colored by the verdict level once a solve backs it.
+component VerdictCard inherits Rectangle {
+    property <int> level: PropsModel.verdict-level;
+    property <bool> ready: PropsModel.checks-ready;
+    property <color> ink: root.ready || root.level == 2 ? Theme.verdict-content(root.level) : Theme.on-surface-variant;
+
+    background: root.ready || root.level == 2 ? Theme.verdict-container(root.level) : Theme.surface-high;
+    border-radius: Theme.radius-lg;
+    height: content.preferred-height;
+
+    content := VerticalLayout {
+        padding: Theme.space-lg;
+        spacing: Theme.space-xs;
+
+        HorizontalLayout {
+            spacing: Theme.space-sm;
+
+            Text {
+                text: root.ready ? ["Good", "Check", "Problem"][root.level] : (root.level == 2 ? "Problem" : "Not Checked Yet");
+                color: root.ink;
+                font-size: Theme.text-headline-small;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+
+            InfoButton {
+                tint: root.ink;
+                info-title: "Verdict";
+                info-body: "Good: the stone solves and closes, and nothing needs a second look. Check: it can be cut, but something deserves attention. Problem: it does not solve or close, or the optics are clearly poor. The findings below say why, and some have a Fix button that makes the change in one undoable step.";
+            }
+        }
+
+        Text {
+            text: root.ready ? PropsModel.verdict-text : PropsModel.checks-note;
+            color: root.ink;
+            font-size: Theme.text-body-large;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// One finding, with Show (selects its tier) and Fix. A fix that removes something asks
+// first, right in the card.
+component WarningCard inherits Rectangle {
+    in property <WarningItem> item;
+    callback show-tier();
+    callback run-fix();
+
+    property <bool> armed: false;
+
+    background: Theme.surface-high;
+    border-radius: Theme.radius-md;
+    height: content.preferred-height;
+
+    changed item => {
+        root.armed = false;
+    }
+
+    content := VerticalLayout {
+        padding: Theme.space-md;
+        spacing: Theme.space-sm;
+
+        HorizontalLayout {
+            spacing: Theme.space-sm;
+
+            Rectangle {
+                width: 16px;
+
+                Rectangle {
+                    y: 6px;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    background: Theme.verdict-mark(root.item.level);
+                }
+            }
+
+            Text {
+                text: root.item.text;
+                color: Theme.on-surface;
+                font-size: Theme.text-body;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+
+        if root.armed: Text {
+            text: root.item.confirm;
+            color: Theme.on-surface;
+            font-size: Theme.text-body;
+            font-weight: 500;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.space-xs;
+
+            if root.item.tier >= 0 && !root.armed: TextButton {
+                text: "Show";
+                clicked => {
+                    root.show-tier();
+                }
+            }
+
+            if root.item.fix-label != "" && !root.armed: InfoButton {
+                info-title: root.item.fix-label;
+                info-body: root.item.fix-hint;
+            }
+
+            if root.item.fix-label != "" && !root.armed: TonalButton {
+                text: root.item.fix-label;
+                clicked => {
+                    if (root.item.confirm == "") {
+                        root.run-fix();
+                    } else {
+                        root.armed = true;
+                    }
+                }
+            }
+
+            if root.armed: TextButton {
+                text: "Cancel";
+                clicked => {
+                    root.armed = false;
+                }
+            }
+
+            if root.armed: PrimaryButton {
+                text: "Confirm";
+                clicked => {
+                    root.armed = false;
+                    root.run-fix();
+                }
+            }
+        }
+    }
+}
+
+// One line of the proportions table. Tap a judged line for the reference range's reason.
+component ProportionLine inherits Rectangle {
+    in property <ProportionItem> item;
+
+    min-height: 48px;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.item.label + ", " + root.item.value;
+    accessible-enabled: root.item.reason != "";
+
+    StateLayer {
+        pressed: touch.pressed;
+        hovered: touch.has-hover;
+        enabled: root.item.reason != "";
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-lg;
+        padding-right: Theme.space-lg;
+        spacing: Theme.space-sm;
+
+        Text {
+            text: root.item.label;
+            color: Theme.on-surface;
+            font-size: Theme.text-body-large;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: root.item.value;
+            color: Theme.on-surface;
+            font-size: Theme.text-body-large;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            width: 16px;
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background: Theme.verdict-mark(root.item.level);
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.item.reason != "";
+        clicked => {
+            Shell.show-info(root.item.label, root.item.reason);
+        }
+    }
+}
+
+component ChecksBody inherits PageScroll {
+    Inset {
+        VerdictCard { }
+    }
+
+    if PropsModel.checks-ready && PropsModel.warnings.length > 0: SectionHeader {
+        text: "Warnings";
+    }
+
+    for warning[index] in PropsModel.warnings: Inset {
+        WarningCard {
+            item: warning;
+            show-tier => {
+                PropsModel.show-warning(index);
+            }
+            run-fix => {
+                PropsModel.fix-warning(index);
+            }
+        }
+    }
+
+    if PropsModel.proportions.length > 0: SectionHeader {
+        text: "Proportions";
+    }
+
+    for line in PropsModel.proportions: ProportionLine {
+        item: line;
+    }
+
+    SectionHeader {
+        text: "Preform";
+    }
+
+    if PropsModel.preform-note != "": Inset {
+        Text {
+            text: PropsModel.preform-note;
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-body;
+            wrap: word-wrap;
+        }
+    }
+
+    SettingBlock {
+        title: "Half-Width";
+        value-text: PropsModel.preform-half-width-mm;
+        info-body: "Half the rough's width, in the design's own units: the stone's girdle half-width is 1, so the rough has to be wider than 1, for example 1.2.";
+
+        NumberField {
+            key: "checks-half-width";
+            caption: "Half-Width";
+            clearable: false;
+            text <=> PropsModel.preform-half-width;
+            enabled: PropsModel.preform-editable;
+            placeholder: "Half-width";
+            committed(value) => {
+                PropsModel.field-committed("half-width", value);
+            }
+        }
+    }
+
+    SettingBlock {
+        title: "Length / Width";
+        info-body: "The rough's length divided by its width. 1 is square or round; larger is longer, for example 1.5.";
+
+        NumberField {
+            key: "checks-length-width";
+            caption: "Length / Width";
+            clearable: false;
+            text <=> PropsModel.preform-length-width;
+            enabled: PropsModel.preform-editable;
+            placeholder: "Length over width";
+            committed(value) => {
+                PropsModel.field-committed("length-width", value);
+            }
+        }
+    }
+
+    SettingBlock {
+        title: "Depth";
+        value-text: PropsModel.preform-depth-mm;
+        info-body: "The rough's total height from table to culet, in the same units as the Half-Width, for example 1.5.";
+
+        NumberField {
+            key: "checks-depth";
+            caption: "Depth";
+            clearable: false;
+            text <=> PropsModel.preform-depth;
+            enabled: PropsModel.preform-editable;
+            placeholder: "Depth";
+            committed(value) => {
+                PropsModel.field-committed("depth", value);
+            }
+        }
+    }
+
+    SectionHeader {
+        text: "Yield";
+    }
+
+    SettingBlock {
+        title: "Girdle Diameter";
+        info-body: "Real girdle diameter in millimetres, used for the carat estimate and for the color depth of the picture. It is the same value as Stone Width on the Stone tab. Use Clear Value to leave it unset.";
+
+        NumberField {
+            key: "checks-girdle-mm";
+            caption: "Girdle Diameter";
+            text <=> PropsModel.preform-girdle-mm;
+            placeholder: "not set";
+            unit: "mm";
+            committed(value) => {
+                PropsModel.field-committed("girdle-mm", value);
+            }
+        }
+    }
+
+    SettingBlock {
+        title: "Specific Gravity";
+        info-body: "Specific gravity for the carat estimate. It does not affect the picture. Clear Value uses the material's own figure.";
+
+        NumberField {
+            key: "checks-sg";
+            caption: "Specific Gravity";
+            text <=> PropsModel.preform-sg;
+            placeholder: "material's own";
+            committed(value) => {
+                PropsModel.field-committed("sg", value);
+            }
+        }
+    }
+
+    for line in PropsModel.yield-lines: Inset {
+        Text {
+            text: line;
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-body-large;
+            wrap: word-wrap;
+        }
+    }
+
+    SectionHeader {
+        text: "Metrics";
+    }
+
+    // The five optical metrics of the stone, seen near face-up. Numbers from before the last change stay
+    // visible, dimmed, until they are computed again.
+    for metric-name[index] in PropsModel.metric-labels: MetricLine {
+        label: metric-name;
+        value: PropsModel.metric-values[index];
+        meaning: PropsModel.metric-meanings[index];
+        dimmed: PropsModel.metrics-state == 3 || PropsModel.metrics-state == 2;
+    }
+
+    if PropsModel.metrics-note != "": Inset {
+        Text {
+            text: PropsModel.metrics-note;
+            color: PropsModel.metrics-state == 5 ? Theme.error : Theme.on-surface-variant;
+            font-size: Theme.text-body;
+            wrap: word-wrap;
+        }
+    }
+
+    Inset {
+        HorizontalLayout {
+            alignment: start;
+            spacing: Theme.space-sm;
+
+            TonalButton {
+                text: PropsModel.metrics-state == 2 ? "Measuring..." : (PropsModel.metric-labels.length > 0 ? "Compute Again" : "Compute Metrics");
+                enabled: PropsModel.metrics-state != 2 && PropsModel.metrics-state != 0;
+                clicked => {
+                    PropsModel.metrics-compute();
+                }
+            }
+
+            InfoButton {
+                info-title: "Metrics";
+                info-body: "Brilliance, fire, scintillation, windowing and extinction of the stone seen near face-up, scored under the lighting you chose on the Light tab (an HDR map counts). They are measured on demand because each measurement traces many rays. The numbers go dim when the design or the lighting changes.";
+            }
+        }
+    }
+
+    ListRow {
+        title: "Tilt Curves";
+        supporting: "Brilliance, extinction and windowing as the stone tips, on four axes";
+        enabled: PropsModel.metrics-state != 0 || PropsModel.tilt-state != 0;
+        clicked => {
+            PropsModel.open-tilt();
+        }
+    }
+
+    Rectangle {
+        height: Theme.space-xl;
+    }
+}
+
+export component ChecksTab inherits Rectangle {
+    ChecksBody { }
+
+    NumberSheet { }
+
+    TiltSheet { }
+}

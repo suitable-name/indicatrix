@@ -30,10 +30,11 @@ mod worker_settings;
 pub use orchestrator::{RemoteOrchestratorHandle, setup_remote_rendering};
 pub use worker_callbacks::setup_worker_callbacks;
 pub use worker_settings::refresh_remote_ui;
+pub(in crate::gui) use worker_settings::{current_availability, publish_availability};
 
 use crate::settings::LiveComputeTarget;
 
-/// `settings_dialog.slint`'s "Live Compute" pill index (0/1/2) -> [`LiveComputeTarget`].
+/// the Parameters panel's "Live Compute" pill index (0/1/2) -> [`LiveComputeTarget`].
 /// Mirrors `gui::render_export::compute_target_from_index`'s int-discriminant
 /// convention for the export dialog's own Compute pill, duplicated rather than shared
 /// since the two pickers carry different enum types.

@@ -1,28 +1,46 @@
-//! The "Open Recent" list's rule for the two native file kinds: a self-contained
-//! `.indicatrix` design file and the older `.indicatrix.toml`/`.gemcut.toml` sidecar
-//! both belong in it, and a design file replaces the older file it was saved over.
+//! The "Open Recent" list's load-time rule: the list holds design-file paths only
+//! (`.isdd`, or a legacy `.indicatrix` one). An entry that names a removed
+//! sidecar (`.indicatrix.toml`, or the older `.gemcut.toml`) can no longer be opened, so
+//! it is dropped silently when the settings file is read.
 
-/// The older sidecar suffixes a design file supersedes, lower case.
-const OLDER_SIDECAR_SUFFIXES: [&str; 2] = [".indicatrix.toml", ".gemcut.toml"];
+use serde::{Deserialize, Deserializer};
 
-/// The design file extension, lower case, with its dot.
-const DESIGN_SUFFIX: &str = ".indicatrix";
+/// The removed sidecar suffixes, lower case; a recent-file entry ending in one is pruned.
+const REMOVED_SIDECAR_SUFFIXES: [&str; 2] = [".indicatrix.toml", ".gemcut.toml"];
 
-/// `true` when `existing` is an older sidecar of the very design that the design file
-/// at `new_path` now stores: same folder and stem, an older suffix. A save (or open) of
-/// `foo.indicatrix` makes `foo.indicatrix.toml` in the Open Recent list redundant, so
-/// the list prefers the new extension and drops the older entry. Compared
-/// case-insensitively; paths are compared as text, exactly as the list stores them.
+/// `true` when `path` names a sidecar file, which can no longer be opened. Compared
+/// case-insensitively, on the path text exactly as the list stores it.
 #[must_use]
-pub(super) fn is_superseded_sidecar(existing: &str, new_path: &str) -> bool {
-    let new_lower = new_path.to_ascii_lowercase();
-    let Some(stem) = new_lower.strip_suffix(DESIGN_SUFFIX) else {
-        return false;
-    };
-    let existing_lower = existing.to_ascii_lowercase();
-    OLDER_SIDECAR_SUFFIXES
+fn is_removed_sidecar_entry(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    REMOVED_SIDECAR_SUFFIXES
         .iter()
-        .any(|suffix| existing_lower == format!("{stem}{suffix}"))
+        .any(|suffix| lower.ends_with(suffix))
+}
+
+/// Keeps the entries of `paths` that are not removed sidecars, in order.
+#[must_use]
+fn prune_removed_sidecars(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|path| !is_removed_sidecar_entry(path))
+        .collect()
+}
+
+/// `serde` hook for `AppSettings::recent_native_files`: reads the list and prunes the
+/// entries that name a removed sidecar, so a settings file written by an earlier version
+/// opens without them and the next save drops them for good.
+///
+/// # Errors
+///
+/// The deserializer's own error when the value is not a list of strings.
+pub(super) fn deserialize_recent_native_files<'de, D>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Vec::<String>::deserialize(deserializer).map(prune_removed_sidecars)
 }
 
 #[cfg(test)]
@@ -30,35 +48,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_design_file_supersedes_the_sidecars_of_the_same_stem() {
-        assert!(is_superseded_sidecar(
-            "C:/d/round.indicatrix.toml",
-            "C:/d/round.indicatrix"
-        ));
-        assert!(is_superseded_sidecar(
-            "C:/d/Round.GemCut.toml",
-            "C:/d/round.indicatrix"
-        ));
+    fn sidecar_entries_are_pruned_and_design_files_kept_in_order() {
+        let kept = prune_removed_sidecars(vec![
+            "C:/d/round.indicatrix.toml".to_string(),
+            "C:/d/round.isdd".to_string(),
+            "C:/d/Old.GemCut.toml".to_string(),
+            "C:/d/legacy.indicatrix".to_string(),
+        ]);
+        assert_eq!(kept, vec!["C:/d/round.isdd", "C:/d/legacy.indicatrix"]);
     }
 
     #[test]
-    fn other_stems_folders_and_kinds_are_not_superseded() {
-        assert!(!is_superseded_sidecar(
-            "C:/d/other.indicatrix.toml",
-            "C:/d/round.indicatrix"
-        ));
-        assert!(!is_superseded_sidecar(
-            "C:/e/round.indicatrix.toml",
-            "C:/d/round.indicatrix"
-        ));
-        assert!(!is_superseded_sidecar(
-            "C:/d/round.indicatrix",
-            "C:/d/round.indicatrix"
-        ));
-        // An older sidecar being recorded never removes anything.
-        assert!(!is_superseded_sidecar(
-            "C:/d/round.indicatrix",
-            "C:/d/round.indicatrix.toml"
-        ));
+    fn a_plain_toml_file_is_not_a_removed_sidecar() {
+        assert!(!is_removed_sidecar_entry("C:/d/settings.toml"));
+        assert!(is_removed_sidecar_entry("C:/d/ROUND.INDICATRIX.TOML"));
     }
 }

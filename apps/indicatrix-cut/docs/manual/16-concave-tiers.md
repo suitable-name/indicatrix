@@ -1,6 +1,6 @@
 # 16. Concave Tiers
 
-## What you will do
+## What You Will Do
 
 Most facets are flat: a lap grinds one plane, and the stone stays convex. A
 **concave tier** is cut with a shaped **tool** instead — a cylinder, a cone, a
@@ -11,7 +11,7 @@ performance numbers treat it, what each file format keeps of it, and what it
 cannot do yet. Everything here is additive: a design with no concave tiers behaves,
 prints and saves exactly as it did before.
 
-## How a concave tier is written
+## How a Concave Tier Is Written
 
 A concave tier follows the standard notation for fantasy and concave cuts: it is
 another tier in the same table, written on **two lines**.
@@ -34,7 +34,9 @@ The two lines are one tier: they share one shaded band in every table. Concave
 tiers are cut after the flat faceting of their section — at the end of the pavilion
 and girdle section, and at the end of the crown, directly above the table.
 
-## Adding a concave tier
+## Adding a Concave Tier
+
+![The Tier tab on the blank concave tier form.](../../../../assets/concave_tier_form.png)
 
 Press **+ Add Concave Tier** in the tier table's toolbar. The Advanced interface
 also has **+ Concave** in the command bar; the Simple interface leaves that button
@@ -49,7 +51,7 @@ in:
 - **Theta (deg)** — the azimuth of the tool's axis around the stone. Blank is 0.
 - **X / Y / Z** — the tool's displacement, as ratios of the stone width. Blank is 0.
 - **D/W** — the tool's diameter over the stone width. It must be positive.
-- **Tool angle (deg)** — the included angle of a cone or disc. The field is enabled
+- **Tool Angle (deg)** — the included angle of a cone or disc. The field is enabled
   for those two tools only, and is required for them.
 - **Reciprocating** — ticked, the tool is stroked back and forth; unticked, it is
   plunged straight in.
@@ -63,7 +65,7 @@ form (and in a toast): `angle`, `indices`, `tool`, `theta`, `x`, `y`, `z`, `diam
 your draft the same way it does for a flat tier: if you click another row while the
 form has unsaved changes, it asks whether to keep the draft or load the other row.
 
-## The concave rows of the tier table
+## The Concave Rows of the Tier Table
 
 Concave rows come after the flat ones, in the order you authored them. They differ
 from a flat row in a few ways:
@@ -92,14 +94,14 @@ with Ctrl or Shift on a tool facet selects the concave row alone, like a click o
 row. While the Slice tool holds an unconfirmed tier, a click selects nothing until
 you keep or discard it.
 
-## The cutting sheet and the schedule
+## The Cutting Sheet and the Schedule
 
 The text and HTML cutting sheets, the Edit tab's **Schedule** tab and the
 catalogue's cutting table all print a concave tier as its two lines in one band,
 with the zebra striping alternating per tier. Flat tiers print exactly as before.
 The catalogue's **Copy Instructions** puts each tool line under its facet line.
 
-## The solid view, the render and the numbers
+## The Solid View, the Render and the Numbers
 
 The solid view, the 2D diagram and the render show the stone with every tool's cut
 removed. The tool's facets have their own ids, so hover and picking name them.
@@ -120,23 +122,23 @@ Rendering a stone with tools:
   alone, and the tier table's warning badge says why. A half-resolved set of tools
   would be less truthful than none.
 
-## Saving and exporting
+## Saving and Exporting
 
 | Format | What it keeps of a concave tier |
 |---|---|
-| `.indicatrix` | Everything, exactly. This is the lossless carrier; open it to get your concave tiers back. |
+| `.isdd` | Everything, exactly. This is the lossless carrier; open it to get your concave tiers back. |
 | `.asc` | Two footnotes per tier (the facet line and the tool line), in cutting order. A concave tier is never written as an `.asc` tier. Re-opening the `.asc` alone reads them as ordinary footnotes. |
 | `.gcs` | The same footnotes, in the file's footer fields; no tier record. Experimental, like the rest of the `.gcs` export. |
 
 **Export Edited .asc** and **Export as Gem Cut Studio (.gcs)...** tell you before
 writing: *"N concave tier(s) cannot be written to this format and are left out of
-the tier list; the .asc keeps them as footnotes, the .indicatrix file keeps them in
+the tier list; the .asc keeps them as footnotes, the .isdd file keeps them in
 full"*, and ask **Export Anyway**. A design with no concave tiers is never asked.
 In the library, exporting a design whose `.asc` is rebuilt from its stored table
 asks the same question, and writes its concave rows as footnotes rather than as flat
 tiers.
 
-**Save** writes the `.indicatrix` file (with the paired `.asc` carrying the
+**Save** writes the `.isdd` file (the catalogue's `.asc` carries the
 footnotes) and needs no question: nothing is lost.
 
 ## Limitations
@@ -165,7 +167,7 @@ footnotes) and needs no question: nothing is lost.
   stored angle table, which has no place for a tool: its concave rows are left out of
   that placeholder stone.
 
-## Next steps
+## Next Steps
 
 Chapter 11 describes the file formats in full; Chapter 13 covers the solid view,
 whose hover and pick work on tool facets; Chapter 9 covers rendering and export.

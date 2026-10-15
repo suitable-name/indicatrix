@@ -1,0 +1,365 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
+import { StaleBadge } from "stale_badge.slint";
+// The Log popup's "Copy" button reuses LibraryModel.copy_text to copy details
+// to clipboard and show "Copied!" toast.
+import { LibraryModel } from "../models/library.slint";
+import { TouchButton } from "touch_button.slint";
+
+// The Edit sub-tab's full detail-width status line -- see `app.slint`'s
+// Edit-mode layout doc comment. Shows only the single highest-priority
+// message as a colored dot + one line -- the solver's own state
+// (solving/stale/failed/solved) always leads, see
+// `EditorStatusStrip::strip_text`'s own doc comment for the full order;
+// "Details" (a current-state snapshot, not a history a cutter could
+// scroll back through) opens `EditorLogPopup` with every message in
+// full, so nothing is ever unreachable, only reordered behind one click.
+export component EditorLogPopup inherits PopupWindow {
+    // `close-on-click-outside` gives the popup real click-outside-to-close,
+    // making the old backdrop genuinely redundant.
+    close-policy: PopupClosePolicy.close-on-click-outside;
+    width: 380px;
+    height: outer.preferred-height;
+
+    // Popup height is capped so it doesn't grow past the top of the window.
+    // Plumbed from EditorStatusStrip.window_height, bound from app.slint's
+    // root.height, the same way RetargetDialog/TiltBatchDialog size themselves.
+    in property <length> window_height: 900px;
+
+    // Grabs keyboard focus every time the popup opens so Escape works immediately.
+    // A monotonic counter (not a flag) so `changed` fires on every open, even
+    // when opened twice in a row. A property, not a function, because PopupWindow
+    // functions aren't reachable from the enclosing component.
+    in property <int> open_pulse: 0;
+    changed open_pulse => {
+        popup_focus.focus();
+    }
+
+    property <bool> has_deep_solve: EditorModel.deep_solve_running || EditorModel.deep_solve_status != "" || !EditorModel.deep_solve_available || EditorModel.deep_solve_hint != "";
+
+    // Deep Solve status hoisted into property so section Text and log_text
+    // read the same value without duplicating the logic.
+    property <string> deep_solve_line: EditorModel.deep_solve_running
+        ? EditorModel.deep_solve_status
+        : (EditorModel.deep_solve_status != "" ? EditorModel.deep_solve_status : EditorModel.deep_solve_hint);
+
+    // Everything this popup currently shows, concatenated for the "Copy"
+    // button below -- a cutter can paste a solver failure or a Deep Solve
+    // verdict to ask for help without retyping it by hand. Mirrors
+    // `has_deep_solve`/`deep_solve_line` above section-for-section; the
+    // per-tier Deep Solve table and the manufacturability list are
+    // summarized by count rather than transcribed line-by-line (Slint's
+    // function bodies have no loop construct to walk either array).
+    function log_text() -> string {
+        return "Editor Details\n\n"
+            + (EditorModel.last_saved_path != "" ? ("Last saved to: " + EditorModel.last_saved_path + "\n\n") : "")
+            + (EditorModel.status_text != "" ? (EditorModel.status_text + "\n\n") : "")
+            + (root.has_deep_solve ? (root.deep_solve_line + "\n\n") : "")
+            + (EditorModel.deep_solve_tier_rows.length > 0 ? ("Deep Solve: " + EditorModel.deep_solve_tier_rows.length + " tier(s) disagree with the last solve.\n\n") : "")
+            + (EditorModel.manufacturability_warnings.length > 0 ? ("Manufacturability (" + EditorModel.manufacturability_warnings.length + " warning(s))\n\n") : "")
+            + (EditorModel.preform_fit_warning != "" ? ("Rough Fit: " + EditorModel.preform_fit_warning + "\n\n") : "")
+            + (EditorModel.material_suggestion_text != "" ? EditorModel.material_suggestion_text : "");
+    }
+
+    Rectangle {
+        // Uses theme tokens for background/border/shadow instead of bare hex.
+        background: Theme.popup-surface;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        drop-shadow-offset-y: 6px;
+        clip: true;
+
+        // Escape closes the popup from the keyboard. The popup takes focus
+        // as soon as it opens so Escape works immediately, with no click
+        // into the popup needed first.
+        popup_focus := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.close();
+                    return accept;
+                }
+                reject
+            }
+
+            outer := VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text { text: "Editor Details"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        // Copies everything this popup shows (`log_text` above)
+                        // through the same generic clipboard callback
+                        // `performance_graph_dialog.slint`'s own Copy button
+                        // uses -- `LibraryModel.copy_text` shows its own
+                        // "Copied to clipboard!" toast, so nothing more is
+                        // needed here.
+                        Rectangle {
+                            width: copy_label.preferred-width + 16px;
+                            height: 24px;
+                            border-radius: Theme.radius-sm;
+                            // `Theme.bg-card-hover` matches the hover treatment
+                            // this file already uses a few segments below (the
+                            // "Saved:" chip's own TouchArea), so the same
+                            // hover-affordance role renders consistently
+                            // everywhere it appears in this popup.
+                            background: copy_touch.has-hover ? Theme.bg-card-hover : transparent;
+                            border-width: 1px;
+                            border-color: Theme.border-dialog;
+                            copy_label := Text { text: "Copy"; font-size: 10px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+                            copy_touch := TouchButton {
+                                label: "Copy Details";
+                                hint: "Copy everything this window shows to the clipboard, to paste into a message.";
+                                clicked => { LibraryModel.copy_text(root.log_text()); }
+                            }
+                        }
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 12px;
+                            background: close_touch.has_hover ? Theme.bg-card-hover : transparent;
+                            Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                            close_touch := TouchButton {
+                                label: "Close Details";
+                                hint: "Close this window (Esc).";
+                                ring_radius: 12px;
+                                clicked => { root.close(); }
+                            }
+                        }
+                    }
+                }
+
+                // The popup's body -- everything below the header -- scrolls
+                // once it would exceed roughly 60% of the window, so it never
+                // pushes the popup past the top of the window with entries
+                // left unreachable.
+                body_scroll := ScrollView {
+                    height: min(body.preferred-height, root.window_height * 0.6);
+
+                    body := VerticalLayout {
+                        spacing: 10px;
+
+                        // Validation status line -- the old green/ruby "Closed solid --
+                        // volume …" banner's full text.
+                        // Dot + wrapped text are absolutely placed inside a Rectangle sized to
+                        // the text's wrapped height (a wrapped Text inside a HorizontalLayout
+                        // reports a one-line height, so the next row would overlap it).
+                        if EditorModel.status_text != "": Rectangle {
+                            height: status_row_t.preferred-height;
+                            Rectangle { x: 0px; y: 3px; width: 8px; height: 8px; border-radius: 4px; background: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; }
+                            status_row_t := Text { x: 14px; y: 0px; width: parent.width - 14px; text: EditorModel.status_text; font-size: 11px; font-weight: 600; color: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; wrap: word-wrap; }
+                        }
+
+                        // Deep Solve status/hint line.
+                        if root.has_deep_solve: VerticalLayout {
+                            spacing: 4px;
+                            Rectangle {
+                                height: deep_row_t.preferred-height;
+                                Rectangle {
+                                    x: 0px;
+                                    y: 3px;
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                                }
+                                deep_row_t := Text {
+                                    x: 14px;
+                                    y: 0px;
+                                    width: parent.width - 14px;
+                                    text: root.deep_solve_line;
+                                    font-size: 11px;
+                                    color: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                                    wrap: word-wrap;
+                                }
+                            }
+                            // Badges (never clears) a verdict computed for an
+                            // OLDER design generation -- see
+                            // `EditorModel.deep_solve_stale`'s own doc comment.
+                            // Not shown while a run is actively in progress (its
+                            // own amber "running" state already says enough).
+                            if EditorModel.deep_solve_stale && !EditorModel.deep_solve_running: StaleBadge {
+                                // Locked with Deep Solve while the worked-example guide runs.
+                                enabled: GuideModel.allows_advanced();
+                                recompute => { EditorModel.deep_solve(); }
+                            }
+                        }
+
+                        // Optimize status line -- same shape as Deep Solve's own,
+                        // so the Details popup can badge staleness for it too
+                        // (`EditorModel.optimize_stale`). The full per-tier
+                        // result/change tables live in `editor_inspector.slint`'s
+                        // Optimize tab.
+                        if EditorModel.optimize_running || EditorModel.optimize_status != "": VerticalLayout {
+                            spacing: 4px;
+                            Rectangle {
+                                height: opt_row_t.preferred-height;
+                                Rectangle {
+                                    x: 0px;
+                                    y: 3px;
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald);
+                                }
+                                opt_row_t := Text {
+                                    x: 14px;
+                                    y: 0px;
+                                    width: parent.width - 14px;
+                                    text: EditorModel.optimize_status;
+                                    font-size: 11px;
+                                    color: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald);
+                                    wrap: word-wrap;
+                                }
+                            }
+                            if EditorModel.optimize_stale && !EditorModel.optimize_running: StaleBadge {
+                                show_recompute: false;
+                            }
+                        }
+
+                        // The per-tier table behind the aggregate verdict above
+                        // -- one row per tier Deep Solve's verified repair
+                        // actually disagreed with the plain solve on
+                        // (`EditorModel.deep_solve_tier_rows`, additional to --
+                        // never replacing -- the status line's own
+                        // one-sentence "Disagrees with the last solve on: ..."
+                        // suffix). Empty (and so hidden) when there is nothing
+                        // to report.
+                        if EditorModel.deep_solve_tier_rows.length > 0: VerticalLayout {
+                            spacing: 3px;
+                            Text { text: "Deep Solve: Per-Tier Mast Comparison"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { width: 32px; text: "TIER"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                Text { horizontal-stretch: 1; text: "NAME"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                Text { width: 56px; text: "BEFORE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                Text { width: 56px; text: "AFTER"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                Text { width: 56px; text: "DELTA"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                // Same column as the Pin buttons below, which are advanced.
+                                if GuideModel.shows_advanced(): Text { width: 30px; text: ""; }
+                            }
+                            for r in EditorModel.deep_solve_tier_rows: HorizontalLayout {
+                                spacing: 6px;
+                                Text { width: 32px; text: r.tier_number; font-size: 10px; color: Theme.text-secondary; }
+                                Text { horizontal-stretch: 1; text: r.name == "" ? "(unnamed)" : r.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                                Text { width: 56px; text: r.before_mast; font-size: 10px; color: Theme.text-muted; }
+                                Text { width: 56px; text: r.after_mast; font-size: 10px; color: Theme.text-primary; }
+                                Text { width: 56px; text: r.delta; font-size: 10px; font-weight: 700; color: Theme.accent-amber; }
+                                // Opt-in "Pin to verified mast" --
+                                // `pin_verified_mast` takes the SAME "#N"
+                                // tier-number text this row already prints, so
+                                // no new field is needed to identify the tier.
+                                // Advanced: the Simple interface leaves Pin out.
+                                if GuideModel.shows_advanced(): Rectangle {
+                                    width: 30px;
+                                    height: max(20px, pin_text.preferred-height);
+                                    pin_text := Text {
+                                        text: "Pin";
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: pin_touch.has_hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    pin_touch := TouchButton {
+                                        enabled: GuideModel.allows_advanced();
+                                        label: "Pin Tier " + r.tier_number;
+                                        hint: "Pin this tier to the value Deep Solve verified, as an exact scale value. Does nothing, and says why, once this run is out of date. See the glossary.";
+                                        clicked => { EditorModel.pin_verified_mast(r.tier_number); }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Manufacturability warnings -- every one, in full. Amber, never
+                        // ruby: these are never treated as errors that stop anything, only
+                        // things the user should look at.
+                        if EditorModel.manufacturability_warnings.length > 0: VerticalLayout {
+                            spacing: 3px;
+                            Text { text: "Manufacturability (" + EditorModel.manufacturability_warnings.length + ")"; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+                            // Click a line to jump straight to its tier.
+                            // `EditorModel.manufacturability_warning_tiers` is
+                            // the same length as `manufacturability_warnings`;
+                            // `-1` marks a line with no specific tier. If the
+                            // two arrays ever disagree in length, this
+                            // degrades to a plain-text list rather than
+                            // crashing.
+                            for w[idx] in EditorModel.manufacturability_warnings: Rectangle {
+                                property <int> warn_tier: idx < EditorModel.manufacturability_warning_tiers.length
+                                    ? EditorModel.manufacturability_warning_tiers[idx]
+                                    : -1;
+                                property <bool> warn_clickable: warn_tier >= 0;
+                                height: warn_text.preferred-height;
+                                // A warning about one tier is a button that selects that tier;
+                                // a warning about the whole design is plain text.
+                                warn_touch := TouchButton {
+                                    enabled: warn_clickable;
+                                    label: w;
+                                    hint: warn_clickable ? "Select the tier this warning is about." : "";
+                                    clicked => {
+                                        EditorModel.selected_tier_index = warn_tier;
+                                        EditorModel.inspector_tab = 0;
+                                        EditorModel.inspector_collapsed = false;
+                                        root.close();
+                                    }
+                                }
+                                warn_text := Text {
+                                    text: "- " + w;
+                                    font-size: 10px;
+                                    color: warn_clickable && warn_touch.has-hover ? Theme.accent-cyan : Theme.text-secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        // Does the design fit its rough?
+                        if EditorModel.preform_fit_warning != "": VerticalLayout {
+                            spacing: 3px;
+                            Text { text: "Rough Fit"; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+                            Text { text: EditorModel.preform_fit_warning; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        }
+
+                        // Catalogue-load material suggestion, with its accept/dismiss
+                        // actions kept exactly as the old banner offered them.
+                        if EditorModel.material_suggestion_text != "": VerticalLayout {
+                            spacing: 4px;
+                            Text { text: EditorModel.material_suggestion_text; font-size: 11px; color: Theme.accent-cyan; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Button { text: "Set Material"; accessible-description: "Use the suggested material for this design. You can undo it."; enabled: GuideModel.allows_design_settings(); clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
+                                Button { text: "No Thanks"; accessible-description: "Ignore the suggested material."; clicked => { EditorModel.material_suggestion_dismiss(); } }
+                            }
+                        }
+
+                        // The full path, in the one place that has room for it
+                        // -- the strip itself shows only the bare file name.
+                        // Deliberately outside the "Nothing to
+                        // report." condition below: a saved path is a fact about
+                        // the session, not a message competing for the strip's
+                        // single slot, so it stays visible even when there is
+                        // genuinely nothing else to report.
+                        if EditorModel.last_saved_path != "": VerticalLayout {
+                            spacing: 3px;
+                            Text { text: "Last Saved To"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                            Text { text: EditorModel.last_saved_path; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        }
+
+                        if EditorModel.status_text == "" && !root.has_deep_solve && EditorModel.manufacturability_warnings.length == 0 && EditorModel.preform_fit_warning == "" && EditorModel.material_suggestion_text == "": Text {
+                            text: "Nothing to report.";
+                            font-size: 11px;
+                            color: Theme.text-muted;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

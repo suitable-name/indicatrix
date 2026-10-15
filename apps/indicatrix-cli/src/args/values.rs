@@ -5,6 +5,7 @@ use super::types::{ExportFormat, LIGHTING_NAMES, MaterialArg, Mode, PRESET_NAMES
 use indicatrix::optics::LightingPreset;
 use indicatrix_cut_core::ObjectivePreset;
 use indicatrix_editor::optimize_view::MAX_CANDIDATES;
+use indicatrix_formats::native::design::{DESIGN_EXTENSION, LEGACY_DESIGN_EXTENSION};
 use std::path::PathBuf;
 
 /// The greatest refractive index `--ri` takes. Rutile, the highest gem, is 2.9.
@@ -138,11 +139,12 @@ pub(super) fn parse_mode(word: &str) -> Result<Mode, String> {
 pub(super) fn parse_export_format(word: &str) -> Result<ExportFormat, String> {
     match word.to_ascii_lowercase().as_str() {
         "asc" => Ok(ExportFormat::Asc),
-        "indicatrix" => Ok(ExportFormat::Indicatrix),
+        // `indicatrix` is the old name of the design file's extension, kept as an alias.
+        DESIGN_EXTENSION | LEGACY_DESIGN_EXTENSION => Ok(ExportFormat::Isdd),
         "gcs" => Ok(ExportFormat::Gcs),
         "html" => Ok(ExportFormat::Html),
         other => Err(format!(
-            "unknown format {other:?} (expected asc, indicatrix, gcs or html)"
+            "unknown format {other:?} (expected asc, {DESIGN_EXTENSION}, gcs or html)"
         )),
     }
 }

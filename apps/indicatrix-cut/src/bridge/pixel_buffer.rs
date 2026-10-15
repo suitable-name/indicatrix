@@ -84,7 +84,7 @@ mod tests {
     fn released_frames_are_reused_without_allocating() {
         let mut transfer = FramebufferTransfer::new(4, 4);
         let first = transfer.copy_from_gpu_slice(&[1; 64]).as_slice().as_ptr();
-        for shade in 2..=FRAME_BUFFERS as u8 {
+        for shade in 2..=u8::try_from(FRAME_BUFFERS).expect("frame count fits in u8") {
             drop(transfer.copy_from_gpu_slice(&[shade; 64]));
         }
         let again = transfer.copy_from_gpu_slice(&[9; 64]);

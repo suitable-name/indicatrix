@@ -179,10 +179,6 @@ pub fn spawn_render_thread<T, F, M, S, R>(
         // Path signature per pixel, the denoiser's second edge-stop: from the guide cache
         // for CPU and GPU frames alike (`ViewportGpu::sync_path_sig`), never traced.
         let mut first_hit_path_sig: Vec<u32> = Vec::new();
-        // Scratch buffer for folding a remote accumulator's current total into a
-        // display cycle's input (see `should_combine_remote`'s call site below).
-        // Reused across cycles like the buffers above; stays empty when nothing combines.
-        let mut combined_scratch: Vec<Vec3> = Vec::new();
         // The combined remote sample count last sent to `display`, used for the
         // "local has converged" check in the loop.
         let mut last_displayed_remote_samples: u32 = 0;
@@ -397,6 +393,10 @@ pub fn spawn_render_thread<T, F, M, S, R>(
             // (`export_active`). Skips raytracing entirely -- the accumulation buffer
             // stays in sync with `dirty`, so resuming continues converging. The sleep is
             // long enough to cost no CPU but short enough (~100ms) to feel responsive.
+            // A harness run traces nothing: the view counts as an invisible tab (see
+            // `harness_support::disable_viewport_rendering`).
+            #[cfg(feature = "ui-harness")]
+            let tab_visible = tab_visible && !crate::harness_support::viewport_rendering_disabled();
             let suspension = SuspensionFlags {
                 paused,
                 tab_visible,
@@ -626,6 +626,10 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                     // comment.
                     sample_offset,
                 };
+                // Told before the frame so the guide prepass skips the signature walk
+                // that `sync_path_sig` below would discard (UI-1 a).
+                let path_sig_wanted = denoise_enabled && !camera_moving;
+                gpu_backend.set_path_sig_wanted(path_sig_wanted);
                 accumulate_frame_samples(
                     &mut gpu_backend,
                     &backend_frame,
@@ -640,11 +644,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 );
                 // The signature costs a prepass per pose and material, so it is skipped
                 // (zeroed) while the denoiser is off or the camera is moving.
-                gpu_backend.sync_path_sig(
-                    &backend_frame,
-                    &mut first_hit_path_sig,
-                    denoise_enabled && !camera_moving,
-                );
+                gpu_backend.sync_path_sig(&backend_frame, &mut first_hit_path_sig, path_sig_wanted);
             }
 
             // Push `ViewportGpu`'s current self-healing
@@ -717,29 +717,6 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 };
 
                 if can_send {
-                    // Fold the epoch's remote contribution (finished chunks plus the
-                    // in-flight one) into a scratch buffer for THIS display cycle only --
-                    // never merged into `accum_buffer` itself. This read-lock-and-add
-                    // happens at the display cadence, not the hot per-sample trace path.
-                    // The count comes from the SAME locked read as the radiance, so the
-                    // tone mapper's divisor always matches the sum. Falls through to
-                    // `&accum_buffer` with no extra copy when not combining.
-                    let remote_done = live_epoch.as_ref().map(|epoch| {
-                        combined_scratch.clear();
-                        combined_scratch.extend_from_slice(&accum_buffer);
-                        epoch.add_remote_into(&mut combined_scratch)
-                    });
-                    if let Some(done) = remote_done {
-                        // Records what THIS cycle actually displayed, so the "local
-                        // converged" check above knows remote has nothing new the next
-                        // time it reads a bigger count.
-                        last_displayed_remote_samples = done;
-                    }
-                    let (display_accum, display_sample_count): (&[Vec3], u32) = remote_done
-                        .map_or((&accum_buffer, current_sample_count), |done| {
-                            (&combined_scratch, current_sample_count + done)
-                        });
-
                     let (metrics_version, evaluated) = metrics_worker.latest();
                     let mut work = display.reclaim();
                     work.fill(
@@ -748,8 +725,8 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                         FirstHitSnapshot {
                             width,
                             height,
-                            current_sample_count: display_sample_count,
-                            accum_buffer: display_accum,
+                            current_sample_count,
+                            accum_buffer: &accum_buffer,
                             first_hit_depth: &first_hit_depth,
                             first_hit_normal: &first_hit_normal,
                             first_hit_facet_id: &first_hit_facet_id,
@@ -765,6 +742,20 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                             converged: converged_now,
                         },
                     );
+                    // Fold the epoch's remote contribution (finished chunks plus the
+                    // in-flight one) into THIS cycle's pooled copy only -- never into
+                    // `accum_buffer` itself, and with no second full-frame copy: the sum
+                    // is added straight into the buffer `fill` just wrote. This
+                    // read-lock-and-add happens at the display cadence, not the hot
+                    // per-sample trace path. The count comes from the SAME locked read as
+                    // the radiance, so the tone mapper's divisor always matches the sum.
+                    if let Some(epoch) = live_epoch.as_ref() {
+                        // Records what THIS cycle actually displayed, so the "local
+                        // converged" check above knows remote has nothing new the next
+                        // time it reads a bigger count.
+                        last_displayed_remote_samples =
+                            work.add_remote(|dst| epoch.add_remote_into(dst));
+                    }
                     display.send(work);
                     pushed_metrics_version = metrics_version;
                     last_denoise_at = Some(Instant::now());

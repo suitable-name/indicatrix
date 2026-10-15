@@ -32,6 +32,10 @@ pub(crate) fn azimuth2_in_frame(dir: Vec3, s_axis: Vec3, p_axis: Vec3) -> (f32, 
 /// `j = [[j_ss, j_sp], [j_ps, j_pp]]` maps incident `(E_s, E_p)` to outgoing `(E_s',
 /// E_p')`.
 #[must_use]
+#[expect(
+    clippy::similar_names,
+    reason = "j_ss/j_sp/j_ps/j_pp and the m_/a_/b_/c_ products are the established Jones and Mueller element names"
+)]
 pub(crate) fn jones_to_mueller(j_ss: Cplx, j_sp: Cplx, j_ps: Cplx, j_pp: Cplx) -> Mat4 {
     let m_ss = j_ss.norm_sqr();
     let m_sp = j_sp.norm_sqr();

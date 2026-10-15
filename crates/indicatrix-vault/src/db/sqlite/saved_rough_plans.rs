@@ -116,6 +116,54 @@ impl Database {
         Ok(id)
     }
 
+    /// The ids of the saved plans called exactly `name` (the list shows names verbatim,
+    /// so "Plan" and "plan" are two names), ascending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub fn saved_rough_plan_ids_named(&self, name: &str) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT plan_id FROM saved_rough_plans WHERE name = ?1 ORDER BY plan_id")?;
+        let rows = stmt.query_map(params![name], |row| row.get::<_, i64>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row.with_context(|| format!("Failed to read the plans named '{name}'"))?);
+        }
+        Ok(ids)
+    }
+
+    /// Stores a plan under `name` in place of every plan already called that: in one
+    /// transaction the new row is inserted and the old rows are deleted, so a failure
+    /// leaves the old plans as they were and the list never shows two plans with one
+    /// name. Returns the new `plan_id` and the ids that were replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction, the `INSERT` or a `DELETE` fails.
+    pub fn replace_saved_rough_plans_named(
+        &self,
+        name: &str,
+        payload_version: u32,
+        payload: &str,
+        summary: &str,
+        now: i64,
+    ) -> Result<(i64, Vec<i64>)> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("Failed to start replacing the saved rough plan")?;
+        let old = self.saved_rough_plan_ids_named(name)?;
+        let id = self.save_rough_plan(name, payload_version, payload, summary, now)?;
+        for old_id in &old {
+            self.delete_saved_rough_plan(*old_id)?;
+        }
+        tx.commit()
+            .context("Failed to commit the replaced saved rough plan")?;
+        Ok((id, old))
+    }
+
     /// Stores the list description of plan `id` without touching its other columns
     /// (`updated_at` included). Returns how many rows changed: 0 when the plan no longer
     /// exists.
@@ -416,6 +464,42 @@ mod tests {
         let list = db.list_saved_rough_plans().unwrap();
         assert_eq!(list[0].plan_id, id);
         assert_eq!(list[0].updated_at, 600);
+
+        cleanup(db, &path);
+    }
+
+    #[test]
+    fn replacing_a_plan_by_name_leaves_one_row_with_the_new_payload() {
+        let (db, path) = temp_db();
+        let keep = db.save_rough_plan("Other", 1, "other", "s", 100).unwrap();
+        let first = db.save_rough_plan("Plan", 1, "old", "s", 100).unwrap();
+        // A different case is a different name: the list shows names verbatim.
+        let lower = db.save_rough_plan("plan", 1, "lower", "s", 100).unwrap();
+        assert_eq!(db.saved_rough_plan_ids_named("Plan").unwrap(), vec![first]);
+
+        let (id, replaced) = db
+            .replace_saved_rough_plans_named("Plan", 2, "new", "fresh", 500)
+            .unwrap();
+        assert_eq!(replaced, vec![first]);
+        assert_ne!(id, first);
+        assert_eq!(db.saved_rough_plan_ids_named("Plan").unwrap(), vec![id]);
+        assert_eq!(db.get_saved_rough_plan(first).unwrap(), None);
+        let stored = db.get_saved_rough_plan(id).unwrap().unwrap();
+        assert_eq!(stored.payload, "new");
+        assert_eq!(stored.payload_version, 2);
+        assert_eq!(stored.meta.summary.as_deref(), Some("fresh"));
+        assert_eq!(stored.meta.created_at, 500);
+        assert!(db.get_saved_rough_plan(keep).unwrap().is_some());
+        assert!(db.get_saved_rough_plan(lower).unwrap().is_some());
+        assert_eq!(db.list_saved_rough_plans().unwrap().len(), 3);
+
+        // Nothing to replace: it is a plain insert.
+        let (fresh, none) = db
+            .replace_saved_rough_plans_named("Brand New", 1, "p", "s", 600)
+            .unwrap();
+        assert_eq!(none, Vec::<i64>::new());
+        assert_eq!(db.list_saved_rough_plans().unwrap().len(), 4);
+        assert!(db.get_saved_rough_plan(fresh).unwrap().is_some());
 
         cleanup(db, &path);
     }

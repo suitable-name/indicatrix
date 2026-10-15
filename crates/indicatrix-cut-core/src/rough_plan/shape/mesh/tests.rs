@@ -1,6 +1,10 @@
 use super::{
-    build::weld, geometry::area_vector, intersect::first_self_intersections, repair,
-    triangulate::triangulate, *,
+    build::weld,
+    geometry::{area_vector, index_u32},
+    intersect::first_self_intersections,
+    repair,
+    triangulate::triangulate,
+    *,
 };
 use crate::rough_plan::shape::mesh_fixture::{C_SHAPE_OBJ, CUBE_OBJ, icosphere, parse_obj};
 
@@ -38,7 +42,7 @@ fn shells(parts: &[(f64, f64, bool)]) -> (Vec<DVec3>, Vec<[u32; 3]>) {
     let (mut points, mut tris) = (Vec::new(), Vec::new());
     for &(lo, hi, inward) in parts {
         let (shell_points, shell_tris) = cube_shell(lo, hi, inward);
-        let base = points.len() as u32;
+        let base = index_u32(points.len());
         points.extend(shell_points);
         tris.extend(shell_tris.into_iter().map(|tri| tri.map(|v| v + base)));
     }
@@ -94,7 +98,7 @@ fn an_edge_of_three_faces_is_rejected() {
     // A fin on the edge of vertices 0 and 1.
     let mut points = points;
     points.push(DVec3::new(-5.0, -5.0, -5.0));
-    tris.push([0, 1, (points.len() - 1) as u32]);
+    tris.push([0, 1, index_u32(points.len() - 1)]);
     assert_eq!(RoughMesh::new(&points, &tris), Err(MeshError::NonManifold));
 }
 
@@ -127,7 +131,7 @@ fn duplicate_vertices_are_welded() {
         .iter()
         .flat_map(|tri| tri.map(|v| points[v as usize]))
         .collect();
-    let split_tris: Vec<[u32; 3]> = (0..tris.len() as u32)
+    let split_tris: Vec<[u32; 3]> = (0..index_u32(tris.len()))
         .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
         .collect();
     let mesh = RoughMesh::new(&split, &split_tris).expect("welds shut");
@@ -152,7 +156,7 @@ fn copies_of_a_vertex_on_both_sides_of_a_weld_cell_boundary_still_weld() {
                 split.push(DVec3::new(p.x + offset + dx, p.y, p.z));
             }
         }
-        let split_tris: Vec<[u32; 3]> = (0..tris.len() as u32)
+        let split_tris: Vec<[u32; 3]> = (0..index_u32(tris.len()))
             .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
             .collect();
         let mesh = RoughMesh::new(&split, &split_tris)
@@ -198,7 +202,7 @@ fn a_cube_with_a_cubic_cavity_has_one_volume_whichever_way_the_cavity_is_wound()
                 let p = mesh.vertices()[v as usize];
                 p.min_element() >= 5.0 - 1e-9 && p.max_element() <= 15.0 + 1e-9
             });
-            let (n, d) = mesh.triangle_plane(t as u32);
+            let (n, d) = mesh.triangle_plane(index_u32(t));
             assert_eq!(n.dot(centre) > d, in_cavity, "triangle {t}");
         }
         // A cut through the cavity takes the half of both: 10 x 20 x 20 less 5 x 10 x 10.
@@ -213,7 +217,7 @@ fn a_single_shell_is_turned_outward_as_before() {
         let (points, tris) = shells(&[(0.0, 20.0, inward)]);
         let mesh = RoughMesh::new(&points, &tris).expect("closed");
         assert!((mesh.volume() - 8000.0).abs() < 1e-9, "inward {inward}");
-        for t in 0..mesh.triangles().len() as u32 {
+        for t in 0..index_u32(mesh.triangles().len()) {
             let (n, d) = mesh.triangle_plane(t);
             assert!(
                 n.dot(DVec3::splat(10.0)) < d,
@@ -334,7 +338,7 @@ fn a_body_whose_apex_rests_on_another_shell_is_still_a_body() {
             let mut tris: Vec<[u32; 3]> = Vec::new();
             for part in order {
                 let (shell_points, shell_tris) = &parts[part];
-                let base = points.len() as u32;
+                let base = index_u32(points.len());
                 points.extend(shell_points);
                 tris.extend(shell_tris.iter().map(|tri| tri.map(|v| v + base)));
             }
@@ -356,13 +360,17 @@ fn a_body_whose_apex_rests_on_another_shell_is_still_a_body() {
                 } else {
                     DVec3::splat(10.0)
                 };
-                let (n, d) = mesh.triangle_plane(t as u32);
+                let (n, d) = mesh.triangle_plane(index_u32(t));
                 assert!(n.dot(inside) < d, "{what}: triangle {t}");
             }
         }
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "the probe coordinates are exact literals from the `at` table, compared with the same literals"
+)]
 #[test]
 fn points_inside_and_outside_are_told_apart_even_on_a_lattice_of_edges() {
     // Coordinates on the planes of the notch walls and the faces, so axis-aligned
@@ -688,7 +696,10 @@ fn a_large_cap_outline_is_triangulated_quickly() {
         })
         .collect();
     let triangles = triangulate(std::slice::from_ref(&ring), DVec3::Z, 0.0);
-    assert_eq!(triangles.len(), count as usize - 2);
+    assert_eq!(
+        triangles.len(),
+        usize::try_from(count).expect("a positive vertex count") - 2
+    );
     let area: f64 = triangles
         .iter()
         .map(|t| (t[1] - t[0]).cross(t[2] - t[0]).z * 0.5)
@@ -761,7 +772,7 @@ fn a_hair_wide_gap_is_welded_shut() {
         };
         split.extend(tri.map(|v| points[v as usize] + shift));
     }
-    let split_tris: Vec<[u32; 3]> = (0..tris.len() as u32)
+    let split_tris: Vec<[u32; 3]> = (0..index_u32(tris.len()))
         .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
         .collect();
     let mesh = RoughMesh::new(&split, &split_tris).expect("the gaps are closed");
@@ -782,7 +793,7 @@ fn a_gap_wider_than_the_retry_stays_open() {
         };
         split.extend(tri.map(|v| points[v as usize] + shift));
     }
-    let split_tris: Vec<[u32; 3]> = (0..tris.len() as u32)
+    let split_tris: Vec<[u32; 3]> = (0..index_u32(tris.len()))
         .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
         .collect();
     assert_eq!(RoughMesh::new(&split, &split_tris), Err(MeshError::Open));
@@ -861,7 +872,7 @@ fn the_hole_loops_come_out_in_order_of_their_lowest_vertex() {
 /// A triangle soup of `triangles` (three corners each, no shared vertex numbers).
 fn soup(triangles: &[[DVec3; 3]]) -> (Vec<DVec3>, Vec<[u32; 3]>) {
     let points: Vec<DVec3> = triangles.iter().flatten().copied().collect();
-    let tris = (0..triangles.len() as u32)
+    let tris = (0..index_u32(triangles.len()))
         .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
         .collect();
     (points, tris)

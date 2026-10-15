@@ -86,6 +86,11 @@ fn pipe_text_to(mut command: Command, text: &str) -> io::Result<()> {
 /// which does the copy on a worker thread.
 pub fn copy_to_clipboard(text: &str) -> bool {
     info!("Copying text to clipboard ({} bytes)", text.len());
+    // UI harness builds never touch the owner's clipboard: the text is captured instead.
+    #[cfg(feature = "ui-harness")]
+    if crate::harness_support::capture_clipboard_write(text) {
+        return true;
+    }
     for (program, args) in CLIPBOARD_TOOLS {
         match pipe_text_to(clipboard_command(program, args), text) {
             Ok(()) => return true,
@@ -169,7 +174,7 @@ fn build_curve_data_csv(ui: &MainWindow) -> String {
                 continue;
             };
             for i in 0..FULL_AXIS_SAMPLE_COUNT {
-                let angle = i as i32 - 90; // TILT_ANGLES_DEG[i]
+                let angle = i32::try_from(i).expect("axis sample index fits i32") - 90; // TILT_ANGLES_DEG[i]
                 let b = axis_b.row_data(i).unwrap_or(0.0);
                 let w = axis_w.row_data(i).unwrap_or(0.0);
                 let e = axis_e.row_data(i).unwrap_or(0.0);
@@ -279,7 +284,10 @@ pub(in crate::gui) fn setup_copy_callbacks(ui: &MainWindow) {
         .on_copy_cutting_row(move |idx: i32| {
             if let Some(ui) = ui_weak_row.upgrade() {
                 let angles_model = ui.global::<LibraryModel>().get_current_angles();
-                if let Some(row) = angles_model.row_data(idx as usize) {
+                let row = usize::try_from(idx)
+                    .ok()
+                    .and_then(|row_idx| angles_model.row_data(row_idx));
+                if let Some(row) = row {
                     let mut text = format!(
                         "Facet: {}, Angle: {}, Index: {}, Notes: {}",
                         row.code, row.angle, row.index_val, row.notes

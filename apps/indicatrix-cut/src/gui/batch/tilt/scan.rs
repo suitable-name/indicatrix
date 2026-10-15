@@ -15,13 +15,17 @@ use std::{
 /// `gui::batch::preview::scan`'s `scan_missing_preview_ids`: one blob-free `LEFT JOIN`
 /// query rather than a page walk plus a per-row point lookup. Intended to run
 /// off the UI thread -- see [`spawn_missing_tilt_curve_scan`].
+///
+/// The fingerprint a row is compared with is built from the design's persisted material
+/// state (name, stone size and source: `FingerprintMaterial::from_state`), exactly as the
+/// preview scan builds it.
 fn scan_missing_tilt_curve_ids(db: &Mutex<Database>) -> Vec<i64> {
     db.lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .entry_ids_missing_tilt_curves(|material| {
+        .entry_ids_missing_tilt_curves(|state| {
             crate::bridge::preview_render::cache_fingerprint(
                 crate::bridge::preview_render::CacheKind::TiltCurves,
-                material,
+                crate::bridge::preview_render::FingerprintMaterial::from_state(state),
             )
         })
         .unwrap_or_default()

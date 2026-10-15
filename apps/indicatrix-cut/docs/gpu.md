@@ -1,4 +1,4 @@
-# indicatrix-cut — the `gpu` feature and its fallback rules
+# indicatrix-cut — The `gpu` Feature and Its Fallback Rules
 
 What the `gpu` feature routes through the GPU megakernel, the measured speedup,
 and exactly when and why a frame or batch falls back to the CPU tracer instead.

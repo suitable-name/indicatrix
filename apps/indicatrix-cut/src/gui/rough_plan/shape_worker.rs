@@ -152,6 +152,10 @@ const CREASE_DEGREES: f64 = 30.0;
 
 /// A point as a hashable grid cell, for matching the corners of triangles that were
 /// clipped one at a time. The cell is `1e-6` of the mesh's size.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "grid cell index of a point near the mesh; `as` saturates and cells are 1e-6 of the mesh size"
+)]
 fn corner_key(point: DVec3, cell: f64) -> [i64; 3] {
     [point.x, point.y, point.z].map(|c| (c / cell).round() as i64)
 }
@@ -348,12 +352,22 @@ impl Solid {
     }
 }
 
+/// A volume in mm³ rounded to a whole number for display (negative or NaN shows as 0).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "volumes are non-negative and far below usize::MAX; `as` saturates and maps NaN to 0"
+)]
+const fn whole_mm3(volume_mm3: f64) -> usize {
+    volume_mm3.round() as usize
+}
+
 /// The readout line for a measured rough: its volume (the gross volume when it has
 /// inclusions, which it then says: "including 2 inclusions (128 mm³)").
 fn model_text(request: &ShapeRequest, measure: &RoughMeasure) -> String {
     let volume_mm3 = measure.volume_mm3;
     let line = if request.material_name.is_empty() {
-        format!("Model {} mm³", group_thousands(volume_mm3.round() as usize))
+        format!("Model {} mm³", group_thousands(whole_mm3(volume_mm3)))
     } else {
         format_model_readout(volume_mm3, request.specific_gravity, &request.material_name)
     };
@@ -536,7 +550,7 @@ const fn error_row(error: &ShapeError) -> Option<usize> {
 fn removed_text(removed_mm3: f64, specific_gravity: f64) -> String {
     format!(
         "removes {} mm³ ({:.2} ct)",
-        group_thousands(removed_mm3.round() as usize),
+        group_thousands(whole_mm3(removed_mm3)),
         carat_weight(removed_mm3, specific_gravity)
     )
 }

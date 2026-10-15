@@ -1,0 +1,121 @@
+// Design tokens for the mobile app: a Material-3-like palette for dark and light,
+// state-layer opacities, the type scale, spacing, corner radii and elevation.
+//
+// `Theme.dark` follows the system scheme (`Palette.color-scheme`, which the Material
+// widget style fills from the platform) unless the preference forces dark or light
+// (`Shell.theme-choice`, pushed from the settings).
+import { Palette } from "std-widgets.slint";
+import { Shell } from "models.slint";
+
+export global Theme {
+    out property <bool> dark: Shell.theme-choice == 1 ? true : (Shell.theme-choice == 2 ? false : Palette.color-scheme == ColorScheme.dark);
+
+    // Surfaces, from the page background up to the highest container.
+    out property <color> surface: dark ? #141218 : #fef7ff;
+    out property <color> surface-low: dark ? #1d1b20 : #f7f2fa;
+    out property <color> surface-container: dark ? #211f26 : #f3edf7;
+    out property <color> surface-high: dark ? #2b2930 : #ece6f0;
+    out property <color> surface-highest: dark ? #36343b : #e6e0e9;
+    out property <color> on-surface: dark ? #e6e0e9 : #1d1b20;
+    out property <color> on-surface-variant: dark ? #cac4d0 : #49454f;
+
+    // Accent roles.
+    out property <color> primary: dark ? #d0bcff : #6750a4;
+    out property <color> on-primary: dark ? #381e72 : #ffffff;
+    out property <color> primary-container: dark ? #4f378b : #eaddff;
+    out property <color> on-primary-container: dark ? #eaddff : #21005d;
+    out property <color> secondary-container: dark ? #4a4458 : #e8def8;
+    out property <color> on-secondary-container: dark ? #e8def8 : #1d192b;
+
+    // Lines and feedback.
+    out property <color> outline: dark ? #938f99 : #79747e;
+    out property <color> outline-variant: dark ? #49454f : #cac4d0;
+    out property <color> error: dark ? #f2b8b5 : #b3261e;
+    out property <color> on-error: dark ? #601410 : #ffffff;
+    out property <color> error-container: dark ? #601410 : #f9dedc;
+    out property <color> on-error-container: dark ? #f2b8b5 : #410e0b;
+    out property <color> scrim: #000000;
+
+    // Verdict roles: good (success) and check (warning); problems use the error roles.
+    out property <color> success: dark ? #7fd69a : #1b7a3a;
+    out property <color> on-success: dark ? #0b3a1c : #ffffff;
+    out property <color> success-container: dark ? #1f3a2a : #c9efd3;
+    out property <color> on-success-container: dark ? #b9f0c8 : #0c3a1a;
+    out property <color> warning: dark ? #f0c24f : #a06a00;
+    out property <color> on-warning: dark ? #3d2e00 : #ffffff;
+    out property <color> warning-container: dark ? #4a3a12 : #ffe9a8;
+    out property <color> on-warning-container: dark ? #ffe08a : #3d2e00;
+
+    // Snackbar colors (inverted against the page).
+    out property <color> inverse-surface: dark ? #e6e0e9 : #322f35;
+    out property <color> on-inverse-surface: dark ? #322f35 : #f5eff7;
+
+    // The three verdict levels (0 good, 1 check, 2 problem) as roles. -1 is "not judged".
+    pure public function verdict-container(level: int) -> color {
+        return level == 0 ? success-container : (level == 1 ? warning-container : error-container);
+    }
+
+    pure public function verdict-content(level: int) -> color {
+        return level == 0 ? on-success-container : (level == 1 ? on-warning-container : on-error-container);
+    }
+
+    // The solid mark (a dot, a pill outline) of a level; nothing for "not judged".
+    pure public function verdict-mark(level: int) -> color {
+        return level == 0 ? success : (level == 1 ? warning : (level == 2 ? error : transparent));
+    }
+
+    // State-layer opacities (the overlay a pressed or hovered control gets).
+    out property <float> state-hover: 0.08;
+    out property <float> state-focus: 0.12;
+    out property <float> state-pressed: 0.12;
+    out property <float> disabled-content: 0.38;
+
+    // Type scale. A global cannot use `rem` (it has no window to take the default font
+    // size from), so `AppWindow` copies its `default-font-size` into `base-font` (the
+    // platform's default size, which Android scales with the system font scale) and
+    // every size below is a multiple of it.
+    in-out property <length> base-font: 14px;
+    out property <length> text-display: base-font * 2.57;
+    out property <length> text-headline: base-font * 2;
+    out property <length> text-headline-small: base-font * 1.71;
+    out property <length> text-title-large: base-font * 1.57;
+    out property <length> text-title: base-font * 1.14;
+    out property <length> text-body-large: base-font * 1.14;
+    out property <length> text-body: base-font;
+    out property <length> text-label-large: base-font;
+    out property <length> text-label: base-font * 0.86;
+
+    // Spacing.
+    out property <length> space-xs: 4px;
+    out property <length> space-sm: 8px;
+    out property <length> space-md: 12px;
+    out property <length> space-lg: 16px;
+    out property <length> space-xl: 24px;
+
+    // Corner radii.
+    out property <length> radius-xs: 4px;
+    out property <length> radius-sm: 8px;
+    out property <length> radius-md: 12px;
+    out property <length> radius-lg: 16px;
+    out property <length> radius-xl: 28px;
+
+    // Touch metrics.
+    out property <length> touch: 48px;
+    out property <length> row-height: 56px;
+    out property <length> nav-size: 80px;
+    out property <length> top-bar-height: 64px;
+    out property <length> sheet-peek: 56px;
+
+    // Elevation: shadow color and the blur/offset of levels 1 to 3.
+    out property <color> shadow: dark ? #000000b0 : #00000040;
+    out property <length> shadow-blur-1: 3px;
+    out property <length> shadow-blur-2: 8px;
+    out property <length> shadow-blur-3: 16px;
+    out property <length> shadow-offset-1: 1px;
+    out property <length> shadow-offset-2: 3px;
+    out property <length> shadow-offset-3: 6px;
+
+    // Motion.
+    out property <duration> motion-short: 120ms;
+    out property <duration> motion-medium: 220ms;
+}

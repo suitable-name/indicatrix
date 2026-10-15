@@ -11,8 +11,19 @@ use super::{
     super::{ObjectiveFidelity, evaluate_objective, objective},
     fixtures::{design_with_real_meet_structure, rbc_445},
 };
-use crate::design::Design;
-use indicatrix::optics::materials::GemMaterial;
+use crate::{
+    design::Design,
+    manufacturability::{
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability_with_geometry,
+    },
+};
+use indicatrix::{
+    geometry::{
+        meet_solver::SolvedTier,
+        stone_metrics::{SolidStatus, build_solid_mesh, measure_solid},
+    },
+    optics::materials::GemMaterial,
+};
 use std::time::Instant;
 
 const CRACKOTTO_STEP: &str = include_str!("../../optimize_cost_probe_crackotto_step.asc");
@@ -43,6 +54,45 @@ fn report(name: &str, design: &Design) {
         solve_time + fast_metrics_time,
         solve_time + full_metrics_time,
     );
+    report_geometry(name, design, &solved);
+}
+
+/// One line per call `evaluate_candidate` makes around the metrics, each timed alone:
+/// the plane list, the mesh, the manufacturability check given that geometry, the solid
+/// measurement and the (per-run) preform measure. Before the candidate shared its
+/// geometry the first four ran 2-3 times per evaluation; the sum of one of each is what
+/// the evaluation pays now.
+fn report_geometry(name: &str, design: &Design, solved: &[SolvedTier]) {
+    let start = Instant::now();
+    let planes = design.planes_from_solved(solved);
+    println!("{name}: planes_from_solved={:?}", start.elapsed());
+
+    let start = Instant::now();
+    let status = build_solid_mesh(&planes);
+    println!("{name}: build_solid_mesh={:?}", start.elapsed());
+
+    let start = Instant::now();
+    let metrics = measure_solid(&planes);
+    println!("{name}: measure_solid={:?}", start.elapsed());
+
+    if let SolidStatus::Closed(mesh) = &status {
+        let start = Instant::now();
+        let _ = check_manufacturability_with_geometry(
+            design,
+            solved,
+            Some(mesh),
+            metrics.as_ref(),
+            DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+        );
+        println!(
+            "{name}: check_manufacturability_with_geometry={:?}",
+            start.elapsed()
+        );
+    }
+
+    let start = Instant::now();
+    let _ = measure_solid(&design.preform.planes());
+    println!("{name}: preform measure_solid={:?}", start.elapsed());
 }
 
 #[test]

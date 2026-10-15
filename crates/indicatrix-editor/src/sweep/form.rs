@@ -105,9 +105,19 @@ pub fn format_duration_estimate(seconds: f64) -> String {
         } else {
             (seconds / 5.0).round() * 5.0
         };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "rounded is a whole number of seconds in 1..=90"
+        )]
         let count = rounded as u64;
         return format!("about {count} second{}", if count == 1 { "" } else { "s" });
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "minutes is rounded and at least 2; a sweep never runs for u64::MAX minutes"
+    )]
     let minutes = (seconds / 60.0).round().max(2.0) as u64;
     format!("about {minutes} minutes")
 }

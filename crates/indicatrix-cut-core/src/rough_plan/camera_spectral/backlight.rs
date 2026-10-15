@@ -151,6 +151,11 @@ impl BacklightSpectrum {
         if !(0.0..=(GRID_LEN - 1) as f64).contains(&position) {
             return 0.0;
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "position is checked to lie in 0..=GRID_LEN-1 above, so the floor is a small non-negative index"
+        )]
         let lo = (position.floor() as usize).min(GRID_LEN - 2);
         let t = position - lo as f64;
         (self.spd[lo + 1] - self.spd[lo]).mul_add(t, self.spd[lo])

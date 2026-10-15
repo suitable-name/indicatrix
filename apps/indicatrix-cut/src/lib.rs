@@ -29,6 +29,9 @@ slint::include_modules!();
 mod bridge;
 /// Slint user interface layer.
 pub mod gui;
+/// Test-only seams for the desktop UI harness (`tests/ui_harness`); see the module docs.
+#[cfg(feature = "ui-harness")]
+pub mod harness_support;
 mod locate_io;
 mod mesh_io;
 mod plan_limit;

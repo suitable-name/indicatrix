@@ -143,7 +143,12 @@ pub fn sized_material_for_optimize(
         .girdle_diameter_mm
         .filter(|mm| *mm > 0.0 && mm.is_finite())
         .unwrap_or(0.0);
-    render_setup::material_for_stone(material, mm as f32, planes)
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the GPU/render precision; a girdle diameter in mm is a small value"
+    )]
+    let mm_f32 = mm as f32;
+    render_setup::material_for_stone(material, mm_f32, planes)
 }
 
 /// How close a design's own refractive index must sit to a built-in preset's for that
@@ -206,8 +211,8 @@ pub fn traced_gem_material(
 /// The built-in species [`nearest_built_in_material`] guesses for a nameless
 /// design, purely from its refractive index.
 ///
-/// Deliberately only thirteen common species (not the full thirty-three built-ins),
-/// because an exhaustive search regressed `material_for_refractive_index_names_the_catalogues_common_stones`:
+/// Deliberately only thirteen common species (not the full thirty-four built-ins, including the
+/// zoned Ametrine), because an exhaustive search regressed `material_for_refractive_index_names_the_catalogues_common_stones`:
 /// at `n_d` 1.76, Benitoite sits closer than Sapphire (see its Sellmeier entry),
 /// so all-thirty-two search silently misnamed the owner's Sapphire designs. Picking
 /// a name by an explicit choice (right) differs from guessing one from a bare number

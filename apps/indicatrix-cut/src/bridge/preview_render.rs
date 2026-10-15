@@ -94,10 +94,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod cpu_permits;
 mod fingerprint;
 mod solid;
 
-pub use fingerprint::{CacheKind, cache_fingerprint};
+pub use fingerprint::{CacheKind, FingerprintMaterial, cache_fingerprint};
 pub use solid::render_view_solid;
 
 /// Refractive index is conventionally quoted at the sodium D line -- see
@@ -176,15 +177,25 @@ impl PreviewView {
     }
 }
 
+/// Whether `material` carries no colour zones.
+const fn is_unzoned(material: &GemMaterial) -> bool {
+    material.zoning.is_none()
+}
+
 /// Builds the `RiPresetCandidate` list `indicatrix_vault::model::material_match::
 /// pick_ri_preset` matches a design's own refractive index against -- one candidate per
 /// `GemMaterial::all_materials()` entry, evaluated at the sodium D line (see
 /// [`SODIUM_D_NM`]). The one place in this crate that performs this adaptation, since
 /// `indicatrix_vault` is deliberately `indicatrix`-free.
+///
+/// A built-in with colour zones (the zoned Ametrine) is left out: the pick is a
+/// write-once guess for a design that names no material, and a bicolour guess would make every
+/// preview and tilt curve of such a design two-coloured.
 #[must_use]
 pub fn ri_candidates() -> Vec<RiPresetCandidate> {
     GemMaterial::all_materials()
         .into_iter()
+        .filter(is_unzoned)
         .map(|material| {
             let refractive_index = material_ri_at_sodium_d(&material);
             RiPresetCandidate {
@@ -277,8 +288,17 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
     let pixel_count = (job.size as usize) * (job.size as usize);
     let mut accum = vec![Vec3::ZERO; pixel_count];
     if !gpu.try_accumulate(&gpu_scene, 0, job.spp, &mut accum) {
-        export_thread::batch::render_batch(
-            job.size, job.size, job.spp, 0, &camera, &scene, &mut accum,
+        // The batch runs `cores - 1` lanes: each fallback render takes its fair share of
+        // the core pool and spawns exactly that many threads (see `cpu_permits`).
+        let permits = cpu_permits::acquire_share();
+        export_thread::batch::render_batch_with_threads(
+            (job.size, job.size),
+            job.spp,
+            0,
+            &camera,
+            &scene,
+            &mut accum,
+            permits.threads(),
         );
     }
 
@@ -708,9 +728,24 @@ mod tests {
     }
 
     #[test]
-    fn ri_candidates_covers_every_built_in_material_with_a_finite_ri() {
+    fn ri_candidates_covers_every_unzoned_built_in_material_with_a_finite_ri() {
         let candidates = ri_candidates();
-        assert_eq!(candidates.len(), GemMaterial::all_materials().len());
+        let unzoned: Vec<String> = GemMaterial::all_materials()
+            .into_iter()
+            .filter(is_unzoned)
+            .map(|material| material.name)
+            .collect();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>(),
+            unzoned
+        );
+        assert!(
+            !candidates.iter().any(|c| c.name == "Ametrine"),
+            "a zoned built-in is never the write-once guess for a nameless design"
+        );
         for c in &candidates {
             assert!(
                 c.refractive_index.is_finite() && c.refractive_index > 1.0,

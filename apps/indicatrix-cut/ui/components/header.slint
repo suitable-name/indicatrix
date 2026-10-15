@@ -1,5 +1,6 @@
 import { LineEdit, ComboBox, Button } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { SearchInput } from "search_input.slint";
 import { FilterPanel } from "filter_panel.slint";
 import { ImportDialog } from "import_dialog.slint";
 import { RemoteWorkerDialog } from "remote_worker_dialog.slint";
@@ -16,11 +17,18 @@ import { TouchButton } from "touch_button.slint";
 
 export component HeaderToolbar inherits Rectangle {
     public function focus_search() {
-        search_input.focus();
+        search_input.focus-input();
     }
 
     property <bool> filters_open: filter_popup.is-open;
     property <bool> remote_open: remote_popup.is-open;
+    // Another surface asked for the Remote Coordinator dialog (`RemoteWorkerModel.open_dialog()`).
+    property <int> remote_open_requests: RemoteWorkerModel.open_requests;
+    changed remote_open_requests => {
+        if (!remote_popup.is-open) {
+            remote_popup.show();
+        }
+    }
 
     property <bool> filters_active: Math.abs(LibraryModel.ri_filter_min - LibraryModel.ri_bounds_min) > 0.0001
         || Math.abs(LibraryModel.ri_filter_max - LibraryModel.ri_bounds_max) > 0.0001
@@ -43,6 +51,9 @@ export component HeaderToolbar inherits Rectangle {
     // ids stay unique); this Rectangle's own width comes from its parent, so reading
     // `root.width` here cannot loop.
     in property <bool> compact: false;
+    // The window's height, so the floating Advanced Filters panel can be capped to what
+    // fits below the toolbar (its body scrolls).
+    in property <length> window_height: 100000px;
     height: root.compact ? 76px : 40px;
     background: Theme.bg-card;
     border-radius: Theme.radius-md;
@@ -104,7 +115,8 @@ export component HeaderToolbar inherits Rectangle {
                     colorize: Theme.accent-cyan;
                     width: 12px;
                     height: 12px;
-                    horizontal-alignment: center;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
                 }
             }
 
@@ -155,7 +167,7 @@ export component HeaderToolbar inherits Rectangle {
                     border-width: 1px;
                     border-color: RemoteWorkerModel.library_is_remote ? Theme.accent-cyan : Theme.border-subtle;
                     accessible-role: AccessibleRole.text;
-                    accessible-label: "Library shown: " + RemoteWorkerModel.library_source_label;
+                    accessible-label: "Library Shown: " + RemoteWorkerModel.library_source_label;
                     Tooltip { text: @markdown("Which library the list shows: your own library on this computer, or the library of a remote computer."); }
                     HorizontalLayout {
                         padding-left: 7px;
@@ -208,7 +220,7 @@ export component HeaderToolbar inherits Rectangle {
                             border-width: simple_focus.has-focus ? 2px : 0px;
                             border-color: Theme.accent-cyan-hover;
                             accessible-role: AccessibleRole.radio-button;
-                            accessible-label: "Simple interface";
+                            accessible-label: "Simple Interface";
                             accessible-description: "Show only the controls most designs need. Nothing is deleted or changed in your designs.";
                             accessible-checkable: true;
                             accessible-checked: PreferencesModel.simple_mode;
@@ -257,7 +269,7 @@ export component HeaderToolbar inherits Rectangle {
                             border-width: advanced_focus.has-focus ? 2px : 0px;
                             border-color: Theme.accent-cyan-hover;
                             accessible-role: AccessibleRole.radio-button;
-                            accessible-label: "Advanced interface";
+                            accessible-label: "Advanced Interface";
                             accessible-description: "Show every control. Nothing is deleted or changed in your designs.";
                             accessible-checkable: true;
                             accessible-checked: !PreferencesModel.simple_mode;
@@ -339,19 +351,23 @@ export component HeaderToolbar inherits Rectangle {
                     // only the typed text's afterwards.
                     alignment: stretch;
 
-                    Image {
-                        source: @image-url("../icons/search.svg");
-                        colorize: Theme.text-muted;
-                        width: 12px;
-                        height: 12px;
+                    // Centred by a layout of its own: a fixed-size Image in the row sits at the
+                    // top of its cell.
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../icons/search.svg");
+                            colorize: Theme.text-muted;
+                            width: 12px;
+                            height: 12px;
+                        }
                     }
 
-                    search_input := LineEdit {
-                        min-width: 0px;
+                    search_input := SearchInput {
                         horizontal-stretch: 1;
                         text <=> LibraryModel.search_text;
                         placeholder-text: "Search title or designer... (Ctrl+F)";
-                        accessible-label: "Search the library";
+                        accessible-label: "Search the Library";
                         accessible-description: "Type part of a design title or designer to narrow the list. Ctrl+F jumps here.";
                         edited => { LibraryModel.search_changed(self.text); }
                     }
@@ -371,7 +387,7 @@ export component HeaderToolbar inherits Rectangle {
                         }
 
                         TouchButton {
-                            label: "Clear search";
+                            label: "Clear Search";
                             hint: "Clear the search box and show every design again.";
                             ring_radius: 10px;
                             clicked => {
@@ -395,7 +411,7 @@ export component HeaderToolbar inherits Rectangle {
                 ComboBox {
                     width: 100%;
                     height: 100%;
-                    accessible-label: "Shape filter";
+                    accessible-label: "Shape Filter";
                     accessible-description: "Show only designs of one shape.";
                     model: LibraryModel.shape_options;
                     current-index <=> LibraryModel.selected_shape_index;
@@ -422,7 +438,7 @@ export component HeaderToolbar inherits Rectangle {
                 ComboBox {
                     width: 100%;
                     height: 100%;
-                    accessible-label: "Gear filter";
+                    accessible-label: "Gear Filter";
                     accessible-description: "Show only designs cut on one index gear.";
                     model: LibraryModel.gear_options;
                     current-index <=> LibraryModel.selected_gear_index;
@@ -456,9 +472,9 @@ export component HeaderToolbar inherits Rectangle {
                 ComboBox {
                     width: 100%;
                     height: 100%;
-                    accessible-label: "Sort order";
+                    accessible-label: "Sort Order";
                     accessible-description: "The order of the library list.";
-                    model: ["Catalogue order", "Title", "Newest", "Recently edited"];
+                    model: ["Catalogue Order", "Title", "Newest", "Recently Edited"];
                     current-index <=> LibraryModel.sort_order_index;
                     selected(val) => { LibraryModel.filters_changed(); }
                 }
@@ -481,7 +497,7 @@ export component HeaderToolbar inherits Rectangle {
                 // A button for the keyboard and a screen reader (`TouchButton`): it says whether the
                 // panel is open and whether a filter is on.
                 filters_touch := TouchButton {
-                    label: root.filters_active ? "Filters (a filter is on)" : "Filters";
+                    label: root.filters_active ? "Filters (A Filter Is On)" : "Filters";
                     hint: "Open the filter panel: refractive index, length to width, volume, number of facets, RI match and tilt performance.";
                     expandable: true;
                     expanded: root.filters_open;
@@ -497,12 +513,14 @@ export component HeaderToolbar inherits Rectangle {
                 HorizontalLayout {
                     spacing: 5px;
                     alignment: center;
-                    Image {
-                        source: @image-url("../icons/ruler.svg");
-                        colorize: root.filters_open ? Theme.text-on-amber : (root.filters_active ? Theme.accent-amber : Theme.text-secondary);
-                        width: 12px;
-                        height: 12px;
-                        vertical-alignment: center;
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../icons/ruler.svg");
+                            colorize: root.filters_open ? Theme.text-on-amber : (root.filters_active ? Theme.accent-amber : Theme.text-secondary);
+                            width: 12px;
+                            height: 12px;
+                        }
                     }
                     Text {
                         text: "Filters";
@@ -605,6 +623,8 @@ export component HeaderToolbar inherits Rectangle {
 
     // --- FLOATING FILTER PANEL ---
     filter_popup := FilterPanel {
+        // The toolbar sits about 110px below the window top (menu bar, tabs, padding).
+        panel_max_height: max(200px, root.window_height - root.height - 110px);
         x: parent.width - self.width - 16px;
         y: root.height + 6px;
     }

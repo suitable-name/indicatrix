@@ -44,7 +44,7 @@ impl SettingsFile {
     /// that changed what that preset is SUPPOSED to be.
     ///
     /// Every field is refreshed except `export_usable`: that is the one thing about
-    /// a built-in this settings dialog lets a user customize per install (see
+    /// a built-in the Parameters panel lets a user customize per install (see
     /// [`LightingPreset::export_usable`]'s own doc comment), so a refresh must not
     /// silently undo that choice. A user preset (`built_in: false`), or one a user
     /// has renamed to no longer match any current built-in's name, is never touched
@@ -113,7 +113,7 @@ impl SettingsFile {
         Ok(())
     }
 
-    /// Flips a preset's `export_usable` flag -- the settings dialog's checkbox next to
+    /// Flips a preset's `export_usable` flag -- the Parameters panel's checkbox next to
     /// each preset row. Unlike `rename_preset`/`delete_preset`, this is NOT refused
     /// for a built-in: its name/existence is protected, but whether it's useful
     /// enough for an export fan-out is purely a matter of taste.

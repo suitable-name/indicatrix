@@ -36,7 +36,7 @@ export component QuickAdd inherits Rectangle {
         HorizontalLayout {
             spacing: 6px;
             Text {
-                text: "Quick add:";
+                text: "Quick Add:";
                 font-size: 9px;
                 color: Theme.text-muted;
                 vertical-alignment: center;
@@ -105,7 +105,7 @@ export component QuickAdd inherits Rectangle {
                 accepted => { root.submit(); }
             }
             ToolButton {
-                text: "Add tier";
+                text: "Add Tier";
                 locked: !GuideModel.allows-tier-form();
                 accent: Theme.accent-emerald;
                 hint: "Add this tier after the selected row (Enter in any field does the same).";

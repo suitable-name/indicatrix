@@ -234,16 +234,16 @@ fn tilt_rows_follow_the_table_up_rows_with_their_own_labels() {
         Some((&tilt(50.0, 20.0, 20.0), &tilt(52.0, 19.0, 20.0))),
     );
     assert_eq!(rows.len(), 8);
-    assert_eq!(rows[5].label, "Tilt brilliance");
+    assert_eq!(rows[5].label, "Tilt Brilliance");
     assert_eq!(rows[5].change, "+2.0 %");
     assert_eq!(rows[5].tone, Tone::Better);
-    assert_eq!(rows[6].label, "Tilt windowing");
+    assert_eq!(rows[6].label, "Tilt Windowing");
     assert_eq!(
         rows[6].tone,
         Tone::Same,
         "one point of windowing is exactly the threshold"
     );
-    assert_eq!(rows[7].label, "Tilt extinction");
+    assert_eq!(rows[7].label, "Tilt Extinction");
 }
 
 #[test]

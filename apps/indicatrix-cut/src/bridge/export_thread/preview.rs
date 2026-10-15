@@ -174,15 +174,25 @@ fn downsample_preview(
 
     let long_edge = width.max(height).max(1);
     let scale = (f64::from(PREVIEW_MAX_LONG_EDGE) / f64::from(long_edge)).min(1.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scale is in (0, 1], so the rounded value is within 0..=width"
+    )]
     let thumb_w = ((f64::from(width) * scale).round() as u32).max(1);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scale is in (0, 1], so the rounded value is within 0..=height"
+    )]
     let thumb_h = ((f64::from(height) * scale).round() as u32).max(1);
 
     let width_usize = width as usize;
     let height_usize = height as usize;
     let thumb_w_usize = thumb_w as usize;
-    let thumb_h_usize = thumb_h as usize;
+    let thumb_rows = thumb_h as usize;
 
-    let mut sum = vec![Vec3::ZERO; thumb_w_usize * thumb_h_usize];
+    let mut sum = vec![Vec3::ZERO; thumb_w_usize * thumb_rows];
     let mut count = vec![0u32; sum.len()];
 
     // Forward (source -> bucket) box mapping via floored division. Surjective onto
@@ -198,7 +208,7 @@ fn downsample_preview(
         .collect();
 
     for y in 0..height_usize {
-        let ty = y * thumb_h_usize / height_usize;
+        let ty = y * thumb_rows / height_usize;
         let row = y * width_usize;
         let dst_row = ty * thumb_w_usize;
         for (x, &tx) in col_bucket.iter().enumerate() {

@@ -1,9 +1,35 @@
 //! Parses the preform-edit form and the New Design dialog's own fields into
-//! `indicatrix-cut-core` spec types.
+//! `indicatrix-cut-core` spec types, and words the note the Preform tab shows for a
+//! planned piece of rough.
 
 use super::number_expr::eval_number;
 use crate::material::material_name_from_index;
-use indicatrix_cut_core::{FreshDesignSpec, MaterialSelection, PreformSpec};
+use indicatrix_cut_core::{FreshDesignSpec, MaterialSelection, PreformShape, PreformSpec};
+
+/// The note the Preform tab shows under the shape choice when the design's rough is a
+/// planned piece from the Rough Planner (a plane set), and `""` for a block or cylinder.
+///
+/// It names where the piece came from (the set's source, when it has one) and how many
+/// planes it has, and says that the three size fields show its bounding box and that
+/// Apply Preform replaces it with the shape chosen above.
+#[must_use]
+pub fn preform_source_note(preform: &PreformSpec) -> String {
+    let PreformShape::Planes(set) = &preform.shape else {
+        return String::new();
+    };
+    let count = set.planes.len();
+    let origin = if set.source.is_empty() {
+        format!("Planned piece ({count} planes)")
+    } else {
+        format!(
+            "Planned piece from the Rough Planner: {} ({count} planes)",
+            set.source
+        )
+    };
+    format!(
+        "{origin}. The fields show its bounding box; Apply Preform replaces it with the shape above."
+    )
+}
 
 /// Parses the preform form's shape choice and three dimension fields into a
 /// [`PreformSpec`].
@@ -106,7 +132,33 @@ pub fn parse_new_design_form(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix_cut_core::PreformShape;
+
+    #[test]
+    fn a_block_or_cylinder_has_no_source_note() {
+        assert_eq!(preform_source_note(&PreformSpec::block(1.0, 1.0, 1.0)), "");
+        assert_eq!(
+            preform_source_note(&PreformSpec::cylinder(96, 1.0, 1.0, 1.0)),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_planned_piece_names_its_source_and_plane_count() {
+        let planes = PreformSpec::block(1.0, 1.0, 1.0).planes();
+        let named = PreformSpec::from_planes(planes.clone(), "plan 'Aqua', stone 1".to_string())
+            .expect("a block's planes close");
+        assert_eq!(
+            preform_source_note(&named),
+            "Planned piece from the Rough Planner: plan 'Aqua', stone 1 (6 planes). The fields \
+             show its bounding box; Apply Preform replaces it with the shape above."
+        );
+        let unnamed = PreformSpec::from_planes(planes, String::new()).expect("closes");
+        assert_eq!(
+            preform_source_note(&unnamed),
+            "Planned piece (6 planes). The fields show its bounding box; Apply Preform replaces \
+             it with the shape above."
+        );
+    }
 
     #[test]
     fn parse_preform_form_builds_a_block_at_index_zero() {
@@ -174,7 +226,7 @@ mod tests {
     #[test]
     fn parse_new_design_form_rejects_a_non_positive_symmetry_order() {
         let preform = PreformSpec::cylinder(96, 1.0, 1.0, 1.0);
-        assert!(parse_new_design_form(96, preform, "0", true, 0).is_err());
+        assert!(parse_new_design_form(96, preform.clone(), "0", true, 0).is_err());
         assert!(parse_new_design_form(96, preform, "wide", true, 0).is_err());
     }
 }

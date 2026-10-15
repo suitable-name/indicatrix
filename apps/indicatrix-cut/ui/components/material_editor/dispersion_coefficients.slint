@@ -78,7 +78,7 @@ export component MaterialDispersionCoefficients inherits VerticalLayout {
     property <string> baseline_signature: "s";
     out property <bool> dirty: root.signature != root.baseline_signature;
 
-    property <[string]> kind_options: ["Sellmeier, 1 term", "Sellmeier, 3 terms", "Cauchy"];
+    property <[string]> kind_options: ["Sellmeier, 1 Term", "Sellmeier, 3 Terms", "Cauchy"];
     property <DispersionView> view: DispersionEditorModel.evaluate(
         root.kind, [root.t0, root.t1, root.t2, root.t3, root.t4, root.t5]);
     property <[string]> copy_names: DispersionEditorModel.copy_options(root.kind);
@@ -158,7 +158,7 @@ export component MaterialDispersionCoefficients inherits VerticalLayout {
         spacing: 10px;
         alignment: start;
         Text {
-            text: "Refractive index curve:";
+            text: "Refractive Index Curve:";
             font-size: 11px;
             font-weight: 600;
             color: Theme.text-secondary;
@@ -192,7 +192,7 @@ export component MaterialDispersionCoefficients inherits VerticalLayout {
             ComboBox {
                 model: root.kind_options;
                 current-index <=> root.kind;
-                accessible-label: "Dispersion model";
+                accessible-label: "Dispersion Model";
                 accessible-description: "Choosing another model clears the coefficient fields.";
                 selected(value) => {
                     root.clear_texts();
@@ -203,13 +203,13 @@ export component MaterialDispersionCoefficients inherits VerticalLayout {
         // Copy the coefficients of a built-in material of this kind as a starting point. Hidden
         // when no built-in material uses this kind.
         if root.copy_names.length > 0 : FormRow {
-            label: "Copy from";
+            label: "Copy From";
             tooltip: "Fill the fields with the coefficients of a built-in material, as a starting point.";
             label_width: 56px;
             ComboBox {
                 model: root.copy_names;
                 current-index: 0;
-                accessible-label: "Copy coefficients from a built-in material";
+                accessible-label: "Copy Coefficients from a Built-In Material";
                 selected(name) => {
                     if (self.current-index > 0) {
                         root.t0 = DispersionEditorModel.coefficient(root.kind, name, 0);
@@ -236,35 +236,35 @@ export component MaterialDispersionCoefficients inherits VerticalLayout {
             spacing: 4px;
             HorizontalLayout {
                 spacing: 10px;
-                CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
-                CoefficientField { value <=> root.t3; label: root.view.labels[3]; tooltip: root.tip(3); placeholder: root.view.placeholders[3]; error: root.view.field_errors[3]; }
+                coefficient-field-view := CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
+                coefficient-field-view-2 := CoefficientField { value <=> root.t3; label: root.view.labels[3]; tooltip: root.tip(3); placeholder: root.view.placeholders[3]; error: root.view.field_errors[3]; }
             }
             HorizontalLayout {
                 spacing: 10px;
-                CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
-                CoefficientField { value <=> root.t4; label: root.view.labels[4]; tooltip: root.tip(4); placeholder: root.view.placeholders[4]; error: root.view.field_errors[4]; }
+                coefficient-field-view-3 := CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
+                coefficient-field-view-4 := CoefficientField { value <=> root.t4; label: root.view.labels[4]; tooltip: root.tip(4); placeholder: root.view.placeholders[4]; error: root.view.field_errors[4]; }
             }
             HorizontalLayout {
                 spacing: 10px;
-                CoefficientField { value <=> root.t2; label: root.view.labels[2]; tooltip: root.tip(2); placeholder: root.view.placeholders[2]; error: root.view.field_errors[2]; }
-                CoefficientField { value <=> root.t5; label: root.view.labels[5]; tooltip: root.tip(5); placeholder: root.view.placeholders[5]; error: root.view.field_errors[5]; }
+                coefficient-field-view-5 := CoefficientField { value <=> root.t2; label: root.view.labels[2]; tooltip: root.tip(2); placeholder: root.view.placeholders[2]; error: root.view.field_errors[2]; }
+                coefficient-field-view-6 := CoefficientField { value <=> root.t5; label: root.view.labels[5]; tooltip: root.tip(5); placeholder: root.view.placeholders[5]; error: root.view.field_errors[5]; }
             }
         }
         if root.kind == 0 : HorizontalLayout {
             spacing: 10px;
-            CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
-            CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
+            coefficient-field-view-7 := CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
+            coefficient-field-view-8 := CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
         }
         if root.kind == 2 : VerticalLayout {
             spacing: 4px;
             HorizontalLayout {
                 spacing: 10px;
-                CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
-                CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
+                coefficient-field-view-9 := CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
+                coefficient-field-view-10 := CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
             }
             HorizontalLayout {
                 spacing: 10px;
-                CoefficientField { value <=> root.t2; label: root.view.labels[2]; tooltip: root.tip(2); placeholder: root.view.placeholders[2]; error: root.view.field_errors[2]; }
+                coefficient-field-view-11 := CoefficientField { value <=> root.t2; label: root.view.labels[2]; tooltip: root.tip(2); placeholder: root.view.placeholders[2]; error: root.view.field_errors[2]; }
                 Rectangle { horizontal-stretch: 1; }
             }
         }
@@ -323,7 +323,7 @@ export component MaterialDispersionCoefficients inherits VerticalLayout {
                 horizontal-stretch: 1;
                 Tooltip { text: @markdown("Abbe number: (nd − 1) divided by (nF − nC). A lower number means more dispersion and more fire. Gem materials sit between about 5 and 120."); }
                 VerticalLayout {
-                    Text { text: "Abbe number"; font-size: 9px; color: Theme.text-muted; overflow: elide; }
+                    Text { text: "Abbe Number"; font-size: 9px; color: Theme.text-muted; overflow: elide; }
                     Text { text: root.view.abbe; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
                 }
             }
@@ -360,7 +360,7 @@ export component MaterialDispersionCoefficients inherits VerticalLayout {
                     border-color: Theme.border-dialog;
                     border-radius: Theme.radius-sm;
                     accessible-role: AccessibleRole.image;
-                    accessible-label: "Refractive index against wavelength, from " + root.view.curve_bottom + " to " + root.view.curve_top;
+                    accessible-label: "Refractive Index Against Wavelength, from " + root.view.curve_bottom + " to " + root.view.curve_top;
                     Tooltip { text: @markdown("The refractive index over the visible wavelengths, scaled to its own spread: blue light bends most, red least."); }
                     Path {
                         width: 100%;
@@ -379,7 +379,7 @@ export component MaterialDispersionCoefficients inherits VerticalLayout {
                 padding-left: 48px;
                 alignment: space-between;
                 Text { text: "380 nm"; font-size: 9px; color: Theme.text-muted; }
-                Text { text: "wavelength"; font-size: 9px; color: Theme.text-muted; }
+                Text { text: "Wavelength"; font-size: 9px; color: Theme.text-muted; }
                 Text { text: "780 nm"; font-size: 9px; color: Theme.text-muted; }
             }
         }

@@ -1,7 +1,7 @@
 import { Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { BodyColorEditorModel } from "../../models/body_color_editor.slint";
-import { colorPicker } from "color_picker.slint";
+import { ColorPicker } from "color_picker.slint";
 import { TipButton } from "../compact_controls.slint";
 import { TipBox, FieldCaption } from "../tip_box.slint";
 
@@ -56,7 +56,7 @@ component LchRow inherits HorizontalLayout {
 export component LchEditor inherits Rectangle {
     in property <bool> enabled: true;
     // The tooltip of "Apply colour": what the colour is applied to depends on the caller.
-    in property <string> apply_hint: "Use this colour for the design. It is one step you can undo.";
+    in property <string> apply_hint: "Use this color for the design. It is one step you can undo.";
     callback applied();
     callback cancelled();
 
@@ -75,7 +75,7 @@ export component LchEditor inherits Rectangle {
         LchRow {
             enabled: root.enabled;
             label: "Tone";
-            hint: "How light or dark the colour is (CIE L*, 0 black to 100 white). A darker tone means more absorption.";
+            hint: "How light or dark the color is (CIE L*, 0 black to 100 white). A darker tone means more absorption.";
             minimum: 0.0;
             maximum: 100.0;
             value <=> BodyColorEditorModel.tone;
@@ -85,7 +85,7 @@ export component LchEditor inherits Rectangle {
         LchRow {
             enabled: root.enabled;
             label: "Saturation";
-            hint: "How rich the colour is (CIE C*, 0 grey). Very rich colours are not all reachable at every size; the badge says so.";
+            hint: "How rich the color is (CIE C*, 0 grey). Very rich colors are not all reachable at every size; the badge says so.";
             minimum: 0.0;
             maximum: 130.0;
             value <=> BodyColorEditorModel.chroma;
@@ -95,7 +95,7 @@ export component LchEditor inherits Rectangle {
         LchRow {
             enabled: root.enabled;
             label: "Hue";
-            hint: "The basic colour in degrees around the colour wheel (CIE h): about 30 red, 90 yellow, 140 green, 260 blue.";
+            hint: "The basic color in degrees around the color wheel (CIE h): about 30 red, 90 yellow, 140 green, 260 blue.";
             minimum: 0.0;
             maximum: 360.0;
             value <=> BodyColorEditorModel.hue;
@@ -116,7 +116,7 @@ export component LchEditor inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.border-dialog;
                     accessible-role: AccessibleRole.image;
-                    accessible-label: "Colour at " + BodyColorEditorModel.swatch_labels[index];
+                    accessible-label: "Color at "+ BodyColorEditorModel.swatch_labels[index];
                 }
                 Text {
                     text: BodyColorEditorModel.swatch_labels[index];
@@ -136,7 +136,7 @@ export component LchEditor inherits Rectangle {
             accessible-role: AccessibleRole.text;
         }
 
-        if root.picker_open: colorPicker {
+        if root.picker_open: ColorPicker {
             apply_label: "Use";
             applied(c) => {
                 root.picker_open = false;
@@ -147,20 +147,20 @@ export component LchEditor inherits Rectangle {
 
         HorizontalLayout {
             spacing: 6px;
-            TipButton {
-                text: root.picker_open ? "Hide picker" : "Use picker...";
-                hint: "Choose the colour with the hue, saturation and brightness picker instead; the sliders then show its tone, saturation and hue.";
+            tip-button-picker-open := TipButton {
+                text: root.picker_open ? "Hide Picker" : "Use Picker...";
+                hint: "Choose the color with the hue, saturation and brightness picker instead; the sliders then show its tone, saturation and hue.";
                 clicked => { root.picker_open = !root.picker_open; }
             }
             Rectangle { horizontal-stretch: 1; }
             TipButton {
                 text: "Cancel";
-                hint: "Close the editor without applying a colour.";
+                hint: "Close the editor without applying a color.";
                 clicked => { root.cancelled(); }
             }
             TipButton {
                 enabled: root.enabled && BodyColorEditorModel.has_solution && !BodyColorEditorModel.busy;
-                text: "Apply colour";
+                text: "Apply Color";
                 hint: root.apply_hint;
                 primary: true;
                 clicked => {

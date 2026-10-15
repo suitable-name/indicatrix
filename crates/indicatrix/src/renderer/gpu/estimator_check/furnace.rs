@@ -375,6 +375,10 @@ fn summarise(cpu_flat: &[Vec3], gpu_xyz: &[f32], l0: f32) -> FurnaceResult {
 }
 
 /// Standard error of the mean of `acc`, per component.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the estimator's comparison precision; a standard error is in the normal float range"
+)]
 fn standard_error(acc: &WelfordXyz) -> Vec3 {
     Vec3::new(
         acc.x.standard_error_sq().sqrt() as f32,

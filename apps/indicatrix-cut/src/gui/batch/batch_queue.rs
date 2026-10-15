@@ -205,7 +205,7 @@ mod tests {
             vec![(1, 'f'), (1, 't'), (2, 'f'), (2, 't')]
         );
         assert_eq!(queue.claim_shared_batch(2, same), vec![(3, 'f'), (3, 't')]);
-        assert!(queue.claim_shared_batch(2, same).is_empty());
+        assert_eq!(queue.claim_shared_batch(2, same).len(), 0);
     }
 
     #[test]

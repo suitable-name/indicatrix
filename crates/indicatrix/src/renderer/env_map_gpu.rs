@@ -147,8 +147,8 @@ fn flatten_distribution(
         wgpu::BufferUsages::STORAGE,
     );
     let dims = GpuDistDims {
-        width: width as u32,
-        height: height as u32,
+        width: u32::try_from(width).expect("the distribution width fits the u32 GPU dims"),
+        height: u32::try_from(height).expect("the distribution height fits the u32 GPU dims"),
         marginal_func_int: marginal.func_int(),
         _pad0: 0.0,
     };
@@ -194,8 +194,8 @@ impl HdrEnvGpuData {
             wgpu::BufferUsages::STORAGE,
         );
         let dims = GpuHdrEnvDims {
-            width: map.width() as u32,
-            height: map.height() as u32,
+            width: u32::try_from(map.width()).expect("the env-map width fits the u32 GPU dims"),
+            height: u32::try_from(map.height()).expect("the env-map height fits the u32 GPU dims"),
             _pad0: 0,
             _pad1: 0,
         };

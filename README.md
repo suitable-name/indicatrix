@@ -53,7 +53,10 @@ geometry rather than approximating it:
 | [`crates/indicatrix-vault`](crates/indicatrix-vault/README.md) | Local SQLite-backed design library — models, storage, and local `.asc` import/export. |
 | [`apps/indicatrix-cut`](apps/indicatrix-cut/README.md) | The desktop faceting-design editor, built with [Slint](https://slint.dev/): browse, search, and render your library in 3D, with a faceting editor for material retargeting and a solid inspection view. |
 | [`apps/indicatrix-web`](apps/indicatrix-web/README.md) | The browser build (Slint compiled to WebAssembly, static files): open or start a design, edit it, view it as a solid, a diagram and a CPU-rendered stone, and save it back as downloads. Rendering and slow solves run in Web Workers (`apps/indicatrix-web-compute` is their entry point). No design library, remote rendering, Deep Solve or GPU path; state lives in the tab's session only. Built with `trunk`. |
+| [`apps/indicatrix-mobile-android`](apps/indicatrix-mobile-android/README.md) | The Android phone and tablet app: a touch-first Slint UI over `indicatrix-mobile-core`, the JNI platform services (files, share, print) and a desktop preview of the same UI. Not in an app store yet; build and install it yourself. |
+| [`crates/indicatrix-mobile-core`](crates/indicatrix-mobile-core/README.md) | The UI-free core of the mobile app: app state, settings, the library, the compute threads (render, solve, analysis), cutting progress and the platform-service trait. Shared by the Android app and any later iOS app; tested natively. |
 | [`apps/indicatrix-worker`](apps/indicatrix-worker/README.md) | Headless render CLI and remote server — `serve` is a coordinator that serves a design library over mutual TLS and (on a `worker` build) spreads render requests over the machines that `join` it, rendering itself too with `--render`. |
+| [`apps/indicatrix-cli`](apps/indicatrix-cli/README.md) | Headless command-line tool for designs, no GUI and no GPU: `info`, `solve`, `metrics`, `validate`, `optimize`, `retarget`, `sweep` and `export` on `.isdd`, `.asc`, `.gem` and `.gcs` files, with the editor's own engines, deterministic text, JSON and CSV output, and exit codes a script can branch on. |
 
 ## Build and run
 
@@ -84,6 +87,29 @@ without it, but running it just prints an error telling you to rebuild with
 produce a `scene.json`, and for the `serve`/`join`/`cert` subcommands that let
 other machines' GPUs and CPUs help render over the network.
 
+### Designs from a script
+
+`indicatrix-cli` runs the editor's engines on design files without opening a window.
+It takes `.isdd` (and old `.indicatrix`), `.asc`, `.gem` and `.gcs` files, and its output is the same
+bytes every time, so it can be diffed and checked in:
+
+```
+cargo run -p indicatrix-cli -- info round.asc
+cargo run -p indicatrix-cli -- validate round.asc            # exit code 4 when the verdict is Problem
+cargo run -p indicatrix-cli -- metrics round.asc --ri 1.76 --json
+cargo run -p indicatrix-cli -- retarget round.asc --ri 1.7681 --crown-fraction 0.33 --out sapphire.isdd
+cargo run -p indicatrix-cli -- sweep round.asc --tier "Pavilion Main" --from -43 --to -39 --step 0.5 --csv sweep.csv
+cargo run -p indicatrix-cli -- export sapphire.isdd --format html --out sheet.html
+```
+
+`retarget` uses the Retarget dialog's engine and validity gate (by default the crown follows
+the pavilion's stretch, so the stone keeps its silhouette; `--crown-fraction` and `--crown-ratio`
+choose an older rule); a result the gate refuses exits with code 2, prints the reasons and
+writes nothing. Custom materials come from a
+design library with `--db facet_diagrams.sqlite` (opened read-only). Exit codes are 0
+success, 1 usage, 2 design or solve, 3 file, 4 `validate` found a Problem. See
+[`apps/indicatrix-cli`'s README](apps/indicatrix-cli/README.md) for every command and flag.
+
 ### Testing
 
 ```
@@ -110,6 +136,20 @@ cargo run --profile probe -p indicatrix --features gpu --example gpu_equivalence
 See [`crates/indicatrix/docs/gpu.md`](crates/indicatrix/docs/gpu.md) for what each of
 its verification tiers checks.
 
+The desktop UI targets of `indicatrix-cut` also run only on command (`test = false`, so the
+workspace commands above skip them):
+
+```
+cargo ui-harness                                                    # the UI harness: every flow, report in target/ui-harness/
+cargo ui-static                                                     # static scan of the .slint sources
+INDICATRIX_HARNESS_LIBRARY=facet_diagrams.sqlite cargo ui-screens   # rewrite the screenshots in assets/
+cargo ui-clippy                                                     # clippy over the three targets
+```
+
+The aliases live in `.cargo/config.toml`. `ui-screens` draws with Slint's software renderer in a
+throw-away profile and photographs a copy of the library you name; add `-- main cad` to retake
+only some shots.
+
 ### Optimized builds
 
 `cargo build --release` is fine for everyday use; `.cargo/config.toml` gives every x86-64
@@ -131,7 +171,7 @@ material optical character (isotropic, uniaxial +/-, biaxial +), dispersive and
 near-non-dispersive built-ins, plain and frosted-girdle finishes, inclusion scattering,
 the A-Trous denoiser and tone-mapper (both the linear-HDR float buffer and the
 tonemapped 8-bit output); every lighting model (the analytic studio rig's four presets
-plus the `IsoHemisphere`/`LightTent`/`DaylightDome` lit models) and a synthetic HDR
+plus the `IsoHemisphere`/`LightTent`/`DaylightDome`/`DaylightSun`/`Aset` lit models) and a synthetic HDR
 equirectangular map; the meet-point solver's three phases plus the verified repair
 search (and through it the SIMD candidate-vertex/plane-intersection kernels) against
 both synthetic AND real, catalogue-sourced `.asc` designs -- including the crate's own
@@ -142,30 +182,26 @@ a real adapter present) it also trains the CPU-side GPU chunk dispatch/readback
 orchestration. See that example's own doc comment for the exact stage-by-stage coverage
 table and its `PGO_SCALE`/`PGO_TRAIN_SKIP_GPU` environment knobs.
 
-Both scripts additionally train `indicatrix-cut-core`'s OWN `pgo_train` example -- the
-editor-core layer built on top of `indicatrix`: `Design::solve`, `.asc` export, the
-`.indicatrix` design file save/load round trip, `resolve_after_edit`, and
-`optimize_design`'s coordinate-search loop, run against every built-in template plus
-the same CrackOtto-Step fixture. Always built and run in its OWN, separate `cargo
-build` invocation rather than folded into the SAME `-p indicatrix ... --example
-pgo_train` command above: both crates ship a `pgo_train` example
-(`indicatrix`'s is `examples/pgo_train/{main,stages}.rs`), and Cargo's
-example-binary output-path uplift is keyed by name alone, not by package, so selecting
-both in one invocation was measured to make Cargo emit an unresolvable "output filename
-collision" between them (see each script's own header comment for the full story). Its
-library code is still correctly instrumented and optimised either way, since
-`indicatrix-cut-core` is already a transitive dependency of `indicatrix-cut` in the
-main build; the separate invocation exists only to execute that code so it collects
-real profile samples.
+For the `cut` target both scripts additionally train `indicatrix-cut-core`'s OWN
+`pgo_train_cutcore` example -- the editor-core layer built on top of `indicatrix`:
+`Design::solve`, `.asc` export, the `.isdd` design file save/load round trip,
+`resolve_after_edit`, and `optimize_design`'s coordinate-search loop, run against every
+built-in template plus the same CrackOtto-Step fixture. It is built in the SAME `cargo
+build` invocation as everything else for that target (`indicatrix-cut-core` is in the
+package list and both `--example pgo_train --example pgo_train_cutcore` are passed), so
+the instrumented and optimised builds resolve an identical dependency graph and
+`indicatrix-cut-core`'s crate hash matches. The two examples need distinct names because
+Cargo's example-binary output-path uplift is keyed by name alone, not by package; an
+earlier separate cut-core invocation had a different dependency graph and its profile
+never applied. The `worker` target does not link cut-core and skips this step.
 
 Both scripts also train a third binary, `indicatrix-net`'s `scene_roundtrip`
 integration test, under the same instrumentation: `SceneState`'s postcard
 wire-protocol encode/decode, the one hot path `pgo_train` cannot reach directly (a
 `indicatrix` example can't depend on `indicatrix-net`, which itself depends on
 `indicatrix`). Both scripts then rebuild both applications against the merged profile
-and check that the profile applied to BOTH `indicatrix` and `indicatrix-cut-core`
-(each trained by a build whose package and feature set is narrower than the optimised
-build's, so each crate's hash is compared separately).
+and check that the profile applied: `indicatrix` for every target, plus
+`indicatrix-cut-core` for the `cut` target (each crate's hash is compared separately).
 
 **Training coverage is a known limitation, not a complete picture.** The training
 binaries do not exercise the radiance (HDR) image codecs, the solid rasterizer,
@@ -179,6 +215,15 @@ applied to the trained crates, nothing about how much of them it covers.
 |---|---|---|
 | [`scripts/pgo-build.ps1`](scripts/pgo-build.ps1) | Windows (PowerShell) | PGO, over AVX2/scalar x GPU/CPU by default (`-Cpu all`/`-Cpu avx512` auto-skip/refuse AVX-512 on a host without it) |
 | [`scripts/pgo-bolt-build.sh`](scripts/pgo-bolt-build.sh) | Linux or Windows (bash); a Linux host can also build Windows binaries with `--os windows` | PGO over AVX2/scalar x GPU/CPU by default (`--isa all`/`--isa avx512` auto-skip/refuse the same way), plus BOLT on Linux |
+
+By default (`--target all` / `-Target all`) both scripts build `indicatrix-worker` and
+`indicatrix-cut` together: per combination ONE instrumented cargo invocation over both
+apps, one training run, one merged profile and one optimised build that emits both
+binaries. A single package set gives `indicatrix` one crate hash for both apps, so one
+profile applies to both and the work is done once instead of twice; the trade-off is that
+the worker is compiled with cut's (additive) features enabled, a somewhat larger binary
+with unchanged behaviour. `--target worker` / `--target cut` still build one app on its
+own, with its own profile.
 
 Each build is emitted as `<binary>-<os>-<isa>-<gpu>`, so the variants can coexist in
 one output directory. `--native` (bash) / `-Native` (PowerShell) builds only the
@@ -232,12 +277,87 @@ All of the following are **off by default**, except `indicatrix-net`'s `compress
 | `indicatrix` | `serde` | `Serialize`/`Deserialize` on the scene-description types (`GemMaterial`, `GpuFacetPlane`, `LightingPreset`) that `indicatrix-net`'s wire protocol needs. |
 | `indicatrix-net` | `render` | `SceneState`/`RenderRequest` and everything else that needs `indicatrix`'s resolved scene/material types. Off by default so a library-only `indicatrix-worker` build never compiles `indicatrix` in at all. |
 | `apps/indicatrix-cut` | `gpu` | Routes the viewport's progressive accumulation and the high-resolution export worker through `indicatrix`'s GPU megakernel, falling back to the CPU tracer per frame whenever it declines. See [`apps/indicatrix-cut/docs/gpu.md`](apps/indicatrix-cut/docs/gpu.md). |
+| `apps/indicatrix-cut` | `physical-color` | Shows the physics-based color editor in the Gem Material Editor (the Fantasy/Physics toggle and the host-crystal and element-recipe section). UI only: a material's stored color mode and recipe are kept and rendered in every build, with or without this feature; without it the editor always shows the plain Fantasy colors. Not part of the shipped or PGO builds. |
 | `apps/indicatrix-worker` | `worker` | Render capacity: the coordinator's worker port and job execution on `serve`, `serve --render`, the `join` subcommand, and the `render` subcommand actually working. Turns on `indicatrix-net/render`. Without it, `indicatrix-worker` serves a read-only design library only. |
 | `apps/indicatrix-worker` | `gpu` | Implies `worker`. Routes `render`/`serve --render`/`join` tracing through `indicatrix`'s GPU megakernel, falling back to the CPU tracer whenever it declines. |
 
 ## Screenshots
 
-...
+All screenshots live in [`assets/`](assets/); click one for full size.
+
+### Library and live render
+
+[![The main window: design library on the left, the 3D spectral preview of the selected design on the right, with the material, lighting and metrics bar above it](assets/main.png)](assets/main.png)
+
+| | |
+|---|---|
+| [<img src="assets/solid_rendering.png" alt="Solid view: the untextured stone for checking the geometry" width="400">](assets/solid_rendering.png)<br>Solid view, for checking the geometry | [<img src="assets/cutting_instructions.png" alt="Cutting Instructions tab: one row per step with facet, angle and index-gear positions" width="400">](assets/cutting_instructions.png)<br>Cutting instructions |
+| [<img src="assets/tilt_performance.png" alt="Tilt Performance dialog: brilliance, windowing and extinction against tilt angle" width="400">](assets/tilt_performance.png)<br>Tilt performance curve | [<img src="assets/tilt_performance_export.png" alt="The tilt dialog with the tilt-video export options unfolded" width="400">](assets/tilt_performance_export.png)<br>Tilt video export |
+| [<img src="assets/emerald_export_settings_4k.png" alt="Export High-Resolution Render dialog during a 4K export" width="400">](assets/emerald_export_settings_4k.png)<br>High-resolution export | [<img src="assets/cutting_mode.png" alt="Cutting Mode: one step of the cutting instructions per page with the index wheel and the step strip" width="400">](assets/cutting_mode.png)<br>Cutting mode |
+
+| | | |
+|---|---|---|
+| [<img src="assets/parameters_stone.png" alt="Stone tab of the Parameters dock: material, size and color of the stone" width="260">](assets/parameters_stone.png)<br>Parameters: Stone | [<img src="assets/parameters_lighting.png" alt="Lighting and Environment tab: lighting rigs and environment map" width="260">](assets/parameters_lighting.png)<br>Parameters: Lighting & Environment | [<img src="assets/parameters_render.png" alt="Render and Output tab: resolution, samples and compute target" width="260">](assets/parameters_render.png)<br>Parameters: Render & Output |
+
+### Design editor
+
+| | |
+|---|---|
+| [<img src="assets/cad.png" alt="Edit mode: solid view with a crown tier selected, the tier table and the design panel" width="400">](assets/cad.png)<br>Edit mode | [<img src="assets/cad_solved_diagram.png" alt="Diagram view in Edit mode: crown, pavilion and profile panels on the index-gear scale" width="400">](assets/cad_solved_diagram.png)<br>Faceting diagram |
+| [<img src="assets/diagram_view_detail.png" alt="The crown panel of the diagram view, every facet labelled with its tier code" width="400">](assets/diagram_view_detail.png)<br>Crown diagram ([full diagram view](assets/diagram_view.png)) | [<img src="assets/tilt_performance_cad.png" alt="The tilt dialog opened from the editor's view bar over the diagram view" width="400">](assets/tilt_performance_cad.png)<br>Tilt curve from the editor |
+| [<img src="assets/retarget_dialog.png" alt="Retarget for Material dialog: before and after side by side, path traced" width="400">](assets/retarget_dialog.png)<br>Retarget for another material | [<img src="assets/retarget_dialog_1.png" alt="The Retarget dialog in overlay mode: the stone before (red) and after (green)" width="400">](assets/retarget_dialog_1.png)<br>Retarget overlay |
+| [<img src="assets/retarget_gear_2.png" alt="Confirm Index Remap dialog after choosing a different index gear" width="400">](assets/retarget_gear_2.png)<br>Index-gear remap | [<img src="assets/retarget_merge.png" alt="A gear change from 96 to 64 teeth, before and after" width="400">](assets/retarget_merge.png)<br>Gear change, before and after |
+| [<img src="assets/optimizer_1.png" alt="Optimize tab with the objective list open" width="400">](assets/optimizer_1.png)<br>Optimize: objectives | [<img src="assets/optimizer_2.png" alt="Optimize tab after a run: the start design and five candidates with their scores" width="400">](assets/optimizer_2.png)<br>Optimize: candidates |
+| [<img src="assets/optimizer__compare_1.png" alt="Compare window in overlay mode: removed facets red, added facets green" width="400">](assets/optimizer__compare_1.png)<br>Compare, overlay | [<img src="assets/optimizer__compare_2.png" alt="Compare window side by side, path traced, with tilt-averaged metrics" width="400">](assets/optimizer__compare_2.png)<br>Compare, path traced |
+
+### Dialogs and tools
+
+| | |
+|---|---|
+| [<img src="assets/new_design_dialog.png" alt="New Design dialog: starting shape, gear and material" width="400">](assets/new_design_dialog.png)<br>New Design | [<img src="assets/material_editor.png" alt="Gem Material Editor: refractive index, dispersion, crystal class and color" width="400">](assets/material_editor.png)<br>Material editor |
+| [<img src="assets/material_zones.png" alt="Material dialog with the color zones of the built-in Ametrine" width="400">](assets/material_zones.png)<br>Color zones (Ametrine) | [<img src="assets/tier_form.png" alt="Tier tab of the inspector with a crown tier selected" width="400">](assets/tier_form.png)<br>Tier form |
+| [<img src="assets/concave_tier_form.png" alt="Tier tab on the blank concave tier form" width="400">](assets/concave_tier_form.png)<br>Concave tier | [<img src="assets/angle_sweep.png" alt="Angle Sweep dialog: table, chart and Use This Angle" width="400">](assets/angle_sweep.png)<br>Angle sweep |
+| [<img src="assets/history_steps.png" alt="History tab: one step for each change" width="400">](assets/history_steps.png)<br>History | [<img src="assets/history_variants.png" alt="Variants view with two saved variants" width="400">](assets/history_variants.png)<br>Variants |
+| [<img src="assets/command_palette.png" alt="Command palette searching for export" width="400">](assets/command_palette.png)<br>Command palette | [<img src="assets/preferences.png" alt="Preferences dialog" width="400">](assets/preferences.png)<br>Preferences |
+
+### Guided build
+
+| | | |
+|---|---|---|
+| [<img src="assets/tutorial_from_design.png" alt="Library card context menu with Build this design" width="260">](assets/tutorial_from_design.png)<br>Build this design | [<img src="assets/tutorial_from_design_2.png" alt="Guide panel, step 1: start a new design" width="260">](assets/tutorial_from_design_2.png)<br>Step 1 | [<img src="assets/tutorial_from_design_3.png" alt="Guide panel, step 2: add the girdle tier" width="260">](assets/tutorial_from_design_3.png)<br>Step 2 |
+
+### Rough planner
+
+| | |
+|---|---|
+| [<img src="assets/rough_planner.png" alt="Rough Planner before planning: a sapphire block with its edge cuts" width="400">](assets/rough_planner.png)<br>A block of rough | [<img src="assets/rough_planner_result.png" alt="The same rough after planning: the stones of the selected layout inside the block" width="400">](assets/rough_planner_result.png)<br>Planned layout |
+
+### Remote rendering and the web app
+
+[![A distributed export in flight: the Export High-Resolution Render dialog in the middle, surrounded by the GPU load of the local and remote machines that render it](assets/hybrid_remote_rendering.png)](assets/hybrid_remote_rendering.png)
+
+| | |
+|---|---|
+| [<img src="assets/web_ui.png" alt="The web app's start screen in a desktop browser" width="400">](assets/web_ui.png)<br>Web app, desktop browser | [<img src="assets/web_ui_mobile.png" alt="The web app's start screen on a phone" width="200">](assets/web_ui_mobile.png)<br>Web app, phone |
+| [<img src="assets/remote_coordinator.png" alt="Remote Coordinator dialog with an endpoint entered" width="400">](assets/remote_coordinator.png)<br>Remote coordinator | [<img src="assets/render_jobs.png" alt="Render Jobs window with two queued pictures" width="400">](assets/render_jobs.png)<br>Render jobs queue |
+
+### Mobile app
+
+Indicatrix also runs on Android phones and tablets. The app is not in an app store yet, but you
+can build it and install it on your own device (a debug APK from Android Studio, or `gradlew
+assembleDebug` plus `adb install`; see
+[`apps/indicatrix-mobile-android/README.md`](apps/indicatrix-mobile-android/README.md)). The
+same UI also runs on the desktop:
+`cargo run -p indicatrix-mobile-android --features desktop-preview --bin indicatrix-mobile-preview -- --size phone`.
+
+| | | | |
+|---|---|---|---|
+| [<img src="assets/mobile/phone_library.png" alt="The mobile library on a phone" width="200">](assets/mobile/phone_library.png)<br>Library | [<img src="assets/mobile/phone_design_render.png" alt="A design rendered on a phone" width="200">](assets/mobile/phone_design_render.png)<br>Render | [<img src="assets/mobile/phone_tiers_sheet.png" alt="The Tiers sheet over the solid view on a phone" width="200">](assets/mobile/phone_tiers_sheet.png)<br>Tiers | [<img src="assets/mobile/phone_cut.png" alt="The cutting instructions on a phone" width="200">](assets/mobile/phone_cut.png)<br>Cutting |
+
+[![The mobile app on a tablet in landscape: the design rendered beside its panels](assets/mobile/tablet_design_render.png)](assets/mobile/tablet_design_render.png)
+
+More phone and tablet shots are in [`assets/mobile/`](assets/mobile/); `cargo ui-screens-mobile`
+rewrites them from the desktop preview, `cargo ui-screens` the desktop ones.
 
 ## The design library is yours to build
 

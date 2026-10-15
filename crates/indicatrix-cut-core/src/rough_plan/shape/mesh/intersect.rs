@@ -43,7 +43,7 @@ pub(super) fn first_self_intersections(
     let (bvh, order) = build_bvh(verts, tris);
     let corners = |t: u32| tris[t as usize].map(|v| verts[v as usize]);
     let mut candidates: Vec<u32> = Vec::new();
-    for i in 0..tris.len() as u32 {
+    for i in 0..super::geometry::index_u32(tris.len()) {
         let (lo, hi) = bounds_of(corners(i).into_iter());
         let (lo, hi) = (lo - DVec3::splat(tolerance), hi + DVec3::splat(tolerance));
         candidates.clear();

@@ -7,7 +7,10 @@
 use crate::renderer::gpu::compute;
 
 use super::{
-    FLOATS_PER_TUPLE, WORKGROUP_SIZE, renderer::GpuFrameRenderer, scene_buffers::TransportOutputs,
+    FLOATS_PER_TUPLE,
+    dispatch::{count_u32, workgroups_for},
+    renderer::GpuFrameRenderer,
+    scene_buffers::TransportOutputs,
 };
 
 /// `reduce_xyz.wgsl`'s uniform param struct (binding 0 there). `_pad0`/`_pad1` reproduce
@@ -41,6 +44,8 @@ pub struct PixelXyzOutput {
 }
 
 impl PixelXyzOutput {
+    /// Allocates the zeroed GPU-reduced XYZ buffer for `capacity` pixels (`capacity * 3`
+    /// floats, `STORAGE | COPY_SRC` so the readback copy can read it).
     pub(crate) fn new(device: &wgpu::Device, capacity: usize) -> Self {
         let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
         Self {
@@ -72,6 +77,8 @@ pub struct StagingSlot {
 }
 
 impl StagingSlot {
+    /// Creates the mappable (`COPY_DST | MAP_READ`) staging buffer for `capacity` pixels
+    /// under the debug name `label`.
     pub(crate) fn new(device: &wgpu::Device, label: &str, capacity: usize) -> Self {
         let byte_len = (capacity * FLOATS_PER_TUPLE * size_of::<f32>()) as wgpu::BufferAddress;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -136,7 +143,7 @@ impl GpuFrameRenderer {
             .as_ref()
             .expect("ensure_reduce_params_buffers just populated both slots");
         let reduce_params = GpuReduceParams {
-            num_pixels: pixels_this_chunk as u32,
+            num_pixels: count_u32(pixels_this_chunk),
             num_samples,
             _pad0: 0,
             _pad1: 0,
@@ -154,7 +161,7 @@ impl GpuFrameRenderer {
                 (2, &pixel_output.buffer),
             ],
         );
-        let reduce_workgroups = (pixels_this_chunk as u32).div_ceil(WORKGROUP_SIZE as u32);
+        let reduce_workgroups = workgroups_for(pixels_this_chunk);
         let _ = compute::dispatch(
             &self.ctx.device,
             &self.ctx.queue,

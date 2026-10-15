@@ -387,7 +387,12 @@ impl IndexRotation {
             self.last_angle = Some(angle);
         }
         let teeth = f64::from(self.gear_teeth.max(1));
-        (self.turn * teeth / std::f64::consts::TAU).round() as i64
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a whole number of gear teeth of a finite drag turn; `as` saturates"
+        )]
+        let steps = (self.turn * teeth / std::f64::consts::TAU).round() as i64;
+        steps
     }
 }
 

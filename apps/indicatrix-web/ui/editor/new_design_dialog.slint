@@ -19,8 +19,32 @@ export global NewDesignModel {
     in property <[string]> material-options: [];
     in-out property <int> material-index: 0;
 
+    // -- Template cards (`GalleryModel.selected-index >= 1`) -------------------------
+    // The gallery cards' parallel lists, indexed like `GalleryModel.templates`: the template
+    // index each card creates, its section (0 Blank, 1 Shapes, 2 Round Variants and
+    // Teaching Designs) and its "Designed for ..." line.
+    in property <[int]> card-template-index: [];
+    in property <[int]> card-group: [];
+    in property <[string]> card-designed-for: [];
+    // The gears the selected template offers (its own first), the materials (built-in, then
+    // custom) and the optional stone width in millimetres.
+    in property <[string]> template-gear-options: [];
+    in-out property <int> template-gear-index: 0;
+    in property <[string]> template-material-options: [];
+    in-out property <int> template-material-index: 0;
+    in-out property <string> stone-width-text: "";
+    // "Designed for Sapphire (n 1.768)", and what the chosen material means for the angles.
+    in property <string> designed-for: "";
+    in property <string> material-note: "";
+
     // Creates the design from the fields; the dialog closes only when it succeeds.
     callback create();
+    // The dialog opened: fill the template options (materials, gears) for the selected card.
+    callback dialog-shown();
+    // A card was picked (its template index); refill the template options.
+    callback template-chosen(int);
+    // The template material combo changed (its index); refresh the note under it.
+    callback material-chosen(int);
 }
 
 component Lbl inherits Text {
@@ -42,25 +66,22 @@ component Rule inherits Rectangle {
 // template from the gallery (which locks gear, symmetry and mirror to its own tier table).
 // Mounted by `app.slint` while `GalleryModel.open`.
 export component NewDesignDialog inherits Rectangle {
-    // Every template (any index >= 1; 0 is Empty) is authored for 96 teeth, 8-fold and
-    // mirrored, so it locks those three fields rather than remapping its table onto
-    // whatever the user chose.
-    property <bool> template-locks-fields: GalleryModel.selected-index >= 1;
+    // A template card (any template index >= 1; 0 is Empty) is built from the template's
+    // own preform, symmetry and mirror, so the dialog asks only for the gear (among those the
+    // template allows), the material and the stone width; the full form is Empty's.
+    property <bool> is-template: GalleryModel.selected-index >= 1;
 
     property <bool> half-width-valid: NewDesignModel.preform-half-width.to-float() > 0;
     property <bool> length-over-width-valid: NewDesignModel.preform-length-over-width.to-float() > 0;
     property <bool> depth-valid: NewDesignModel.preform-depth.to-float() > 0;
     property <bool> custom-gear-valid: NewDesignModel.gear-index != 6 || NewDesignModel.gear-custom-text.to-float() > 0;
     property <bool> symmetry-valid: NewDesignModel.symmetry-order-text.to-float() >= 1;
-    property <bool> form-valid: root.half-width-valid && root.length-over-width-valid && root.depth-valid && root.custom-gear-valid && root.symmetry-valid;
+    // Empty or a number above 0 and at most 200 mm (the width is optional).
+    property <bool> stone-width-valid: NewDesignModel.stone-width-text == "" || (NewDesignModel.stone-width-text.to-float() > 0 && NewDesignModel.stone-width-text.to-float() <= 200);
+    property <bool> form-valid: root.is-template
+        ? root.stone-width-valid
+        : (root.half-width-valid && root.length-over-width-valid && root.depth-valid && root.custom-gear-valid && root.symmetry-valid);
 
-    function apply-template-lock() {
-        if root.template-locks-fields {
-            NewDesignModel.gear-index = 0;
-            NewDesignModel.symmetry-order-text = "8";
-            NewDesignModel.mirror = true;
-        }
-    }
     function cancel() {
         GalleryModel.open = false;
     }
@@ -70,7 +91,7 @@ export component NewDesignDialog inherits Rectangle {
         }
     }
 
-    init => { root.apply-template-lock(); }
+    init => { NewDesignModel.dialog-shown(); }
 
     background: Theme.overlay-backdrop;
 
@@ -132,22 +153,70 @@ export component NewDesignDialog inherits Rectangle {
                         wrap: word-wrap;
                     }
 
-                    Lbl { text: "Start from"; }
+                    Lbl { text: "Start From"; }
                     TemplateGallery {
                         selected-index <=> GalleryModel.selected-index;
-                        selected => { root.apply-template-lock(); }
+                        indices: NewDesignModel.card-template-index;
+                        groups: NewDesignModel.card-group;
+                        designed-for: NewDesignModel.card-designed-for;
+                        selected => { NewDesignModel.template-chosen(GalleryModel.selected-index); }
                         chosen => { root.do-create(); }
                     }
-                    if root.template-locks-fields: Text {
-                        text: "Locks Index gear to 96, Symmetry order to 8 and Mirror on, and seeds this template's tiers -- Create yields a design that solves immediately.";
-                        font-size: 8px;
-                        color: Theme.text-muted;
-                        wrap: word-wrap;
+
+                    if root.is-template: VerticalLayout {
+                        spacing: 8px;
+
+                        if NewDesignModel.designed-for != "": Text {
+                            text: NewDesignModel.designed-for;
+                            font-size: 10px;
+                            font-weight: 700;
+                            color: Theme.accent-cyan;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "Starts from this template's own tiers, preform, symmetry and mirror -- Create yields a design that solves immediately.";
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+
+                        Rule {}
+
+                        Lbl { text: "Index Gear"; }
+                        ComboBox {
+                            model: NewDesignModel.template-gear-options;
+                            current-index <=> NewDesignModel.template-gear-index;
+                        }
+
+                        Lbl { text: "Material"; }
+                        ComboBox {
+                            model: NewDesignModel.template-material-options;
+                            current-index <=> NewDesignModel.template-material-index;
+                            changed current-index => { NewDesignModel.material-chosen(self.current-index); }
+                        }
+                        if NewDesignModel.material-note != "": Text {
+                            text: NewDesignModel.material-note;
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+
+                        Lbl { text: "Stone Width in mm (Optional)"; }
+                        LineEdit {
+                            min-width: 0px;
+                            placeholder-text: "e.g. 7.0";
+                            text <=> NewDesignModel.stone-width-text;
+                            changed has-focus => { AppModel.text-focus = self.has-focus; }
+                        }
+                        Bad { text: root.stone-width-valid ? "" : "must be above 0 and at most 200"; }
                     }
+
+                    if !root.is-template: VerticalLayout {
+                    spacing: 8px;
 
                     Rule {}
 
-                    Lbl { text: "Preform shape"; }
+                    Lbl { text: "Preform Shape"; }
                     ComboBox {
                         model: ["Block", "Cylinder"];
                         current-index <=> NewDesignModel.preform-shape-index;
@@ -157,7 +226,7 @@ export component NewDesignDialog inherits Rectangle {
                         VerticalLayout {
                             horizontal-stretch: 1;
                             spacing: 2px;
-                            Lbl { text: "Half-width"; }
+                            Lbl { text: "Half-Width"; }
                             LineEdit {
                                 // (The style's LineEdit is 160px wide at minimum: two side by
                                 // side overflowed the dialog on a phone-width window.)
@@ -170,7 +239,7 @@ export component NewDesignDialog inherits Rectangle {
                         VerticalLayout {
                             horizontal-stretch: 1;
                             spacing: 2px;
-                            Lbl { text: "Length / width"; }
+                            Lbl { text: "Length / Width"; }
                             LineEdit {
                                 min-width: 0px;
                                 text <=> NewDesignModel.preform-length-over-width;
@@ -202,18 +271,17 @@ export component NewDesignDialog inherits Rectangle {
                         VerticalLayout {
                             horizontal-stretch: 1;
                             spacing: 2px;
-                            Lbl { text: "Index gear"; }
+                            Lbl { text: "Index Gear"; }
                             ComboBox {
                                 min-width: 0px;
                                 model: ["96", "80", "77", "72", "64", "120", "Custom"];
                                 current-index <=> NewDesignModel.gear-index;
-                                enabled: !root.template-locks-fields;
                             }
                         }
-                        if NewDesignModel.gear-index == 6 && !root.template-locks-fields: VerticalLayout {
+                        if NewDesignModel.gear-index == 6: VerticalLayout {
                             width: 100px;
                             spacing: 2px;
-                            Lbl { text: "Custom teeth"; }
+                            Lbl { text: "Custom Teeth"; }
                             LineEdit {
                                 min-width: 0px;
                                 text <=> NewDesignModel.gear-custom-text;
@@ -227,10 +295,9 @@ export component NewDesignDialog inherits Rectangle {
                         VerticalLayout {
                             horizontal-stretch: 1;
                             spacing: 2px;
-                            Lbl { text: "Symmetry order"; }
+                            Lbl { text: "Symmetry Order"; }
                             LineEdit {
                                 text <=> NewDesignModel.symmetry-order-text;
-                                enabled: !root.template-locks-fields;
                                 changed has-focus => { AppModel.text-focus = self.has-focus; }
                             }
                             Bad { text: root.symmetry-valid ? "" : "must be a positive whole number"; }
@@ -242,10 +309,8 @@ export component NewDesignDialog inherits Rectangle {
                                 width: 36px;
                                 height: 20px;
                                 border-radius: 10px;
-                                background: NewDesignModel.mirror ? (root.template-locks-fields ? Theme.border-medium : Theme.accent-cyan) : Theme.bg-card-hover;
-                                opacity: root.template-locks-fields ? 0.6 : 1.0;
+                                background: NewDesignModel.mirror ? Theme.accent-cyan : Theme.bg-card-hover;
                                 TouchArea {
-                                    enabled: !root.template-locks-fields;
                                     clicked => { NewDesignModel.mirror = !NewDesignModel.mirror; }
                                 }
                                 Rectangle {
@@ -263,10 +328,11 @@ export component NewDesignDialog inherits Rectangle {
 
                     Rule {}
 
-                    Lbl { text: "Starting material (change it any time in Design settings)"; }
+                    Lbl { text: "Starting Material (change it any time in Design Settings)"; }
                     ComboBox {
                         model: NewDesignModel.material-options;
                         current-index <=> NewDesignModel.material-index;
+                    }
                     }
                 }
             }

@@ -31,7 +31,9 @@ pub const HIGHLIGHT_TARGETS: &[&str] = &[
     "new_design_dialog",
     // The inspector's Tier tab.
     "inspector_tier",
-    // The Design Settings panel.
+    // The Design Settings panel. On the desktop the design's material lives in the Stone tab of the
+    // Parameters dock, so the worked example's material step (shared with the web app, where this
+    // is the Design Settings panel) outlines and opens that tab as well.
     "design_settings",
     // The Solve button on the command bar.
     "solve_button",
@@ -71,6 +73,11 @@ pub const HIGHLIGHT_TARGETS: &[&str] = &[
     "live_render_tab",
     // The Lighting drop-down of the Live Render toolbar.
     "lighting_combo",
+    // The three tabs of the Parameters dock (pill in the panel and the toolbar button of the
+    // same tab). A step that names one opens it (`ParametersModel.show_tab`).
+    "stone_tab",
+    "lighting_tab",
+    "render_output_tab",
     // The Cut Mode button of the command bar.
     "cutting_mode_button",
     // The Export .asc button of the command bar.
@@ -227,7 +234,7 @@ fn guide_step_from(step: &Step) -> GuideStep {
 pub fn worked_example_guide() -> Guide {
     let mut guide = Guide::new(
         WORKED_EXAMPLE_ID,
-        "New design walkthrough",
+        "New Design Walkthrough",
         "Build an 8-fold round brilliant from an empty design: girdle, pavilion, crown and table.",
         GuideCategory::GettingStarted,
     )

@@ -7,6 +7,12 @@ use glam::DVec3;
 
 use super::{BvhNode, LEAF_SIZE};
 
+/// A mesh element count or index as the `u32` the mesh stores. A mesh with more than
+/// `u32::MAX` triangles or vertices cannot be represented at all, so overflow is a bug.
+pub(super) fn index_u32(index: usize) -> u32 {
+    u32::try_from(index).expect("mesh element indices fit u32")
+}
+
 /// The minimum and maximum corner of `points`.
 pub(super) fn bounds_of(points: impl Iterator<Item = DVec3>) -> (DVec3, DVec3) {
     points.fold(
@@ -23,7 +29,7 @@ pub(super) fn build_bvh(verts: &[DVec3], tris: &[[u32; 3]]) -> (Vec<BvhNode>, Ve
         .map(|tri| bounds_of(tri.iter().map(|&v| verts[v as usize])))
         .collect();
     let centroids: Vec<DVec3> = boxes.iter().map(|&(lo, hi)| (lo + hi) * 0.5).collect();
-    let mut order: Vec<u32> = (0..tris.len() as u32).collect();
+    let mut order: Vec<u32> = (0..index_u32(tris.len())).collect();
     let mut nodes = vec![BvhNode::EMPTY];
     let mut work = vec![(0_usize, 0_usize, tris.len())];
     while let Some((slot, start, end)) = work.pop() {
@@ -35,8 +41,8 @@ pub(super) fn build_bvh(verts: &[DVec3], tris: &[[u32; 3]]) -> (Vec<BvhNode>, Ve
             nodes[slot] = BvhNode {
                 min,
                 max,
-                first: start as u32,
-                count: (end - start) as u32,
+                first: index_u32(start),
+                count: index_u32(end - start),
             };
             continue;
         }
@@ -61,7 +67,7 @@ pub(super) fn build_bvh(verts: &[DVec3], tris: &[[u32; 3]]) -> (Vec<BvhNode>, Ve
         nodes[slot] = BvhNode {
             min,
             max,
-            first: left as u32,
+            first: index_u32(left),
             count: 0,
         };
         work.push((left + 1, mid, end));

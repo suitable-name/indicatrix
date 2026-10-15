@@ -1,0 +1,359 @@
+// The Tilt Curves sheet: brilliance, extinction and windowing against the tilt of the stone
+// away from table-up (-90 to +90 degrees), one chart per camera axis (0, 45, 90 and 135
+// degrees of azimuth). Drag on the chart to read the values at one tilt; "Copy Data" puts the
+// whole sweep on the clipboard as a tab-separated table.
+//
+// A full-height overlay of the Checks tab (the page's sheet is raised to full height while it
+// is open, as for the keypad sheet). Opened by `PropsModel.open-tilt`; the sweep itself runs
+// on the core's analysis thread, and this sheet only shows what Rust pushed into `PropsModel`.
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { Shell } from "../../models.slint";
+import { PageScroll } from "../../shell/page_scroll.slint";
+import { TextButton, TonalButton } from "../../shell/buttons.slint";
+import { IconButton } from "../../shell/icon_button.slint";
+import { Segmented } from "../../shell/chips.slint";
+import { PropsModel } from "props_model.slint";
+
+// The chart: gridlines, three curves in a 100 x 100 box stretched over the plot, and a
+// cursor the finger moves. `scrub` is the cursor position as a fraction of the plot width.
+component TiltChart inherits Rectangle {
+    in-out property <float> scrub: 0.5;
+
+    property <length> pad-left: 36px;
+    property <length> pad-right: 8px;
+    property <length> pad-top: 8px;
+    property <length> pad-bottom: 24px;
+
+    height: 240px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: "Tilt curves chart. Drag to read values.";
+
+    function move-cursor(x: length) {
+        root.scrub = clamp(x / plot.width, 0, 1);
+    }
+
+    // Y labels.
+    for pct[i] in [0, 50, 100]: Text {
+        x: 0px;
+        y: root.pad-top + plot.height * (1 - pct / 100) - self.height / 2;
+        width: root.pad-left - 6px;
+        text: pct + "";
+        color: Theme.on-surface-variant;
+        font-size: Theme.text-label;
+        horizontal-alignment: right;
+    }
+
+    // X labels.
+    for t[i] in [-90, -45, 0, 45, 90]: Text {
+        x: root.pad-left + plot.width * ((t + 90) / 180) - 20px;
+        y: root.pad-top + plot.height + 4px;
+        width: 40px;
+        text: t + "°";
+        color: Theme.on-surface-variant;
+        font-size: Theme.text-label;
+        horizontal-alignment: center;
+    }
+
+    plot := Rectangle {
+        x: root.pad-left;
+        y: root.pad-top;
+        width: root.width - root.pad-left - root.pad-right;
+        height: root.height - root.pad-top - root.pad-bottom;
+        border-width: 1px;
+        border-color: Theme.outline-variant;
+        clip: true;
+
+        for pct[i] in [25, 50, 75]: Rectangle {
+            y: parent.height * (1 - pct / 100);
+            height: 1px;
+            background: Theme.outline-variant;
+            opacity: 0.6;
+        }
+
+        for t[i] in [-45, 0, 45]: Rectangle {
+            x: parent.width * ((t + 90) / 180);
+            width: 1px;
+            background: t == 0 ? Theme.outline : Theme.outline-variant;
+            opacity: 0.6;
+        }
+
+        Path {
+            width: parent.width;
+            height: parent.height;
+            commands: PropsModel.tilt-windowing-path;
+            viewbox-width: 100;
+            viewbox-height: 100;
+            fit: fill;
+            fill: transparent;
+            stroke: Theme.warning;
+            stroke-width: 2px;
+        }
+
+        Path {
+            width: parent.width;
+            height: parent.height;
+            commands: PropsModel.tilt-extinction-path;
+            viewbox-width: 100;
+            viewbox-height: 100;
+            fit: fill;
+            fill: transparent;
+            stroke: Theme.error;
+            stroke-width: 2px;
+        }
+
+        Path {
+            width: parent.width;
+            height: parent.height;
+            commands: PropsModel.tilt-brilliance-path;
+            viewbox-width: 100;
+            viewbox-height: 100;
+            fit: fill;
+            fill: transparent;
+            stroke: Theme.primary;
+            stroke-width: 2.5px;
+        }
+
+        // The cursor.
+        Rectangle {
+            x: root.scrub * parent.width - 1px;
+            width: 2px;
+            background: Theme.on-surface;
+            opacity: 0.8;
+        }
+
+        scrub-touch := TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.move-cursor(self.mouse-x);
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.move-cursor(self.mouse-x);
+                }
+            }
+        }
+    }
+}
+
+// A colored swatch and a name, for the legend and the readout.
+component Swatch inherits Rectangle {
+    in property <color> tone;
+
+    width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    background: root.tone;
+}
+
+// One line of the readout: swatch, name, value at the cursor.
+component ReadoutLine inherits HorizontalLayout {
+    in property <color> tone;
+    in property <string> name;
+    in property <string> value;
+
+    spacing: Theme.space-sm;
+
+    Rectangle {
+        width: 12px;
+
+        Swatch {
+            x: 0px;
+            y: (parent.height - self.height) / 2;
+            tone: root.tone;
+        }
+    }
+
+    Text {
+        text: root.name;
+        color: Theme.on-surface;
+        font-size: Theme.text-body-large;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+    }
+
+    Text {
+        text: root.value;
+        color: Theme.on-surface;
+        font-size: Theme.text-body-large;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+}
+
+export component TiltSheet inherits Rectangle {
+    // When the page's sheet comes back down (the Back key, a drag) the sheet closes with it.
+    property <int> detent-watch: Shell.sheet-detent;
+    property <bool> busy: PropsModel.tilt-state == 2;
+    // The curve point under the cursor: 0 is -90 degrees, 90 is table-up, 180 is +90.
+    property <int> point: Math.round(chart.scrub * 180);
+
+    changed detent-watch => {
+        if (Shell.sheet-detent < 2 && PropsModel.tilt-open) {
+            PropsModel.dismiss-tilt();
+        }
+    }
+
+    visible: PropsModel.tilt-open;
+    background: Theme.surface-container;
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: "Tilt Curves";
+
+    // Swallows taps so they do not reach the tab below.
+    TouchArea { }
+
+    VerticalLayout {
+        Rectangle {
+            height: 56px;
+
+            HorizontalLayout {
+                padding-left: Theme.space-xs;
+                padding-right: Theme.space-sm;
+                spacing: Theme.space-xs;
+
+                IconButton {
+                    icon: Icons.back;
+                    label: "Back";
+                    tint: Theme.on-surface;
+                    clicked => {
+                        PropsModel.close-tilt();
+                    }
+                }
+
+                Text {
+                    text: "Tilt Curves";
+                    color: Theme.on-surface;
+                    font-size: Theme.text-title;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                if PropsModel.tilt-has-curves: TextButton {
+                    text: "Copy Data";
+                    clicked => {
+                        PropsModel.tilt-copy();
+                    }
+                }
+            }
+        }
+
+        PageScroll {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                padding-bottom: Theme.space-xl;
+                spacing: Theme.space-md;
+
+                Segmented {
+                    options: PropsModel.tilt-axis-names;
+                    current: PropsModel.tilt-axis;
+                    selected(index) => {
+                        PropsModel.tilt-axis = index;
+                        PropsModel.tilt-axis-picked(index);
+                    }
+                }
+
+                Text {
+                    text: "Camera axis: the azimuth the stone is tipped towards. Tilt is measured away from table-up.";
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+
+                // Progress of a running sweep (or an indeterminate stripe while it starts).
+                if root.busy: Rectangle {
+                    height: 4px;
+                    border-radius: 2px;
+                    background: Theme.surface-highest;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0px;
+                        width: parent.width * (PropsModel.tilt-progress >= 0 ? PropsModel.tilt-progress : 0.15);
+                        background: Theme.primary;
+                    }
+                }
+
+                if root.busy: Text {
+                    text: PropsModel.tilt-stage != "" ? PropsModel.tilt-stage : "Starting the sweep...";
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+
+                chart := TiltChart {
+                    visible: PropsModel.tilt-has-curves;
+                    opacity: PropsModel.tilt-state == 3 || root.busy ? 0.5 : 1.0;
+                    height: PropsModel.tilt-has-curves ? 240px : 0px;
+                }
+
+                if PropsModel.tilt-has-curves: Rectangle {
+                    background: Theme.surface-high;
+                    border-radius: Theme.radius-md;
+                    height: readout.preferred-height;
+
+                    readout := VerticalLayout {
+                        padding: Theme.space-md;
+                        spacing: Theme.space-xs;
+
+                        Text {
+                            text: "At " + (root.point - 90) + "° of tilt";
+                            color: Theme.on-surface-variant;
+                            font-size: Theme.text-label-large;
+                            font-weight: 500;
+                        }
+
+                        ReadoutLine {
+                            tone: Theme.primary;
+                            name: "Brilliance";
+                            value: Math.round(PropsModel.tilt-brilliance[root.point] * 10) / 10 + " %";
+                        }
+
+                        ReadoutLine {
+                            tone: Theme.error;
+                            name: "Extinction";
+                            value: Math.round(PropsModel.tilt-extinction[root.point] * 10) / 10 + " %";
+                        }
+
+                        ReadoutLine {
+                            tone: Theme.warning;
+                            name: "Windowing";
+                            value: Math.round(PropsModel.tilt-windowing[root.point] * 10) / 10 + " %";
+                        }
+                    }
+                }
+
+                Text {
+                    text: PropsModel.tilt-note;
+                    color: PropsModel.tilt-state == 5 ? Theme.error : Theme.on-surface-variant;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Theme.space-sm;
+
+                    if !root.busy: TonalButton {
+                        text: PropsModel.tilt-has-curves ? "Sweep Again" : "Run Sweep";
+                        clicked => {
+                            PropsModel.tilt-run();
+                        }
+                    }
+
+                    if root.busy: TextButton {
+                        text: "Cancel";
+                        clicked => {
+                            PropsModel.tilt-cancel();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

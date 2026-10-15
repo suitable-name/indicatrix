@@ -215,7 +215,8 @@ fn measure(
     let errors: [[f32; 3]; SEEDS] = thread::scope(|scope| {
         let runs: [_; SEEDS] = std::array::from_fn(|seed| {
             // Above the sample-index bits, see the module doc.
-            let salt = 0x4E46_0000 ^ ((seed as u32 + 1) << 16);
+            let salt =
+                0x4E46_0000 ^ ((u32::try_from(seed).expect("a seed index fits in u32") + 1) << 16);
             scope.spawn(move || {
                 relative_error(
                     furnace_mean(anchor, planes, env, max_bounces, spp, salt),

@@ -9,14 +9,22 @@
 use super::metrics::{Metric, MetricReading};
 use crate::gui::pixel_font;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "const context (no try_from); the glyph width is the constant 5"
+)]
 const GLYPH_WIDTH: u32 = pixel_font::GLYPH_WIDTH as u32;
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "const context (no try_from); the glyph height is the constant 7"
+)]
 const GLYPH_HEIGHT: u32 = pixel_font::GLYPH_HEIGHT as u32;
 
 /// Pixel width `text` occupies at `scale` (1 device px per glyph px at `scale == 1`),
 /// including inter-glyph spacing but not a trailing gap.
 #[must_use]
 pub fn text_width(text: &str, scale: u32) -> u32 {
-    let len = text.chars().count() as u32;
+    let len = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
     if len == 0 {
         0
     } else {
@@ -25,10 +33,10 @@ pub fn text_width(text: &str, scale: u32) -> u32 {
 }
 
 fn put_pixel(frame: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 3]) {
-    if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
+    if x < 0 || y < 0 || x.cast_unsigned() >= width || y.cast_unsigned() >= height {
         return;
     }
-    let Some(idx) = (y as u32 * width + x as u32)
+    let Some(idx) = (y.cast_unsigned() * width + x.cast_unsigned())
         .checked_mul(4)
         .map(|i| i as usize)
     else {
@@ -57,21 +65,21 @@ fn draw_glyph(
     scale: u32,
     color: [u8; 3],
 ) {
-    for (row_idx, bits) in rows.iter().enumerate() {
+    for (row_idx, bits) in (0u32..).zip(rows.iter()) {
         for col in 0..GLYPH_WIDTH {
             if bits & (1 << (GLYPH_WIDTH - 1 - col)) == 0 {
                 continue;
             }
-            let px0 = x + (col * scale) as i32;
-            let py0 = y + (row_idx as u32 * scale) as i32;
+            let px0 = x + (col * scale).cast_signed();
+            let py0 = y + (row_idx * scale).cast_signed();
             for dy in 0..scale {
                 for dx in 0..scale {
                     put_pixel(
                         frame,
                         width,
                         height,
-                        px0 + dx as i32,
-                        py0 + dy as i32,
+                        px0 + dx.cast_signed(),
+                        py0 + dy.cast_signed(),
                         color,
                     );
                 }
@@ -98,8 +106,9 @@ pub fn draw_text(
     color: [u8; 3],
 ) {
     let scale = scale.max(1);
-    for (i, ch) in text.chars().enumerate() {
-        let glyph_x = x + i as i32 * ((GLYPH_WIDTH as i32 + 1) * scale as i32);
+    let advance = (GLYPH_WIDTH.cast_signed() + 1) * scale.cast_signed();
+    for (i, ch) in (0i32..).zip(text.chars()) {
+        let glyph_x = x + i * advance;
         draw_glyph(
             frame,
             width,
@@ -134,12 +143,12 @@ pub fn fill_rect_alpha(
     let alpha_frac = f32::from(alpha) / 255.0;
     for row in 0..rect_h {
         for col in 0..rect_w {
-            let px = rect_x + col as i32;
-            let py = rect_y + row as i32;
-            if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
+            let px = rect_x + col.cast_signed();
+            let py = rect_y + row.cast_signed();
+            if px < 0 || py < 0 || px.cast_unsigned() >= width || py.cast_unsigned() >= height {
                 continue;
             }
-            let Some(idx) = (py as u32 * width + px as u32)
+            let Some(idx) = (py.cast_unsigned() * width + px.cast_unsigned())
                 .checked_mul(4)
                 .map(|byte_idx| byte_idx as usize)
             else {
@@ -151,7 +160,13 @@ pub fn fill_rect_alpha(
             for channel in 0..3 {
                 let bg = f32::from(frame[idx + channel]);
                 let fg = f32::from(color[channel]);
-                frame[idx + channel] = bg.mul_add(1.0 - alpha_frac, fg * alpha_frac) as u8;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a blend of two 0..=255 channels with alpha in 0..=1 stays in 0..=255; `as` saturates"
+                )]
+                let blended = bg.mul_add(1.0 - alpha_frac, fg * alpha_frac) as u8;
+                frame[idx + channel] = blended;
             }
         }
     }
@@ -197,7 +212,8 @@ fn layout_width(layout: OverlayLayout, metric_count: usize, scale: u32) -> u32 {
     }
     let per_metric = text_width(worst_case_sample(layout), scale);
     let gap = (GLYPH_WIDTH + 2) * scale;
-    per_metric * metric_count as u32 + gap * (metric_count as u32 - 1)
+    let count = u32::try_from(metric_count).unwrap_or(u32::MAX);
+    per_metric * count + gap * (count - 1)
 }
 
 /// Picks the richest overlay layout whose worst-case text run fits within 90% of
@@ -211,6 +227,11 @@ pub fn select_overlay_layout(width: u32, height: u32, metric_count: usize) -> Ov
         return OverlayLayout::NumbersOnly;
     }
     let scale = font_scale(height);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "90% of a u32 width is non-negative and below u32::MAX"
+    )]
     let budget = (f64::from(width) * 0.9) as u32;
     for layout in [OverlayLayout::FullLabels, OverlayLayout::ShortLabels] {
         if layout_width(layout, metric_count, scale) <= budget {
@@ -312,11 +333,11 @@ pub fn draw_overlay(frame: &mut [u8], width: u32, height: u32, readings: &[Metri
     let layout = select_overlay_layout(width, height, readings.len());
     let scale = font_scale(height);
     let row_h = GLYPH_HEIGHT * scale + scale * 2;
-    let pad = scale as i32;
-    for (row, reading) in readings.iter().enumerate() {
+    let pad = scale.cast_signed();
+    for (row, reading) in (0i32..).zip(readings.iter()) {
         let text = format_reading(reading.metric, reading.value, layout);
-        let y = pad + row as i32 * row_h as i32;
-        let bar_w = text_width(&text, scale) + 2 * scale + pad as u32;
+        let y = pad + row * row_h.cast_signed();
+        let bar_w = text_width(&text, scale) + 2 * scale + pad.cast_unsigned();
         fill_rect_alpha(
             frame,
             width,

@@ -110,13 +110,45 @@ pub struct PreparedView {
     pub triangles: Vec<u32>,
     /// The checks of the view's frames.
     pub consistency: ConsistencyReport,
-    /// The backlight flat field of the view.
-    pub white_frame: WhiteFrame,
-    /// The mean corrected white frame colour (white minus dark), for the backlight fit.
-    pub white_rgb: [f64; 3],
+    /// The backlight flat field of the view. `None` for a view restored from the plan's cached
+    /// working-resolution photo: the white frame is not cached, so such a view cannot be fitted
+    /// again until its original photos are loaded and prepared.
+    pub white_frame: Option<WhiteFrame>,
+    /// The mean corrected white frame colour (white minus dark), for the backlight fit. `None`
+    /// for a restored view.
+    pub white_rgb: Option<[f64; 3]>,
 }
 
 impl PreparedView {
+    /// A view restored from the cached working-resolution photo of a saved plan.
+    ///
+    /// `image` is what was cached at Accept: its mask already holds every flag (sampling, mesh and
+    /// brush), so the mesh and brush masks start empty and [`combined_mask`](Self::combined_mask)
+    /// gives the cached mask back. There is no triangle map (no window painting on this view), no
+    /// white frame and no consistency findings.
+    #[must_use]
+    pub fn from_cache(view: usize, name: &str, image: ResampledImage) -> Self {
+        let (width, height) = (image.grid.width, image.grid.height);
+        Self {
+            view,
+            name: name.to_owned(),
+            grid: image.grid,
+            observed: image,
+            auto_mask: PixelMask::new(width, height),
+            user_mask: PixelMask::new(width, height),
+            triangles: vec![u32::MAX; width * height],
+            consistency: ConsistencyReport::default(),
+            white_frame: None,
+            white_rgb: None,
+        }
+    }
+
+    /// Whether this view came from the plan's cache (no original photo behind it).
+    #[must_use]
+    pub const fn is_cached(&self) -> bool {
+        self.white_frame.is_none()
+    }
+
     /// Every flag together: sampling, mesh and brush.
     #[must_use]
     pub fn combined_mask(&self) -> PixelMask {
@@ -191,6 +223,49 @@ pub fn triangle_map(scene: &Scene<'_>, view: usize, grid: &WorkingGrid) -> Vec<u
     out
 }
 
+/// The stone's exclusion mask at the stone photo's full resolution, for the compression-noise
+/// estimate of the transmittance.
+///
+/// The mesh flags (outline, edge band, inclusion, ghost) exist only on the working grid, so they
+/// are upsampled by nearest neighbour: every full-resolution pixel takes the flags of the working
+/// pixel that contains its centre, and a pixel outside the grid (the margin around the stone's
+/// region) is flagged as outside the outline. Nearest neighbour is exact enough here, the
+/// estimator only needs to keep the flat backlight and the stone's edge out; it also skips the
+/// four neighbours of every flagged pixel.
+#[must_use]
+pub fn full_resolution_exclusion(
+    grid: &WorkingGrid,
+    working: &PixelMask,
+    width: usize,
+    height: usize,
+) -> PixelMask {
+    let mut out = PixelMask::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let centre = DVec2::new(x as f64 + 0.5, y as f64 + 0.5);
+            let bits = match grid.working_coordinates(centre) {
+                Some((wx, wy)) => {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "`as` saturates (negative and NaN give 0) and both indices are clamped to the mask size right below"
+                    )]
+                    let (col_idx, row_idx) = (wx as usize, wy as usize);
+                    working.get(
+                        col_idx.min(working.width().saturating_sub(1)),
+                        row_idx.min(working.height().saturating_sub(1)),
+                    )
+                }
+                None => flag::OUTSIDE_OUTLINE,
+            };
+            if bits != 0 {
+                out.set(x, y, bits);
+            }
+        }
+    }
+    out
+}
+
 fn read_all(paths: &[PathBuf]) -> Result<Vec<LinearImage>, String> {
     paths
         .iter()
@@ -238,13 +313,15 @@ pub fn prepare_view(
         ViewCalibration::new(frames, &NoiseOptions::default()).map_err(|e| fail(&e))?;
     let consistency = check_view(&stone, &calibration.frames, &ConsistencyOptions::default());
     let white_rgb = mean_rgb(&calibration.frames).map_err(|e| fail(&e))?;
-    let reference = if white_rgb.iter().all(|v| *v > 0.0) {
-        white_rgb
-    } else {
-        [1.0; 3]
-    };
-    let white_frame = WhiteFrame::from_calibration(&calibration.frames, reference, 512)
-        .map_err(|e| fail(&format!("{e:?}")))?;
+    // A black channel would make the flat field meaningless; refuse rather than substitute a
+    // reference.
+    if !white_rgb.iter().all(|v| *v > 0.0) {
+        return Err(fail(
+            &"the white frame is black in at least one color channel (check the exposure and that the backlight was on)",
+        ));
+    }
+    let white_frame =
+        WhiteFrame::from_calibration(&calibration.frames, white_rgb, 512).map_err(|e| fail(&e))?;
 
     let (stone, extra) = if let Some(second_path) = &files.second {
         let second = decode_file(second_path).map_err(|e| fail(&e))?;
@@ -267,20 +344,13 @@ pub fn prepare_view(
     } else {
         (stone, None)
     };
-    let mut transmittance = calibration
-        .transmittance(&stone, &TransmittanceOptions::default())
-        .map_err(|e| fail(&e))?;
-    if let Some(extra) = &extra {
-        let _ = transmittance.mask.merge(extra);
-    }
-    drop(stone);
+    // The geometry comes first: the stone's silhouette (outline, edge band, inclusions) is needed
+    // for the transmittance, whose compression-noise estimate must not see the flat backlight
+    // around the stone (it would drive the robust spread toward zero).
     let scene = data.scene();
     let region = stone_region(&scene, view, 0.05)
         .ok_or_else(|| fail(&"the stone is outside this camera's picture"))?;
     let grid = WorkingGrid::fit(region, DEFAULT_WORKING_PX).map_err(|e| fail(&e))?;
-    let observed = transmittance
-        .to_working(&grid, &ResampleOptions::default())
-        .map_err(|e| fail(&e))?;
     let auto_mask = mesh_masks(
         &scene,
         view,
@@ -291,6 +361,17 @@ pub fn prepare_view(
             ..MeshMaskOptions::default()
         },
     );
+    let exclusion = full_resolution_exclusion(&grid, &auto_mask, stone.width, stone.height);
+    let mut transmittance = calibration
+        .transmittance_masked(&stone, &TransmittanceOptions::default(), Some(&exclusion))
+        .map_err(|e| fail(&e))?;
+    if let Some(extra) = &extra {
+        let _ = transmittance.mask.merge(extra);
+    }
+    drop(stone);
+    let observed = transmittance
+        .to_working(&grid, &ResampleOptions::default())
+        .map_err(|e| fail(&e))?;
     let triangles = triangle_map(&scene, view, &grid);
     Ok(PreparedView {
         view,
@@ -301,8 +382,8 @@ pub fn prepare_view(
         auto_mask,
         triangles,
         consistency,
-        white_frame,
-        white_rgb,
+        white_frame: Some(white_frame),
+        white_rgb: Some(white_rgb),
     })
 }
 
@@ -400,7 +481,7 @@ pub fn build_calibration(
         }
         CameraChoice::Fallback => {
             notes.push(
-                "Camera: sRGB matrix fallback. Colours are less certain; load curves or a filter set for better ones."
+                "Camera: sRGB matrix fallback. Colors are less certain; load curves or a filter set for better ones."
                     .to_owned(),
             );
             base
@@ -425,6 +506,112 @@ mod tests {
         assert!(!files.is_complete());
         files.white.push(PathBuf::from("w.png"));
         assert!(files.is_complete());
+    }
+
+    #[test]
+    fn a_view_from_the_cache_has_the_cached_mask_and_no_originals_behind_it() {
+        let grid = WorkingGrid::fit([0, 0, 4, 3], 4).unwrap();
+        let n = grid.width * grid.height;
+        let image = ResampledImage {
+            grid,
+            values: vec![[0.5; 3]; n],
+            variance: vec![[0.01; 3]; n],
+            coverage: vec![1.0; n],
+            mask: PixelMask::new(grid.width, grid.height),
+        };
+        let view = PreparedView::from_cache(2, "Left", image);
+        assert!(view.is_cached());
+        assert_eq!((view.view, view.name.as_str()), (2, "Left"));
+        assert_eq!(view.triangles.len(), n);
+        assert!(view.white_frame.is_none() && view.white_rgb.is_none());
+        assert_eq!(view.combined_mask().clear_count(), n);
+        assert!((view.usable_fraction() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_exclusion_mask_upsamples_the_working_flags_and_flags_the_margin() {
+        // Region [10, 30) squared at 10 working pixels: two full-resolution pixels per cell.
+        let grid = WorkingGrid::fit([10, 10, 30, 30], 10).unwrap();
+        assert!((grid.scale - 2.0).abs() < 1e-12);
+        let mut working = PixelMask::new(grid.width, grid.height);
+        working.set(0, 0, flag::EDGE_BAND);
+        let full = full_resolution_exclusion(&grid, &working, 40, 40);
+        assert_eq!((full.width(), full.height()), (40, 40));
+        // The flagged cell covers (10..12, 10..12); its neighbours are clear.
+        for (x, y) in [(10, 10), (11, 10), (10, 11), (11, 11)] {
+            assert!(full.has(x, y, flag::EDGE_BAND), "({x}, {y})");
+        }
+        assert!(full.is_clear(12, 10) && full.is_clear(20, 20));
+        // Outside the region.
+        assert!(full.has(5, 5, flag::OUTSIDE_OUTLINE));
+        assert!(full.has(35, 20, flag::OUTSIDE_OUTLINE));
+    }
+
+    /// F1: a frame that is mostly flat backlight with a textured stone gives the stone region's
+    /// compression estimate once the silhouette is masked; unmasked, the flat pixels drag the
+    /// robust spread to zero.
+    #[test]
+    fn the_stone_compression_estimate_ignores_the_flat_background() {
+        use indicatrix_cut_core::rough_plan::photometry::{
+            NoiseModel, SourceKind, estimate_stone_compression_sigma, srgb_to_linear,
+        };
+        let noise = NoiseModel {
+            a: [1e-12; 3],
+            b: [0.0; 3],
+        };
+        let (w, h) = (60_usize, 60_usize);
+        let (x0, y0, side) = (20_usize, 20_usize, 20_usize);
+        // Deterministic uniform noise of about +-3 codes in the encoded domain on the stone.
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        let mut stone_pixels = Vec::new();
+        for _ in 0..side * side {
+            let mut p = [0.0_f32; 3];
+            for v in &mut p {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let unit = ((seed >> 40) as f32 / (1_u64 << 24) as f32).mul_add(2.0, -1.0);
+                *v = srgb_to_linear((0.5 + unit * 3.0 / 255.0).clamp(0.0, 1.0));
+            }
+            stone_pixels.push(p);
+        }
+        let flat = srgb_to_linear(0.4);
+        let mut pixels = vec![[flat; 3]; w * h];
+        for y in 0..side {
+            for x in 0..side {
+                pixels[(y0 + y) * w + x0 + x] = stone_pixels[y * side + x];
+            }
+        }
+        let frame = LinearImage::from_pixels(w, h, pixels, SourceKind::Rgb8).unwrap();
+        let crop = LinearImage::from_pixels(side, side, stone_pixels, SourceKind::Rgb8).unwrap();
+        // Everything outside the stone is flagged, as the silhouette mask does.
+        let mut exclusion = PixelMask::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let inside = (x0..x0 + side).contains(&x) && (y0..y0 + side).contains(&y);
+                if !inside {
+                    exclusion.set(x, y, flag::OUTSIDE_OUTLINE);
+                }
+            }
+        }
+        let alone = estimate_stone_compression_sigma(&crop, &noise, None, 0.98).unwrap();
+        let masked =
+            estimate_stone_compression_sigma(&frame, &noise, Some(&exclusion), 0.98).unwrap();
+        let unmasked = estimate_stone_compression_sigma(&frame, &noise, None, 0.98).unwrap();
+        for c in 0..3 {
+            assert!(alone[c] > 1e-3, "the test texture must show: {alone:?}");
+            assert!(
+                (masked[c] - alone[c]).abs() <= 0.1 * alone[c],
+                "channel {c}: masked {} against the stone alone {}",
+                masked[c],
+                alone[c]
+            );
+            assert!(
+                unmasked[c] < 0.1 * alone[c],
+                "channel {c}: the unmasked estimate {} should collapse",
+                unmasked[c]
+            );
+        }
     }
 
     #[test]

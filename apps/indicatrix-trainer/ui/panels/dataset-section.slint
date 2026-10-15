@@ -1,0 +1,207 @@
+import { Button, Switch, Spinner, LineEdit, ListView } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { UiState } from "../state.slint";
+import { Section, InfoRow } from "../components/section.slint";
+
+// One row of the design picker: title, split chip, file name; hover, pressed, selected, focus.
+component DesignRow inherits Rectangle {
+    in property <string> title;
+    in property <string> filename;
+    in property <string> split;
+    in property <bool> selected;
+    callback activated();
+
+    private property <color> chip: root.split == "Train" ? TrainerTheme.accent-green
+        : root.split == "Validation" ? TrainerTheme.accent-cyan
+        : root.split == "Test" ? TrainerTheme.accent-purple : TrainerTheme.text-muted;
+
+    height: 40px;
+    border-radius: 4px;
+    background: root.selected ? TrainerTheme.bg-selected
+        : ta.pressed ? TrainerTheme.bg-card-pressed
+        : ta.has-hover ? TrainerTheme.bg-card-hover : transparent;
+    border-width: fs.has-focus ? 2px : 0px;
+    border-color: TrainerTheme.focus-ring;
+    accessible-role: list-item;
+    accessible-label: root.title + ", " + root.split;
+    accessible-description: root.filename;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.activated(); }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                color: TrainerTheme.text-primary;
+                font-size: 12px;
+                font-weight: root.selected ? 700 : 500;
+                overflow: elide;
+            }
+            Text {
+                text: root.filename;
+                color: TrainerTheme.text-muted;
+                font-size: 10px;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 66px;
+                height: 18px;
+                border-radius: 9px;
+                background: root.chip.with-alpha(0.18);
+                border-width: 1px;
+                border-color: root.chip.with-alpha(0.7);
+                Text {
+                    text: root.split;
+                    color: TrainerTheme.text-primary;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == " " || e.text == "\n" { root.activated(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { fs.focus(); root.activated(); }
+    }
+    Tooltip { text: @markdown("\{root.filename}"); }
+}
+
+export component DatasetSection inherits Section {
+    title: "DATA SET";
+
+    // Database path and Browse
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: TrainingController.db_path == "" ? "No database selected" : TrainingController.db_path;
+            color: TrainingController.db_path == "" ? TrainerTheme.text-muted : TrainerTheme.text-secondary;
+            font-size: 11px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            accessible-role: text;
+            accessible-label: "Database: " + TrainingController.db_path;
+            Tooltip { text: @markdown("\{TrainingController.db_path}"); }
+        }
+        Button {
+            text: "Browse…";
+            enabled: TrainingController.worker_alive && TrainingController.db_state != 0;
+            accessible-label: "Browse for the facet diagram database";
+            clicked => { TrainingController.pick_database(); }
+            Tooltip { text: @markdown("Choose a facet_diagrams.sqlite file. It is opened read-only."); }
+        }
+    }
+    if TrainingController.db_state == 0: HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        Spinner { indeterminate: true; width: 18px; height: 18px; }
+        Text {
+            text: "Loading the data set…";
+            color: TrainerTheme.text-secondary;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+    if TrainingController.db_state == 2: Text {
+        text: "Could not load the data set: " + TrainingController.db_error;
+        color: TrainerTheme.sev-error;
+        font-size: 12px;
+        wrap: word-wrap;
+        accessible-role: text;
+    }
+    if TrainingController.db_state == 1: VerticalLayout {
+        spacing: 6px;
+        InfoRow {
+            label: "Designs";
+            value: UiState.count(TrainingController.db_designs_count);
+        }
+        InfoRow {
+            label: "Train / Validation / Test";
+            value: TrainingController.train_designs_count + " / " + TrainingController.val_designs_count + " / " + TrainingController.test_designs_count;
+        }
+        if TrainingController.split_text != "": Text {
+            text: TrainingController.split_text;
+            color: TrainerTheme.text-muted;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+        Switch {
+            text: "Corpus Mode";
+            checked: TrainingController.is_corpus_mode;
+            enabled: UiState.can_command;
+            accessible-label: "Corpus mode";
+            toggled => { TrainingController.toggle_corpus_mode(); }
+            Tooltip { text: @markdown("On: cycle through the training split. Off: train on the selected design only. Rebuilds the environments."); }
+        }
+        LineEdit {
+            placeholder-text: "Filter Designs";
+            text: TrainingController.design_filter;
+            accessible-label: "Filter the design list by title or file name";
+            edited(t) => { TrainingController.filter_designs(t); }
+        }
+        // The list
+        Rectangle {
+            height: 168px;
+            background: TrainerTheme.bg-input;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: TrainerTheme.border-subtle;
+            clip: true;
+            ListView {
+                for d in TrainingController.designs: DesignRow {
+                    title: d.title;
+                    filename: d.filename;
+                    split: d.split;
+                    selected: d.index == TrainingController.current_db_index;
+                    activated => { TrainingController.select_design(d.index); }
+                }
+            }
+            if TrainingController.designs.length == 0: Text {
+                text: TrainingController.design_filter == "" ? "The data set holds no designs." : "No design matches the filter.";
+                color: TrainerTheme.text-muted;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            Button {
+                text: "◀ Previous";
+                enabled: UiState.can_command;
+                accessible-label: "Previous design";
+                clicked => { TrainingController.prev_design(); }
+            }
+            Button {
+                text: "Next ▶";
+                enabled: UiState.can_command;
+                accessible-label: "Next design";
+                clicked => { TrainingController.next_design(); }
+            }
+        }
+        Text {
+            text: TrainingController.current_db_index < 0 ? "No design selected"
+                : TrainingController.current_design_title + " · " + TrainingController.current_design_split
+                + (TrainingController.tier_count > 0 ? " · " + TrainingController.tier_count + " tiers" : "");
+            color: TrainerTheme.text-secondary;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+}

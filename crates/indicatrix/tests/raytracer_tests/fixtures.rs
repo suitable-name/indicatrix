@@ -39,7 +39,7 @@ pub fn furnace_mean_xyz(
         for ix in 0..grid {
             let ray = camera.generate_ray(ix as f32, iy as f32, grid as f32, grid as f32, 0.5, 0.5);
             for s in 0..samples_per_pixel {
-                let pixel_id = (iy as u32) * (grid as u32) + (ix as u32);
+                let pixel_id = u32::try_from(iy * grid + ix).expect("a pixel id fits in u32");
                 let seed = hash_u32(pixel_id ^ hash_u32(s ^ seed_salt));
                 sum += trace(ray, seed, (hash_u32(seed) as f32) / 4_294_967_295.0);
                 count += 1;

@@ -72,7 +72,7 @@ pub fn rgba8_len(width: u32, height: u32) -> Result<usize, DisplayError> {
     if len > u64::from(MAX_FRAME_LEN) {
         return Err(DisplayError::TooLarge { width, height });
     }
-    Ok(len as usize)
+    usize::try_from(len).map_err(|_| DisplayError::TooLarge { width, height })
 }
 
 /// Encodes `rgba` (`width * height * 4` bytes) as `encoding`.
@@ -284,7 +284,7 @@ mod tests {
                 state ^= state << 13;
                 state ^= state >> 17;
                 state ^= state << 5;
-                (state >> 11) as u8
+                (state >> 11).to_le_bytes()[0]
             })
             .collect();
         let (encoding, bytes) =

@@ -177,8 +177,8 @@ impl DispersionModel {
 
     /// The model itself, evaluated exactly at `lambda_nm`.
     fn evaluate_unclamped(&self, lambda_nm: f32) -> f32 {
-        let lambda_um = lambda_nm * 1e-3;
-        let l2 = lambda_um * lambda_um;
+        let wavelength_um = lambda_nm * 1e-3;
+        let l2 = wavelength_um * wavelength_um;
 
         match self {
             Self::Sellmeier1 { b1, c1 } => {
@@ -213,8 +213,8 @@ impl DispersionModel {
     /// coefficients say so, `NaN` where a Sellmeier `n^2` is negative, infinite on a pole.
     /// Only [`Self::validate`] wants to see those; the renderer must never.
     fn raw_index(&self, lambda_nm: f32) -> f32 {
-        let lambda_um = lambda_nm * 1e-3;
-        let l2 = lambda_um * lambda_um;
+        let wavelength_um = lambda_nm * 1e-3;
+        let l2 = wavelength_um * wavelength_um;
         match self {
             Self::Sellmeier1 { b1, c1 } => (1.0 + (b1 * l2) / (l2 - c1)).sqrt(),
             Self::Sellmeier3 { b, c } => {

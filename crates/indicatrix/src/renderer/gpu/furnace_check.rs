@@ -309,7 +309,9 @@ fn dispatch_furnace_samples(
         &samples_pipeline,
         &[(0, camera_buf), (1, extra_buf), (2, &persample_buf)],
     );
-    let samples_workgroups = (total_tuples as u32).div_ceil(64);
+    let samples_workgroups = u32::try_from(total_tuples)
+        .expect("pixels times samples is small")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -332,8 +334,9 @@ fn compare_per_tuple(
     let mut over_budget = 0usize;
     let mut cpu_sum = Vec3::ZERO;
     for idx in 0..total_tuples {
-        let pixel = (idx as u32) / NUM_SAMPLES;
-        let sample = (idx as u32) % NUM_SAMPLES;
+        let tuple = u32::try_from(idx).expect("pixels times samples is small");
+        let pixel = tuple / NUM_SAMPLES;
+        let sample = tuple % NUM_SAMPLES;
         let cpu_xyz = cpu_furnace_xyz(pixel, sample, L0);
         cpu_sum += cpu_xyz;
         let gpu_xyz = Vec3::new(
@@ -434,6 +437,10 @@ fn dispatch_furnace_accumulate_twice(
 /// Mean XYZ over `total_samples` samples, from a flat `[x0,y0,z0,x1,y1,z1,...]`
 /// per-pixel sum buffer, accumulated in `f64` to avoid the mean itself introducing
 /// extra rounding on top of what's being measured.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the f64 mean of f32 samples is returned as a Vec3 of f32, the render precision"
+)]
 fn mean_of_interleaved_component(flat_xyz: &[f32], total_samples: u32) -> Vec3 {
     let mut sum = [0.0f64; 3];
     for chunk in flat_xyz.as_chunks::<3>().0 {

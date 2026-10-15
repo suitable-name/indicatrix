@@ -77,6 +77,10 @@ fn build_dist2d_pdf_cases() -> Vec<Dist2dPdfCase> {
 }
 
 /// Runs the Tier 2 check for [`EnvironmentMap::pdf`](crate::renderer::env_map::EnvironmentMap::pdf).
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_dist2d_pdf(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<Dist2dPdfCase> {
     let map = synthetic_test_map();
@@ -113,7 +117,9 @@ pub fn run_dist2d_pdf(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
             (72, &out_buf),
         ],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

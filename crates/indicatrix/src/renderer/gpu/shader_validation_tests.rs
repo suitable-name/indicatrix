@@ -107,13 +107,11 @@ fn every_shader_parses_and_validates() {
 
 /// The zone-table layout echo shader, followed by the table declarations it copies (the
 /// concatenation `layout_check::run_zone_table` compiles).
-#[cfg(feature = "zoning")]
 const ZONE_TABLE_ECHO_WGSL: &str = concat!(
     include_str!("../shaders/zoning/zone_table_echo.wgsl"),
     include_str!("../shaders/zoning/01_zone_table.wgsl"),
 );
 
-#[cfg(feature = "zoning")]
 #[test]
 fn the_zone_table_echo_shader_parses_and_validates() {
     if let Err(message) = validate("zone_table_echo.wgsl", ZONE_TABLE_ECHO_WGSL) {
@@ -121,11 +119,23 @@ fn the_zone_table_echo_shader_parses_and_validates() {
     }
 }
 
+/// The zone-kernel echo shader with the table declarations and the kernel (the concatenation
+/// `layout_check::run_zone_kernel_echo` compiles).
+const ZONE_KERNEL_ECHO_WGSL: &str = concat!(
+    include_str!("../shaders/zoning/zone_kernel_echo.wgsl"),
+    include_str!("../shaders/zoning/01_zone_table.wgsl"),
+    include_str!("../shaders/zoning/02_zone_kernel.wgsl"),
+);
+
+#[test]
+fn the_zone_kernel_echo_shader_parses_and_validates() {
+    if let Err(message) = validate("zone_kernel_echo.wgsl", ZONE_KERNEL_ECHO_WGSL) {
+        panic!("shader validation failed:\n{message}");
+    }
+}
+
 /// The zoned-absorption units are in the megakernel and wavefront shader text (and their
-/// two anchor patches applied), and never in the Tier 2 per-function unit. A default build
-/// holds none of them: its generated text is byte-for-byte the pre-zoning text (`build.rs`
-/// only appends and patches under `CARGO_FEATURE_ZONING`).
-#[cfg(feature = "zoning")]
+/// two anchor patches applied), and never in the Tier 2 per-function unit.
 #[test]
 fn the_generated_transport_shaders_hold_the_zoning_units() {
     for (name, source) in SHADERS.iter().take(3) {

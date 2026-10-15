@@ -276,8 +276,8 @@ pub(in crate::gui) struct EditorState {
     /// The paired `.asc`'s bare file name and exact original text, when this design's
     /// schedule came from a real `.asc` file on disk (a catalogue attachment, or a
     /// previous save/open). `None` for a brand-new design or one reconstructed
-    /// from the angle-table placeholder. Fed to [`indicatrix_cut_core::save_paired`]'s
-    /// `original_asc_text` parameter, which lets a Save leave the `.asc` half
+    /// from the angle-table placeholder. Fed to [`indicatrix_cut_core::catalogue_asc`]'s
+    /// `original_asc_text` parameter, which lets a Save leave the catalogue `.asc`
     /// byte-for-byte untouched instead of regenerating it.
     pub(in crate::gui::editor) asc_filename: Option<String>,
     pub(in crate::gui::editor) original_asc_text: Option<String>,
@@ -304,7 +304,7 @@ pub(in crate::gui) struct EditorState {
     /// real cut instruction but is not says so in its own header. `false` for every
     /// other construction path.
     pub(in crate::gui::editor) used_placeholder: bool,
-    /// The `[meta]` table and attachments of the `.indicatrix` file this design came
+    /// The `[meta]` table and attachments of the `.isdd` file this design came
     /// from, so a Save writes them back unchanged -- see [`DesignFileExtras`].
     pub(in crate::gui::editor) file_extras: DesignFileExtras,
     /// See [`PendingGearRemap`]. `None` whenever the gear remap confirmation panel is

@@ -17,7 +17,7 @@ const MONTHS: [&str; 12] = [
 ];
 
 /// What the first entry of the compare boxes is called.
-pub(super) const CURRENT_LABEL: &str = "Current design";
+pub(super) const CURRENT_LABEL: &str = "Current Design";
 
 /// The longest name, in characters.
 pub(super) const NAME_LIMIT: usize = 80;

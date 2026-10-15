@@ -107,7 +107,13 @@ impl JobSink for StreamSink<'_> {
             let _ = self.out.flush();
             self.open_len = line.chars().count();
         } else if progress.frames_total <= 1 {
-            let decile = ((progress.fraction.clamp(0.0, 1.0) * 100.0).round() as u32) / 10;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "fraction is clamped to 0..=1, so the rounded percent is in 0..=100"
+            )]
+            let percent = (progress.fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
+            let decile = percent / 10;
             if decile > self.last_decile {
                 self.last_decile = decile;
                 let _ = writeln!(

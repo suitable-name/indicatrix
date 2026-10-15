@@ -28,7 +28,7 @@ fn outcome(response: SolveResponse) -> SolveOutcome {
 #[test]
 fn every_template_solved_through_the_worker_equals_a_direct_solve() {
     for (i, template) in TEMPLATES.iter().enumerate() {
-        let design = template_design(i as i32 + 1);
+        let design = template_design(i32::try_from(i).expect("few templates") + 1);
         let direct = design.solve().expect("every template solves");
         let toml = design_to_toml(&design).expect("encodes");
         let got = outcome(handle_solve(&toml, &SolveRequest::Solve));

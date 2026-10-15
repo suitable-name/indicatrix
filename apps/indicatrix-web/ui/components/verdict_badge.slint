@@ -1,0 +1,320 @@
+// The overall verdict on the open design: one Good / Check / Problem word in the header
+// (`VerdictBadge`), and the popover behind it (`VerdictPopover`) that lists the reasons with a
+// "Show" and a "Fix" for each where there is one. The words, thresholds and fixes are
+// `indicatrix_editor::verdict`; the Rust glue is `src/editor/verdict.rs`. The popover is an
+// overlay `app.slint` mounts while `VerdictModel.open`, like the app's dialogs.
+import { Theme } from "theme.slint";
+import { GuideModel } from "../models/guide_model.slint";
+
+// One thing the verdict found.
+export struct VerdictReasonData {
+    // 0 Good, 1 Check, 2 Problem -- the reason's own level (a Check reason inside a Problem
+    // verdict stays amber).
+    level: int,
+    // The plain sentence.
+    text: string,
+    // The tier the reason is about (its row number in the tier table, counting from 0), or -1
+    // for a reason about the whole stone. "Show" selects it.
+    tier: int,
+    // The label of the Fix button ("Snap to Teeth", "Steepen", ...), or "" when no safe tool
+    // exists for this reason.
+    fix_label: string,
+    // What the Fix does, for its tooltip.
+    fix_hint: string,
+}
+
+export global VerdictModel {
+    // -1 nothing to judge (no design, or no tiers yet: the badge is hidden), 0 Good,
+    // 1 Check, 2 Problem.
+    in property <int> level: -1;
+    // The one word for `level`: "Good", "Check" or "Problem".
+    in property <string> word: "";
+    // The verdict as one plain sentence; the badge's tooltip and the popover's first line.
+    in property <string> headline: "";
+    // The reasons, worst first. Empty for Good.
+    in property <[VerdictReasonData]> reasons: [];
+    // The design changed since this verdict was worked out (an edit, or a solve still
+    // running). The old verdict stays on screen, dimmed, and its Fix buttons wait.
+    in property <bool> stale: false;
+    // A fix is being planned or applied; a second one has to wait.
+    in property <bool> busy: false;
+    // The popover is open (the badge opens it, `app.slint` mounts it).
+    in-out property <bool> open: false;
+
+    // The Fix button of reason `index` was pressed. The Rust side asks for a confirmation
+    // where the fix removes something, plans the fix, applies it as one undo step and says
+    // what it did in a toast.
+    callback fix-reason(int);
+    // "Show": select tier row `tier` and open the inspector's Tier tab.
+    callback show-tier(int);
+
+    // The color for a level (the badge, the dots in the popover).
+    public pure function level-color(code: int) -> color {
+        return code >= 2 ? Theme.accent-ruby : (code == 1 ? Theme.accent-amber : Theme.accent-emerald);
+    }
+}
+
+// The header's verdict badge: a small chip with a dot and ONE word (Good, Check or Problem)
+// in the level's color. A click opens the popover with the reasons. The caller mounts it only
+// while `VerdictModel.level >= 0`. Dimmed while the design has changed since the verdict was
+// worked out (`VerdictModel.stale`).
+export component VerdictBadge inherits Rectangle {
+    property <color> tone: VerdictModel.level-color(VerdictModel.level);
+    // What the tooltip says: the verdict as a sentence, that it is out of date when the
+    // design changed since, and how to see the reasons.
+    property <string> tip-text: VerdictModel.headline
+        + (VerdictModel.stale ? " This is out of date: the design changed since it was checked." : "")
+        + " Click to see the reasons and the Fix buttons.";
+
+    width: badge-layout.preferred-width;
+    height: 22px;
+    border-radius: Theme.radius-sm;
+    background: badge-touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+    border-width: 1px;
+    border-color: root.tone;
+    opacity: VerdictModel.stale ? 0.6 : 1.0;
+    accessible-role: button;
+    accessible-label: "Overall Verdict: " + VerdictModel.word;
+    accessible-description: root.tip-text;
+
+    badge-layout := HorizontalLayout {
+        padding-left: 7px;
+        padding-right: 7px;
+        spacing: 5px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.tone;
+            }
+        }
+        Text {
+            text: VerdictModel.word;
+            font-size: 10px;
+            font-weight: 700;
+            color: root.tone;
+            vertical-alignment: center;
+        }
+    }
+
+    badge-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { VerdictModel.open = !VerdictModel.open; }
+    }
+
+    Tooltip { text: @markdown("\{root.tip-text}"); }
+}
+
+// A small text button for the popover's "Show" and "Fix"; an inactive one is dimmed, ignores
+// clicks and says why in its tooltip.
+component VerdictAction inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: true;
+    in property <bool> primary: false;
+    // The tooltip: what the button does, or why it waits.
+    in property <string> hint;
+    callback clicked();
+
+    height: 22px;
+    width: max(44px, action-label.preferred-width + 18px);
+    border-radius: Theme.radius-sm;
+    opacity: root.active ? 1.0 : 0.45;
+    background: root.primary
+        ? Theme.accent-cyan
+        : (action-touch.has-hover && root.active ? Theme.bg-elevated : Theme.bg-input);
+    border-width: 1px;
+    border-color: root.primary ? Theme.accent-cyan : Theme.border-medium;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-enabled: root.active;
+
+    action-label := Text {
+        text: root.label;
+        font-size: 10px;
+        font-weight: 700;
+        color: root.primary ? Theme.bg-darkest : Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    action-touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: root.active ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+}
+
+// The popover the badge opens: the verdict as one sentence, then every reason with a "Show"
+// (select the tier it is about) and a "Fix" (the safe tool, one undo step). `app.slint`
+// sizes and places it; `height-limit` caps its height so a long list scrolls.
+export component VerdictPopover inherits Rectangle {
+    in property <length> height-limit: 400px;
+
+    // Why a Fix waits, for the tooltip of a dimmed button; "" when it may run.
+    property <string> fix-wait-hint: !GuideModel.allows-tier-table()
+        ? GuideModel.locked-hint
+        : (VerdictModel.stale
+            ? "The design changed since this was checked. The verdict updates when the solve finishes."
+            : (VerdictModel.busy ? "Another fix is still running." : ""));
+    property <bool> fix-ready: root.fix-wait-hint == "";
+
+    height: min(outer.preferred-height, root.height-limit);
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-medium;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Theme.toast-shadow;
+    drop-shadow-offset-y: 6px;
+    clip: true;
+
+    // Swallows clicks on the popover itself so the click-away layer behind it stays out of it.
+    TouchArea {}
+
+    Flickable {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        content-height: outer.preferred-height;
+
+        outer := VerticalLayout {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: self.preferred-height;
+            padding: 16px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "Overall Verdict";
+                    font-size: 13px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: VerdictModel.word;
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: VerdictModel.level-color(VerdictModel.level);
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                // Room for the close button, which sits above the Flickable (see below).
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                }
+            }
+
+            // The verdict as one plain sentence; the word beside the title carries the level.
+            Text {
+                text: VerdictModel.headline;
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+
+            if VerdictModel.stale: Text {
+                text: "Out of date: the design changed. This updates when the solve finishes.";
+                font-size: 10px;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+
+            if VerdictModel.reasons.length == 0: Text {
+                text: "Nothing to fix.";
+                font-size: 11px;
+                color: Theme.text-muted;
+            }
+
+            for r[idx] in VerdictModel.reasons: VerticalLayout {
+                spacing: 4px;
+
+                // Dot and wrapped text are placed by hand inside a Rectangle sized to the
+                // text's wrapped height (a wrapped Text in a HorizontalLayout reports a
+                // one-line height).
+                Rectangle {
+                    height: reason-text.preferred-height;
+                    accessible-role: text;
+                    accessible-label: (r.level >= 2 ? "Problem: " : (r.level == 1 ? "Check: " : "Good: ")) + r.text;
+                    Rectangle {
+                        x: 0px;
+                        y: 3px;
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: VerdictModel.level-color(r.level);
+                    }
+                    reason-text := Text {
+                        x: 14px;
+                        y: 0px;
+                        width: parent.width - 14px;
+                        text: r.text;
+                        font-size: 11px;
+                        color: Theme.text-primary;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if r.tier >= 0 || r.fix-label != "": HorizontalLayout {
+                    padding-left: 14px;
+                    spacing: 6px;
+                    alignment: start;
+
+                    if r.tier >= 0: VerdictAction {
+                        label: "Show";
+                        hint: "Select this tier in the tier table.";
+                        clicked => {
+                            VerdictModel.show-tier(r.tier);
+                            VerdictModel.open = false;
+                        }
+                    }
+
+                    if r.fix-label != "": VerdictAction {
+                        label: r.fix-label;
+                        primary: root.fix-ready;
+                        active: root.fix-ready;
+                        hint: root.fix-ready ? (r.fix-hint + " One undo step.") : root.fix-wait-hint;
+                        clicked => {
+                            VerdictModel.open = false;
+                            VerdictModel.fix-reason(idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The close button, outside the Flickable: a tap inside the Flickable's content did not
+    // reach a TouchArea this small in the browser (the Show/Fix buttons there do work).
+    Rectangle {
+        x: parent.width - 16px - self.width;
+        y: 16px;
+        width: 24px;
+        height: 24px;
+        border-radius: 12px;
+        background: close-touch.has-hover ? Theme.overlay-hover : transparent;
+        accessible-role: button;
+        accessible-label: "Close the Verdict";
+        Text {
+            text: "\u{00D7}";
+            font-size: 16px;
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        close-touch := TouchArea {
+            clicked => { VerdictModel.open = false; }
+        }
+    }
+}

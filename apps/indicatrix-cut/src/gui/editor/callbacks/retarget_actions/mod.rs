@@ -95,7 +95,8 @@ pub(in crate::gui::editor) use proposal::{
     setup_retarget_open_callback, setup_retarget_proposal_changed_callback,
 };
 pub(in crate::gui::editor) use snapshot::{
-    hold_reference_snapshot, original_for_compare, setup_snapshot_callbacks, snapshot_for_compare,
+    hold_reference_snapshot, original_for_compare, release_window_state as release_snapshot,
+    setup_snapshot_callbacks, snapshot_for_compare,
 };
 
 use super::super::{

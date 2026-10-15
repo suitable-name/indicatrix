@@ -12,6 +12,10 @@
 //!    keeps the result when it is not wider than the median-cut one;
 //! 4. replaces every cluster by one record at its weighted mean length with the summed weight.
 //!
+//! The per-channel colour of the light (`PathRecord::chroma`, ZC-13) is merged so that the
+//! weight of every colour channel (`weight * chroma[c]`) is preserved as well: a cluster's chroma
+//! is the weight-averaged chroma of its members. The colour plays no part in the clustering.
+//!
 //! Total weight and the weighted first moment of every zone length are preserved exactly. The
 //! second moment is not stored: a cluster whose zone-length range is `r` has a transmittance
 //! error of about `(alpha r / 2)^2 / 2` (relative) for the absorption `alpha`, so the tolerance
@@ -27,6 +31,8 @@ use super::records::{LENGTHS, PathRecord};
 struct Point {
     len: [f32; LENGTHS],
     weight: f64,
+    /// `weight * chroma[c]` per channel.
+    colour: [f64; 3],
 }
 
 fn lexicographic(a: &[f32; LENGTHS], b: &[f32; LENGTHS]) -> Ordering {
@@ -58,6 +64,29 @@ fn widest(cluster: &[Point], dims: usize) -> (f32, usize) {
 
 fn weight_of(cluster: &[Point]) -> f64 {
     cluster.iter().map(|p| p.weight).sum()
+}
+
+/// The weight-averaged chroma of a cluster; `[1; 3]` for a cluster without weight.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the record storage precision; chromaticity ratios are in 0..~1"
+)]
+fn chroma_of(cluster: &[Point]) -> [f32; 3] {
+    let total = weight_of(cluster);
+    if total <= 0.0 {
+        return [1.0; 3];
+    }
+    let mut sum = [0.0_f64; 3];
+    for p in cluster {
+        for (s, &c) in sum.iter_mut().zip(&p.colour) {
+            *s += c;
+        }
+    }
+    [
+        (sum[0] / total) as f32,
+        (sum[1] / total) as f32,
+        (sum[2] / total) as f32,
+    ]
 }
 
 /// Median-cut: splits the most important cluster wider than `tolerance` until none is or
@@ -177,16 +206,40 @@ pub fn compress(
         return 0.0;
     }
     let dims = dims.clamp(1, LENGTHS);
+    // Ties on the lengths and the weight are broken by the chroma, so the sum order of the merge
+    // below (and with it the result) never depends on the order the samples came in.
     raw.sort_by(|a, b| {
-        lexicographic(&a.lengths, &b.lengths).then_with(|| a.weight.total_cmp(&b.weight))
+        lexicographic(&a.lengths, &b.lengths)
+            .then_with(|| a.weight.total_cmp(&b.weight))
+            .then_with(|| {
+                a.chroma
+                    .iter()
+                    .zip(&b.chroma)
+                    .map(|(x, y)| x.total_cmp(y))
+                    .find(|order| order.is_ne())
+                    .unwrap_or(Ordering::Equal)
+            })
     });
     let mut points: Vec<Point> = Vec::new();
     for r in &*raw {
+        let weight = f64::from(r.weight);
+        let colour = r.chroma.map(|c| weight * f64::from(c));
+        #[expect(
+            clippy::float_cmp,
+            reason = "samples are merged only when their sampled path lengths are bit-identical; the sort above makes equal keys adjacent"
+        )]
+        let same_as_last = points.last().is_some_and(|last| last.len == r.lengths);
         match points.last_mut() {
-            Some(last) if last.len == r.lengths => last.weight += f64::from(r.weight),
+            Some(last) if same_as_last => {
+                last.weight += weight;
+                for (total, c) in last.colour.iter_mut().zip(colour) {
+                    *total += c;
+                }
+            }
             _ => points.push(Point {
                 len: r.lengths,
-                weight: f64::from(r.weight),
+                weight,
+                colour,
             }),
         }
     }
@@ -203,13 +256,18 @@ pub fn compress(
     }
     for cluster in &clusters {
         let centre = centroid(cluster);
-        let mut lengths = [0.0_f32; LENGTHS];
-        for d in 0..LENGTHS {
-            lengths[d] = centre[d] as f32;
-        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the record storage precision; path lengths and weights are in the normal float range"
+        )]
+        let (lengths, weight32): ([f32; LENGTHS], f32) = (
+            std::array::from_fn(|d| centre[d] as f32),
+            weight_of(cluster) as f32,
+        );
         out.push(PathRecord {
             lengths,
-            weight: weight_of(cluster) as f32,
+            weight: weight32,
+            chroma: chroma_of(cluster),
         });
     }
     extent

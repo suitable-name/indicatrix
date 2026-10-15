@@ -1,9 +1,10 @@
-//! Cataloguing a self-contained `.indicatrix` design file: recognising its attachment
+//! Cataloguing a self-contained `.isdd` design file (or one saved as `.indicatrix`
+//! before; both are read the same way): recognising its attachment
 //! by name and turning one into the entry and detail rows a library import stores.
 //!
 //! The file carries the whole design, so a standalone one needs no `.asc` beside it;
 //! the angle-settings table and header metadata are read from its own tiers and
-//! schedule table. A `.indicatrix` file next to a `.asc`/`.gem`/`.gcs` is attached to
+//! schedule table. A design file next to a `.asc`/`.gem`/`.gcs` is attached to
 //! that design instead (see `design_attachment_position` for the cutting-instructions
 //! file the other readers use).
 
@@ -12,15 +13,16 @@ use crate::{db::sqlite::Database, model::file::AttachedFile};
 use indicatrix_formats::{
     asc::{AscLineEnding, AscSchedule, AscTier},
     native::design::{
-        self, AttachmentBlob, AttachmentRole, DESIGN_EXTENSION, DesignFile, DesignMetadata,
+        self, AttachmentBlob, AttachmentRole, DESIGN_READ_EXTENSIONS, DesignFile, DesignMetadata,
         attachment_blobs,
     },
 };
 use std::path::Path;
 
-/// `true` when `file_name` names a self-contained design file: its last extension is
-/// `indicatrix`, compared case-insensitively. A `name.indicatrix.toml` overlay sidecar
-/// is not one.
+/// `true` when `file_name` names a self-contained design file.
+///
+/// Its last extension is `isdd` or the earlier `indicatrix`, compared case-insensitively. A
+/// `name.indicatrix.toml` name (the removed overlay sidecar) is not one.
 #[must_use]
 pub fn is_native_design_name(file_name: &str) -> bool {
     design::is_design_path(Path::new(file_name))
@@ -198,7 +200,24 @@ pub fn apply_imported_extras(
     Ok(())
 }
 
-/// Parses one `.indicatrix` file's `bytes` into an [`ImportedAsc`] ready to save into
+/// `file_name` without its design extension (`.isdd` or `.indicatrix`, compared
+/// case-insensitively); the whole name when it ends in neither.
+fn design_file_stem(file_name: &str) -> &str {
+    DESIGN_READ_EXTENSIONS
+        .iter()
+        .find_map(|extension| {
+            let suffix = format!(".{extension}");
+            file_name
+                .len()
+                .checked_sub(suffix.len())
+                .filter(|&at| file_name.is_char_boundary(at))
+                .filter(|&at| file_name[at..].eq_ignore_ascii_case(&suffix))
+                .map(|at| &file_name[..at])
+        })
+        .unwrap_or(file_name)
+}
+
+/// Parses one design file's (`.isdd` or `.indicatrix`) `bytes` into an [`ImportedAsc`] ready to save into
 /// the local library, with the file itself as its first attachment.
 ///
 /// The `[meta]` table and the `[[attachments]]` fill the row through
@@ -219,13 +238,7 @@ pub fn import_native_design(file_name: &str, bytes: &[u8]) -> Result<ImportedAsc
         .map_err(|e| format!("the design file is not UTF-8 text: {e}"))?;
     let file = design::parse(text).map_err(|e| e.to_string())?;
     let schedule = schedule_of(&file);
-    let suffix = format!(".{DESIGN_EXTENSION}");
-    let stem = file_name
-        .len()
-        .checked_sub(suffix.len())
-        .filter(|&at| file_name.is_char_boundary(at))
-        .filter(|&at| file_name[at..].eq_ignore_ascii_case(&suffix))
-        .map_or(file_name, |at| &file_name[..at]);
+    let stem = design_file_stem(file_name);
     let mut imported = catalogue_rows(
         file_name,
         stem,
@@ -313,50 +326,76 @@ mod tests {
 
     #[test]
     fn names_are_recognised_by_their_last_extension() {
+        assert!(is_native_design_name("a.isdd"));
+        assert!(is_native_design_name("A.ISDD"));
+        // The earlier extension is still a design file.
         assert!(is_native_design_name("a.indicatrix"));
         assert!(is_native_design_name("A.INDICATRIX"));
+        // The removed overlay sidecar names and other files are not.
         assert!(!is_native_design_name("a.indicatrix.toml"));
+        assert!(!is_native_design_name("a.gemcut.toml"));
         assert!(!is_native_design_name("a.asc"));
         assert_eq!(
-            native_design_attachment_position(["a.asc", "a.indicatrix.toml", "a.indicatrix"]),
+            native_design_attachment_position(["a.asc", "a.indicatrix.toml", "a.isdd"]),
             Some(2)
         );
+        assert_eq!(
+            native_design_attachment_position(["a.asc", "a.indicatrix"]),
+            Some(1)
+        );
+        assert_eq!(
+            native_design_attachment_position(["a.asc", "a.indicatrix.toml"]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_legacy_indicatrix_file_imports_like_an_isdd_one() {
+        let text = sample_file_text();
+        let legacy = import_native_design("Legacy.indicatrix", text.as_bytes()).expect("imports");
+        let current = import_native_design("Legacy.isdd", text.as_bytes()).expect("imports");
+        assert_eq!(legacy.entry.title, current.entry.title);
+        assert_eq!(legacy.entry.url, "local://Legacy.indicatrix");
+        assert_eq!(current.entry.url, "local://Legacy.isdd");
+        assert_eq!(
+            legacy.detail.attached_files[0].name, "Legacy.indicatrix",
+            "the stored name is never rewritten"
+        );
+        assert_eq!(design_file_stem("Legacy.INDICATRIX"), "Legacy");
+        assert_eq!(design_file_stem("Legacy.Isdd"), "Legacy");
+        assert_eq!(design_file_stem("Legacy.asc"), "Legacy.asc");
     }
 
     #[test]
     fn a_standalone_design_file_becomes_a_catalogue_row_with_itself_attached() {
         let text = sample_file_text();
-        let imported =
-            import_native_design("brilliant.indicatrix", text.as_bytes()).expect("imports");
+        let imported = import_native_design("brilliant.isdd", text.as_bytes()).expect("imports");
         assert_eq!(imported.entry.title, "Stand-alone Brilliant");
-        assert_eq!(imported.entry.url, "local://brilliant.indicatrix");
+        assert_eq!(imported.entry.url, "local://brilliant.isdd");
         assert_eq!(imported.detail.angle_settings_table.len(), 1);
         assert_eq!(imported.detail.angle_settings_table[0].facet, "P1");
         assert_eq!(imported.detail.index_gear.as_deref(), Some("96"));
         assert_eq!(imported.detail.attached_files.len(), 1);
-        assert_eq!(
-            imported.detail.attached_files[0].name,
-            "brilliant.indicatrix"
-        );
+        assert_eq!(imported.detail.attached_files[0].name, "brilliant.isdd");
         assert_eq!(imported.detail.attached_files[0].content, text.as_bytes());
     }
 
     #[test]
     fn the_title_falls_back_to_the_file_stem() {
         let text = sample_file_text().replace("Stand-alone Brilliant", "");
-        let imported = import_native_design("Nameless.indicatrix", text.as_bytes()).expect("ok");
+        let imported = import_native_design("Nameless.isdd", text.as_bytes()).expect("ok");
         assert_eq!(imported.entry.title, "Nameless");
     }
 
     #[test]
     fn something_that_is_not_a_design_file_is_refused() {
-        assert!(import_native_design("x.indicatrix", b"not a design").is_err());
-        assert!(import_native_design("x.indicatrix", &[0xFF, 0xFE]).is_err());
+        assert!(import_native_design("x.isdd", b"not a design").is_err());
+        assert!(import_native_design("x.isdd", &[0xFF, 0xFE]).is_err());
     }
     #[test]
     fn meta_fills_the_row_and_the_derived_columns_still_come_from_the_tiers() {
         let text = design::to_string(&described_file()).expect("serializes");
-        let imported = import_native_design("capps.indicatrix", text.as_bytes()).expect("imports");
+        let imported = import_native_design("capps.isdd", text.as_bytes()).expect("imports");
         assert_eq!(imported.entry.title, "Capps Brilliant");
         assert_eq!(imported.entry.design_id, "cb-17");
         let detail = &imported.detail;
@@ -381,14 +420,14 @@ mod tests {
     #[test]
     fn every_attachment_is_kept_and_the_diagram_image_goes_to_the_image_fields() {
         let text = design::to_string(&described_file()).expect("serializes");
-        let imported = import_native_design("capps.indicatrix", text.as_bytes()).expect("imports");
+        let imported = import_native_design("capps.isdd", text.as_bytes()).expect("imports");
         let names: Vec<&str> = imported
             .detail
             .attached_files
             .iter()
             .map(|f| f.name.as_str())
             .collect();
-        assert_eq!(names, ["capps.indicatrix", "capps.pdf", "capps.asc"]);
+        assert_eq!(names, ["capps.isdd", "capps.pdf", "capps.asc"]);
         assert_eq!(imported.detail.attached_files[1].content, b"%PDF");
         assert_eq!(
             imported.detail.diagram_image_name.as_deref(),
@@ -403,7 +442,7 @@ mod tests {
     #[test]
     fn tags_are_sorted_and_deduplicated_in_the_extras() {
         let text = design::to_string(&described_file()).expect("serializes");
-        let imported = import_native_design("capps.indicatrix", text.as_bytes()).expect("imports");
+        let imported = import_native_design("capps.isdd", text.as_bytes()).expect("imports");
         assert_eq!(imported.extras.tags, ["a-tag", "b-tag"]);
         assert!(imported.extras.ignored && imported.extras.planner_excluded);
     }
@@ -411,7 +450,7 @@ mod tests {
     #[test]
     fn the_planner_exclusion_tags_and_ignored_mark_are_restored_on_the_saved_row() {
         let text = design::to_string(&described_file()).expect("serializes");
-        let imported = import_native_design("capps.indicatrix", text.as_bytes()).expect("imports");
+        let imported = import_native_design("capps.isdd", text.as_bytes()).expect("imports");
         let db = Database::new(Some(":memory:")).expect("in-memory db");
         let id = db
             .save_design(
@@ -438,7 +477,7 @@ mod tests {
     #[test]
     fn a_file_without_meta_imports_exactly_as_before() {
         let text = sample_file_text();
-        let imported = import_native_design("plain.indicatrix", text.as_bytes()).expect("imports");
+        let imported = import_native_design("plain.isdd", text.as_bytes()).expect("imports");
         assert_eq!(imported.extras, ImportedExtras::default());
         assert!(imported.detail.designer.is_none());
         assert!(imported.detail.diagram_image_data.is_none());

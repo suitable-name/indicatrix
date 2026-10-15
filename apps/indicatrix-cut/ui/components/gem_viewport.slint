@@ -1,6 +1,5 @@
 import { Theme } from "../theme.slint";
 import { LightingPresetItem } from "../types.slint";
-import { SettingsDialog } from "settings_dialog.slint";
 import { ExportDialog } from "export_dialog.slint";
 import { ExportModel } from "../models/export.slint";
 import { ViewportModel } from "../models/viewport.slint";
@@ -71,7 +70,7 @@ export component GemViewportView inherits Rectangle {
 
     // Viewport TouchArea for Orbit, Pan, Zoom with True Incremental Deltas
     touch_area := TouchArea {
-        enabled: !SettingsModel.is_open && !ViewportModel.material_editor_open && !TiltModel.dialog_open;
+        enabled: !ViewportModel.material_editor_open && !TiltModel.dialog_open;
 
         pointer-event(event) => {
             if (event.kind == PointerEventKind.down) {
@@ -212,12 +211,16 @@ export component GemViewportView inherits Rectangle {
         alignment: center;
         spacing: 12px;
 
-        Image {
-            source: @image-url("../icons/gem.svg");
-            colorize: Theme.text-muted;
-            width: 56px;
-            height: 56px;
-            horizontal-alignment: center;
+        // Centred by a layout of its own: a fixed-size Image in the column sits at the left of
+        // its cell (`horizontal-alignment` only places the picture inside the Image).
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../icons/gem.svg");
+                colorize: Theme.text-muted;
+                width: 56px;
+                height: 56px;
+            }
         }
 
         Text {
@@ -234,12 +237,14 @@ export component GemViewportView inherits Rectangle {
         alignment: center;
         spacing: 12px;
 
-        Image {
-            source: @image-url("../icons/gem.svg");
-            colorize: Theme.text-muted;
-            width: 56px;
-            height: 56px;
-            horizontal-alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../icons/gem.svg");
+                colorize: Theme.text-muted;
+                width: 56px;
+                height: 56px;
+            }
         }
 
         Text {
@@ -292,7 +297,7 @@ export component GemViewportView inherits Rectangle {
 
             ModePill {
                 width: 110px;
-                text: "Path-traced";
+                text: "Path-Traced";
                 hint: "The realistic picture: a spectral path tracer follows light through the stone. Turns the graphics-card or remote tracer on for this design.";
                 selected: ViewportModel.live_view_mode == 1;
                 picked => { ViewportModel.live_view_mode = 1; }
@@ -326,10 +331,30 @@ export component GemViewportView inherits Rectangle {
                 // `GemViewportToolbarActions`'s own doc comment
                 // (`gem_viewport/toolbar_actions.slint`) for why this is split out.
                 // `compact` drops the labels that only decorate an icon or a toggle.
-                // 1100 px, not 1000: the colour pill added about 80 px to the full-width
+                // 1180 px, not 1100: the colour pill added about 80 px to the full-width
                 // row (the least it needs is about 1060 px with a colour readout showing),
-                // so the labels drop earlier.
-                GemViewportToolbarActions { compact: root.width < 1100px; }
+                // and the Parameters dock's three buttons in place of the one gear another
+                // 64 px plus gaps, so the labels drop earlier. This is the VIEWPORT's width,
+                // which the docked Parameters panel narrows by its own.
+                // `wrap`: the row needs about 800px inside the 12px padding (Advanced mode, all
+                // pills showing) -- 824px of viewport -- so from 860px of viewport it is one row;
+                // narrower, pause / the Parameters buttons / Export drop to a second row instead
+                // of being clipped. The left row then needs about 570px, and `app.slint` never
+                // docks the Parameters panel beside a viewport narrower than 700px.
+                //
+                // The amber "Previewing <material>" badge (about 220px compact, 290px full: name +
+                // "Back to design" button) sits in the FIRST row while the row is single, so both
+                // thresholds grow while it shows: `wrap` by 230px (compact single row: 825 + 230 =
+                // 1055px, threshold 1090px) and `compact` by the badge's full 290px (the full row's
+                // 1060px least plus 290px = 1350px against 1180 + 290 = 1470px, keeping the 120px
+                // slack the row has without the badge). Once the tail wraps, the badge moves
+                // to the second row beside the tail, so the left row keeps its 570px need and the
+                // 700px docking minimum. (The "Color data updated" badge only shows in the full row,
+                // whose 1060px figure already counts it.)
+                GemViewportToolbarActions {
+                    compact: root.width < 1180px + (ViewportModel.previewing ? 290px : 0px);
+                    wrap: root.width < 860px + (ViewportModel.previewing ? 230px : 0px);
+                }
             }
         }
 
@@ -351,7 +376,7 @@ export component GemViewportView inherits Rectangle {
                 border-color: hud_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-medium;
 
                 accessible-role: AccessibleRole.button;
-                accessible-label: "Copy the five gemological numbers";
+                accessible-label: "Copy the Five Gemological Numbers";
                 accessible-description: "Brilliance " + Math.round(ViewportModel.brilliance_pct) + " percent, scintillation " + Math.round(ViewportModel.scintillation_pct) + " percent, windowing " + Math.round(ViewportModel.windowing_pct) + " percent, extinction " + Math.round(ViewportModel.extinction_pct) + " percent.";
                 accessible-action-default => { ViewportModel.copy_metrics(); }
 
@@ -368,7 +393,7 @@ export component GemViewportView inherits Rectangle {
                     mouse-cursor: pointer;
                     clicked => { ViewportModel.copy_metrics(); }
                 }
-                Tooltip { text: @markdown("Click to copy these five numbers. **Brilliance**: the share of light returned to the eye. **Fire**: how much rainbow colour the stone throws. **Scintillation**: sparkle as the light or stone moves. **Windowing**: the share of the face that looks see-through. **Extinction**: the share that looks dead dark. See the glossary."); }
+                Tooltip { text: @markdown("Click to copy these five numbers. **Brilliance**: the share of light returned to the eye. **Fire**: how much rainbow color the stone throws. **Scintillation**: sparkle as the light or stone moves. **Windowing**: the share of the face that looks see-through. **Extinction**: the share that looks dead dark. See the glossary."); }
 
                 HorizontalLayout {
                     padding-left: 10px;
@@ -427,7 +452,12 @@ export component GemViewportView inherits Rectangle {
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
-                    Image { source: @image-url("../icons/mouse.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; vertical-alignment: center; }
+                    // Centred by a layout of its own: a fixed-size Image in the row sits at the
+                    // top of its cell (`vertical-alignment` only places the picture inside the Image).
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("../icons/mouse.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; }
+                    }
                     Text { text: "Left Drag: 360° Gem Orbit"; font-size: 10px; font-weight: 600; color: Theme.hint-text; vertical-alignment: center; }
                 }
             }
@@ -439,7 +469,10 @@ export component GemViewportView inherits Rectangle {
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
-                    Image { source: @image-url("../icons/lightbulb.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("../icons/lightbulb.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; }
+                    }
                     Text { text: "Right / Shift+Drag: Move Light"; font-size: 10px; font-weight: 600; color: Theme.hint-text; vertical-alignment: center; }
                 }
             }
@@ -451,7 +484,10 @@ export component GemViewportView inherits Rectangle {
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
-                    Image { source: @image-url("../icons/search.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("../icons/search.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; }
+                    }
                     Text { text: "Scroll: Zoom"; font-size: 10px; font-weight: 600; color: Theme.hint-text; vertical-alignment: center; }
                 }
             }
@@ -465,37 +501,19 @@ export component GemViewportView inherits Rectangle {
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
-                    Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; }
+                    }
                     Text { text: "Click HUD: Copy Metrics"; font-size: 10px; font-weight: 600; color: Theme.hint-text; vertical-alignment: center; }
                 }
             }
         }
     }
 
-    // --- MODAL BACKDROP FOR SETTINGS DIALOG ---
-    if SettingsModel.is_open: Rectangle {
-        width: 100%;
-        height: 100%;
-        background: Theme.scrim-light;
-        z: 150;
-
-        TouchArea {
-            clicked => { SettingsModel.is_open = false; }
-        }
-    }
-
-    // --- FLOATING SETTINGS DIALOG CARD ---
-    // `y` pushed down from its old `48px` by the new mode-toggle pill row above the
-    // toolbar (28px tall, plus the 8px `VerticalLayout` spacing now separating it from
-    // the toolbar) -- otherwise this card would open underneath/overlapping that row.
-    // In Path-traced mode the metrics HUD row (about 26px + the 8px layout spacing)
-    // sits under the toolbar too, so the card drops below it.
-    if SettingsModel.is_open: SettingsDialog {
-        x: 12px;
-        y: 84px + (ViewportModel.live_view_mode == 1 ? 36px : 0px);
-        z: 200;
-        available_height: root.height;
-    }
+    // The Rendering Settings card that used to open here is the Parameters dock now: beside this
+    // viewport (`app.slint`), with Stone, Lighting & Environment and Render & Output tabs. The
+    // toolbar's three buttons open it (`GemViewportToolbarActions`).
 
     // The gem material editor and the tilt-performance chart are mounted at window size
     // in `GlobalDialogsOverlay` (`components/app/global_dialogs.slint`), not here.

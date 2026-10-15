@@ -175,9 +175,8 @@ fn queue_request(
             now,
         )
     };
-    // Zoning builds: a zoned stone's zones travel beside the job (the frozen scene carries none).
+    // A zoned stone's zones travel beside the job (the frozen scene carries none).
     // If they cannot be stored the job is removed again rather than queued without its colour.
-    #[cfg(feature = "zoning")]
     let stored = stored.and_then(|job_id| {
         let db = deps
             .db

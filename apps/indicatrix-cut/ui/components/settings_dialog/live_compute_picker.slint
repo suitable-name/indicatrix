@@ -4,29 +4,39 @@ import { RemoteWorkerModel } from "../../models/remote_worker.slint";
 import { SegmentPill } from "../pill_button.slint";
 import { ToggleRow } from "../toggle_switch.slint";
 import { SettingLabel } from "setting_label.slint";
+import { TextLink } from "../parameters_panel/parts.slint";
 
 // Live Compute: which engine(s) trace the settled viewport image. Same
 // segmented-pill idiom, and the same disabled-with-a-reason treatment, as
 // `export_dialog.slint`'s "Compute" section. Advanced: Simple mode hides it
-// (`settings_dialog.slint`).
+// (`render_output_tab.slint`).
+//
+// The remote choices read the `configured` half of the one remote-availability value
+// (`RemoteWorkerModel.availability`): the live view does not probe, so it never blames
+// reachability. Rust supplies the reason text (`RemoteWorkerModel.availability_reason`).
+//
+// How the remote's share comes home (progressive, full data when finished, or finished
+// pictures) is one control per remote: it lives in the Remote Coordinator dialog, and this
+// section shows the current choice read-only.
 export component LiveComputePicker inherits VerticalLayout {
-    // Explanatory text shown when no remote worker is available; empty falls
-    // back to a generic "No remote worker is configured." message below.
-    in property <string> unavailable_reason: "";
-    // The Live Transfer pills only mean something with a remote in the loop.
-    property <bool> transfer_enabled: RemoteWorkerModel.live_remote_available && SettingsModel.live_compute_target_index != 0;
+    // The merged live transfer, by its index (`RemoteWorkerModel.endpoint.transfer_mode_index`
+    // carries the same number): 0 progressive full data, 1 full data when finished, 2 finished
+    // pictures.
+    property <string> transfer_name: SettingsModel.live_transfer_index == 2
+        ? "Final picture (finished, denoised frames)"
+        : (SettingsModel.live_transfer_index == 1 ? "Full data, sent when finished" : "Full data, progressive");
 
     spacing: 6px;
     SettingLabel {
         text: "Live Compute";
-        hint: "Live Compute: which computer traces the settled picture in the Live Render view. Local only uses this computer, Remote only hands the picture to the remote worker, and Local + Remote uses both.";
+        hint: "Live Compute: which computer traces the settled picture in the Live Render view. Local Only uses this computer, Remote Only hands the picture to the remote worker, and Local + Remote uses both.";
     }
 
     HorizontalLayout {
         spacing: 4px;
 
         SegmentPill {
-            text: "Local only";
+            text: "Local Only";
             hint: "Trace the live picture on this computer only.";
             selected: SettingsModel.live_compute_target_index == 0;
             picked => {
@@ -36,11 +46,11 @@ export component LiveComputePicker inherits VerticalLayout {
         }
 
         SegmentPill {
-            text: "Remote only";
-            hint: RemoteWorkerModel.live_remote_available
+            text: "Remote Only";
+            hint: RemoteWorkerModel.availability.configured
                 ? "Hand the whole live picture to the remote worker."
-                : "Needs a remote worker. None is available right now.";
-            enabled: RemoteWorkerModel.live_remote_available;
+                : "Needs a remote worker. " + RemoteWorkerModel.availability_reason;
+            enabled: RemoteWorkerModel.availability.configured;
             selected: SettingsModel.live_compute_target_index == 1;
             picked => {
                 SettingsModel.live_compute_target_index = 1;
@@ -50,10 +60,10 @@ export component LiveComputePicker inherits VerticalLayout {
 
         SegmentPill {
             text: "Local + Remote";
-            hint: RemoteWorkerModel.live_remote_available
+            hint: RemoteWorkerModel.availability.configured
                 ? "Trace the live picture on this computer and on the remote worker together."
-                : "Needs a remote worker. None is available right now.";
-            enabled: RemoteWorkerModel.live_remote_available;
+                : "Needs a remote worker. " + RemoteWorkerModel.availability_reason;
+            enabled: RemoteWorkerModel.availability.configured;
             selected: SettingsModel.live_compute_target_index == 2;
             picked => {
                 SettingsModel.live_compute_target_index = 2;
@@ -62,58 +72,60 @@ export component LiveComputePicker inherits VerticalLayout {
         }
     }
 
-    if !RemoteWorkerModel.live_remote_available: Text {
-        text: root.unavailable_reason == "" ? "No remote coordinator is configured." : root.unavailable_reason;
+    if !RemoteWorkerModel.availability.configured: Text {
+        text: RemoteWorkerModel.availability_reason == "" ? "No remote coordinator is configured." : RemoteWorkerModel.availability_reason;
         font-size: 11px;
         color: Theme.text-muted;
         wrap: word-wrap;
     }
 
-    if RemoteWorkerModel.live_remote_available: Text {
-        text: "Once the camera settles, Local + Remote lets both engines keep tracing the same image together for a faster converge; Remote only hands the whole image to the remote.";
+    if RemoteWorkerModel.availability.configured: Text {
+        text: "Once the camera settles, Local + Remote lets both engines keep tracing the same image together for a faster converge; Remote Only hands the whole image to the remote.";
         font-size: 11px;
         color: Theme.text-muted;
         wrap: word-wrap;
     }
 
-    // Live transfer: how the remote's contribution comes home.
-    // Meaningless for "Local only" and without a remote, so disabled (not hidden)
-    // then, the same treatment the Remote pills above get.
-    SettingLabel {
-        text: "Live Transfer";
-        hint: "Live Transfer: how the remote worker sends its share back. Full data sends the raw samples, which combine with your own. Final picture sends only finished, denoised frames.";
-    }
-
-    HorizontalLayout {
-        spacing: 4px;
-        for label[idx] in ["Full data", "Final picture"]: SegmentPill {
-            text: label;
-            hint: idx == 0
-                ? "The remote sends its raw samples, so they combine with the ones traced here."
-                : "The remote sends finished, denoised frames. Less data travels, but this computer pauses its own tracing after the handoff.";
-            enabled: root.transfer_enabled;
-            selected: SettingsModel.live_transfer_index == idx;
-            picked => {
-                SettingsModel.live_transfer_index = idx;
-                SettingsModel.live_transfer_changed(idx);
-            }
+    // Live transfer, read-only: one setting per remote (the old "Live stream" and "Live
+    // transfer" controls were merged), edited in the Remote Coordinator dialog. Only meaningful
+    // with a remote in the loop, so it is shown only then.
+    if RemoteWorkerModel.availability.configured && SettingsModel.live_compute_target_index != 0: VerticalLayout {
+        spacing: 2px;
+        SettingLabel {
+            text: "Live Transfer";
+            hint: "Live Transfer: how the remote worker sends its share back while you look at the stone. Progressive shows the picture improving; Full Data When Finished waits for the result; Final Picture sends only finished, denoised frames, so your own tracing pauses after the handoff. Change it in the Remote Coordinator dialog (header, Remote).";
         }
-    }
-
-    Text {
-        text: "Final picture: the server sends finished, denoised frames -- less bandwidth, but your own GPU/CPU pauses after the handoff; results can't be combined.";
-        font-size: 11px;
-        color: Theme.text-muted;
-        wrap: word-wrap;
+        Text {
+            text: root.transfer_name;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: "Set per remote.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            TextLink {
+                text: "Open Remote Settings...";
+                hint: "Open the Remote Coordinator dialog (the Remote button in the header), where the live transfer is chosen for the remote.";
+                clicked => { RemoteWorkerModel.open_dialog(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
     }
 
     // v16: final-picture EXPORTS (the still export and tilt videos, not the live
     // viewport above) can fold this machine's own idle samples into the remote's --
-    // same switch idiom as `settings_dialog.slint`'s "Frosted Girdle" toggle.
+    // same switch idiom as the Stone tab's "Frosted Girdle" toggle.
     ToggleRow {
-        text: "Final-picture exports: this machine renders a share too";
+        text: "Final-Picture Exports: This Machine Renders a Share Too";
         hint: "Your GPU or CPU traces part of the samples and uploads them; the coordinator merges them before tone-mapping.";
-        enabled: RemoteWorkerModel.live_remote_available;
+        enabled: RemoteWorkerModel.availability.configured;
         checked: SettingsModel.contribute_to_final_picture;
         toggled => {
             SettingsModel.contribute_to_final_picture = !SettingsModel.contribute_to_final_picture;

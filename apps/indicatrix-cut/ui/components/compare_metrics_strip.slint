@@ -120,10 +120,10 @@ export component CompareMetricsStrip inherits Rectangle {
             if root.has_rows && !CompareModel.tilt_done: HorizontalLayout {
                 alignment: start;
 
-                if CompareModel.tilt_running: ActionButton {
+                if CompareModel.tilt_running: action-button-tilt-progress := ActionButton {
                     width: 220px;
                     height: 24px;
-                    text: "Cancel tilt average · " + Math.round(CompareModel.tilt_progress * 100) + " %";
+                    text: "Cancel Tilt Average · " + Math.round(CompareModel.tilt_progress * 100) + " %";
                     hint: "Stop measuring the tilt average. The table-up figures stay.";
                     fill: Theme.surface-control;
                     hover_fill: Theme.surface-control-hover;
@@ -133,7 +133,7 @@ export component CompareMetricsStrip inherits Rectangle {
                 if !CompareModel.tilt_running: ActionButton {
                     width: 120px;
                     height: 24px;
-                    text: "Tilt average";
+                    text: "Tilt Average";
                     hint: "Measure both stones over four tilt axes and 181 tilts. It takes a few seconds on a background thread and adds three rows to the table.";
                     fill: Theme.surface-control;
                     hover_fill: Theme.surface-control-hover;

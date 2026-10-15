@@ -153,6 +153,7 @@ pub fn resolve_after_edit(
         | Edit::SetPreformYOffset { .. }
         | Edit::SetGirdleDiameterMm { .. }
         | Edit::SetMaterial { .. }
+        | Edit::SetRenderEffects { .. }
         | Edit::SetMeta { .. }
         | Edit::SetCheaterOffset { .. }
         | Edit::SetTierNote { .. }
@@ -251,6 +252,7 @@ fn batch_needs_full_resolve(
             | Edit::SetPreformYOffset { .. }
             | Edit::SetGirdleDiameterMm { .. }
             | Edit::SetMaterial { .. }
+            | Edit::SetRenderEffects { .. }
             | Edit::SetMeta { .. }
             | Edit::SetCheaterOffset { .. }
             | Edit::SetTierNote { .. }

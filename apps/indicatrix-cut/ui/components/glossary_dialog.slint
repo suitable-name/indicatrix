@@ -1,4 +1,5 @@
-import { ScrollView, LineEdit } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { SearchInput } from "search_input.slint";
 import { Theme } from "../theme.slint";
 import { HelpModel, HelpTopics } from "../models/help.slint";
 import { HelpToolButton, HelpButton } from "help_button.slint";
@@ -13,7 +14,7 @@ export component GlossaryDialog inherits Rectangle {
     background: Theme.overlay-backdrop;
 
     // The search box takes the keyboard as soon as the dialog opens.
-    init => { glossary_search.focus(); }
+    init => { glossary_search.focus-input(); }
 
     TouchArea {
         clicked => { HelpModel.glossary_open = false; }
@@ -90,19 +91,23 @@ export component GlossaryDialog inherits Rectangle {
                     spacing: 6px;
                     alignment: stretch;
 
-                    Image {
-                        source: @image-url("../icons/search.svg");
-                        colorize: Theme.text-muted;
-                        width: 12px;
-                        height: 12px;
+                    // Centred by a layout of its own: a fixed-size Image in the row sits at the
+                    // top of its cell.
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../icons/search.svg");
+                            colorize: Theme.text-muted;
+                            width: 12px;
+                            height: 12px;
+                        }
                     }
 
-                    glossary_search := LineEdit {
-                        min-width: 0px;
+                    glossary_search := SearchInput {
                         horizontal-stretch: 1;
                         text <=> HelpModel.glossary_query;
                         placeholder-text: "Search the terms";
-                        accessible-label: "Search the terms";
+                        accessible-label: "Search the Terms";
                         edited => { HelpModel.glossary_search(self.text); }
                     }
 
@@ -115,7 +120,7 @@ export component GlossaryDialog inherits Rectangle {
                         border-color: Theme.accent-cyan-hover;
 
                         accessible-role: AccessibleRole.button;
-                        accessible-label: "Clear the search";
+                        accessible-label: "Clear the Search";
                         accessible-action-default => {
                             HelpModel.glossary_query = "";
                             HelpModel.glossary_search("");
@@ -193,7 +198,7 @@ export component GlossaryDialog inherits Rectangle {
                 alignment: end;
 
                 HelpToolButton {
-                    label: "Open in the manual";
+                    label: "Open in the Manual";
                     hint: "Open the glossary as a chapter of the manual, with the full explanations and links.";
                     clicked => {
                         HelpModel.glossary_open = false;

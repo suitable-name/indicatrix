@@ -2,6 +2,7 @@ import { ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { PreferencesModel } from "../models/preferences.slint";
 import { ManipulateModel } from "../models/manipulate.slint";
+import { UpdateModel } from "../models/update.slint";
 import { HelpTopics } from "../models/help.slint";
 import { HelpButton } from "help_button.slint";
 import { IconButton } from "icon_button.slint";
@@ -24,7 +25,7 @@ component SectionHeading inherits Rectangle {
         color: Theme.accent-cyan;
         accessible-role: AccessibleRole.text;
     }
-    if root.help_topic != "": HelpButton {
+    if root.help_topic != "": help-button-help-hint := HelpButton {
         x: parent.width - self.width;
         y: 0px;
         diameter: 20px;
@@ -319,7 +320,7 @@ export component PreferencesDialog inherits Rectangle {
                             spacing: 12px;
                             Text {
                                 horizontal-stretch: 1;
-                                text: "Interface scale";
+                                text: "Interface Scale";
                                 font-size: 12px;
                                 font-weight: 600;
                                 color: Theme.text-primary;
@@ -332,7 +333,7 @@ export component PreferencesDialog inherits Rectangle {
                                 ComboBox {
                                     model: PreferencesModel.ui_scale_options;
                                     current-index <=> PreferencesModel.ui_scale_index;
-                                    accessible-label: "Interface scale";
+                                    accessible-label: "Interface Scale";
                                     selected(val) => {
                                         PreferencesModel.ui_scale_changed(PreferencesModel.ui_scale_index);
                                     }
@@ -349,7 +350,7 @@ export component PreferencesDialog inherits Rectangle {
                             }
                         }
                         PreferenceSwitch {
-                            title: "High contrast";
+                            title: "High Contrast";
                             detail: "Near-black surfaces, white text and bright accents.";
                             hint: "Draw the program with near-black surfaces, white text and bright accents, for easier reading. It takes effect at once. The standard controls keep their own subtle borders.";
                             checked: PreferencesModel.high_contrast;
@@ -363,9 +364,9 @@ export component PreferencesDialog inherits Rectangle {
                     // --- Direct manipulation ------------------------------------------
                     VerticalLayout {
                         spacing: 6px;
-                        SectionHeading { text: "Direct manipulation"; }
+                        SectionHeading { text: "Direct Manipulation"; }
                         PreferenceSwitch {
-                            title: "Larger handles";
+                            title: "Larger Handles";
                             detail: "Bigger drag handles, for touch screens and pens.";
                             hint: "Make the drag handles on the 3D stone and their hit areas larger, so they are easy to grab with a finger or a pen.";
                             checked: PreferencesModel.large_handles;
@@ -377,13 +378,54 @@ export component PreferencesDialog inherits Rectangle {
                         // The same setting as the Solid view toolbar's Snap button
                         // (`ManipulateModel.snap_off`, inverted), so the two stay in step.
                         PreferenceSwitch {
-                            title: "Snap to gear steps when dragging";
+                            title: "Snap to Gear Steps When Dragging";
                             detail: "Same as the Snap button in the Solid view toolbar.";
                             hint: "While you drag a handle, jump from one index-gear step to the next instead of moving freely. It is the same switch as the Snap button in the Solid view toolbar.";
                             checked: !ManipulateModel.snap_off;
                             toggled => {
                                 ManipulateModel.snap_off = !ManipulateModel.snap_off;
                                 ManipulateModel.snap_toggled();
+                            }
+                        }
+                    }
+
+                    // --- Updates -----------------------------------------------------
+                    VerticalLayout {
+                        spacing: 6px;
+                        SectionHeading { text: "Updates"; }
+                        PreferenceSwitch {
+                            title: "Check for New Versions";
+                            detail: "Ask GitHub once a day whether a newer release exists.";
+                            hint: "Once a day, when the program starts, ask GitHub for the latest release and tell you if it is newer than this one. Nothing is downloaded or installed, and nothing but the request itself is sent.";
+                            checked: UpdateModel.check_enabled;
+                            toggled => {
+                                UpdateModel.check_enabled = !UpdateModel.check_enabled;
+                                UpdateModel.enabled_changed(UpdateModel.check_enabled);
+                            }
+                        }
+                        HorizontalLayout {
+                            height: 32px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 10px;
+                            alignment: start;
+                            TipButton {
+                                text: "Check Now";
+                                hint: "Ask GitHub right now whether a newer release exists, and show the answer below.";
+                                enabled: !UpdateModel.checking;
+                                clicked => { UpdateModel.check_now(); }
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: UpdateModel.status_text;
+                                font-size: 10px;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                                visible: UpdateModel.status_text != "";
+                                accessible-role: AccessibleRole.text;
                             }
                         }
                     }
@@ -403,7 +445,7 @@ export component PreferencesDialog inherits Rectangle {
                             spacing: 10px;
                             alignment: start;
                             TipButton {
-                                text: "Reset tutorial progress";
+                                text: "Reset Tutorial Progress";
                                 hint: "Forget which tutorials you have finished, so every one shows as new again.";
                                 clicked => {
                                     PreferencesModel.reset_tutorials();
@@ -411,7 +453,7 @@ export component PreferencesDialog inherits Rectangle {
                                 }
                             }
                             TipButton {
-                                text: "Show the welcome tour again";
+                                text: "Show the Welcome Tour Again";
                                 hint: "Show the short welcome tour again the next time you start the program.";
                                 clicked => {
                                     PreferencesModel.show_tour_again();

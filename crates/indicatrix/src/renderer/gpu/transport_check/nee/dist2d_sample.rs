@@ -90,6 +90,10 @@ fn sin_theta_of(dir: Vec3) -> f32 {
 }
 
 /// Runs the Tier 2 check for [`EnvironmentMap::sample`](crate::renderer::env_map::EnvironmentMap::sample).
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_dist2d_sample(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -131,7 +135,9 @@ pub fn run_dist2d_sample(
             (70, &out_buf),
         ],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

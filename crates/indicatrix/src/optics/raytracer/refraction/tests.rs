@@ -651,6 +651,10 @@ mod entry_mode_projection_tests {
                 let estimate = if use_extraordinary { t_e } else { t_o };
                 sum += f64::from(estimate);
             }
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a Monte Carlo mean in 0..~1 narrowed to f32 for the comparison with the f32 target"
+            )]
             let mean = (sum / f64::from(TRIALS)) as f32;
             assert!(
                 (mean - target).abs() < 0.01,

@@ -78,6 +78,10 @@ pub const BODY_COLOR_PRESETS: [BodyColorPreset; 9] = [
 /// `None` when `rgb` matches no preset (a color authored elsewhere, e.g. a
 /// hand-edited design file).
 #[must_use]
+#[expect(
+    clippy::float_cmp,
+    reason = "a preset is recognised only by its exact stored triple, as the doc says"
+)]
 pub fn preset_index_for_rgb(rgb: [f32; 3]) -> Option<usize> {
     BODY_COLOR_PRESETS
         .iter()

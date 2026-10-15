@@ -533,13 +533,13 @@ impl Design {
             .iter()
             .map(|(&position, deps)| (position, deps.len()))
             .collect();
-        let mut ready: BTreeSet<usize> = waiting
+        let mut unblocked: BTreeSet<usize> = waiting
             .iter()
             .filter(|&(_, &count)| count == 0)
             .map(|(&position, _)| position)
             .collect();
         let mut order = Vec::with_capacity(driven.len());
-        while let Some(position) = ready.pop_first() {
+        while let Some(position) = unblocked.pop_first() {
             order.push(position);
             waiting.remove(&position);
             for (&reader, deps) in &reads {
@@ -548,7 +548,7 @@ impl Design {
                 {
                     *count -= 1;
                     if *count == 0 {
-                        ready.insert(reader);
+                        unblocked.insert(reader);
                     }
                 }
             }

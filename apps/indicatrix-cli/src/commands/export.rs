@@ -1,4 +1,4 @@
-//! `export`: the design as `.asc` cutting instructions, a `.indicatrix` file, a Gem Cut Studio
+//! `export`: the design as `.asc` cutting instructions, a `.isdd` file, a Gem Cut Studio
 //! file or the cutting sheet as a web page.
 //!
 //! Every format is written from the same solve the other commands use, so a design that does
@@ -8,7 +8,7 @@
 //! | Format | Written by |
 //! |---|---|
 //! | `asc` | `indicatrix_formats::asc::to_asc_string` on the editor's export schedule: the effective refractive index, the solved masts and concave tiers as footnotes, with the CRLF line ends `GemCAD` itself writes |
-//! | `indicatrix` | the file the design was opened from, with the design swapped in (see [`Loaded::indicatrix_text`]) |
+//! | `isdd` (alias `indicatrix`) | the file the design was opened from, with the design swapped in (see [`Loaded::design_text`]) |
 //! | `gcs` | `indicatrix_formats::gcs::to_gcs_string` on the same schedule `asc` is made from (experimental, as in the editor) |
 //! | `html` | `indicatrix_editor::cut_sheet::cutting_sheet_document_with`: the cutting instructions with their four views, headed by the file's own title, designer, shape and notes (else the `.asc` header lines) and the `--date` text |
 //!
@@ -75,7 +75,7 @@ fn export_text(
                 CliError::design(format!("cannot write the design as .asc: {error}"))
             })
         }
-        ExportFormat::Indicatrix => loaded.indicatrix_text(design, catalogue),
+        ExportFormat::Isdd => loaded.design_text(design, catalogue),
         ExportFormat::Gcs => {
             let schedule = export_schedule(design, solved, catalogue, ".gcs")?;
             to_gcs_string(&schedule).map_err(|error| {
@@ -128,7 +128,7 @@ mod tests {
     use indicatrix_cut_core::{Design, PreformSpec, ScheduleMeta};
 
     fn loaded() -> Loaded {
-        Loaded::in_memory(testing::template(), "round.indicatrix")
+        Loaded::in_memory(testing::template(), "round.isdd")
     }
 
     fn text_in(format: ExportFormat) -> String {
@@ -161,9 +161,9 @@ mod tests {
     }
 
     #[test]
-    fn indicatrix_text_opens_again_as_the_same_design() {
-        let text = text_in(ExportFormat::Indicatrix);
-        let again = from_bytes("round.indicatrix", text.as_bytes()).expect("opens");
+    fn design_text_opens_again_as_the_same_design() {
+        let text = text_in(ExportFormat::Isdd);
+        let again = from_bytes("round.isdd", text.as_bytes()).expect("opens");
         assert_eq!(
             testing::shape(&again.design),
             testing::shape(&testing::template())
@@ -225,10 +225,10 @@ mod tests {
             ScheduleMeta::standard_round_brilliant(),
             Vec::new(),
         );
-        let loaded = Loaded::in_memory(empty, "empty.indicatrix");
+        let loaded = Loaded::in_memory(empty, "empty.isdd");
         for format in [
             ExportFormat::Asc,
-            ExportFormat::Indicatrix,
+            ExportFormat::Isdd,
             ExportFormat::Gcs,
             ExportFormat::Html,
         ] {
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn end_to_end_export_writes_one_file_and_prints_nothing() {
-        let input = testing::write_design("export-e2e.indicatrix", &testing::template());
+        let input = testing::write_design("export-e2e.isdd", &testing::template());
         let target = testing::temp_path("export-e2e.asc")
             .to_string_lossy()
             .into_owned();
@@ -253,6 +253,7 @@ mod tests {
 
     #[test]
     fn end_to_end_the_format_follows_the_file_extension_when_none_is_given() {
+        // The one end-to-end test that reads a legacy `.indicatrix` file from disk.
         let input = testing::write_design("export-e2e-ext.indicatrix", &testing::template());
         let target = testing::temp_path("export-e2e-ext.html")
             .to_string_lossy()
@@ -265,7 +266,7 @@ mod tests {
 
     #[test]
     fn end_to_end_an_unknown_extension_without_a_format_is_a_usage_error() {
-        let input = testing::write_design("export-e2e-bad.indicatrix", &testing::template());
+        let input = testing::write_design("export-e2e-bad.isdd", &testing::template());
         let target = testing::temp_path("export-e2e-bad.dat")
             .to_string_lossy()
             .into_owned();

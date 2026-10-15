@@ -292,7 +292,7 @@ export component NewDesignDialog inherits Rectangle {
                                     hint: "The number of teeth on the index gear that will cut this stone.";
                                     ComboBox {
                                         min-width: 0px;
-                                        accessible-label: "Index gear";
+                                        accessible-label: "Index Gear";
                                         model: TemplateGalleryModel.gear_options;
                                         current-index <=> TemplateGalleryModel.gear_index;
                                     }
@@ -309,7 +309,7 @@ export component NewDesignDialog inherits Rectangle {
                                     hint: "The finished stone's width in millimetres. Leave empty to set it later.";
                                     LineEdit {
                                         min-width: 0px;
-                                        accessible-label: "Stone width in millimetres";
+                                        accessible-label: "Stone Width in Millimetres";
                                         text <=> TemplateGalleryModel.width_text;
                                         changed has-focus => { EditorModel.text_focus = self.has-focus; }
                                     }
@@ -348,7 +348,7 @@ export component NewDesignDialog inherits Rectangle {
                         TipBox {
                             hint: "Block is a rectangular rough. Cylinder is a round rod.";
                             ComboBox {
-                                accessible-label: "Preform shape";
+                                accessible-label: "Preform Shape";
                                 model: ["Block", "Cylinder"];
                                 current-index <=> EditorModel.new_preform_shape_index;
                             }
@@ -366,7 +366,7 @@ export component NewDesignDialog inherits Rectangle {
                                     hint: "Half the rough's width, in mast units. 1.0 is where the girdle will sit.";
                                     LineEdit {
                                         min-width: 0px;
-                                        accessible-label: "Half-width of the rough";
+                                        accessible-label: "Half-Width of the Rough";
                                         text <=> EditorModel.new_preform_half_width;
                                         changed has-focus => { EditorModel.text_focus = self.has-focus; }
                                     }
@@ -384,7 +384,7 @@ export component NewDesignDialog inherits Rectangle {
                                     hint: "The rough's length divided by its width. 1.0 is square or round.";
                                     LineEdit {
                                         min-width: 0px;
-                                        accessible-label: "Length over width of the rough";
+                                        accessible-label: "Length over Width of the Rough";
                                         text <=> EditorModel.new_preform_length_over_width;
                                         changed has-focus => { EditorModel.text_focus = self.has-focus; }
                                     }
@@ -402,7 +402,7 @@ export component NewDesignDialog inherits Rectangle {
                                     hint: "The rough's height from table to culet, in mast units.";
                                     LineEdit {
                                         min-width: 0px;
-                                        accessible-label: "Depth of the rough";
+                                        accessible-label: "Depth of the Rough";
                                         text <=> EditorModel.new_preform_depth;
                                         changed has-focus => { EditorModel.text_focus = self.has-focus; }
                                     }
@@ -426,7 +426,7 @@ export component NewDesignDialog inherits Rectangle {
                                     hint: "The number of teeth on the index gear. 96 is the most common.";
                                     ComboBox {
                                         min-width: 0px;
-                                        accessible-label: "Index gear";
+                                        accessible-label: "Index Gear";
                                         model: ["96", "80", "77", "72", "64", "120", "Custom"];
                                         current-index <=> EditorModel.new_gear_index;
                                     }
@@ -442,7 +442,7 @@ export component NewDesignDialog inherits Rectangle {
                                     hint: "How many teeth your own index gear has.";
                                     LineEdit {
                                         min-width: 0px;
-                                        accessible-label: "Teeth on the custom gear";
+                                        accessible-label: "Teeth on the Custom Gear";
                                         text <=> EditorModel.new_gear_custom_text;
                                         changed has-focus => { EditorModel.text_focus = self.has-focus; }
                                     }
@@ -462,7 +462,7 @@ export component NewDesignDialog inherits Rectangle {
                                 TipBox {
                                     hint: "How many times the pattern repeats around the stone. 8 repeats every 45 degrees.";
                                     LineEdit {
-                                        accessible-label: "Symmetry order";
+                                        accessible-label: "Symmetry Order";
                                         text <=> EditorModel.new_symmetry_order_text;
                                         changed has-focus => { EditorModel.text_focus = self.has-focus; }
                                     }
@@ -491,7 +491,7 @@ export component NewDesignDialog inherits Rectangle {
                         TipBox {
                             hint: "The material the new design starts with. You can change it later in Design Settings.";
                             ComboBox {
-                                accessible-label: "Starting material";
+                                accessible-label: "Starting Material";
                                 // `EditorModel.new_material_options` is pushed from
                                 // `gui::editor::state::builtin_preset_names` (built from
                                 // `indicatrix_cut_core::MaterialCatalogue`, so it covers every

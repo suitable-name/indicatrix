@@ -210,6 +210,10 @@ fn solid_identity_pin_crackotto_step_full_pipeline() {
     );
     let solved = design.solve().expect("fixture must solve");
     let planes_f64 = design.planes_from_solved(&solved);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the rasterizer takes f32 planes; the fixture values are small"
+    )]
     let planes: Vec<(Vec3, f32)> = planes_f64
         .into_iter()
         .map(|(n, m)| (Vec3::new(n.x as f32, n.y as f32, n.z as f32), m as f32))
@@ -227,6 +231,10 @@ fn solid_identity_pin_crackotto_step_full_pipeline() {
     fast.render_prepared(prepared, &pin_camera(), &style);
     let prepared_hash = hash_rasterizer(&fast);
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "DiagramConfig stores the reference angle as f32 render data"
+    )]
     let diagram_config = DiagramConfig {
         width: PIN_WIDTH,
         height: PIN_HEIGHT,

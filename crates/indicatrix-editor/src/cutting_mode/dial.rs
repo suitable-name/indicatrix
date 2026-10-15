@@ -152,6 +152,10 @@ fn push_segment(commands: &mut String, tooth: u32, gear_teeth: u32, inner: f64) 
 }
 
 /// A coordinate in box units as a fraction of the box.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the Slint/UI precision; the fraction is within about 0..=1"
+)]
 fn fraction(coordinate: f64) -> f32 {
     (coordinate / BOX) as f32
 }

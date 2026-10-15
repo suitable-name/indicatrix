@@ -343,8 +343,8 @@ fn best_pairs(slots: &mut [Pair], norms: &[Norm], dims: [f64; 3], min_width: f64
             if bound > f64::NEG_INFINITY {
                 let pair = Pair {
                     bound,
-                    design: design as u32,
-                    orient: orient as u8,
+                    design: u32::try_from(design).expect("a design index fits u32"),
+                    orient: u8::try_from(orient).expect("an orientation index is below 6"),
                 };
                 insert_pair(slots, &mut len, pair);
             }
@@ -381,7 +381,8 @@ impl SizeShortlist {
                     let dims = grid.stone_box([gx, gy, gz]);
                     let slots = &mut pairs[size * CLIP_SHORTLIST_MAX..][..CLIP_SHORTLIST_MAX];
                     let min_width = params.settings.min_width_mm;
-                    counts[size] = best_pairs(slots, norms, dims, min_width) as u8;
+                    counts[size] = u8::try_from(best_pairs(slots, norms, dims, min_width))
+                        .expect("a shortlist holds at most CLIP_SHORTLIST_MAX pairs");
                     size += 1;
                 }
             }

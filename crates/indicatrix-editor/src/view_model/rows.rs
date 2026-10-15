@@ -109,7 +109,7 @@ fn build_tier_row(
         tier.name.clone()
     };
     TierRow {
-        index: index as i32,
+        index: i32::try_from(index).unwrap_or(i32::MAX),
         angle_deg: format_angle_cell(tier.angle_deg.abs()),
         angle_full: full_precision(tier.angle_deg.abs()),
         name,
@@ -182,7 +182,7 @@ fn concave_tier_rows(design: &Design, warnings: &BTreeMap<usize, String>) -> Vec
             let units = indicatrix_cut_core::orbit_units(&tier.indices, &design.meta);
             let (orbit_status, orbit_incomplete) = orbit_status_text(&units);
             TierRow {
-                index: index as i32,
+                index: i32::try_from(index).unwrap_or(i32::MAX),
                 angle_deg: format_angle_cell(tier.angle_deg.abs()),
                 angle_full: full_precision(tier.angle_deg.abs()),
                 name: tier.name.clone(),

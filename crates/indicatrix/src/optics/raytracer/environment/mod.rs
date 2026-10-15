@@ -77,7 +77,10 @@ pub(crate) fn sun_nee_reference_factor(key_dir: Vec3) -> f32 {
 pub(crate) fn sun_nee_reference_pdf(key_dir: Vec3, dir: Vec3) -> f32 {
     rig::sun_nee_pdf(key_dir, dir)
 }
-pub use rig::{sample_studio_environment_with_rig, sample_studio_environment_with_rig_shadow};
+pub use rig::{
+    sample_studio_environment_with_rig, sample_studio_environment_with_rig_shadow,
+    sample_studio_environment_with_rig_spec_power, studio_spec_power,
+};
 
 // spectral.rs
 use spectral::{BlackbodyNorm, IlluminantSpectrum};

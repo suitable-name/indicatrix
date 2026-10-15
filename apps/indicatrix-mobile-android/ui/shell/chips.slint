@@ -1,0 +1,135 @@
+// `Chip` (a filter or suggestion pill) and `Segmented` (2 to 4 mutually exclusive
+// choices). Both have 48 px touch targets; the chip's drawn pill is 32 px tall.
+import { Theme } from "../theme.slint";
+import { Icon } from "icon.slint";
+import { StateLayer } from "state_layer.slint";
+
+export component Chip inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: Theme.touch;
+    width: pill.width;
+    opacity: root.enabled ? 1.0 : Theme.disabled-content;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+
+    pill := Rectangle {
+        height: 32px;
+        width: lay.preferred-width;
+        border-radius: Theme.radius-sm;
+        background: root.selected ? Theme.secondary-container : transparent;
+        border-width: root.selected ? 0px : 1px;
+        border-color: Theme.outline;
+
+        StateLayer {
+            pressed: touch.pressed;
+            hovered: touch.has-hover;
+            enabled: root.enabled;
+            border-radius: parent.border-radius;
+        }
+
+        lay := HorizontalLayout {
+            padding-left: root.icon.width > 0 ? 8px : 12px;
+            padding-right: 12px;
+            spacing: Theme.space-sm;
+            alignment: center;
+
+            if root.icon.width > 0: Rectangle {
+                width: 18px;
+
+                Icon {
+                    source: root.icon;
+                    tint: root.selected ? Theme.on-secondary-container : Theme.on-surface-variant;
+                    glyph: 18px;
+                }
+            }
+
+            Text {
+                text: root.text;
+                color: root.selected ? Theme.on-secondary-container : Theme.on-surface-variant;
+                font-size: Theme.text-label-large;
+                font-weight: 500;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in property <int> current: 0;
+    callback selected(int);
+
+    height: Theme.touch;
+    border-radius: Theme.touch / 2;
+    border-width: 1px;
+    border-color: Theme.outline;
+    clip: true;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        for option[index] in root.options: Rectangle {
+            background: index == root.current ? Theme.secondary-container : transparent;
+            accessible-role: AccessibleRole.button;
+            accessible-label: option;
+            accessible-checkable: true;
+            accessible-checked: index == root.current;
+
+            StateLayer {
+                pressed: segment-touch.pressed;
+                hovered: segment-touch.has-hover;
+            }
+
+            // The divider between this segment and the previous one.
+            Rectangle {
+                x: 0px;
+                width: 1px;
+                background: index > 0 ? Theme.outline : transparent;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.space-sm;
+
+                if index == root.current: Rectangle {
+                    width: 18px;
+
+                    Icon {
+                        source: @image-url("../icons/check.svg");
+                        tint: Theme.on-secondary-container;
+                        glyph: 18px;
+                    }
+                }
+
+                Text {
+                    text: option;
+                    color: index == root.current ? Theme.on-secondary-container : Theme.on-surface;
+                    font-size: Theme.text-label-large;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            segment-touch := TouchArea {
+                clicked => {
+                    root.selected(index);
+                }
+            }
+        }
+    }
+}

@@ -102,7 +102,7 @@ fn the_grouped_gallery_lists_the_top_five_then_the_variants_then_blank() {
     assert_eq!(GalleryGroup::Shapes.title(), "Shapes");
     assert_eq!(
         GalleryGroup::Variants.title(),
-        "Round variants and teaching designs"
+        "Round Variants and Teaching Designs"
     );
 }
 

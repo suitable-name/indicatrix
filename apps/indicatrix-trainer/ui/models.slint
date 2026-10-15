@@ -1,0 +1,268 @@
+// The contract between the trainer's Slint UI and its Rust side.
+//
+// The UI binds to these properties and invokes these callbacks; the Rust side (src/gui/**) sets
+// every property and handles every callback. Nothing here is a measurement default: every
+// figure has a `has_*` flag (or an empty string) that says "not measured yet", and the UI shows
+// a dash or an empty state for it, never a 0.
+//
+// The GUI trains with the imitation algorithm only (the CLI offers PPO), so no PPO figure or
+// PPO-only hyperparameter is part of this contract.
+
+export struct StoneMetrics {
+    brilliance: float,
+    windowing: float,
+    extinction: float,
+    yield_pct: float,
+}
+
+// One console line. `severity`: 0 = info, 1 = success (BEST, CHECKPOINT, EXPORT, IMPORT),
+// 2 = warning (WARN), 3 = error (ERROR), 4 = validation (VAL). The Rust side maps the level.
+export struct LogEntry {
+    timestamp: string,
+    level: string,
+    message: string,
+    severity: int,
+}
+
+// One species of the refractive-index spectrum (`dataset::MINERAL_SPECTRUM`).
+export struct MaterialItem {
+    name: string,
+    n_d: float,
+    critical_deg: float,
+    // False: no built-in material preset; the trainer uses a neutral stone of this index.
+    has_preset: bool,
+}
+
+// One model size. `params` like "~103k parameters", `shape` like "width 64 · 4 heads · 3 layers".
+export struct TierItem {
+    code: string,
+    params: string,
+    shape: string,
+}
+
+// One library design of the design picker. `split`: "Train", "Validation", "Test" or "Skipped".
+export struct DesignItem {
+    index: int,
+    title: string,
+    filename: string,
+    split: string,
+}
+
+// One chart, already scaled by Rust. `commands` is an SVG path in a 1000 x 400 viewbox
+// (x = iteration, larger y values drawn higher); "" when there is nothing to draw.
+// `reference` is an optional horizontal goal line in the same viewbox ("" = none).
+export struct ChartData {
+    title: string,
+    unit: string,
+    commands: string,
+    reference: string,
+    reference_label: string,
+    latest: string,
+    y_min: string,
+    y_max: string,
+    x_first: string,
+    x_last: string,
+    has_data: bool,
+    // Shown instead of the plot while `has_data` is false, e.g. "Appears after the first validation".
+    empty_text: string,
+    // One sentence for the tooltip: what the figure is and which direction is good.
+    help: string,
+}
+
+export global TrainingController {
+    // ---- Run state -------------------------------------------------------------------------
+    // "Idle", "Training", "Paused", "Stopping" or "Stopped" (the worker ended; see `worker_alive`).
+    in-out property <string> status: "Idle";
+    in-out property <bool> is_training: false;
+    in-out property <bool> worker_alive: true;
+    // False until the worker delivered its first measured snapshot.
+    in-out property <bool> has_metrics: false;
+    // Non-empty while the worker runs a long command (tier switch, device switch, environment
+    // rebuild, checkpoint load, validation): the UI shows it with a busy indicator and disables
+    // the commands that would only queue behind it.
+    in-out property <string> busy_text: "";
+    // True when the weights changed since the last save or load (closing then asks first).
+    in-out property <bool> weights_dirty: false;
+    // Banner above the panels; empty = hidden. `notice_is_error` picks the error style.
+    in-out property <string> notice: "";
+    in-out property <bool> notice_is_error: false;
+    // True while an imported run is on screen instead of the live run.
+    in-out property <bool> viewing_import: false;
+    in-out property <string> import_label: "";
+    // True while the close prompt is shown (training or unsaved weights when the window closes).
+    in-out property <bool> close_prompt: false;
+
+    // ---- New-version check -----------------------------------------------------------------
+    // True while the consent question is shown (asked once; the answer is remembered).
+    in-out property <bool> update_prompt: false;
+    // The "Check for New Versions" switch.
+    in-out property <bool> update_enabled: false;
+    // Banner text of a newer release, e.g. "Indicatrix 0.7.3 is available (you have 0.7.2)."; empty = hidden.
+    in-out property <string> update_notice: "";
+    // Result of the last Check Now (or "Checking…"); empty = nothing to say.
+    in-out property <string> update_status: "";
+
+    // ---- Device ----------------------------------------------------------------------------
+    in-out property <string> device_name: "Detecting…";
+    in-out property <bool> use_gpu: false;
+    in-out property <bool> device_known: false;
+    in-out property <bool> device_switching: false;
+
+    // ---- Data set --------------------------------------------------------------------------
+    // 0 = loading, 1 = ready, 2 = failed (`db_error` says why).
+    in-out property <int> db_state: 0;
+    in-out property <string> db_path: "";
+    in-out property <string> db_error: "";
+    in-out property <int> db_designs_count: 0;
+    in-out property <int> train_designs_count: 0;
+    in-out property <int> val_designs_count: 0;
+    in-out property <int> test_designs_count: 0;
+    // The split rule from Rust, e.g. "75 / 15 / 10 % train / validation / test".
+    in-out property <string> split_text: "";
+    // The picker list, already filtered by `design_filter`.
+    in-out property <[DesignItem]> designs: [];
+    in-out property <string> design_filter: "";
+    in-out property <int> current_db_index: -1;
+    in-out property <string> current_design_title: "";
+    in-out property <string> current_design_split: "";
+    in-out property <int> tier_count: 0;
+    // Corpus: cycle through the training split; off: train on the selected design only.
+    in-out property <bool> is_corpus_mode: true;
+    // Title of the stone the optics panel describes (worker 0's).
+    in-out property <string> display_design_title: "";
+
+    // ---- Model and materials ---------------------------------------------------------------
+    // 0 = Optimizer (the design's own material), 1 = Retarget (a target material).
+    in-out property <int> model_mode: 1;
+    in-out property <[TierItem]> tiers: [];
+    in-out property <string> model_tier_name: "M";
+    in-out property <[MaterialItem]> materials: [];
+    // The spectrum range from Rust, e.g. "n 1.43 – 2.90, 13 species".
+    in-out property <string> spectrum_text: "";
+    in-out property <bool> is_universal_spectrum: true;
+    in-out property <string> source_material: "";
+    in-out property <float> source_ri: 0.0;
+    in-out property <string> target_material: "";
+    in-out property <float> target_ri: 0.0;
+
+    // ---- Counters and rates ----------------------------------------------------------------
+    in-out property <int> iteration: 0;
+    in-out property <int> episode: 0;
+    in-out property <int> total_steps: 0;
+    in-out property <float> steps_per_sec: 0.0;
+    in-out property <bool> has_evals_per_sec: false;
+    in-out property <float> evals_per_sec: 0.0;
+
+    // ---- Learning figures (imitation) ------------------------------------------------------
+    in-out property <float> mean_return: 0.0;
+    in-out property <bool> has_best: false;
+    in-out property <float> best_score: 0.0;
+    in-out property <bool> has_loss: false;
+    in-out property <float> imitation_loss: 0.0;
+    in-out property <bool> has_cosine: false;
+    in-out property <float> train_cosine: 0.0;
+    in-out property <int> labelled_samples: 0;
+    in-out property <float> accepted_pct: 0.0;
+
+    // ---- Validation ------------------------------------------------------------------------
+    in-out property <bool> has_validation: false;
+    in-out property <float> val_score: 0.0;
+    in-out property <float> val_brilliance: 0.0;
+    in-out property <float> val_windowing: 0.0;
+    // Model drop / oracle drop on the validation designs: the figure of merit (goal > 0.8).
+    in-out property <bool> has_ratio: false;
+    in-out property <float> val_oracle_ratio: 0.0;
+    in-out property <float> ratio_goal: 0.8;
+    in-out property <bool> has_gap: false;
+    in-out property <float> generalization_gap: 0.0;
+    // A gap above this reads as overfitting (rule of thumb, from Rust).
+    in-out property <float> gap_warn_threshold: 3.0;
+
+    // ---- Optics of the displayed stone -----------------------------------------------------
+    in-out property <bool> has_optics: false;
+    in-out property <StoneMetrics> baseline_metrics: { brilliance: 0.0, windowing: 0.0, extinction: 0.0, yield_pct: 0.0 };
+    in-out property <StoneMetrics> current_metrics: { brilliance: 0.0, windowing: 0.0, extinction: 0.0, yield_pct: 0.0 };
+    in-out property <bool> solid_closed: false;
+
+    // ---- Charts ----------------------------------------------------------------------------
+    // The reward chart of the overview, then the chart grid (loss, cosine, accepted, model /
+    // oracle ratio, evaluations per second, seconds per phase).
+    in-out property <ChartData> reward_chart;
+    in-out property <[ChartData]> charts: [];
+
+    // ---- Hyperparameters -------------------------------------------------------------------
+    // The form's text fields are seeded from the applied values when editing starts; Rust
+    // validates them and reports the first problem in `hyper_error`.
+    in-out property <bool> hyper_editing: false;
+    in-out property <string> hyper_error: "";
+    in-out property <string> edit_workers: "";
+    in-out property <string> edit_rollout: "";
+    in-out property <string> edit_batch: "";
+    in-out property <string> edit_epochs: "";
+    in-out property <string> edit_lr: "";
+    // The applied values (mirror of the worker's configuration).
+    in-out property <float> learning_rate: 0.0;
+    in-out property <int> batch_size: 0;
+    in-out property <int> rollout_size: 0;
+    in-out property <int> epochs: 0;
+    in-out property <int> worker_count: 0;
+    in-out property <int> max_workers: 1024;
+    in-out property <int> core_count: 0;
+
+    // ---- Console ---------------------------------------------------------------------------
+    // Already filtered by `log_filter`: 0 = everything, 1 = warnings and errors, 2 = errors.
+    in-out property <[LogEntry]> logs: [];
+    in-out property <int> log_filter: 0;
+    in-out property <int> warning_count: 0;
+    in-out property <int> error_count: 0;
+
+    // ---- Callbacks -------------------------------------------------------------------------
+    // Run
+    callback start_training();
+    callback pause_training();
+    callback step_training();
+    // The UI confirms first (the run statistics and collected labels are discarded).
+    callback reset_training();
+    callback restart_worker();
+    callback toggle_device();
+    // Model; the UI confirms a tier change first (the weights are re-initialised).
+    callback select_model_mode(int);
+    callback select_model_tier(string);
+    callback select_target_material(string);
+    callback toggle_spectrum_mode();
+    // Data set
+    callback pick_database();
+    callback filter_designs(string);
+    callback select_design(int);
+    callback next_design();
+    callback prev_design();
+    callback toggle_corpus_mode();
+    // Files: each opens a native dialog on the Rust side (save dialogs ask before overwriting).
+    callback save_weights();
+    // The UI confirms first when `weights_dirty`.
+    callback load_weights();
+    callback import_run();
+    callback export_run();
+    callback return_to_live();
+    // Hyperparameters
+    callback begin_edit_hyperparams();
+    callback apply_hyperparams();
+    callback cancel_edit_hyperparams();
+    // Banner and console
+    callback dismiss_notice();
+    callback set_log_filter(int);
+    callback copy_logs();
+    callback clear_logs();
+    // New-version check: the consent answer (true = check daily), the settings switch, Check Now,
+    // and the three buttons of the notice (open the release page, skip this version, hide).
+    callback answer_update_prompt(bool);
+    callback set_update_enabled(bool);
+    callback check_updates_now();
+    callback open_release();
+    callback skip_release();
+    callback dismiss_release();
+    // Close prompt
+    callback close_save();
+    callback close_discard();
+    callback close_cancel();
+}

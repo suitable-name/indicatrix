@@ -416,6 +416,10 @@ mod body_color_basis_tests {
     use super::*;
     use crate::color::body_color::{Illuminant, body_color};
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "AbsorptionBand::evaluate takes f32 nm; wavelengths are 380..=780"
+    )]
     fn alpha(bands: &[AbsorptionBand]) -> impl Fn(f64) -> f64 + '_ {
         move |l| f64::from(bands.iter().map(|b| b.evaluate(l as f32)).sum::<f32>())
     }

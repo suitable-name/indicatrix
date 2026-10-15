@@ -202,6 +202,10 @@ const ENTRY_SOLVE_PAIR_COMPONENT_NAMES_P: [&str; 16] = [
 ];
 
 /// Runs the entry solve pair check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_entry_solve_pair(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -232,7 +236,9 @@ pub fn run_entry_solve_pair(
         &pipeline,
         &[(46, &in_buf), (47, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -378,6 +384,10 @@ const INTERNAL_SOLVE_COMPONENT_NAMES: [&str; 19] = [
 ];
 
 /// Runs the internal solve check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_internal_solve(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -408,7 +418,9 @@ pub fn run_internal_solve(
         &pipeline,
         &[(48, &in_buf), (49, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -435,4 +447,448 @@ pub fn run_internal_solve(
         }
     }
     acc.finish()
+}
+
+// ---------------------------------------------------------------------------------
+// solve4 unrolled vs rolled: the same solution within rounding
+// ---------------------------------------------------------------------------------
+
+/// Equivalence check of the constant-index unrolled `solve4_single` / `solve4_two_rhs`
+/// (generated into `06_uniaxial_fullwave_complex.wgsl` by `tools/unroll_solve4.py`)
+/// against the original rolled, dynamically-pivoting forms.
+///
+/// The unrolled text performs the same IEEE operations in the same order (strict `>`
+/// pivot choice over ascending rows, whole-row conditional swap, `!= 0.0` factor skip),
+/// but the two are NOT bit-identical on every backend: WGSL has no way to forbid FMA
+/// contraction or reassociation, and the owner's GPU compiler contracts the two code
+/// shapes differently (1-3 ULP in a few components; 2026-10-14, still 1 ULP after making
+/// `cplx_mul` an explicit `fma`, which was reverted). So each solution is compared with a
+/// relative tolerance against its own magnitude (`SOLVE4_RELATIVE_TOLERANCE`): far above
+/// rounding through a pivoted 4x4 elimination, far below what a wrong pivot, a skipped row
+/// operation or a swapped right-hand side produces. The largest deviation and the number of
+/// bit-identical solutions are printed. Needs a real adapter: it skips cleanly without one
+/// unless `INDICATRIX_REQUIRE_GPU=1`. Run with
+///
+/// ```text
+/// cargo test -p indicatrix --features gpu unrolled_solve4 -- --nocapture
+/// INDICATRIX_REQUIRE_GPU=1 cargo test -p indicatrix --features gpu unrolled_solve4
+/// ```
+#[cfg(test)]
+mod unrolled_solve4 {
+    use super::{SHADER_SRC, compute};
+    use crate::renderer::gpu::GpuContext;
+
+    /// Floats per case: 4x4 complex `A` (32), complex `b1` (8), complex `b2` (8).
+    const CASE_FLOATS: usize = 48;
+
+    /// Verbatim copy of the original rolled solvers, renamed. Kept here (not in the
+    /// production shader) purely as the reference side of this comparison. Reuses
+    /// `Cplx`, `cplx_*` and `Solve4TwoRhsResult` from the production text.
+    const ROLLED_REFERENCE_WGSL: &str = r"
+fn solve4_single_rolled(a_in: array<array<Cplx, 4>, 4>, b_in: array<Cplx, 4>) -> array<Cplx, 4> {
+    var a = a_in;
+    var b = b_in;
+    for (var col: u32 = 0u; col < 4u; col = col + 1u) {
+        var piv = col;
+        var piv_mag = cplx_norm_sqr(a[col][col]);
+        for (var row: u32 = col + 1u; row < 4u; row = row + 1u) {
+            let mag = cplx_norm_sqr(a[row][col]);
+            if (mag > piv_mag) {
+                piv = row;
+                piv_mag = mag;
+            }
+        }
+        for (var j: u32 = 0u; j < 4u; j = j + 1u) {
+            let tmp = a[col][j];
+            a[col][j] = a[piv][j];
+            a[piv][j] = tmp;
+        }
+        let tmpb = b[col];
+        b[col] = b[piv];
+        b[piv] = tmpb;
+
+        let pivot = a[col][col];
+        for (var j: u32 = col; j < 4u; j = j + 1u) {
+            a[col][j] = cplx_div(a[col][j], pivot);
+        }
+        b[col] = cplx_div(b[col], pivot);
+        for (var row: u32 = 0u; row < 4u; row = row + 1u) {
+            if (row == col) {
+                continue;
+            }
+            let factor = a[row][col];
+            if (cplx_norm_sqr(factor) == 0.0) {
+                continue;
+            }
+            for (var j: u32 = col; j < 4u; j = j + 1u) {
+                a[row][j] = cplx_sub(a[row][j], cplx_mul(factor, a[col][j]));
+            }
+            b[row] = cplx_sub(b[row], cplx_mul(factor, b[col]));
+        }
+    }
+    return b;
+}
+
+fn solve4_two_rhs_rolled(a_in: array<array<Cplx, 4>, 4>, b1_in: array<Cplx, 4>, b2_in: array<Cplx, 4>) -> Solve4TwoRhsResult {
+    var a = a_in;
+    var b1 = b1_in;
+    var b2 = b2_in;
+    for (var col: u32 = 0u; col < 4u; col = col + 1u) {
+        var piv = col;
+        var piv_mag = cplx_norm_sqr(a[col][col]);
+        for (var row: u32 = col + 1u; row < 4u; row = row + 1u) {
+            let mag = cplx_norm_sqr(a[row][col]);
+            if (mag > piv_mag) {
+                piv = row;
+                piv_mag = mag;
+            }
+        }
+        for (var j: u32 = 0u; j < 4u; j = j + 1u) {
+            let tmp = a[col][j];
+            a[col][j] = a[piv][j];
+            a[piv][j] = tmp;
+        }
+        let tmpb1 = b1[col];
+        b1[col] = b1[piv];
+        b1[piv] = tmpb1;
+        let tmpb2 = b2[col];
+        b2[col] = b2[piv];
+        b2[piv] = tmpb2;
+
+        let pivot = a[col][col];
+        for (var j: u32 = col; j < 4u; j = j + 1u) {
+            a[col][j] = cplx_div(a[col][j], pivot);
+        }
+        b1[col] = cplx_div(b1[col], pivot);
+        b2[col] = cplx_div(b2[col], pivot);
+        for (var row: u32 = 0u; row < 4u; row = row + 1u) {
+            if (row == col) {
+                continue;
+            }
+            let factor = a[row][col];
+            if (cplx_norm_sqr(factor) == 0.0) {
+                continue;
+            }
+            for (var j: u32 = col; j < 4u; j = j + 1u) {
+                a[row][j] = cplx_sub(a[row][j], cplx_mul(factor, a[col][j]));
+            }
+            b1[row] = cplx_sub(b1[row], cplx_mul(factor, b1[col]));
+            b2[row] = cplx_sub(b2[row], cplx_mul(factor, b2[col]));
+        }
+    }
+    var result: Solve4TwoRhsResult;
+    result.b1 = b1;
+    result.b2 = b2;
+    return result;
+}
+
+// Free binding slots: 78/79 (transport_functions uses 0..=77).
+@group(0) @binding(78) var<storage, read> solve4_eq_cases: array<f32>;
+// 48 words per case, f32 bit patterns: [0..8) rolled single, [8..16) unrolled single,
+// [16..24) rolled two-rhs b1, [24..32) rolled b2, [32..40) unrolled b1, [40..48) unrolled b2.
+@group(0) @binding(79) var<storage, read_write> solve4_eq_out: array<u32>;
+
+fn solve4_eq_load_a(base: u32) -> array<array<Cplx, 4>, 4> {
+    var a: array<array<Cplx, 4>, 4>;
+    for (var r: u32 = 0u; r < 4u; r = r + 1u) {
+        for (var c: u32 = 0u; c < 4u; c = c + 1u) {
+            let o = base + (r * 4u + c) * 2u;
+            a[r][c] = Cplx(solve4_eq_cases[o], solve4_eq_cases[o + 1u]);
+        }
+    }
+    return a;
+}
+
+fn solve4_eq_load_b(base: u32) -> array<Cplx, 4> {
+    var b: array<Cplx, 4>;
+    for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+        let o = base + i * 2u;
+        b[i] = Cplx(solve4_eq_cases[o], solve4_eq_cases[o + 1u]);
+    }
+    return b;
+}
+
+fn solve4_eq_store(base: u32, b: array<Cplx, 4>) {
+    for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+        solve4_eq_out[base + i * 2u] = bitcast<u32>(b[i].re);
+        solve4_eq_out[base + i * 2u + 1u] = bitcast<u32>(b[i].im);
+    }
+}
+
+@compute @workgroup_size(64)
+fn solve4_unrolled_equivalence_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let base = idx * 48u;
+    if (base + 48u > arrayLength(&solve4_eq_cases)) {
+        return;
+    }
+    let a = solve4_eq_load_a(base);
+    let b1 = solve4_eq_load_b(base + 32u);
+    let b2 = solve4_eq_load_b(base + 40u);
+    solve4_eq_store(base, solve4_single_rolled(a, b1));
+    solve4_eq_store(base + 8u, solve4_single(a, b1));
+    let rolled2 = solve4_two_rhs_rolled(a, b1, b2);
+    solve4_eq_store(base + 16u, rolled2.b1);
+    solve4_eq_store(base + 24u, rolled2.b2);
+    let unrolled2 = solve4_two_rhs(a, b1, b2);
+    solve4_eq_store(base + 32u, unrolled2.b1);
+    solve4_eq_store(base + 40u, unrolled2.b2);
+}
+";
+
+    /// Deterministic splitmix64 stream (no `rand` dependency in this crate's tests).
+    struct SplitMix(u64);
+
+    impl SplitMix {
+        const fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// Uniform in `[lo, hi)`.
+        fn range(&mut self, lo: f32, hi: f32) -> f32 {
+            let unit = (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
+            unit.mul_add(hi - lo, lo)
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            usize::try_from(self.next_u64() % n as u64)
+                .expect("a remainder below a usize bound fits in usize")
+        }
+    }
+
+    /// All 24 permutations of `0..4`.
+    fn permutations4() -> Vec<[usize; 4]> {
+        let mut out = Vec::new();
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        let p = [a, b, c, d];
+                        let distinct = (0..4).all(|i| (i + 1..4).all(|j| p[i] != p[j]));
+                        if distinct {
+                            out.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// One case: `A` (row-major complex), `b1`, `b2`, as 48 floats.
+    type CaseWords = [f32; CASE_FLOATS];
+
+    fn dense(rng: &mut SplitMix) -> CaseWords {
+        let mut w = [0.0f32; CASE_FLOATS];
+        for v in &mut w {
+            *v = rng.range(-2.0, 2.0);
+        }
+        w
+    }
+
+    /// Dense matrix whose rows are permuted by `perm`, so the strict-`>` pivot lands on a
+    /// different row for every permutation (every conditional-swap branch is exercised).
+    fn permuted(rng: &mut SplitMix, perm: [usize; 4]) -> CaseWords {
+        let base = dense(rng);
+        let mut w = base;
+        for (dst_row, &src_row) in perm.iter().enumerate() {
+            for k in 0..8 {
+                w[dst_row * 8 + k] = base[src_row * 8 + k];
+            }
+        }
+        // Spread the row magnitudes so the pivot is decided by more than the permutation.
+        for row in 0..4 {
+            let scale = rng.range(0.25, 4.0);
+            for k in 0..8 {
+                w[row * 8 + k] *= scale;
+            }
+        }
+        w
+    }
+
+    /// Sparse matrix (roughly 40 % exact zeros, so the `!= 0.0` factor skip fires) that
+    /// always keeps a non-zero permutation support so the system is not exactly singular.
+    fn sparse(rng: &mut SplitMix, perms: &[[usize; 4]]) -> CaseWords {
+        let mut w = dense(rng);
+        for pair in 0..16 {
+            if rng.below(10) < 4 {
+                w[pair * 2] = 0.0;
+                w[pair * 2 + 1] = 0.0;
+            }
+        }
+        let p = perms[rng.below(perms.len())];
+        for (row, &col) in p.iter().enumerate() {
+            let o = (row * 4 + col) * 2;
+            w[o] = rng.range(0.5, 2.0);
+            w[o + 1] = rng.range(-0.5, 0.5);
+        }
+        w
+    }
+
+    /// Small-integer palette: many exact magnitude ties, which is where the strict `>`
+    /// (first maximum wins) rule matters. Keeps a unit support so it stays solvable.
+    fn ties(rng: &mut SplitMix, perms: &[[usize; 4]]) -> CaseWords {
+        const PALETTE: [f32; 5] = [0.0, 1.0, -1.0, 2.0, -2.0];
+        let mut w = [0.0f32; CASE_FLOATS];
+        for v in &mut w {
+            *v = PALETTE[rng.below(PALETTE.len())];
+        }
+        let p = perms[rng.below(perms.len())];
+        for (row, &col) in p.iter().enumerate() {
+            let o = (row * 4 + col) * 2;
+            w[o] = 1.0;
+            w[o + 1] = 0.0;
+        }
+        w
+    }
+
+    fn build_cases() -> Vec<CaseWords> {
+        let perms = permutations4();
+        let mut rng = SplitMix(0x50_4C_56_34);
+        let mut cases = Vec::new();
+        for &perm in &perms {
+            for _ in 0..64 {
+                cases.push(permuted(&mut rng, perm));
+            }
+        }
+        for _ in 0..4096 {
+            cases.push(dense(&mut rng));
+        }
+        for _ in 0..4096 {
+            cases.push(sparse(&mut rng, &perms));
+        }
+        for _ in 0..4096 {
+            cases.push(ties(&mut rng, &perms));
+        }
+        cases
+    }
+
+    fn all_finite(words: &[u32]) -> bool {
+        words.iter().all(|&w| f32::from_bits(w).is_finite())
+    }
+
+    /// Largest allowed `|rolled - unrolled|` per component, relative to the largest
+    /// component magnitude of the rolled solution. f32 epsilon is 1.2e-7; a pivoted 4x4
+    /// complex elimination of these well-conditioned cases amplifies rounding by well under
+    /// 100x, so 1e-4 leaves a wide margin while any structural mistake is off by O(1).
+    const SOLVE4_RELATIVE_TOLERANCE: f64 = 1e-4;
+
+    /// `max |r_i - u_i| / max |r_i|` over one solution's eight words (0 for two zero
+    /// vectors).
+    fn relative_deviation(rolled: &[u32], unrolled: &[u32]) -> f64 {
+        let value = |w: u32| f64::from(f32::from_bits(w));
+        let scale = rolled.iter().map(|&w| value(w).abs()).fold(0.0, f64::max);
+        let worst = rolled
+            .iter()
+            .zip(unrolled)
+            .map(|(&r, &u)| (value(r) - value(u)).abs())
+            .fold(0.0, f64::max);
+        if scale > 0.0 { worst / scale } else { worst }
+    }
+
+    #[test]
+    fn unrolled_solve4_matches_rolled() {
+        let ctx = match GpuContext::acquire() {
+            Ok(ctx) => ctx,
+            Err(error) => {
+                assert!(
+                    std::env::var("INDICATRIX_REQUIRE_GPU")
+                        .ok()
+                        .is_none_or(|v| v != "1"),
+                    "INDICATRIX_REQUIRE_GPU=1 but no usable GPU adapter: {error}"
+                );
+                println!("skipping unrolled_solve4: no GPU adapter");
+                return;
+            }
+        };
+        let cases = build_cases();
+        let total = cases.len();
+        let flat: Vec<f32> = cases.iter().flat_map(|c| c.iter().copied()).collect();
+        let source = format!("{SHADER_SRC}\n{ROLLED_REFERENCE_WGSL}");
+        let in_buf = compute::upload(
+            &ctx.device,
+            "solve4 equivalence in",
+            &flat,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let out_buf = compute::zeroed_buffer::<u32>(
+            &ctx.device,
+            "solve4 equivalence out",
+            total * CASE_FLOATS,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let pipeline = compute::create_compute_pipeline(
+            &ctx.device,
+            "solve4_unrolled_equivalence_main",
+            &source,
+            "solve4_unrolled_equivalence_main",
+        );
+        let bind_group = compute::bind_buffers(
+            &ctx.device,
+            "solve4 equivalence bind group",
+            &pipeline,
+            &[(78, &in_buf), (79, &out_buf)],
+        );
+        let workgroups = u32::try_from(total)
+            .expect("the dispatched case count fits in u32")
+            .div_ceil(64);
+        compute::dispatch_and_wait(
+            &ctx.device,
+            &ctx.queue,
+            &pipeline,
+            &bind_group,
+            (workgroups, 1, 1),
+        );
+        let out: Vec<u32> =
+            compute::readback(&ctx.device, &ctx.queue, &out_buf, total * CASE_FLOATS);
+
+        let mut compared = 0usize;
+        let mut identical = 0usize;
+        let mut worst = 0.0_f64;
+        let mut skipped_non_finite = 0usize;
+        for (idx, words) in out.as_chunks::<CASE_FLOATS>().0.iter().enumerate() {
+            // (rolled, unrolled) word ranges: single, two-rhs b1, two-rhs b2.
+            let pairs = [(0..8, 8..16), (16..24, 32..40), (24..32, 40..48)];
+            for (rolled, unrolled) in pairs {
+                let (r, u) = (&words[rolled], &words[unrolled]);
+                match (all_finite(r), all_finite(u)) {
+                    (true, true) => {
+                        compared += 1;
+                        if r == u {
+                            identical += 1;
+                            continue;
+                        }
+                        let deviation = relative_deviation(r, u);
+                        worst = worst.max(deviation);
+                        assert!(
+                            deviation <= SOLVE4_RELATIVE_TOLERANCE,
+                            "case {idx}: unrolled solve4 differs from rolled by {deviation:e} \
+                             relative (tolerance {SOLVE4_RELATIVE_TOLERANCE:e}; input {:?})\n  \
+                             rolled:   {r:?}\n  unrolled: {u:?}",
+                            cases[idx]
+                        );
+                    }
+                    (false, false) => skipped_non_finite += 1,
+                    _ => panic!(
+                        "case {idx}: finite on one side only (input {:?})",
+                        cases[idx]
+                    ),
+                }
+            }
+        }
+        println!(
+            "unrolled_solve4: {compared} comparisons, {identical} bit-identical, largest \
+             relative deviation {worst:e}, {skipped_non_finite} skipped (non-finite on both \
+             sides), {total} cases"
+        );
+        assert!(
+            skipped_non_finite * 100 <= total * 3,
+            "too many non-finite comparisons ({skipped_non_finite} of {})",
+            total * 3
+        );
+    }
 }

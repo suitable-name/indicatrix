@@ -20,7 +20,7 @@ pub const MIN_EXPORT_SPP: u32 = 1;
 pub const MAX_EXPORT_SPP: u32 = 32768;
 
 /// Bounds for the export's max-bounce cap -- matches the ladder
-/// `export_dialog.slint`/`settings_dialog.slint` offer (4/8/12/24/64/128). The
+/// `export_dialog.slint`/the Parameters panel offer (4/8/12/24/64/128). The
 /// ceiling is 128 because `bounce_cost.rs` measurements found zero further image
 /// change up to a 1024-bounce reference. Validated defensively even though the
 /// dialog only ever sends one of the six rungs.
@@ -117,10 +117,10 @@ pub fn validate_export_params(
             "Width, height, sample count, and max bounces must all be positive.".to_string(),
         );
     }
-    let width = width as u32;
-    let height = height as u32;
-    let samples_per_pixel = samples_per_pixel as u32;
-    let max_bounces = max_bounces as u32;
+    let width = width.cast_unsigned();
+    let height = height.cast_unsigned();
+    let samples_per_pixel = samples_per_pixel.cast_unsigned();
+    let max_bounces = max_bounces.cast_unsigned();
 
     if width < MIN_EXPORT_DIM || height < MIN_EXPORT_DIM {
         return Err(format!(
@@ -222,19 +222,19 @@ mod tests {
     fn validate_export_params_accepts_boundary_values() {
         assert!(
             validate_export_params(
-                MIN_EXPORT_DIM as i32,
-                MIN_EXPORT_DIM as i32,
-                MIN_EXPORT_SPP as i32,
-                MIN_EXPORT_BOUNCES as i32,
+                MIN_EXPORT_DIM.cast_signed(),
+                MIN_EXPORT_DIM.cast_signed(),
+                MIN_EXPORT_SPP.cast_signed(),
+                MIN_EXPORT_BOUNCES.cast_signed(),
             )
             .is_ok()
         );
         assert!(
             validate_export_params(
-                MAX_EXPORT_DIM as i32,
-                MAX_EXPORT_DIM as i32,
-                MAX_EXPORT_SPP as i32,
-                MAX_EXPORT_BOUNCES as i32,
+                MAX_EXPORT_DIM.cast_signed(),
+                MAX_EXPORT_DIM.cast_signed(),
+                MAX_EXPORT_SPP.cast_signed(),
+                MAX_EXPORT_BOUNCES.cast_signed(),
             )
             .is_ok()
         );

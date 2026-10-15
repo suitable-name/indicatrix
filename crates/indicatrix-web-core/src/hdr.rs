@@ -47,7 +47,13 @@ pub const fn web_hdr_limits() -> HdrLimits {
 #[must_use]
 pub fn render_worker_count(hardware_concurrency: f64) -> u32 {
     let cores = if hardware_concurrency.is_finite() && hardware_concurrency >= 1.0 {
-        hardware_concurrency.min(64.0) as u32
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the value is finite and in 1.0..=64.0 here"
+        )]
+        let whole = hardware_concurrency.min(64.0) as u32;
+        whole
     } else {
         1
     };
@@ -347,7 +353,10 @@ mod tests {
     fn the_largest_map_the_caps_allow_still_fits_one_worker() {
         // 8192 x 4096 texels in a file padded to the 64 MiB cap: the worst case.
         let mut bytes = header("-Y 4096 +X 8192");
-        bytes.resize(MAX_HDR_FILE_BYTES as usize, 0);
+        bytes.resize(
+            usize::try_from(MAX_HDR_FILE_BYTES).expect("the 64 MiB cap fits usize"),
+            0,
+        );
         let admitted = admit_hdr(&bytes, 8, true).expect("admitted");
         assert_eq!(
             admitted.per_worker_bytes,

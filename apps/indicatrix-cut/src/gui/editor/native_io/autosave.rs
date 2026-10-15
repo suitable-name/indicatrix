@@ -4,7 +4,9 @@
 
 use super::{
     atomic_write::{temp_sibling, write_synced},
-    design_paths::{autosave_file_name, is_autosave_file_name, legacy_autosave_file_name},
+    design_paths::{
+        autosave_file_name, is_autosave_file_name, legacy_extension_autosave_file_name,
+    },
     save_helpers::{custom_material_snapshot_for_save, design_file_text},
 };
 use crate::{
@@ -48,12 +50,30 @@ thread_local! {
     static LAST_AUTOSAVE_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
+/// Stops and drops the autosave timer a previous main window started. The timer's callback owns
+/// a clone of the window's `Arc<Mutex<Database>>`, so without this the design library stays open
+/// (and its file locked) for as long as the thread lives. See `gui::window_release`.
+pub(super) fn release_window_state() {
+    let old = AUTOSAVE_TIMER.with(|cell| cell.borrow_mut().take());
+    drop(old);
+    LAST_AUTOSAVE_PATH.with(|cell| cell.borrow_mut().take());
+}
+
+/// Names this module's holder in `out` while it is still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(super) fn note_holders(out: &mut Vec<&'static str>) {
+    if AUTOSAVE_TIMER.with(|cell| cell.borrow().is_some()) {
+        out.push("editor::native_io::autosave AUTOSAVE_TIMER (vault)");
+    }
+}
+
 /// Takes the path of the recovery file the last autosave tick wrote, if any tick has
 /// run since the previous take.
 ///
 /// A landed save deletes this file (via the listener [`setup_autosave_timer`]
 /// registers), not just [`autosave_path`] of its own file name: the autosave is named
-/// after the design's name AT THE TIME of the tick (`untitled.autosave.indicatrix`
+/// after the design's name AT THE TIME of the tick (`untitled.autosave.isdd`
 /// for a design never saved), which is not the name the save gives it. Deleting only the
 /// file named after the new name left the untitled one behind, and the "Recover unsaved
 /// work?" prompt came back on every start.
@@ -67,16 +87,16 @@ fn take_last_autosave_path() -> Option<PathBuf> {
 ///
 /// # Recovery
 ///
-/// The autosave lands at [`autosave_path`]: `<name>.autosave.indicatrix` inside
+/// The autosave lands at [`autosave_path`]: `<name>.autosave.isdd` inside
 /// this app's OWN settings directory (`settings::store::default_settings_path`'s
 /// parent directory), never beside the cutter's real save location and never the
 /// cutter's real design file (this design's own path isn't tracked here). After a
 /// crash, the startup prompt offers it, or a cutter chooses File > Open and browses
-/// to that file directly; it opens exactly like any other `.indicatrix` design file.
+/// to that file directly; it opens exactly like any other `.isdd` design file.
 ///
 /// The autosave is a complete design file (see [`design_file_text`]), carrying every
-/// tier in full, so restoring it needs nothing else on disk. Autosaves written by
-/// older versions (`<name>.indicatrix.autosave.toml`) are still found and opened.
+/// tier in full, so restoring it needs nothing else on disk. A leftover
+/// `<name>.autosave.indicatrix` written by an earlier version is still found and opened.
 pub(super) fn setup_autosave_timer(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -185,20 +205,20 @@ fn autosave_dir() -> PathBuf {
         .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf)
 }
 
-/// Where [`run_autosave_tick`] writes: `<name>.autosave.indicatrix` inside this app's
+/// Where [`run_autosave_tick`] writes: `<name>.autosave.isdd` inside this app's
 /// own settings directory.
 pub(super) fn autosave_path(asc_filename: Option<&str>) -> PathBuf {
     autosave_dir().join(autosave_file_name(asc_filename))
 }
 
 /// Removes the recovery files for the design recorded as `asc_filename`, in both the
-/// current (`<name>.autosave.indicatrix`) and the older
-/// (`<name>.indicatrix.autosave.toml`) naming. Errors are ignored: a missing file is the
+/// current (`<name>.autosave.isdd`) and the earlier-version
+/// (`<name>.autosave.indicatrix`) naming. Errors are ignored: a missing file is the
 /// ordinary case.
 pub(super) fn delete_autosaves_for(asc_filename: Option<&str>) {
     let dir = autosave_dir();
     let _ = std::fs::remove_file(dir.join(autosave_file_name(asc_filename)));
-    let _ = std::fs::remove_file(dir.join(legacy_autosave_file_name(asc_filename)));
+    let _ = std::fs::remove_file(dir.join(legacy_extension_autosave_file_name(asc_filename)));
 }
 
 /// This is the startup check for a leftover autosave file, exposed for
@@ -209,7 +229,7 @@ pub(super) fn delete_autosaves_for(asc_filename: Option<&str>) {
 ///
 /// Scans [`autosave_path`]'s own directory (never recurses -- there is nothing to
 /// recurse into, every autosave lands flat in this one app-settings directory) for
-/// any `*.autosave.indicatrix` file (or an older `*.indicatrix.autosave.toml` one) and
+/// any `*.autosave.isdd` file (or an earlier version's `*.autosave.indicatrix` one) and
 /// returns the most recently modified one, if any. Does not open or delete anything itself: a leftover file only means SOME
 /// past session was dirty when it stopped ticking (a real crash, or simply the
 /// window closing between one 120-second tick and the next), never that the design
@@ -227,7 +247,7 @@ pub(in crate::gui::editor) fn find_leftover_autosave() -> Option<PathBuf> {
         .max_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
 }
 
-/// Every autosave file (either naming) currently on disk, in
+/// Every autosave file (either extension) currently on disk, in
 /// [`find_leftover_autosave`]'s own directory -- that function's own list, minus
 /// the "keep only the newest" reduction. An older leftover from a DIFFERENT
 /// design than the one just offered is neither opened nor removed by this
@@ -288,7 +308,7 @@ pub(super) fn write_autosave(path: &Path, native_toml: &str) -> Result<(), Strin
 /// refreshes `MainWindow.recent_native_files` so File > Open Recent reflects it
 /// immediately, with no restart needed. Called after every successful Save
 /// and Open (both the picker and File > Open Recent itself, since both funnel
-/// through [`commit_loaded_native`]) -- never for [`open_plain_asc`]'s bare-`.asc`
+/// through [`open_design_file`]) -- never for [`open_plain_asc`]'s bare-`.asc`
 /// path, which has no design file to name.
 ///
 /// The entry goes through the application's [`SettingsPersister`] (the handle

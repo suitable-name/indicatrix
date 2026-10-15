@@ -15,11 +15,11 @@ export global UserGuideModel {
 
     out property <[GuideSectionText]> sections: [
         {
-            heading: "Start a design",
-            body: "File > New Design starts from Empty or one of five built-in templates. File > Open (or dropping files on the page) reads .indicatrix design files (self-contained; File > Save design writes one), .asc files, an older pair (.asc plus a .indicatrix.toml sidecar, opened together), and GemCAD .gem / .gcs files. Help > Guided walkthrough builds a stone step by step.",
+            heading: "Start a Design",
+            body: "File > New Design starts from Empty or one of nine built-in templates. File > Open (or dropping files on the page) reads .isdd design files (self-contained; File > Save design writes one; older .indicatrix files open too), .asc files, and GemCAD .gem / .gcs files. Help > Guided walkthrough builds a stone step by step.",
         },
         {
-            heading: "Edit in the Design dock",
+            heading: "Edit in the Design Dock",
             body: "The tier table lists every tier: double-click an angle to edit it (Enter applies), Ctrl+wheel nudges it, and the buttons above the table add, delete, mirror and complete tiers. The inspector below it has four tabs: Tier (the selected tier's form and facets), Preform (the starting rough, proportions and yield), Optimize (a coordinate search for the best angles) and Schedule (the cutting instructions). Design > Design settings changes the material, index gear, symmetry and printed proportions. Ctrl+Z / Ctrl+Y undo and redo.",
         },
         {
@@ -31,15 +31,15 @@ export global UserGuideModel {
             body: "Render traces the stone's light path on your CPU cores, adds samples until the target is reached, then denoises the result. Drag to orbit; the settings panel sets exposure, light, backdrop, bounces and an optional .hdr environment map. The numbers at the bottom left are the stone's brilliance, fire, scintillation, windowing and extinction for the pose on screen, and the Tilt Curve button plots them against tilt. Solid shows the flat-shaded stone and Diagram the crown, pavilion and profile drawings; click a facet to select its tier, double-click a diagram panel to enlarge it. In a small window the Diagram tab opens on the Crown panel alone (so its labels stay readable); click the highlighted panel button again for all three.",
         },
         {
-            heading: "Change the stone with the mouse",
+            heading: "Change the Stone with the Mouse",
             body: "In the Solid tab, select a facet: three handles appear. Drag A to tilt the tier, D to move it in or out, I to turn it around the index wheel. Shift snaps finely, Esc cancels, and one drag is one undo step. The Slice button (or S) cuts a new facet along a line you draw; Enter keeps it, Esc drops it, F cuts the other side.",
         },
         {
-            heading: "Save and export",
-            body: "Nothing is uploaded. Save design (.indicatrix) and Save .asc download files through your browser; Ctrl+S saves the design. File > Export PNG renders a still at a chosen size (up to 4096 px) and color space. The cutting sheet (HTML) and the diagram (PNG) download as well. Save the design to keep everything in one file, including the design's history and a custom material. An older pair (.asc plus .indicatrix.toml sidecar) can still be saved from the File menu.",
+            heading: "Save and Export",
+            body: "Nothing is uploaded. Save design (.isdd) and Save .asc download files through your browser; Ctrl+S saves the design. File > Export PNG renders a still at a chosen size (up to 4096 px) and color space. The cutting sheet (HTML) and the diagram (PNG) download as well. Save the design to keep everything in one file, including the design's history and a custom material.",
         },
         {
-            heading: "What the browser remembers",
+            heading: "What the Browser Remembers",
             body: "Your settings, the current design and the walkthrough's place are kept in this tab's session storage, so a reload brings them back. Closing the tab forgets them; download the design first. Private windows may block storage, in which case the app simply starts empty.",
         },
         {
@@ -96,7 +96,7 @@ export component UserGuideDialog inherits Rectangle {
             spacing: 8px;
 
             Text {
-                text: "User guide";
+                text: "User Guide";
                 font-size: 14px;
                 font-weight: 700;
                 color: Theme.text-primary;

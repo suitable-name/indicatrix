@@ -12,8 +12,14 @@
 //!   two cameras, a cube with a holder in the rig, and the irregular mesh in immersion
 //!   (`surround_n` equal to the stone index).
 //! * **Five colour cases** ([`ColourCase`]): uniform pale, uniform saturated, bicolour, a
-//!   "watermelon" prism core, a sector. The spectra are sums of Gaussian bands, which are NOT in
-//!   the smooth basis the solver fits (model B), so a recovery test also checks the model error.
+//!   "watermelon" prism core, a sector. The spectra are sums of Gaussian bands of PHYSICAL width
+//!   (round 5, ZC-6): colour-bearing crystal-field absorptions have a FWHM of 2000 to 4000
+//!   cm^-1, a wavelength sigma of 25 to 50 nm, which the 25 nm basis of the fit
+//!   ([`FIT_BASIS_NM`]) can represent. They are still not exactly in the basis, so a recovery
+//!   test also checks the model error, and every failure report prints the projection of the
+//!   truth onto the basis ([`projection_errors`]). One case with 700 cm^-1 lines
+//!   ([`ColourCase::NarrowLineBicolour`], the width of spin-forbidden lines, which carry little
+//!   colour) is kept as an explicit model-class test, judged against its own projection.
 //!   [`ColourCase::Banded`] (base, half space, prism and sector together) exists for the
 //!   benchmark only.
 //! * **Rig photos**, two independent ways:
@@ -31,14 +37,7 @@
 
 #![allow(
     dead_code,
-    clippy::needless_range_loop,
-    clippy::many_single_char_names,
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::type_complexity,
-    clippy::similar_names,
-    reason = "a shared fixture module: each test target and the example use a subset, and the \
-              small dense loops read better as written"
+    reason = "a shared fixture module: each test target and the example use a subset"
 )]
 
 use std::{
@@ -72,12 +71,13 @@ use indicatrix_cut_core::rough_plan::{
             ForwardInput, ForwardOptions, ForwardRecords, PanelGeom, RigLighting, StoneIndex,
             SurfaceClass, SurfaceMap, ViewTraceInput, evaluate, trace_rig,
         },
-        solve::{ColourFit, FitConfig, ObservedView},
+        solve::{ColourFit, FIT_BASIS_NM, FitConfig, ObservedView, SmoothBasisModel},
     },
     locate::{Projection, RigProfile, Rigid, Scene, ViewPose, box_mesh},
     photometry::{
-        COMPRESSION_SIGMA_ENCODED, LinearImage, NoiseModel, SourceKind, WorkingGrid,
-        decode_standard_bytes, encoding_variance_with, estimate_compression_sigma, linear_to_srgb,
+        CalibrationFrames, JPEG_BLOCK, LinearImage, NoiseModel, PixelMask, ResampleOptions,
+        TransmittanceOptions, ViewCalibration, WorkingGrid, decode_standard_bytes, flag,
+        linear_to_srgb,
     },
     shape::RoughMesh,
 };
@@ -229,6 +229,30 @@ const ICOSAHEDRON_TRIANGLES: [[u32; 3]; 20] = [
     [9, 8, 1],
 ];
 
+/// A fixture size or index as `u32`; the fixture meshes and pictures are far below `u32::MAX`.
+fn u32_of(n: usize) -> u32 {
+    u32::try_from(n).expect("a fixture size fits u32")
+}
+
+/// An f64 value narrowed to the f32 the rig and tracer APIs take.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the precision of the APIs under test; the fixture values are in the normal float range"
+)]
+const fn f32_of(v: f64) -> f32 {
+    v as f32
+}
+
+/// A rounded, in-range channel value as a byte.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers pass a value rounded within 0..=255; the saturating cast is the intent"
+)]
+const fn byte_of(v: f32) -> u8 {
+    v as u8
+}
+
 fn edge_midpoint(
     vertices: &mut Vec<DVec3>,
     cache: &mut BTreeMap<(u32, u32), u32>,
@@ -240,7 +264,7 @@ fn edge_midpoint(
         return index;
     }
     let middle = ((vertices[a as usize] + vertices[b as usize]) * 0.5).normalize();
-    let index = vertices.len() as u32;
+    let index = u32_of(vertices.len());
     vertices.push(middle);
     cache.insert(key, index);
     index
@@ -319,7 +343,7 @@ fn polished_windows(mesh: &RoughMesh) -> SurfaceMap {
         let [a, b, c] = triangle.map(|i| vertices[i as usize]);
         let normal = (b - a).cross(c - a).normalize_or_zero();
         if directions.iter().any(|d| normal.dot(*d) > 0.8) {
-            map = map.with_override(index as u32, SurfaceClass::Polished);
+            map = map.with_override(u32_of(index), SurfaceClass::Polished);
         }
     }
     map
@@ -416,6 +440,10 @@ pub enum ColourCase {
     WatermelonPrism,
     /// A 90 degree wedge about Z.
     Sector,
+    /// The bicolour base with 700 cm^-1 lines (sigma 9 to 12 nm), narrower than anything the
+    /// fit basis can represent: a model-class case, not part of [`Self::ALL`]. Its criterion is
+    /// the projection of the truth onto the basis plus the RAW limit (see `recovery.rs`).
+    NarrowLineBicolour,
     /// Base, half space, prism core and sector: three shaped zones (the benchmark).
     Banded,
 }
@@ -439,12 +467,32 @@ impl ColourCase {
             Self::Bicolour => "bicolour",
             Self::WatermelonPrism => "watermelon prism",
             Self::Sector => "sector",
+            Self::NarrowLineBicolour => "bicolour with 700 cm^-1 lines",
             Self::Banded => "banded (4 zones)",
         }
     }
 }
 
-/// A zone absorption from `(centre nm, sigma nm, peak per mm)` Gaussian bands.
+/// The FWHM, in cm^-1, of the colour-bearing bands of the truths: 2200 cm^-1 is a wavelength
+/// sigma of 27 nm at 540 nm and 36 nm at 625 nm, inside the 25 to 50 nm of the crystal-field
+/// absorptions of Cr3+, V3+, Fe2+/Ti4+ and Mn3+ (FWHM 2000 to 4000 cm^-1).
+pub const PHYSICAL_FWHM_CM: f32 = 2200.0;
+/// The FWHM, in cm^-1, of the lines of [`ColourCase::NarrowLineBicolour`] (sigma 9 to 12 nm).
+pub const NARROW_LINE_FWHM_CM: f32 = 700.0;
+
+/// The three-band red/orange/green absorption of the bicolour base, scaled by `scale`, with
+/// bands of `fwhm_cm` (cm^-1): peaks 0.04, 0.03 and 0.024 per mm at 580, 625 and 540 nm.
+#[must_use]
+pub fn three_band_zone(scale: f32, fwhm_cm: f32) -> ZoneAbsorption {
+    band_zone(&[
+        (580.0, fwhm_cm, 0.04 * scale),
+        (625.0, fwhm_cm, 0.03 * scale),
+        (540.0, fwhm_cm, 0.024 * scale),
+    ])
+}
+
+/// A zone absorption from `(centre nm, FWHM cm^-1, peak per mm)` Gaussian energy bands
+/// ([`AbsorptionBand::energy`]).
 #[must_use]
 pub fn band_zone(bands: &[(f32, f32, f32)]) -> ZoneAbsorption {
     ZoneAbsorption::per_mm(AbsorptionTensor::isotropic(
@@ -528,19 +576,29 @@ impl Truth {
                 None,
                 Some(band_zone(&[(545.0, 2600.0, 0.2), (390.0, 3500.0, 0.16)])),
             ),
-            ColourCase::Bicolour => (
-                zoned(
-                    band_zone(&[(580.0, 700.0, 0.04), (625.0, 700.0, 0.03), (540.0, 700.0, 0.024)]),
-                    vec![half_space(band_zone(&[(545.0, 2600.0, 0.2), (390.0, 3500.0, 0.16)]))],
-                ),
-                None,
-            ),
+            ColourCase::Bicolour | ColourCase::NarrowLineBicolour => {
+                let fwhm = if case == ColourCase::NarrowLineBicolour {
+                    NARROW_LINE_FWHM_CM
+                } else {
+                    PHYSICAL_FWHM_CM
+                };
+                (
+                    zoned(
+                        three_band_zone(1.0, fwhm),
+                        vec![half_space(band_zone(&[
+                            (545.0, 2600.0, 0.2),
+                            (390.0, 3500.0, 0.16),
+                        ]))],
+                    ),
+                    None,
+                )
+            }
             ColourCase::WatermelonPrism => (
                 zoned(
                     band_zone(&[(545.0, 2600.0, 0.1), (390.0, 3500.0, 0.08)]),
                     vec![Zone {
                         shape: watermelon_prism(),
-                        absorption: band_zone(&[(580.0, 700.0, 0.08), (625.0, 700.0, 0.06), (540.0, 700.0, 0.048)]),
+                        absorption: three_band_zone(2.0, PHYSICAL_FWHM_CM),
                     }],
                 ),
                 None,
@@ -550,7 +608,7 @@ impl Truth {
                     band_zone(&[(545.0, 2600.0, 0.04), (390.0, 3500.0, 0.032)]),
                     vec![Zone {
                         shape: sector_wedge(),
-                        absorption: band_zone(&[(580.0, 700.0, 0.06), (625.0, 700.0, 0.045), (540.0, 700.0, 0.036)]),
+                        absorption: three_band_zone(1.5, PHYSICAL_FWHM_CM),
                     }],
                 ),
                 None,
@@ -562,11 +620,11 @@ impl Truth {
                         half_space(band_zone(&[(545.0, 2600.0, 0.2), (390.0, 3500.0, 0.16)])),
                         Zone {
                             shape: watermelon_prism(),
-                            absorption: band_zone(&[(580.0, 700.0, 0.08), (625.0, 700.0, 0.06), (540.0, 700.0, 0.048)]),
+                            absorption: three_band_zone(2.0, PHYSICAL_FWHM_CM),
                         },
                         Zone {
                             shape: sector_wedge(),
-                            absorption: band_zone(&[(580.0, 700.0, 0.04), (625.0, 700.0, 0.03), (540.0, 700.0, 0.024)]),
+                            absorption: three_band_zone(1.0, PHYSICAL_FWHM_CM),
                         },
                     ],
                 ),
@@ -682,6 +740,109 @@ pub fn face_up_errors(fit: &ColourFit, truth: &Truth) -> Vec<FaceUpError> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The truth projected onto the fit basis (model class)
+// ---------------------------------------------------------------------------------------------
+
+/// The non-negative amplitudes (per mm) of [`FIT_BASIS_NM`] that best represent the absorption
+/// of `zone` of the truth in the least-squares sense on the 5 nm grid from 400 to 700 nm: the
+/// same grid and norm as the solver's own projection, so this IS the closest spectrum the fit
+/// can reach. Cyclic coordinate descent on the 14 amplitudes (a fixed number of sweeps, so it is
+/// deterministic).
+#[must_use]
+pub fn projected_amplitudes(truth: &Truth, zone: usize) -> Vec<f64> {
+    let bands = FIT_BASIS_NM.len();
+    let grid: Vec<f64> = (0..=60)
+        .map(|i| 5.0_f64.mul_add(f64::from(i), 400.0))
+        .collect();
+    let target: Vec<f64> = grid.iter().map(|&l| truth.alpha(zone, l)).collect();
+    let table: Vec<Vec<f64>> = (0..bands)
+        .map(|k| {
+            grid.iter()
+                .map(|&l| SmoothBasisModel::basis(k, l))
+                .collect()
+        })
+        .collect();
+    let norms: Vec<f64> = table
+        .iter()
+        .map(|column| column.iter().map(|v| v * v).sum::<f64>())
+        .collect();
+    let mut amplitude = vec![0.0_f64; bands];
+    let mut residual = target;
+    for _ in 0..20_000 {
+        let mut largest_step = 0.0_f64;
+        for k in 0..bands {
+            let gradient: f64 = table[k].iter().zip(&residual).map(|(b, r)| b * r).sum();
+            let updated = (amplitude[k] + gradient / norms[k]).max(0.0);
+            let step = updated - amplitude[k];
+            if step != 0.0 {
+                for (r, b) in residual.iter_mut().zip(&table[k]) {
+                    *r -= step * b;
+                }
+                amplitude[k] = updated;
+            }
+            largest_step = largest_step.max(step.abs());
+        }
+        if largest_step < 1e-13 {
+            break;
+        }
+    }
+    amplitude
+}
+
+/// The absorption, per mm, of `amplitudes` on [`FIT_BASIS_NM`] at `lambda_nm`.
+#[must_use]
+pub fn projected_alpha(amplitudes: &[f64], lambda_nm: f64) -> f64 {
+    amplitudes
+        .iter()
+        .enumerate()
+        .map(|(k, a)| a * SmoothBasisModel::basis(k, lambda_nm))
+        .sum()
+}
+
+/// The largest difference, per mm, between the truth of `zone` and its projection onto
+/// [`FIT_BASIS_NM`] on the 5 nm grid from 400 to 700 nm.
+#[must_use]
+pub fn projection_max_alpha_error(truth: &Truth, zone: usize) -> f64 {
+    let amplitudes = projected_amplitudes(truth, zone);
+    (0..=60)
+        .map(|i| {
+            let lambda = 5.0_f64.mul_add(f64::from(i), 400.0);
+            (truth.alpha(zone, lambda) - projected_alpha(&amplitudes, lambda)).abs()
+        })
+        .fold(0.0, f64::max)
+}
+
+/// CIEDE2000 between the true face-up colour of every zone at 7 and 12 mm under D65 and A and
+/// the colour of the truth's best representation on [`FIT_BASIS_NM`] (round 5, ZC-6): the error a
+/// PERFECT fit of the model class would still make. Same order as [`face_up_errors`]. A case
+/// whose projection error is not far below the criterion tests the model class, not the solver.
+#[must_use]
+pub fn projection_errors(truth: &Truth) -> Vec<FaceUpError> {
+    let mut out = Vec::new();
+    for zone in 0..truth.zone_count() {
+        let amplitudes = projected_amplitudes(truth, zone);
+        for size_mm in SIZES_MM {
+            let path = f64::from(MODEL_UNIT_FACE_UP_PATH) * size_mm;
+            for illuminant in illuminants() {
+                let projected = body_color(
+                    |lambda| projected_alpha(&amplitudes, lambda),
+                    path,
+                    illuminant,
+                )
+                .lab;
+                out.push(FaceUpError {
+                    zone,
+                    size_mm,
+                    illuminant,
+                    delta_e: delta_e_2000(truth.face_up_lab(zone, size_mm, illuminant), projected),
+                });
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------------
 // Noise and tiers
 // ---------------------------------------------------------------------------------------------
 
@@ -713,6 +874,13 @@ impl NoiseSpec {
     }
 }
 
+/// The relative error the JPEG round trip may leave in a photo beyond the Gaussian noise: the
+/// generator's flat-field tolerance (1.5 codes through the sRGB curve,
+/// `a_flat_field_survives_the_jpeg_round_trip_within_quantisation`) at the brightest level it
+/// checks, 1.5 %, the smallest tolerance over those levels (the darker ones allow more). It is
+/// the JPEG tier's [`Tier::systematic`] figure.
+pub const JPEG_SYSTEMATIC: f64 = 0.015;
+
 /// The two accuracy tiers of section 10.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -723,7 +891,9 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// The CIEDE2000 limit of the predicted face-up colour (1.5 RAW, 3.0 JPEG).
+    /// The CIEDE2000 figure of plan section 10.1 (1.5 RAW, 3.0 JPEG). Since 2026-10-12
+    /// `recovery.rs` asserts it as the floor of the metamer allowance and counts how often it is
+    /// met on its own.
     #[must_use]
     pub const fn face_up_limit(self) -> f64 {
         match self {
@@ -732,13 +902,25 @@ impl Tier {
         }
     }
 
-    /// The limit of the leave-one-view-out median (2.0 for RAW; the JPEG tier gets 3.0, the
-    /// plan states no separate figure).
+    /// The relative systematic error of the tier's photos beyond the Gaussian noise, which the
+    /// chi-square budget of `recovery.rs` allows the fit to chase: 0 for RAW (its photos are
+    /// computed from the very records the fit evaluates) and [`JPEG_SYSTEMATIC`], 1.5 %, for
+    /// JPEG (the generator's flat-field tolerance of one and a half 8-bit codes through the sRGB
+    /// curve at the brightest level it checks).
+    #[must_use]
+    pub const fn systematic(self) -> f64 {
+        match self {
+            Self::Raw => 0.0,
+            Self::Jpeg => JPEG_SYSTEMATIC,
+        }
+    }
+
+    /// The limit of the leave-one-view-out median: 2.0 for both tiers, as plan section 10.1 lists
+    /// it without a tier qualifier (round 5, ZC-16; the first version gave the JPEG tier 3.0).
     #[must_use]
     pub const fn lovo_limit(self) -> f64 {
         match self {
-            Self::Raw => 2.0,
-            Self::Jpeg => 3.0,
+            Self::Raw | Self::Jpeg => 2.0,
         }
     }
 
@@ -768,10 +950,14 @@ pub enum Light {
 /// Which spectrum the backlight and the camera see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spectrum {
-    /// A 5000 K LED over 400 to 700 nm in 8 bins.
+    /// A 5000 K CIE LED illuminant over 400 to 700 nm in 8 bins of 8 evaluation points (4.7
+    /// nm). The table is verified against the CIE's 1 nm file (`indicatrix::color::led`).
     Led,
-    /// The spectrum of the main tracer's white environment over 380 to 780 nm in 40 bins, so
-    /// that forward and main tracer weigh every wavelength alike.
+    /// The spectrum of the main tracer's white environment over 380 to 780 nm in 40 bins of 4
+    /// evaluation points (2.5 nm), so that forward and main tracer weigh every wavelength alike.
+    /// The midpoint rule's error for a 23 nm sigma band is nil at any spacing used here
+    /// (aliasing `2 exp(-2 pi^2 sigma^2 / h^2)`, see `forward/mod.rs` "Spectral quadrature"),
+    /// so a persistent cross-check bias is a transport question, not a quadrature one (ZC-2).
     EnvironmentWhite,
 }
 
@@ -868,7 +1054,7 @@ pub fn environment_white_grid() -> [f64; GRID_LEN] {
     let mut grid = [0.0; GRID_LEN];
     for (i, slot) in grid.iter_mut().enumerate() {
         let lambda = GRID_STEP_NM.mul_add(i as f64, GRID_FIRST_NM);
-        *slot = f64::from(rgb_to_spectral_radiance([1.0, 1.0, 1.0], lambda as f32)).max(0.0);
+        *slot = f64::from(rgb_to_spectral_radiance([1.0, 1.0, 1.0], f32_of(lambda))).max(0.0);
     }
     grid
 }
@@ -932,14 +1118,14 @@ impl Setup {
                 BacklightSpectrum::from_cct_k(5000.0).expect("an LED spectrum"),
                 [400.0, 700.0],
                 8,
-                2,
+                8,
             ),
             Spectrum::EnvironmentWhite => (
                 BacklightSpectrum::from_grid(&environment_white_grid())
                     .expect("the white environment spectrum"),
                 [380.0, 780.0],
                 40,
-                1,
+                4,
             ),
         };
         let index = if spec.dispersion {
@@ -1010,12 +1196,15 @@ impl Setup {
 }
 
 /// The solver settings that keep the tests quick (the bench uses `FitConfig::default()`). The
-/// priors are the SHIPPED defaults (smoothness sigma 0.5, the gain split of round 2): a test must
-/// not fit with a prior the application does not use.
+/// priors, the host and the common gain are the SHIPPED defaults: model B alone (`host_id`
+/// `None`, owner decision 2; a chromophore model next to it would double the solve time and could
+/// be the one that is reported), the Gaussian-process smoothness and L1 magnitude priors of
+/// round 5, the gain split of round 2 and `fix_common_gain` (the white frames fix the common
+/// exposure, ZC-5). A test must not fit with a setting the application does not use.
 #[must_use]
 pub fn quick_fit_config(threads: usize) -> FitConfig {
     FitConfig {
-        host_id: Some("spinel".into()),
+        host_id: None,
         seeds: 4,
         stage1_iterations: 10,
         finalists: 1,
@@ -1063,8 +1252,8 @@ pub fn photos_forward(
                 for c in 0..3 {
                     let clean = gain * f64::from(prediction.rgb[p][c]);
                     let var = noise.transmittance_variance(clean).max(1e-9);
-                    values[p][c] = var.sqrt().mul_add(rng.gauss(), clean) as f32;
-                    variance[p][c] = var as f32;
+                    values[p][c] = f32_of(var.sqrt().mul_add(rng.gauss(), clean));
+                    variance[p][c] = f32_of(var);
                 }
             }
             ObservedView {
@@ -1082,13 +1271,15 @@ pub fn photos_forward(
 fn encode_jpeg(width: usize, height: usize, pixels: &[[f32; 3]], quality: u8) -> Vec<u8> {
     let mut raw = Vec::with_capacity(pixels.len() * 3);
     for pixel in pixels {
-        for c in 0..3 {
-            raw.push((linear_to_srgb(pixel[c].clamp(0.0, 1.0)) * 255.0).round() as u8);
+        for &channel in pixel {
+            raw.push(byte_of(
+                (linear_to_srgb(channel.clamp(0.0, 1.0)) * 255.0).round(),
+            ));
         }
     }
     let mut bytes = Vec::new();
     JpegEncoder::new_with_quality(&mut bytes, quality)
-        .encode(&raw, width as u32, height as u32, ExtendedColorType::Rgb8)
+        .encode(&raw, u32_of(width), u32_of(height), ExtendedColorType::Rgb8)
         .expect("the JPEG encodes");
     bytes
 }
@@ -1125,30 +1316,33 @@ fn extend_into_invalid(width: usize, height: usize, values: &mut [[f64; 3]], val
         let before = values.to_vec();
         for y in 0..height {
             for x in 0..width {
-                let i = y * width + x;
-                if snapshot[i] {
+                let index = y * width + x;
+                if snapshot[index] {
                     continue;
                 }
                 let mut sum = [0.0_f64; 3];
                 let mut count = 0.0;
-                for (dx, dy) in [(-1_i64, 0_i64), (1, 0), (0, -1), (0, 1)] {
-                    let (nx, ny) = (x as i64 + dx, y as i64 + dy);
-                    if nx < 0 || ny < 0 || nx >= width as i64 || ny >= height as i64 {
+                for (dx, dy) in [(-1_isize, 0_isize), (1, 0), (0, -1), (0, 1)] {
+                    let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy))
+                    else {
+                        continue;
+                    };
+                    if nx >= width || ny >= height {
                         continue;
                     }
-                    let j = ny as usize * width + nx as usize;
-                    if snapshot[j] {
-                        for c in 0..3 {
-                            sum[c] += before[j][c];
+                    let near = ny * width + nx;
+                    if snapshot[near] {
+                        for (acc, value) in sum.iter_mut().zip(&before[near]) {
+                            *acc += value;
                         }
                         count += 1.0;
                     }
                 }
                 if count > 0.0 {
-                    for c in 0..3 {
-                        values[i][c] = sum[c] / count;
+                    for (value, total) in values[index].iter_mut().zip(&sum) {
+                        *value = total / count;
                     }
-                    known[i] = true;
+                    known[index] = true;
                 }
             }
         }
@@ -1161,18 +1355,30 @@ fn extend_into_invalid(width: usize, height: usize, values: &mut [[f64; 3]], val
     }
 }
 
-/// The JPEG variant of [`photos_forward`]: the stone frame (white level times the prediction
-/// times the gain, plus the noise of `noise`, the pixels outside the stone extended from their
-/// neighbours) and a flat white frame are encoded as 8-bit sRGB JPEG, decoded through the
-/// photometry lane's [`decode_standard_bytes`], and divided (`t = stone / white`, no dark frame).
-/// The stated variance is the one the photometry lane gives such a pair: the noise plus the
-/// encoding variance ([`encoding_variance_with`], quantisation and compression) of the stone and of
-/// the white frame, `(var_s + t^2 var_w) / w^2`.
+/// The JPEG variant of [`photos_forward`], run through the photometry lane's own pipeline (S2).
+///
+/// The JPEG block-DC error is a property of the photo's 8 x 8 block grid, so the photo is built at
+/// [`JPEG_BLOCK`] times the working resolution: every working pixel is one aligned 8 x 8 block of
+/// photo pixels whose cell mean is the prediction (white level times the prediction times the
+/// gain, the pixels outside the stone extended from their neighbours), reconstructed piecewise
+/// linearly from the cell-mean slopes so that the photo is smooth like a real one. Each photo
+/// pixel carries the sensor noise of `noise` scaled by `JPEG_BLOCK^2` (so a working pixel keeps
+/// the stated noise after the average). The stone frame and a white frame at [`WHITE_LEVEL`] with
+/// the same sensor noise are encoded as 8-bit sRGB JPEG, decoded through
+/// [`decode_standard_bytes`], calibrated with `ViewCalibration::transmittance_masked` (outside
+/// pixels masked, the compression terms estimated from the frames: per-pixel and block-DC) and
+/// area-averaged onto the working grid with `TransmittanceImage::to_working`. The stated variance
+/// is the one that pipeline propagates, so it is by construction what the application states for
+/// such a photo.
 ///
 /// # Panics
 ///
-/// When the codec fails or the decoded frames differ in size.
+/// When the codec fails, the decoded frames differ in size, or the calibration is refused.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pipeline (prediction, JPEG frames, calibration, working grid) read top to bottom"
+)]
 pub fn photos_jpeg(
     records: &ForwardRecords,
     truth: &Truth,
@@ -1201,54 +1407,127 @@ pub fn photos_jpeg(
                 })
                 .collect();
             extend_into_invalid(width, height, &mut transmittance, &prediction.valid);
-            let mut stone = vec![[0.0_f32; 3]; n];
-            for p in 0..n {
-                for c in 0..3 {
-                    let signal = WHITE_LEVEL * transmittance[p][c];
-                    let noisy = noise
-                        .signal_variance(signal)
-                        .sqrt()
-                        .mul_add(rng.gauss(), signal);
-                    stone[p][c] = noisy.clamp(0.0, 1.0) as f32;
+            // The photo at JPEG_BLOCK times the working resolution. A photo pixel's cell-mean
+            // signal is reconstructed piecewise linearly from the central slope of the working
+            // pixels around it (zero slope at the edge of the grid): the offsets inside a cell
+            // are symmetric, so the cell mean stays the working pixel's value.
+            let block = JPEG_BLOCK;
+            let (photo_w, photo_h) = (width * block, height * block);
+            let photo_signal = |x: usize, y: usize, c: usize| -> f64 {
+                let (px, py) = (x / block, y / block);
+                let at = |qx: usize, qy: usize| transmittance[qy * width + qx][c];
+                let slope_x = if px == 0 || px + 1 == width {
+                    0.0
+                } else {
+                    0.5 * (at(px + 1, py) - at(px - 1, py))
+                };
+                let slope_y = if py == 0 || py + 1 == height {
+                    0.0
+                } else {
+                    0.5 * (at(px, py + 1) - at(px, py - 1))
+                };
+                let offset = |i: usize| ((i % block) as f64 + 0.5) / block as f64 - 0.5;
+                WHITE_LEVEL * slope_y.mul_add(offset(y), slope_x.mul_add(offset(x), at(px, py)))
+            };
+            // The sensor noise of the working pixel spreads over the block: per photo pixel the
+            // variance is JPEG_BLOCK^2 times the stated one.
+            let photo_gain = (block * block) as f64;
+            let mut stone = vec![[0.0_f32; 3]; photo_w * photo_h];
+            for y in 0..photo_h {
+                for x in 0..photo_w {
+                    #[expect(
+                        clippy::needless_range_loop,
+                        reason = "the channel index addresses the pixel's rgb triple and is also an argument of photo_signal"
+                    )]
+                    for c in 0..3 {
+                        let signal = photo_signal(x, y, c);
+                        let sampled = (photo_gain * noise.signal_variance(signal))
+                            .sqrt()
+                            .mul_add(rng.gauss(), signal);
+                        stone[y * photo_w + x][c] = f32_of(sampled.clamp(0.0, 1.0));
+                    }
                 }
             }
-            let white = vec![[WHITE_LEVEL as f32; 3]; n];
-            let stone_back = jpeg_round_trip(width, height, &stone, quality);
-            let white_back = jpeg_round_trip(width, height, &white, quality);
+            // The white frame carries the sensor noise of `noise` as well (ZC-3): a diffuser frame
+            // is nowhere noise-free (shot noise of a 0.7 full-scale frame), and its own
+            // stream keeps the stone frame's noise unchanged.
+            let mut white_rng = SplitMix::new(
+                seed.wrapping_mul(0x2000_0001)
+                    .wrapping_add(0x5A17_E000 + slot as u64),
+            );
+            let white_sigma = (photo_gain * noise.signal_variance(WHITE_LEVEL)).sqrt();
+            let white: Vec<[f32; 3]> = (0..photo_w * photo_h)
+                .map(|_| {
+                    [0; 3].map(|_| {
+                        f32_of(
+                            white_sigma
+                                .mul_add(white_rng.gauss(), WHITE_LEVEL)
+                                .clamp(0.0, 1.0),
+                        )
+                    })
+                })
+                .collect();
+            let stone_back = jpeg_round_trip(photo_w, photo_h, &stone, quality);
+            let white_back = jpeg_round_trip(photo_w, photo_h, &white, quality);
             assert_eq!(
                 (stone_back.width, stone_back.height, white_back.width),
-                (width, height, width),
+                (photo_w, photo_h, photo_w),
                 "the round trip keeps the size"
             );
-            // The compression term the photometry lane estimates from this white frame (round 3,
-            // D4.2), the assumed constant when it cannot: the stated variance is the one the lane
-            // gives such a pair. A flat white frame compresses almost perfectly, so the estimate
-            // is small and the solver's Birge ratio carries the rest.
+            // The photometry lane's own pipeline (ZC-3, S2): the sensor noise per photo pixel is
+            // JPEG_BLOCK^2 times the stated one, the pixels outside the stone are masked for the
+            // compression estimate, and the transmittance is area-averaged onto the working grid
+            // with the per-pixel variance averaged as independent and the block-DC variance as
+            // correlated within a block.
             let sensor = NoiseModel {
-                a: [noise.a as f32; 3],
-                b: [noise.b as f32; 3],
+                a: [f32_of(photo_gain * noise.a); 3],
+                b: [f32_of(photo_gain * noise.b); 3],
             };
-            let compression = estimate_compression_sigma(&white_back, &sensor, 0.98)
-                .unwrap_or([COMPRESSION_SIGMA_ENCODED; 3]);
-            let encoding = |linear: f64, c: usize| {
-                f64::from(encoding_variance_with(
-                    SourceKind::Rgb8,
-                    true,
-                    linear as f32,
-                    compression[c],
-                ))
+            let mut outside = PixelMask::new(photo_w, photo_h);
+            for y in 0..photo_h {
+                for x in 0..photo_w {
+                    if !prediction.valid[(y / block) * width + x / block] {
+                        outside.set(x, y, flag::OUTSIDE_OUTLINE);
+                    }
+                }
+            }
+            let calibration = ViewCalibration {
+                frames: CalibrationFrames {
+                    white: vec![white_back],
+                    dark: Vec::new(),
+                },
+                noise: sensor,
             };
+            let photo = calibration
+                .transmittance_masked(
+                    &stone_back,
+                    &TransmittanceOptions::default(),
+                    Some(&outside),
+                )
+                .expect("the stone and white frames agree in size");
+            let grid = WorkingGrid {
+                width,
+                height,
+                origin: [0.0, 0.0],
+                scale: block as f64,
+            };
+            let working = photo
+                .to_working(&grid, &ResampleOptions::default())
+                .expect("the photo covers the working grid");
             let mut values = vec![[0.0_f32; 3]; n];
             let mut variance = vec![[1e-6_f32; 3]; n];
             for p in 0..n {
                 for c in 0..3 {
-                    let w = f64::from(white_back.pixels[p][c]).max(1e-3);
-                    let s = f64::from(stone_back.pixels[p][c]);
-                    let t = s / w;
-                    values[p][c] = t as f32;
-                    let var_s = noise.signal_variance(s) + encoding(s, c);
-                    let var_w = noise.signal_variance(w) + encoding(w, c);
-                    variance[p][c] = (f64::mul_add(t * t, var_w, var_s) / (w * w)).max(1e-9) as f32;
+                    if working.variance[p][c].is_finite() {
+                        values[p][c] = working.values[p][c];
+                        variance[p][c] = working.variance[p][c].max(1e-9);
+                    } else {
+                        // Nothing usable under the footprint (a saturated or noise-floor block):
+                        // the noise-free extended value with the stated sensor noise.
+                        let t = transmittance[p][c];
+                        values[p][c] = f32_of(t);
+                        variance[p][c] = f32_of(noise.transmittance_variance(t).max(1e-9));
+                    }
                 }
             }
             ObservedView {
@@ -1276,9 +1555,9 @@ const XYZ_TO_SRGB: [[f64; 3]; 3] = [
 
 fn xyz_to_camera_rgb(xyz: [f64; 3]) -> [f64; 3] {
     let mut out = [0.0; 3];
-    for i in 0..3 {
-        for k in 0..3 {
-            out[i] = XYZ_TO_SRGB[i][k].mul_add(xyz[k], out[i]);
+    for (slot, row) in out.iter_mut().zip(&XYZ_TO_SRGB) {
+        for (coefficient, component) in row.iter().zip(&xyz) {
+            *slot = coefficient.mul_add(*component, *slot);
         }
     }
     out
@@ -1294,8 +1573,8 @@ pub fn furnace_camera_rgb() -> [f64; 3] {
         let lambda = 380.0_f32 + step as f32;
         let spec = f64::from(rgb_to_spectral_radiance([1.0, 1.0, 1.0], lambda));
         let cmf = cie_1931_cmf(lambda);
-        for k in 0..3 {
-            xyz[k] = f64::mul_add(f64::from(cmf[k]), spec, xyz[k]);
+        for (k, acc) in xyz.iter_mut().enumerate() {
+            *acc = f64::mul_add(f64::from(cmf[k]), spec, *acc);
         }
     }
     let integral = f64::from(CIE_1931_Y_INTEGRAL_5NM);
@@ -1310,7 +1589,7 @@ pub fn furnace_camera_rgb() -> [f64; 3] {
 #[must_use]
 pub fn camera_furnace_rgb(camera: &CameraResponse) -> [f64; 3] {
     let rgb = camera
-        .camera_rgb(&|lambda| f64::from(rgb_to_spectral_radiance([1.0, 1.0, 1.0], lambda as f32)));
+        .camera_rgb(&|lambda| f64::from(rgb_to_spectral_radiance([1.0, 1.0, 1.0], f32_of(lambda))));
     let integral = f64::from(CIE_1931_Y_INTEGRAL_5NM);
     [rgb[0] / integral, rgb[1] / integral, rgb[2] / integral]
 }
@@ -1345,7 +1624,7 @@ pub fn main_material(truth: &Truth) -> GemMaterial {
         .unwrap_or_else(|| ZonedAbsorption::new(truth.zone(0).clone()));
     GemMaterial::new_custom(
         "validation stone",
-        STONE_N as f32,
+        f32_of(STONE_N),
         0.0,
         0.0,
         [0.0, 0.0, 0.0],
@@ -1376,16 +1655,16 @@ impl MainView {
             values: self
                 .mean
                 .iter()
-                .map(|m| [m[0] as f32, m[1] as f32, m[2] as f32])
+                .map(|m| [f32_of(m[0]), f32_of(m[1]), f32_of(m[2])])
                 .collect(),
             variance: self
                 .variance_of_mean
                 .iter()
                 .map(|v| {
                     [
-                        v[0].max(1e-6) as f32,
-                        v[1].max(1e-6) as f32,
-                        v[2].max(1e-6) as f32,
+                        f32_of(v[0].max(1e-6)),
+                        f32_of(v[1].max(1e-6)),
+                        f32_of(v[2].max(1e-6)),
                     ]
                 })
                 .collect(),
@@ -1422,20 +1701,20 @@ pub fn render_main(setup: &Setup, spp: u32, salt: u32) -> Vec<MainView> {
         let mut variance_of_mean = vec![[0.0_f64; 3]; width * height];
         for y in 0..height {
             for x in 0..width {
-                let p = y * width + x;
+                let pixel = y * width + x;
                 // The forward model averages over the whole working-pixel footprint, so the main
                 // tracer must as well: a centre ray alone sees a zone boundary that cuts a pixel
                 // as all-or-nothing (a 1.7 percent bias of the bicolour cross-check). R2
                 // low-discrepancy points with a per-pixel shift, deterministic.
                 let [u0, v0, u1, v1] = view.grid.footprint(x, y);
-                let pixel_id = (slot * width * height + p) as u32;
+                let pixel_id = u32_of(slot * width * height + pixel);
                 let shift_x = f64::from(hash_u32(pixel_id ^ 0x9E37_79B9)) / 4_294_967_296.0;
                 let shift_y = f64::from(hash_u32(pixel_id ^ 0x85EB_CA6B)) / 4_294_967_296.0;
                 let (mut sum, mut sum_sq) = ([0.0_f64; 3], [0.0_f64; 3]);
                 for s in 0..spp {
-                    let k = f64::from(s) + 1.0;
-                    let fx = 0.754_877_666_246_692_7f64.mul_add(k, shift_x).fract();
-                    let fy = 0.569_840_290_998_053_3f64.mul_add(k, shift_y).fract();
+                    let draw = f64::from(s) + 1.0;
+                    let fx = 0.754_877_666_246_692_7f64.mul_add(draw, shift_x).fract();
+                    let fy = 0.569_840_290_998_053_3f64.mul_add(draw, shift_y).fract();
                     let at = DVec2::new(fx.mul_add(u1 - u0, u0), fy.mul_add(v1 - v0, v0));
                     let (origin, direction) = pose.pixel_ray(at);
                     let ray = Ray {
@@ -1462,13 +1741,13 @@ pub fn render_main(setup: &Setup, spp: u32, salt: u32) -> Vec<MainView> {
                         sum_sq[c] = relative.mul_add(relative, sum_sq[c]);
                     }
                 }
-                let n = f64::from(spp);
+                let spp_f = f64::from(spp);
                 for c in 0..3 {
-                    let m = sum[c] / n;
-                    mean[p][c] = m;
-                    let sample_var =
-                        f64::mul_add(m, -m, sum_sq[c] / n).max(0.0) * n / (n - 1.0).max(1.0);
-                    variance_of_mean[p][c] = sample_var / n;
+                    let m = sum[c] / spp_f;
+                    mean[pixel][c] = m;
+                    let sample_var = f64::mul_add(m, -m, sum_sq[c] / spp_f).max(0.0) * spp_f
+                        / (spp_f - 1.0).max(1.0);
+                    variance_of_mean[pixel][c] = sample_var / spp_f;
                 }
             }
         }
@@ -1489,8 +1768,12 @@ pub fn render_main(setup: &Setup, spp: u32, salt: u32) -> Vec<MainView> {
 pub struct Agreement {
     pub forward: f64,
     pub main: f64,
-    /// The Monte-Carlo standard error of `forward` (round 3, D5): the records' relative error at
-    /// the reference absorption times the prediction, a conservative figure for a pale stone.
+    /// The Monte-Carlo standard error of `forward` (round 5, ZC-15): the records' relative error
+    /// of the clear-stone transmittance (the sum of the weights, which the adaptive sampling
+    /// converges on) times the prediction. The first version used the error at 0.3 per mm, which
+    /// is 5 to 10 times the real figure for a pale stone and made a genuine bias look like noise.
+    /// For an absorbing stone the relative error grows with the optical depth, so this is a
+    /// lower bound: a z-score computed with it can only overstate a bias, never hide one.
     pub forward_se: f64,
     /// The Monte-Carlo standard error of `main`: the root of the summed per-pixel variances of
     /// the mean, over the number of pixels.
@@ -1553,22 +1836,22 @@ pub fn furnace_agreement_rgb(
     let main = render_main(&setup, main_spp, 0xA11C_E000);
     let (mut sum_forward, mut sum_main, mut count) = ([0.0_f64; 3], [0.0_f64; 3], 0_usize);
     let (mut var_forward, mut var_main) = ([0.0_f64; 3], [0.0_f64; 3]);
-    for (slot, prediction) in predictions.iter().enumerate() {
+    for (slot, pred) in predictions.iter().enumerate() {
         let view = &records.views[slot];
-        for p in 0..prediction.rgb.len() {
-            if !prediction.valid[p] {
+        for p in 0..pred.rgb.len() {
+            if !pred.valid[p] {
                 continue;
             }
-            let mc_mean = f64::from(view.mc_mean[p]);
+            let mc_mean = f64::from(view.mc_mean_clear[p]);
             let relative = if mc_mean > 1e-6 {
-                f64::from(view.mc_variance[p]).sqrt() / mc_mean
+                f64::from(view.mc_variance_clear[p]).sqrt() / mc_mean
             } else {
                 0.0
             };
             for c in 0..3 {
-                sum_forward[c] += f64::from(prediction.rgb[p][c]);
+                sum_forward[c] += f64::from(pred.rgb[p][c]);
                 sum_main[c] += main[slot].mean[p][c];
-                let forward_error = relative * f64::from(prediction.rgb[p][c]);
+                let forward_error = relative * f64::from(pred.rgb[p][c]);
                 var_forward[c] = f64::mul_add(forward_error, forward_error, var_forward[c]);
                 var_main[c] += main[slot].variance_of_mean[p][c];
             }
@@ -1599,17 +1882,17 @@ pub fn plane_error_mm(
     true_offset: f64,
     extent_mm: f64,
 ) -> f64 {
-    let n = true_normal.normalize();
-    let a = n.any_orthonormal_vector();
-    let b = n.cross(a);
+    let normal = true_normal.normalize();
+    let axis_a = normal.any_orthonormal_vector();
+    let axis_b = normal.cross(axis_a);
     let fitted = fitted_normal.normalize();
     let mut worst = 0.0_f64;
     for i in -2..=2 {
         for j in -2..=2 {
-            let p = n * true_offset
-                + a * (extent_mm * f64::from(i) / 2.0)
-                + b * (extent_mm * f64::from(j) / 2.0);
-            worst = worst.max((fitted.dot(p) - fitted_offset).abs());
+            let point = normal * true_offset
+                + axis_a * (extent_mm * f64::from(i) / 2.0)
+                + axis_b * (extent_mm * f64::from(j) / 2.0);
+            worst = worst.max((fitted.dot(point) - fitted_offset).abs());
         }
     }
     worst
@@ -1635,12 +1918,12 @@ pub fn prism_error_mm(
     } else {
         DVec3::X
     };
-    let u = (reference - axis * reference.dot(axis)).normalize();
-    let v = axis.cross(u);
+    let tangent_u = (reference - axis * reference.dot(axis)).normalize();
+    let tangent_v = axis.cross(tangent_u);
     let fitted_normals: Vec<DVec3> = (0..sides)
         .map(|k| {
             let angle = phase + TAU * f64::from(k) / f64::from(sides);
-            u * angle.cos() + v * angle.sin()
+            tangent_u * angle.cos() + tangent_v * angle.sin()
         })
         .collect();
     let mut worst = 0.0_f64;
@@ -1650,12 +1933,12 @@ pub fn prism_error_mm(
         let tangent = DVec3::Z.cross(normal);
         for i in -2..=2 {
             for j in -2..=2 {
-                let p = normal * WATERMELON_APOTHEM_MM
+                let point = normal * WATERMELON_APOTHEM_MM
                     + tangent * (0.5 * f64::from(i))
                     + DVec3::Z * (extent_z_mm * f64::from(j) / 2.0);
                 let nearest = fitted_normals
                     .iter()
-                    .map(|n| (n.dot(p - axis_point) - r_out).abs())
+                    .map(|n| (n.dot(point - axis_point) - r_out).abs())
                     .fold(f64::INFINITY, f64::min);
                 worst = worst.max(nearest);
             }

@@ -58,12 +58,21 @@ pub(in crate::db::sqlite) const SEARCH_INDEXES_SQL: &str = "
 /// [`crate::db::sqlite::Database::entry_ids_missing_previews`] compares it with the
 /// fingerprint a render made now would carry, so a changed renderer or setting marks the
 /// old images outdated instead of leaving them indistinguishable from current ones.
+///
+/// `preview_girdle_mm` and `preview_material_source` record how `preview_material` was
+/// decided (`crate::model::preview::PreviewMaterialState`): the girdle diameter the
+/// material was sized with (`NULL` = not set) and whether the name came from the design's
+/// own file (`'design'`) or from the refractive-index pick (`'ri'`, and `NULL` on a row
+/// written before the column existed). They sit before the PNG blobs for the same reason
+/// `params_fingerprint` does, since the staleness scans read them for every design.
 pub(in crate::db::sqlite) const DIAGRAM_PREVIEWS_TABLE_SQL: &str = "
     CREATE TABLE IF NOT EXISTS diagram_previews (
         entry_id INTEGER PRIMARY KEY,
         preview_material TEXT,
         preview_generated_at INTEGER,
         params_fingerprint TEXT,
+        preview_girdle_mm REAL,
+        preview_material_source TEXT,
         preview_front BLOB,
         preview_top BLOB,
         FOREIGN KEY (entry_id) REFERENCES diagram_entries (id) ON DELETE CASCADE
@@ -82,6 +91,8 @@ pub(in crate::db::sqlite) const DIAGRAM_PREVIEWS_REORDERED_TABLE_SQL: &str = "
         preview_material TEXT,
         preview_generated_at INTEGER,
         params_fingerprint TEXT,
+        preview_girdle_mm REAL,
+        preview_material_source TEXT,
         preview_front BLOB,
         preview_top BLOB,
         FOREIGN KEY (entry_id) REFERENCES diagram_entries (id) ON DELETE CASCADE

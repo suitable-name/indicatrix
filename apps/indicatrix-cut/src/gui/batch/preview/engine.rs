@@ -7,13 +7,14 @@
 use super::remote_lane::run_remote_lane;
 use crate::{
     BatchModel, MainWindow,
-    bridge::preview_render::{self, CacheKind, PreviewJob, PreviewView},
+    bridge::preview_render::{self, CacheKind, FingerprintMaterial, PreviewJob, PreviewView},
     gui::{
         batch::{
             batch_queue::WorkQueue,
-            material_choice::ensure_balanced_material,
+            catalogue_material::catalogue_material,
             remote_dispatch::{DispatcherGroup, RemoteStatus},
         },
+        editor::CataloguePlanes,
         progress_eta::{EtaEstimator, batch_eta_label},
     },
     settings::WorkerSettings,
@@ -23,7 +24,7 @@ use indicatrix::{
     optics::{materials::GemMaterial, raytracer::DEFAULT_MAX_BOUNCES},
     renderer::gpu_backend::GpuBackend,
 };
-use indicatrix_vault::db::sqlite::Database;
+use indicatrix_vault::{db::sqlite::Database, model::preview::PreviewMaterialState};
 use slint::{ComponentHandle, Weak};
 use std::{
     any::Any,
@@ -112,14 +113,18 @@ const LOCAL_IDLE_POLL: Duration = Duration::from_millis(15);
 /// no `GpuBackend`: only the local lane ever touches a GPU adapter, and keeping it OUT
 /// of this struct (passed as its own separate parameter to the local lane instead)
 /// means this struct never needs to answer whether `GpuBackend` is `Sync` to be
-/// borrowed across `std::thread::scope`. `db`/`material_candidates` are each acquired
-/// exactly ONCE per batch (see `super::spawn_preview_batch`'s own doc comment for why),
-/// and `preview_size`/`preview_spp` are the settings snapshot the WHOLE batch was
+/// borrowed across `std::thread::scope`. `db`/`material_candidates`/`custom_materials` are
+/// each acquired exactly ONCE per batch (see `super::spawn_preview_batch`'s own doc comment
+/// for why), and `preview_size`/`preview_spp` are the settings snapshot the WHOLE batch was
 /// started with.
 pub(super) struct BatchContext<'a> {
     pub(super) db: &'a Mutex<Database>,
     pub(super) material_candidates:
         &'a [indicatrix_vault::model::material_match::RiPresetCandidate],
+    /// The vault's custom materials (`catalogue_material::load_custom_materials`), against
+    /// which a design file's material name is resolved before the built-ins, as the
+    /// editor's viewport does.
+    pub(super) custom_materials: &'a [GemMaterial],
     pub(super) preview_size: u32,
     pub(super) preview_spp: u32,
     /// Draw the fast solid stand-in pictures instead of the traced ones: no material is
@@ -165,21 +170,27 @@ pub(super) struct ResolvedDesign {
     pub(super) revision: RecordRevision,
 }
 
-/// `full`'s facet planes for a preview render -- the design file first, the angle
-/// table only as the fallback (`gui::batch::record_planes_for_batch`, shared with the
-/// tilt batch and the library detail view). Both the local and the remote lane get
-/// their planes here, through [`resolve_design`]; a remote render ships these planes
-/// in its scene, so the worker never resolves a record itself.
+/// `full`'s facet planes for a preview render, with the material and stone size its
+/// design file records -- the design file first, the angle table only as the fallback
+/// (`gui::batch::record_planes_for_batch`, shared with the tilt batch and the library
+/// detail view). Both the local and the remote lane get their planes here, through
+/// [`resolve_design`]; a remote render ships these planes in its scene, so the worker
+/// never resolves a record itself.
 pub(super) fn record_planes(
     ctx: &BatchContext<'_>,
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
-) -> Option<Vec<GpuFacetPlane>> {
+) -> Option<CataloguePlanes> {
     super::super::record_planes_for_batch(full, ctx.angle_table_entries)
 }
 
 /// Resolves `entry_id`'s geometry and preview material, or `None` if either step comes
 /// up empty (malformed/unreadable row, unreconstructable geometry, or no material could
 /// be matched/assigned).
+///
+/// The material is the one `gui::batch::catalogue_material::catalogue_material` decides:
+/// the design file's own (its overrides applied), else the refractive-index pick, sized by
+/// the design's girdle diameter -- the stone the editor and the exports show. A remote
+/// lane ships this sized material in its scene unchanged.
 pub(super) fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesign> {
     // The record and its revision stamp are read under one lock hold, so the stamp
     // describes exactly this record.
@@ -196,12 +207,12 @@ pub(super) fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<Re
     let Ok(updated_at) = updated_at else {
         return None;
     };
-    let planes = record_planes(ctx, &full)?;
+    let resolved = record_planes(ctx, &full)?;
 
     if ctx.solid {
         return Some(ResolvedDesign {
             title: full.title,
-            planes,
+            planes: resolved.planes,
             // Never shown: the solid picture is flat-shaded. The traced preview picks
             // the design's real material when it is rendered.
             material: GemMaterial::by_name("Diamond")?,
@@ -209,32 +220,30 @@ pub(super) fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<Re
         });
     }
     let target_ri = target_ri_for_design(&full);
-    let material_name = {
+    let chosen = {
         let guard = ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
-        ensure_balanced_material(
+        catalogue_material(
             &guard,
             entry_id,
-            target_ri,
+            &resolved,
+            ctx.custom_materials,
             ctx.material_candidates,
-            RI_MATCH_TOLERANCE,
-            &planes,
+            target_ri,
         )
     };
-    let Ok(Some(material_name)) = material_name else {
-        return None;
+    let chosen = match chosen {
+        Ok(Some(chosen)) => chosen,
+        Ok(None) => return None,
+        Err(e) => {
+            warn!("Could not choose the preview material for entry {entry_id}: {e}");
+            return None;
+        }
     };
-    // Through the render's size rule (a library design has no stone size): the same absorption
-    // calibration the live view applies to a built-in's per-model-unit colour.
-    let material = indicatrix::render_setup::material_for_stone(
-        GemMaterial::by_name(&material_name)?,
-        0.0,
-        &planes,
-    );
 
     Some(ResolvedDesign {
         title: full.title,
-        planes,
-        material,
+        planes: resolved.planes,
+        material: chosen.material,
         revision: RecordRevision::Stamp(updated_at),
     })
 }
@@ -369,20 +378,26 @@ pub(super) fn push_progress(
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         ui.global::<BatchModel>().set_preview_eta(eta_text.into());
         ui.global::<BatchModel>()
-            .set_preview_design_index(snapshot.completed as i32);
+            .set_preview_design_index(slint_count(snapshot.completed));
         ui.global::<BatchModel>()
-            .set_preview_design_total(design_total as i32);
+            .set_preview_design_total(slint_count(design_total));
         ui.global::<BatchModel>()
-            .set_preview_local_active(snapshot.local_active as i32);
+            .set_preview_local_active(slint_count(snapshot.local_active));
         ui.global::<BatchModel>()
-            .set_preview_local_lane_total(local_lane_total as i32);
+            .set_preview_local_lane_total(slint_count(local_lane_total));
         ui.global::<BatchModel>()
             .set_preview_remote_title(snapshot.remote.title().into());
         ui.global::<BatchModel>()
             .set_preview_remote_active(snapshot.remote.is_active());
         ui.global::<BatchModel>()
-            .set_preview_remote_in_flight(snapshot.remote.in_flight() as i32);
+            .set_preview_remote_in_flight(slint_count(snapshot.remote.in_flight()));
     });
+}
+
+/// A `u32` count as the `int` a Slint property holds, saturating (a count that large is
+/// never reached; saturating keeps the display sane instead of wrapping negative).
+fn slint_count(count: u32) -> i32 {
+    i32::try_from(count).unwrap_or(i32::MAX)
 }
 
 /// Applies `change` to the shared remote status -- every remote dispatcher goes through
@@ -449,6 +464,29 @@ pub(super) struct LaneShared<'a> {
     pub(super) thumbnail_cache: &'a crate::gui::batch::preview_cache::PreviewThumbnailCache,
 }
 
+/// The fingerprint a finished design's pair is stored under: the batch's picture kind
+/// (traced at the batch's size and sample count, or the solid stand-in) and the design's
+/// persisted `material` -- its name, stone size and provenance
+/// (`bridge::preview_render::cache_fingerprint`). The staleness scan rebuilds the same
+/// text from the same persisted row.
+pub(super) fn preview_fingerprint(
+    ctx: &BatchContext<'_>,
+    material: &PreviewMaterialState,
+) -> String {
+    let kind = if ctx.solid {
+        CacheKind::SolidDraft {
+            size: ctx.preview_size,
+        }
+    } else {
+        CacheKind::Preview {
+            size: ctx.preview_size,
+            spp: ctx.preview_spp,
+            max_bounces: PREVIEW_MAX_BOUNCES,
+        }
+    };
+    preview_render::cache_fingerprint(kind, FingerprintMaterial::from_state(material))
+}
+
 /// Stores a finished design's pair, unless the design changed while it was rendered.
 /// Returns whether the pair was stored.
 ///
@@ -481,19 +519,11 @@ fn save_finished_design(shared: &LaneShared<'_>, entry_id: i64, done: &FinishedV
             return false;
         }
     };
-    let material = guard.get_preview_material(entry_id).ok().flatten();
-    let kind = if shared.ctx.solid {
-        CacheKind::SolidDraft {
-            size: shared.ctx.preview_size,
-        }
-    } else {
-        CacheKind::Preview {
-            size: shared.ctx.preview_size,
-            spp: shared.ctx.preview_spp,
-            max_bounces: PREVIEW_MAX_BOUNCES,
-        }
-    };
-    let fingerprint = preview_render::cache_fingerprint(kind, material.as_deref());
+    // The material, size and provenance `resolve_design` persisted for this design.
+    let material = guard
+        .get_preview_material_state(entry_id)
+        .unwrap_or_default();
+    let fingerprint = preview_fingerprint(shared.ctx, &material);
     let stored = guard.save_preview_images(
         entry_id,
         done.front.as_deref(),

@@ -1,0 +1,71 @@
+import { TrainingController } from "../models.slint";
+import { ConfirmDialog } from "../components/confirm-dialog.slint";
+
+// All modal prompts of the window. The `request_*` functions confirm first where the action
+// loses something, and run the action directly otherwise.
+export component Dialogs inherits Rectangle {
+    // 0 none, 1 reset, 2 tier change, 3 load weights, 4 import run
+    private property <int> kind: 0;
+    private property <string> pending_tier;
+
+    public pure function open() -> bool {
+        return root.kind != 0 || TrainingController.close_prompt || TrainingController.update_prompt;
+    }
+
+    public function request_reset() {
+        if TrainingController.iteration > 0 { root.kind = 1; } else { TrainingController.reset_training(); }
+    }
+    public function request_tier(code: string) {
+        if code != TrainingController.model_tier_name {
+            root.pending_tier = code;
+            root.kind = 2;
+        }
+    }
+    public function request_load() {
+        if TrainingController.weights_dirty { root.kind = 3; } else { TrainingController.load_weights(); }
+    }
+    public function request_import() {
+        if TrainingController.is_training { root.kind = 4; } else { TrainingController.import_run(); }
+    }
+
+    if root.kind != 0: ConfirmDialog {
+        heading: root.kind == 1 ? "Reset the Run?"
+            : root.kind == 2 ? "Switch to Size " + root.pending_tier + "?"
+            : root.kind == 3 ? "Load Weights?" : "Import a Run While Training?";
+        body: root.kind == 1 ? "The run statistics and the labels collected so far are discarded. The weights are kept and training stops."
+            : root.kind == 2 ? "The network is re-initialised with new random weights and the run statistics restart."
+                + (TrainingController.weights_dirty ? " The current weights have unsaved changes: cancel and use Save Weights first if you want to keep them." : "")
+            : root.kind == 3 ? "The current weights have unsaved changes and will be replaced by the checkpoint you choose."
+            : "Training keeps running in the background. The window shows the imported run until you choose Return to Live.";
+        primary_text: root.kind == 1 ? "Reset" : root.kind == 2 ? "Switch Size" : root.kind == 3 ? "Choose File…" : "Choose File…";
+        danger: root.kind != 4;
+        cancel => { root.kind = 0; }
+        primary => {
+            if root.kind == 1 { TrainingController.reset_training(); }
+            else if root.kind == 2 { TrainingController.select_model_tier(root.pending_tier); }
+            else if root.kind == 3 { TrainingController.load_weights(); }
+            else { TrainingController.import_run(); }
+            root.kind = 0;
+        }
+    }
+    // The consent question never stacks on another dialog: it waits until both are closed.
+    if TrainingController.update_prompt && root.kind == 0 && !TrainingController.close_prompt: ConfirmDialog {
+        heading: "Check for New Versions?";
+        body: "Indicatrix can check GitHub once a day for a newer release and tell you about it. Nothing is downloaded or installed, and nothing but the request itself is sent.";
+        primary_text: "Check Daily";
+        cancel_text: "Don't Check";
+        primary => { TrainingController.answer_update_prompt(true); }
+        cancel => { TrainingController.answer_update_prompt(false); }
+    }
+    if TrainingController.close_prompt: ConfirmDialog {
+        heading: "Close the Trainer?";
+        body: (TrainingController.is_training ? "Training is running and will stop. " : "")
+            + (TrainingController.weights_dirty ? "The weights have unsaved changes." : "No weights are lost.");
+        primary_text: "Save and Close";
+        secondary_text: "Close Without Saving";
+        danger: true;
+        primary => { TrainingController.close_save(); }
+        secondary => { TrainingController.close_discard(); }
+        cancel => { TrainingController.close_cancel(); }
+    }
+}

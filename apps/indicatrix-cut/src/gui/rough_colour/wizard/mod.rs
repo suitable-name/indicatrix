@@ -1,4 +1,4 @@
-//! The "Rough colour..." wizard (`zoning` feature): photos of a mesh rough on a backlit rig become
+//! The "Rough colour..." wizard: photos of a mesh rough on a backlit rig become
 //! the colour of the stone, and of colour zones inside it.
 //!
 //! Eight steps, in a strip like the cutting mode's: [`steps::Step`]. The window is `RoughColourWindow`
@@ -35,4 +35,4 @@ pub mod view_model;
 pub mod work;
 pub mod zone_rows;
 
-pub use host::{close, open};
+pub use host::{close, open, plan_saved};

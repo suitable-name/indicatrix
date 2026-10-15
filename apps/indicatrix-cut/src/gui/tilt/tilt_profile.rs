@@ -3,8 +3,11 @@
 //!
 //! One sample point (`evaluate_gem_optical_metrics`, round brilliant/diamond, release,
 //! single-threaded) measures ~1.875 ms. A full-axis profile is 181 points across all
-//! four axes, so one complete sweep costs roughly `181 * 4 * 1.875 ms` ~= 1.36
-//! seconds -- a real, user-visible wait, which is why:
+//! four axes, so one complete single-threaded sweep costs roughly `181 * 4 * 1.875 ms`
+//! ~= 1.36 seconds. The sweep is threaded now (and skips the Fire/scintillation tracing
+//! it never reads), so on a multi-core machine it finishes well under that; the figure
+//! stays as the single-thread cost -- still a user-visible wait on small machines, which
+//! is why:
 //!
 //! - This work runs on its own `std::thread::spawn` worker, never the UI thread.
 //! - `AxesCacheKey`/`launched_key` short-circuit re-opening the dialog (or a `changed`
@@ -26,7 +29,7 @@
 //! This sweeps all four axes uniformly (not just the three non-canonical azimuths),
 //! including axis 0, rather than special-casing it to reuse the live render thread's
 //! own positive-half-only value (`graph_brilliance`/etc., still computed every frame
-//! for `settings_dialog.slint`'s mini tilt chart) -- that value cannot supply the
+//! for the Parameters panel's mini tilt chart) -- that value cannot supply the
 //! negative half a full-axis sweep needs anyway. One code path, one cache key, one
 //! generation counter, no cross-thread reuse of a value that could itself be
 //! mid-update, at the cost of one redundant azimuth-0-positive-half resweep (~12% of

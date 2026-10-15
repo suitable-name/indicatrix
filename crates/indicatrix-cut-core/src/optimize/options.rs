@@ -122,6 +122,10 @@ impl ShapeTarget {
     /// The score penalty for a stone with these figures: `weight * 100 * d`, `0.0` when
     /// the weight is not positive.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the shape distance is a small non-negative figure; f32 is the score precision"
+    )]
     pub fn penalty(&self, table_percent: Option<f64>, crown_to_pavilion: Option<f64>) -> f32 {
         if self.weight.is_nan() || self.weight <= 0.0 {
             return 0.0;

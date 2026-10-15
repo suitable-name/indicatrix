@@ -94,7 +94,7 @@ pub(super) fn lesson_steps(target: &Design, plan: &[PlannedTier]) -> Vec<GuideSt
         .collect()
 }
 
-/// Whether the Girdle Facet Preset (angle 90, Meets Exact scale value 1) fills in this tier:
+/// Whether the Girdle Facet Preset (angle 90, Meets Exact Scale Value 1) fills in this tier:
 /// a girdle at exactly 90 degrees that states its depth.
 fn girdle_preset_fits(planned: &PlannedTier) -> bool {
     planned.role == Role::Girdle
@@ -130,13 +130,13 @@ fn girdle_preset_note(planned: &PlannedTier) -> Option<String> {
         .parse::<f64>()
         .is_ok_and(|value| (value - 1.0).abs() < 1e-9);
     Some(if one {
-        "Girdle Facet Preset fills in Angle 90 and Meets Exact scale value 1, so with it only \
+        "Girdle Facet Preset fills in Angle 90 and Meets Exact Scale Value 1, so with it only \
          Name and Indices are left to type."
             .to_owned()
     } else {
         format!(
-            "Girdle Facet Preset fills in Angle 90 and Meets Exact scale value 1; change the \
-             Scale value to {} to match this design.",
+            "Girdle Facet Preset fills in Angle 90 and Meets Exact Scale Value 1; change the \
+             Scale Value to {} to match this design.",
             planned.recipe.constraint_text
         )
     })
@@ -194,40 +194,40 @@ fn meets_reason(planned: &PlannedTier) -> String {
     match &planned.meets {
         Meets::Exact(ExactReason::Anchor) => format!(
             "This is the first {} tier, so it sets that block's size: state its depth with \
-             Exact scale value. The editor needs one such anchor in every block it solves.",
+             Exact Scale Value. The editor needs one such anchor in every block it solves.",
             block_label(planned.block)
         ),
         Meets::Exact(ExactReason::NoMeetInfo) => {
             "The original does not say which facets this tier meets, so state its depth \
-             directly with Exact scale value."
+             directly with Exact Scale Value."
                 .to_owned()
         }
         Meets::Exact(ExactReason::MeetsLater) => {
             "The facets the original meets are cut later in the lesson, so state this depth \
-             directly with Exact scale value."
+             directly with Exact Scale Value."
                 .to_owned()
         }
         Meets::Exact(ExactReason::Missed(percent)) => format!(
             "Meeting its neighbours would put this tier about {percent:.1} percent away from \
-             the original, so state its depth directly with Exact scale value."
+             the original, so state its depth directly with Exact Scale Value."
         ),
         Meets::Exact(ExactReason::Everything) => {
             "Meeting facets does not reproduce this design reliably, so every depth is stated \
-             directly with Exact scale value."
+             directly with Exact Scale Value."
                 .to_owned()
         }
         Meets::Exact(ExactReason::TooLarge) => {
             "This is a large design, so every depth after the anchors is stated directly with \
-             Exact scale value. That keeps the lesson quick to check."
+             Exact Scale Value. That keeps the lesson quick to check."
                 .to_owned()
         }
         Meets::Named(names) => format!(
-            "Named facet(s) places this tier where it meets {}, so you do not have to look up \
+            "Named Facet(s) places this tier where it meets {}, so you do not have to look up \
              its depth.",
             names.join(" and ")
         ),
         Meets::Unspecified => {
-            "Unspecified vertex lets the solver find the vertex this tier closes against, so \
+            "Unspecified Vertex lets the solver find the vertex this tier closes against, so \
              you do not have to look up its depth."
                 .to_owned()
         }
@@ -331,7 +331,7 @@ fn group_step(plan: &[PlannedTier], positions: &[usize], gear: u32) -> GuideStep
     let note = if anchors {
         format!(
             " The first tier of the {} sets that block's size, so it states its depth with \
-             Exact scale value.",
+             Exact Scale Value.",
             block_label(first.block)
         )
     } else {
@@ -415,7 +415,7 @@ fn concave_step(tier: &ConcaveTier, code: &str, number: usize, gear: u32) -> Gui
     ));
     actions.push(format!("D/W: {}", number_text(tier.diameter_ratio, 3)));
     if let Some(angle) = tier.tool_angle_deg.filter(|_| tier.tool.takes_angle()) {
-        actions.push(format!("Tool angle (deg): {}", number_text(angle, 2)));
+        actions.push(format!("Tool Angle (deg): {}", number_text(angle, 2)));
     }
     actions.push(format!(
         "Reciprocating: {}",
@@ -458,10 +458,11 @@ pub(super) fn start_step(target: &Design, title: &str, step_count: usize) -> Gui
     let meta = &target.meta;
     let gear = meta.gear_teeth_abs();
     let symmetry = meta.symmetry_order;
-    let preform = target.preform;
-    let shape = match preform.shape {
+    let preform = &target.preform;
+    let shape = match &preform.shape {
         PreformShape::Block => "Block",
         PreformShape::Cylinder { .. } => "Cylinder",
+        PreformShape::Planes(_) => "Planned piece",
     };
     let gear_line = if DIALOG_GEARS.contains(&gear) {
         format!("Index Gear: {gear}.")
@@ -490,7 +491,7 @@ pub(super) fn start_step(target: &Design, title: &str, step_count: usize) -> Gui
                 symmetry_order: symmetry,
                 mirror: meta.mirror,
                 material: MaterialSelection::none(),
-                preform,
+                preform: preform.clone(),
             }),
         });
     let mut step = GuideStep::new(
@@ -588,14 +589,14 @@ pub(super) fn compare_step(target: &Design, facts: &TierFacts) -> GuideStep {
         "Click Compare on the command bar. The original is held as the snapshot to compare \
          against, so the button is ready as soon as this step opens.",
         "Read the table: every tier should read Same.",
-        "Click Compare visually... to see the original and your stone side by side.",
+        "Click Compare Visually... to see the original and your stone side by side.",
     ])
     .check("every row reads Same, and the status strip still shows a closed solid.")
     .why(
         "This step finishes by itself once every tier is cut as in the original and every \
          solved depth is within about one percent of it. A row that reads Changed names the \
          tier to look at again. Next opens the comparison for you; if the stone will not \
-         match, Skip step then finishes without a perfect match.",
+         match, Skip Step then finishes without a perfect match.",
     )
     .goal(goal, "a design that matches the original")
     .perform(Perform::command(CMD_COMPARE))
@@ -622,8 +623,8 @@ pub(super) fn final_step(target: &Design, title: &str) -> GuideStep {
         .filter(|name| !name.is_empty())
     {
         actions.push(format!(
-            "The original is cut in {material}: set Material to {material} in Design Settings \
-             and click Apply Material to see the same margins."
+            "The original is cut in {material}: set Material to {material} in the Stone tab \
+             of the Parameters dock (Ctrl+Alt+1) to see the same margins."
         ));
     }
     GuideStep::new(

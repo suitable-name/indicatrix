@@ -127,7 +127,8 @@ impl Phase1Cache {
         revalidate(&mut self.candidates, &new_planes, owner);
 
         for p in &new_planes {
-            self.soa.push(p.n, p.m, owner as u32);
+            self.soa
+                .push(p.n, p.m, u32::try_from(owner).expect("tier index fits u32"));
         }
 
         // The three categories below (all-new, two-new-one-old, one-new-two-old)
@@ -208,7 +209,7 @@ fn revalidate(existing: &mut Vec<CachedCandidate>, new_planes: &[PlaneRec], owne
     }
     let mut mini = crate::simd::PlanesSoA64::with_capacity(new_planes.len());
     for p in new_planes {
-        mini.push(p.n, p.m, owner as u32);
+        mini.push(p.n, p.m, u32::try_from(owner).expect("tier index fits u32"));
     }
     existing.retain_mut(
         |cc| match crate::simd::classify_feasibility(&mini, cc.v, EPS_FEAS) {

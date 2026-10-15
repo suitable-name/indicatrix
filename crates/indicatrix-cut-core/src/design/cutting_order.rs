@@ -30,6 +30,10 @@ const TABLE_SECTION: usize = 2;
 const SECTION_COUNT: usize = 3;
 
 /// Where a flat tier is cut.
+#[expect(
+    clippy::float_cmp,
+    reason = "a girdle is authored as exactly +-90 degrees; the exact value is the rule"
+)]
 const fn section_of(tier: &ConstraintTier) -> usize {
     if tier.is_table() {
         TABLE_SECTION

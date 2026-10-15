@@ -37,8 +37,10 @@
 //! # Tab session
 //!
 //! Open / step / collapsed / the dragged panel position are stored as JSON under
-//! `sessionStorage["indicatrix.guide.v1"]` (`indicatrix_web_core::guide::GuideProgress`),
-//! written a moment after any of them changes and read back by [`restore`].
+//! `localStorage["indicatrix.guide.v1"]` (`indicatrix_web_core::guide::GuideProgress`; an
+//! entry an earlier build left in `sessionStorage` is migrated on first read, and with
+//! `localStorage` blocked the key stays in `sessionStorage`), written a moment after any
+//! of them changes and read back by [`restore`].
 
 use crate::{
     GuideAllow, GuideModel, GuideStepData,
@@ -56,8 +58,8 @@ use std::time::Duration;
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 thread_local! {
-    /// Debounces the `sessionStorage` write (restarting the same timer is what makes it
-    /// a debounce).
+    /// Debounces the storage write (restarting the same timer is what makes it a
+    /// debounce).
     static SAVE: Timer = Timer::default();
 }
 
@@ -158,7 +160,7 @@ fn progress_of(guide: &GuideModel<'_>) -> GuideProgress {
     .sanitized()
 }
 
-/// Writes the guide's state to `sessionStorage` after a moment of quiet.
+/// Writes the guide's state to the browser storage after a moment of quiet.
 fn schedule_save(ctx: &Ctx) {
     let weak = ctx.ui.clone();
     SAVE.with(|timer| {

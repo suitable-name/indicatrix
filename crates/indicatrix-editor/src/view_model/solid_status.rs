@@ -311,6 +311,10 @@ pub fn status_text_and_is_problem_from_solved(
 /// set rather than fabricating geometry: the viewport going blank is truthful (no
 /// design to draw) rather than showing stale or invented facets.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the GPU plane precision; plane offsets are in the normal float range"
+)]
 pub fn design_to_gpu_planes(design: &Design) -> Vec<GpuFacetPlane> {
     design
         .planes()

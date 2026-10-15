@@ -22,7 +22,7 @@ export component CmChips inherits Rectangle {
 
     height: root.rows <= 0 ? 0px : root.rows * (root.chip_h + root.gap) - root.gap;
 
-    for chip[i] in root.chips: Rectangle {
+    for chip[i] in root.chips: rectangle-text := Rectangle {
         x: Math.mod(i, root.cols) * (root.chip_w + root.gap);
         y: Math.floor(i / root.cols) * (root.chip_h + root.gap);
         width: root.chip_w;

@@ -140,6 +140,27 @@ thread_local! {
     static TICKER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
 }
 
+/// Forgets what a previous main window left behind: the shared state (with its database) and the
+/// watch timer. See `gui::window_release`.
+pub(super) fn release_window_state() {
+    let deps = LIVE.with(|cell| cell.borrow_mut().take());
+    let ticker = TICKER.with(|cell| cell.borrow_mut().take());
+    drop(deps);
+    drop(ticker);
+}
+
+/// Names this module's holders in `out` while they are still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(super) fn note_holders(out: &mut Vec<&'static str>) {
+    if LIVE.with(|cell| cell.borrow().is_some()) {
+        out.push("editor::variants LIVE (vault, editor state)");
+    }
+    if TICKER.with(|cell| cell.borrow().is_some()) {
+        out.push("editor::variants TICKER");
+    }
+}
+
 /// The shared state, once [`setup_variants`] has run.
 fn live_deps() -> Option<Rc<Deps>> {
     LIVE.with(|cell| cell.borrow().clone())

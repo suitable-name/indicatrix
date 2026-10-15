@@ -48,7 +48,7 @@ pub const fn stage_label(stage: FitStage) -> &'static str {
         FitStage::Tracing => "Tracing light through the stone",
         FitStage::Roughness => "Searching the surface roughness",
         FitStage::Alignment => "Refining the alignment",
-        FitStage::Fitting => "Fitting the colours",
+        FitStage::Fitting => "Fitting the colors",
         FitStage::Selection => "Comparing the models",
         FitStage::CrossValidation => "Checking with each view held out",
         FitStage::Done => "Done",
@@ -58,6 +58,11 @@ pub const fn stage_label(stage: FitStage) -> &'static str {
 /// The line under the Start button: `"Fitting the colours - 43 % - about 2 min left"`.
 #[must_use]
 pub fn progress_line(stage: FitStage, overall: f32, eta: Option<Duration>) -> String {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "overall is clamped to 0..=1, so the rounded percent is 0..=100"
+    )]
     let percent = (overall.clamp(0.0, 1.0) * 100.0).round() as u32;
     let mut line = format!("{} - {percent} %", stage_label(stage));
     let tail = if stage == FitStage::Done {
@@ -152,7 +157,7 @@ mod tests {
     #[test]
     fn the_line_names_the_stage_the_percentage_and_the_time() {
         let line = progress_line(FitStage::Fitting, 0.43, Some(Duration::from_secs(130)));
-        assert_eq!(line, "Fitting the colours - 43 % - about 2 min left");
+        assert_eq!(line, "Fitting the colors - 43 % - about 2 min left");
         let line = progress_line(FitStage::Tracing, 0.05, None);
         assert_eq!(
             line,

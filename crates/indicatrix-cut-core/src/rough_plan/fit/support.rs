@@ -163,17 +163,17 @@ fn support_row(
     let norm_z = norm_dvec.z;
 
     // Rot^T * norm_dvec (project normal onto stone axes)
-    let local_nx = f64::mul_add(
+    let along_first = f64::mul_add(
         norm_z,
         axes[0][2],
         f64::mul_add(norm_y, axes[0][1], norm_x * axes[0][0]),
     );
-    let local_ny = f64::mul_add(
+    let along_second = f64::mul_add(
         norm_z,
         axes[1][2],
         f64::mul_add(norm_y, axes[1][1], norm_x * axes[1][0]),
     );
-    let local_nz = f64::mul_add(
+    let along_third = f64::mul_add(
         norm_z,
         axes[2][2],
         f64::mul_add(norm_y, axes[2][1], norm_x * axes[2][0]),
@@ -181,7 +181,10 @@ fn support_row(
 
     let mut max_support = f64::NEG_INFINITY;
     for vert in vertices {
-        let dot = local_nz.mul_add(vert[2], local_ny.mul_add(vert[1], local_nx * vert[0]));
+        let dot = along_third.mul_add(
+            vert[2],
+            along_second.mul_add(vert[1], along_first * vert[0]),
+        );
         if dot > max_support {
             max_support = dot;
         }

@@ -1,10 +1,16 @@
-//! Rough colour in the Rough Planner's results (`zoning` feature only): the coloured previews, the
-//! "Stone orientation" option and "Use colour" (adopt).
+//! Rough colour in the Rough Planner's results: the coloured previews, the
+//! "Stone orientation" option and "Use Color" (adopt).
 //!
 //! The planner's host, session and results are private to `gui::rough_plan`, so this thin file
 //! reads them and calls `gui::rough_colour`, where the logic and its tests live
 //! (`rough_colour::preview`, `rough_colour::adopt_link`, `rough_colour::store`). The view's own
 //! reach (scene colours, the zone handles, the brush) is `view::zoning_view`.
+//!
+//! "Use Color" and "Open in Editor" (`editor_link`) share one path: the stone is picked and
+//! placed by `editor_link`, its colour adopted here ([`adopt_for_open`]), and the main window's
+//! editor loads the stone's design first and then applies the colour (and, for "Open in Editor",
+//! the planned piece of rough) to it (`gui::editor::planned_stone`), so the zones always land on
+//! the design they were computed for.
 //!
 //! **A plan has a colour only when it is a saved plan.** The rough colour is stored against the
 //! saved plan's id (`store::save_rough_colour`), so results that were just planned and not saved
@@ -12,7 +18,8 @@
 //! [`refresh`] reads the colour whenever the results change.
 
 use super::{
-    format::group_order,
+    counts::is_remote,
+    editor_link::{self, StoneTarget},
     host::{Host, on_host},
     run::ResultsSource,
     session::Session,
@@ -21,19 +28,24 @@ use super::{
 use crate::{
     Zoning,
     gui::{
+        editor::planned_stone::PlannedStoneRequest,
         rough_colour::{
-            adopt_link,
             preview::{
                 AdoptTarget, PoseOption, PreviewInputs, adopt, apply_pose_option, load_inputs,
                 resolve_host,
             },
+            store::{AdoptOutcome, posed_stone_pose},
         },
         show_toast,
     },
 };
-use indicatrix_cut_core::rough_plan::{RoughLayout, zoned_plan::DesignPlacement};
+use indicatrix_cut_core::rough_plan::{PlacedStone, RoughLayout, fit::StonePose};
 use slint::ComponentHandle;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, PoisonError},
+};
 use tracing::warn;
 
 thread_local! {
@@ -132,114 +144,104 @@ fn pose_option_changed(host: &Rc<Host>, index: i32) {
     }
 }
 
-/// The stone a "Use colour" click names.
-struct PickedStone {
-    layout: RoughLayout,
-    entry_id: i64,
-    stone_index: usize,
-    plan_name: String,
-    material: String,
+/// The pose of stone `stone_index` of result `layout_index` as the cutter chose it: the stored
+/// "Stone orientation" choice (`store::posed_stone_pose`, what `preview::adopt` reads), or the
+/// stone's own pose when the results carry no colour.
+pub(super) fn chosen_pose(layout_index: u32, stone_index: u32, stone: &PlacedStone) -> StonePose {
+    INPUTS
+        .with(|cell| cell.borrow().clone())
+        .map_or(stone.pose, |inputs| {
+            posed_stone_pose(&inputs.choices, layout_index, stone_index, stone)
+        })
 }
 
-/// The first stone of design group `group` of result `result` of the shown results.
-fn pick_stone(session: &Session, result: usize, group: usize) -> Option<PickedStone> {
-    let layout = session.run.layouts.get(result)?.clone();
-    let (entry_id, _) = *group_order(&layout).get(group)?;
-    let stone_index = layout
-        .stones
-        .iter()
-        .position(|stone| stone.entry_id == entry_id)?;
-    let ResultsSource::Loaded { name, .. } = &session.run.source else {
-        return None;
-    };
-    Some(PickedStone {
-        layout,
-        entry_id,
-        stone_index,
-        plan_name: name.clone(),
-        material: session.run.material_name.clone(),
-    })
-}
-
-/// "Use colour" on design group `group` of result `result`: the first stone of that design,
-/// in the pose the cutter chose, becomes the material "<plan name> colour" (`preview::adopt`),
-/// which is selected in the editor at the stone's real width.
-fn adopt_colour(host: &Rc<Host>, result: i32, group: i32) {
-    let main = host.main.upgrade();
+/// The colour of the stone `target` names as the custom material "<plan> - <design> color"
+/// (`preview::adopt`: the stone in the pose the cutter chose, at the design's real width), for
+/// the editor to put on the design.
+///
+/// `None` when the results carry no colour or are not a loaded plan (no message: the design just
+/// has no colour to take), and when adopting fails (the reason is toasted).
+pub(super) fn adopt_for_open(host: &Rc<Host>, target: &StoneTarget) -> Option<AdoptOutcome> {
+    let inputs = INPUTS.with(|cell| cell.borrow().clone())?;
+    let picked = &target.picked;
+    let rough_name = picked.plan_name.as_deref()?;
+    let material = host.session.borrow().run.material_name.clone();
     let tell = |text: &str, level: &str| {
-        if let Some(main) = &main {
-            show_toast(main, text, level);
+        if let Some(main) = host.main.upgrade() {
+            show_toast(&main, text, level);
         }
     };
-    let (Ok(result), Ok(group)) = (usize::try_from(result), usize::try_from(group)) else {
-        return;
-    };
-    let Some(inputs) = INPUTS.with(|cell| cell.borrow().clone()) else {
-        tell("These results have no rough colour.", "info");
-        return;
-    };
-    let Some(picked) = pick_stone(&host.session.borrow(), result, group) else {
-        tell("This design has no stone to take the colour of.", "info");
-        return;
-    };
-    // The design's placement is read from the library, so the vault is not locked here.
-    let Some((design, width_units)) = super::design_placement_of(picked.entry_id) else {
-        tell(
-            "This design could not be read from the library, so its stone size is unknown.",
-            "error",
-        );
-        return;
-    };
     let outcome = {
-        let db = host
-            .db
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(owned_host) = resolve_host(&db, &picked.material) else {
+        let db = host.db.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(owned_host) = resolve_host(&db, &material) else {
             drop(db);
             tell(
-                &format!("The material '{}' is not in the library.", picked.material),
+                &format!("The material '{material}' is not in the library."),
                 "error",
             );
-            return;
+            return None;
         };
         adopt(
             &db,
             &owned_host,
             &inputs,
             &AdoptTarget {
-                rough_name: &picked.plan_name,
+                rough_name,
+                design_title: &picked.title,
                 layout: &picked.layout,
-                layout_index: u32::try_from(result).unwrap_or(u32::MAX),
+                layout_index: picked.layout_index,
                 stone_index: picked.stone_index,
-                design,
-                design_width_units: width_units,
+                design: target.info.placement,
+                design_width_axis_units: target.info.width_axis_units,
             },
         )
     };
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
+    match outcome {
+        Ok(outcome) => Some(outcome),
         Err(error) => {
             tell(&format!("{error:#}"), "error");
-            return;
+            None
         }
-    };
-    let Some(main) = &main else {
-        return;
-    };
-    match adopt_link::apply_to_editor(main, &host.db, &outcome) {
-        Ok(()) => {
-            // The planner may be covering the editor.
-            main.window().set_minimized(false);
-            let _ = main.window().show();
-        }
-        Err(message) => show_toast(main, &message, "error"),
     }
 }
 
-/// The placement of design `entry_id` in the planner's caliper frame and its caliper width in
-/// model units, read from the library: the numbers a stone's colour needs to move into the
-/// stone's frame (`DesignPlacement`). `None` for a design that is gone or has no solid.
-pub(super) fn design_placement(entry_id: i64) -> Option<(DesignPlacement, f64)> {
-    view::design_info(entry_id).map(|info| (info.placement, info.width_units))
+/// "Use Color" on design group `group` of result `result`: the first stone of that design, in
+/// the pose the cutter chose, becomes the material "<plan> - <design> color" (`preview::adopt`).
+/// The editor loads that design (the normal Load Selected path, with its unsaved-changes guard)
+/// and the material and the stone's real width are applied to it as one undoable edit, so the
+/// zones land on the design they were computed for (`planned_stone`).
+fn adopt_colour(host: &Rc<Host>, result: i32, group: i32) {
+    let Some(main) = host.main.upgrade() else {
+        return;
+    };
+    let tell = |text: &str, level: &str| show_toast(&main, text, level);
+    let (Ok(result), Ok(group)) = (usize::try_from(result), usize::try_from(group)) else {
+        return;
+    };
+    if INPUTS.with(|cell| cell.borrow().is_none()) {
+        tell("These results have no rough color.", "info");
+        return;
+    }
+    if is_remote(&host.source) {
+        tell(editor_link::LOCAL_LIBRARY_FIRST, "info");
+        return;
+    }
+    // Only a loaded plan has a colour.
+    let picked = editor_link::pick_stone(&host.session.borrow(), result, group)
+        .filter(|picked| picked.plan_name.is_some());
+    let Some(picked) = picked else {
+        tell("This design has no stone to take the color of.", "info");
+        return;
+    };
+    let Some(target) = editor_link::resolve_target(&main, picked) else {
+        return;
+    };
+    let Some(material) = adopt_for_open(host, &target) else {
+        return;
+    };
+    let request = PlannedStoneRequest {
+        material: Some(material),
+        ..editor_link::request_for(host, &target, None)
+    };
+    editor_link::open_in_main(&main, request);
 }

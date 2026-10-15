@@ -163,7 +163,8 @@ mod tests {
     #[test]
     fn a_full_batch_of_thirty_two_items_fits_one_control_frame() {
         let mut buf = Vec::new();
-        write_message(&mut buf, &request(MAX_BATCH_ITEMS as u32)).unwrap();
+        let items = u32::try_from(MAX_BATCH_ITEMS).expect("the batch cap is small");
+        write_message(&mut buf, &request(items)).unwrap();
         // The frame is `LEN_PREFIX_BYTES` of length followed by the payload; the payload
         // is what `MAX_CONTROL_FRAME_LEN` bounds.
         let payload = buf.len() - crate::framing::LEN_PREFIX_BYTES;

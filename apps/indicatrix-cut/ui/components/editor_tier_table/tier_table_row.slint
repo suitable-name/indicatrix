@@ -193,7 +193,7 @@ export component TierTableRow inherits Rectangle {
                                 accessible-role: AccessibleRole.checkbox;
                                 accessible-checkable: true;
                                 accessible-checked: root.item.multi_selected;
-                                accessible-label: "Add tier " + (root.item.index + 1) + " to the selection";
+                                accessible-label: "Add Tier "+ (root.item.index + 1) + " to the selection";
                                 accessible-action-default => { EditorModel.toggle_multi_select(root.item.index); }
                             }
                         }
@@ -250,7 +250,7 @@ export component TierTableRow inherits Rectangle {
                                 accessible-label: root.item.block;
                             }
                             if !block_cell.zero_angle: Tooltip { text: @markdown("\{block_cell.flip_hint} The code is the tier's label on the cutting sheet: P is pavilion, G is girdle, C is crown and T is the table, each numbered in cutting order. See the glossary."); }
-                            if block_cell.zero_angle: CompactButton {
+                            if block_cell.zero_angle: compact-button-code-text := CompactButton {
                                 x: 1px;
                                 y: (parent.height - self.height) / 2;
                                 width: parent.width - 2px;
@@ -462,7 +462,7 @@ export component TierTableRow inherits Rectangle {
                             }
                             if !orbit_cell.completable && root.item.orbit_status != "": Tooltip { text: @markdown("Orbit: \{root.item.orbit_status}. An orbit is the set of facets that the stone's symmetry says belong together. A star means the tier is detached. See the glossary."); }
                             // An amber orbit that can be completed is a button.
-                            if orbit_cell.completable: CompactButton {
+                            if orbit_cell.completable: compact-button-item := CompactButton {
                                 x: 0px;
                                 y: (parent.height - self.height) / 2;
                                 width: parent.width - 2px;
@@ -528,7 +528,7 @@ export component TierTableRow inherits Rectangle {
                         if root.advanced: Rectangle {
                             width: root.col_detach_width;
                             height: 100%;
-                            if root.item.kind == 0 && root.item.orbit_status != "": CompactButton {
+                            if root.item.kind == 0 && root.item.orbit_status != "": compact-button-item-2 := CompactButton {
                                 x: 0px;
                                 y: (parent.height - self.height) / 2;
                                 width: parent.width - 2px;

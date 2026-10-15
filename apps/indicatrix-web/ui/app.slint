@@ -27,9 +27,11 @@ import { MetricsModel, TiltModel } from "components/metrics_model.slint";
 import { TiltDialog } from "components/tilt_dialog.slint";
 import { ShortcutOverlay, ShortcutsModel } from "components/shortcut_overlay.slint";
 import { UserGuideDialog, UserGuideModel } from "components/user_guide_dialog.slint";
+import { VerdictModel, VerdictPopover, VerdictReasonData } from "components/verdict_badge.slint";
 
 // A global is only a Rust type if it is named here.
 export { AppModel, GalleryModel, TemplateCard, Theme }
+export { VerdictModel, VerdictReasonData }
 export { GuideAllow, GuideModel, GuideStepData }
 export { RenderModel }
 export { SolidModel }
@@ -94,22 +96,22 @@ export component AppWindow inherits Window {
                 activated => { AppModel.save-asc(); }
             }
             MenuItem {
-                title: "Save design (.indicatrix) (Ctrl+S)";
+                title: "Save Design (.isdd) (Ctrl+S)";
                 enabled: AppModel.has-design && GuideModel.allows-file-ops();
                 activated => { AppModel.save-design(); }
             }
             MenuItem {
-                title: "Save .asc + older sidecar (.indicatrix.toml)";
+                title: "Export .gcs (Experimental)";
                 enabled: AppModel.has-design && GuideModel.allows-file-ops();
-                activated => { AppModel.save-native-pair(); }
+                activated => { AppModel.save-gcs(); }
             }
             MenuItem {
-                title: "Download cutting sheet (HTML)";
+                title: "Download Cutting Sheet (HTML)";
                 enabled: AppModel.has-design && GuideModel.allows-file-ops();
                 activated => { AppModel.download-cutting-sheet(); }
             }
             MenuItem {
-                title: "Download diagram PNG";
+                title: "Download Diagram PNG";
                 enabled: AppModel.has-design && GuideModel.allows-file-ops();
                 activated => { AppModel.download-diagram(); }
             }
@@ -135,12 +137,12 @@ export component AppWindow inherits Window {
         Menu {
             title: "Design";
             MenuItem {
-                title: "Design settings...";
+                title: "Design Settings...";
                 enabled: AppModel.has-design && GuideModel.allows-design-settings();
                 activated => { DesignSettingsModel.open = true; }
             }
             MenuItem {
-                title: "Optimize angles...";
+                title: "Optimize Angles...";
                 enabled: AppModel.has-design && GuideModel.allows-advanced();
                 activated => {
                     InspectorModel.tab = 2;
@@ -148,17 +150,17 @@ export component AppWindow inherits Window {
                 }
             }
             MenuItem {
-                title: "Retarget for material...";
+                title: "Retarget for Material...";
                 enabled: AppModel.has-design && GuideModel.allows-advanced();
                 activated => { RetargetModel.open(); }
             }
             MenuItem {
-                title: "Snapshot design";
+                title: "Snapshot Design";
                 enabled: AppModel.has-design && GuideModel.allows-advanced();
                 activated => { SnapshotModel.take(); }
             }
             MenuItem {
-                title: "Compare to snapshot...";
+                title: "Compare to Snapshot...";
                 enabled: AppModel.has-design && SnapshotModel.has-snapshot && GuideModel.allows-advanced();
                 activated => { SnapshotModel.compare(); }
             }
@@ -168,15 +170,15 @@ export component AppWindow inherits Window {
             // The worked example: builds a stone from an empty design, step by step, locking
             // everything but the step's own controls (close the guide to unlock them).
             MenuItem {
-                title: "Guided walkthrough";
+                title: "Guided Walkthrough";
                 activated => { GuideModel.start(); }
             }
             MenuItem {
-                title: "User guide";
+                title: "User Guide";
                 activated => { UserGuideModel.open = true; }
             }
             MenuItem {
-                title: "Keyboard shortcuts (?)";
+                title: "Keyboard Shortcuts (?)";
                 activated => { ShortcutsModel.open = true; }
             }
         }
@@ -232,6 +234,7 @@ export component AppWindow inherits Window {
                 // own Escape: clear the tier selection and dismiss the message.
                 SolidModel.clear-selection();
                 AppModel.dismiss-message();
+                VerdictModel.open = false;
                 return accept;
             } else if event.text == "?" && !AppModel.text-focus {
                 ShortcutsModel.open = true;
@@ -333,6 +336,25 @@ export component AppWindow inherits Window {
         text: AppModel.message;
         kind: AppModel.message-kind;
         dismiss => { AppModel.dismiss-message(); }
+    }
+
+    // The verdict badge's popover (`components/verdict_badge.slint`): below the header at the
+    // right edge, over a transparent click-away layer. Escape closes it (the shortcuts above).
+    if VerdictModel.open && VerdictModel.level >= 0 && AppModel.has-design: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        TouchArea {
+            clicked => { VerdictModel.open = false; }
+        }
+        VerdictPopover {
+            width: min(360px, root.width - 16px);
+            x: max(8px, root.width - self.width - 8px);
+            // Under the header: 8 px window padding, then its 40 px row (76 px stacked).
+            y: root.width < 640px ? 90px : 54px;
+            height-limit: root.height * 0.6;
+        }
     }
 
     if GalleryModel.open: NewDesignDialog {

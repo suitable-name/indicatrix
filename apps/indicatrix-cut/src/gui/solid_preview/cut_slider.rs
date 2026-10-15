@@ -1,7 +1,8 @@
 //! The Cut slider: where it stands, what it shows and what it is called.
 //!
 //! The slider walks a design's cutting steps ([`Design::preview_steps`]): position `0`
-//! is the rough (the preform alone), position `k` the stone after the first `k` steps,
+//! is the rough (the preform alone, whatever its shape: block, cylinder or a planned
+//! piece), position `k` the stone after the first `k` steps,
 //! and the last position the finished design. Flat and concave tiers each count as one
 //! step, in the order the cutting sheet lists them for every design
 //! ([`Design::cutting_order`]: the pavilion and girdle tiers, the crown, the table last).
@@ -106,6 +107,11 @@ impl CutPosition {
 
     /// The position a slider handle value stands for: rounded to the nearest step.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the value is rounded and clamped to >= 0 first; from_steps clamps to the step count (a saturating cast)"
+    )]
     pub const fn from_slider_value(value: f32, step_count: usize) -> Self {
         Self::from_steps(value.round().max(0.0) as usize, step_count)
     }
@@ -204,12 +210,17 @@ pub fn cut_geometry(
     let masts = solved.unwrap_or(&own);
     let limit = steps.map_or(CutLimit::Finished, CutLimit::Steps);
     let geometry = display_geometry(design, masts, limit);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the GPU plane precision; offsets are in the normal float range"
+    )]
+    let planes = geometry
+        .planes
+        .into_iter()
+        .map(|(normal, offset)| GpuFacetPlane::new(normal.as_vec3(), -offset as f32))
+        .collect();
     StoneGeometryBuf {
-        planes: geometry
-            .planes
-            .into_iter()
-            .map(|(normal, offset)| GpuFacetPlane::new(normal.as_vec3(), -offset as f32))
-            .collect(),
+        planes,
         tools: geometry.tools,
         placements: geometry.placements,
     }

@@ -67,7 +67,11 @@ fn reference(pixels: usize, samples: &[u32]) -> Vec<Vec3> {
     let mut sum = vec![Vec3::ZERO; pixels];
     for &sample in samples {
         for (pixel, dst) in sum.iter_mut().enumerate() {
-            *dst += value(Values::Integer, pixel as u32, sample);
+            *dst += value(
+                Values::Integer,
+                u32::try_from(pixel).expect("a test pixel index fits u32"),
+                sample,
+            );
         }
     }
     sum

@@ -1,5 +1,5 @@
-//! The render: Live Render and its lighting presets, the lighting a design remembers, and custom
-//! materials (the two sliders, and typed coefficients).
+//! The render: Live Render and its lighting rigs, the Parameters dock's tabs, the lighting a design
+//! remembers, and custom materials (the two sliders, and typed coefficients).
 
 #![allow(
     clippy::too_many_lines,
@@ -15,7 +15,8 @@ use crate::guide::{
     },
 };
 
-/// The Design Settings panel (its "New/Edit material..." button) and Undo.
+/// The Stone tab's material controls (its "New/Edit material..." button; the `DesignSettings`
+/// group gates them) and Undo.
 const MATERIALS: &[Group] = &[Group::DesignSettings, Group::History];
 
 /// The lessons of this file, in browser order.
@@ -37,8 +38,8 @@ fn open_live_render() -> GuideStep {
     .actions([
         "Click Live Render, the pill to the left of Edit, above the picture.",
     ])
-    .check("The traced picture of the stone appears, with its toolbar of Render Material, Lighting and the metrics.")
-    .why("The Edit tab's Solid view is quick and flat-shaded. Live Render is slower and shows colour play, so it settles after a moment.")
+    .check("The traced picture of the stone appears, with its toolbar of Lighting, the three Parameters buttons and the metrics.")
+    .why("The Edit tab's Solid view is quick and flat-shaded. Live Render is slower and shows color play, so it settles after a moment.")
     .goal(event(LIVE_RENDER_OPENED), "The Live Render view")
     .highlight("live_render_tab")
     .allow(VIEWPORT_TABS)
@@ -47,8 +48,8 @@ fn open_live_render() -> GuideStep {
 fn live_render() -> Guide {
     Guide::new(
         "viewing-live-render",
-        "Live Render and lighting",
-        "Look at the stone as light really treats it, and change the lighting preset.",
+        "Live Render and Lighting",
+        "Look at the stone as light really treats it, and change the lighting rig.",
         GuideCategory::Viewing,
     )
     .starting(StartingState::Template(5))
@@ -68,30 +69,45 @@ fn live_render() -> Guide {
     )
     .step(
         GuideStep::new(
-            "Choose a lighting preset",
+            "Choose a lighting rig",
             "The Lighting drop-down changes the light the stone sits in.",
         )
         .actions([
             "Open the Lighting drop-down in the toolbar.",
-            "Choose a different preset, for example Gem Studio Ring Lights or Daylight sky + direct sun.",
+            "Choose a different rig, for example Gem Studio Ring Lights or Daylight sky + direct sun.",
         ])
-        .check("A toast names the preset, and the picture starts again under the new light.")
+        .check("A toast names the rig, and the picture starts again under the new light.")
         .why("The studio rigs give hard sparkle on a dark backdrop. The lit models (Grading tray, Light tent + black cards, Daylight sky + direct sun) show what the stone looks like in a real scene.")
-        .goal(event(LIGHTING_PRESET_CHOSEN), "A lighting preset chosen")
+        .goal(event(LIGHTING_PRESET_CHOSEN), "A lighting rig chosen")
         .highlight("lighting_combo")
         .allow(VIEWPORT),
     )
     .step(
         GuideStep::new(
-            "Render Material",
-            "The Render Material drop-down changes how the render looks, never the cut.",
+            "The Parameters dock",
+            "Everything else about the light is in the Lighting & Environment tab, beside the picture.",
         )
         .actions([
-            "Next to it, Linked to design makes the render follow the material in the Edit tab's Design Settings.",
-            "Picking a material by hand here turns that link off, so the render and the design can differ.",
-            "The pencil button opens the Material Editor (see the custom materials tutorial).",
+            "The bulb button in the toolbar (or Ctrl+Alt+2) opens the tab; the step has opened it for you.",
+            "It holds the lighting rig, the light direction, the exposure, the HDR map and backdrop, the observer's surface glare and head shadow, your saved lighting and the camera.",
+            "The gem button (Ctrl+Alt+1) opens the Stone tab, and the gear button (Ctrl+Alt+3) the Render & Output tab. The same three buttons are in the Edit view.",
         ])
-        .why("To change the material the stone is cut for, use Design Settings in the Edit tab, not this drop-down.")
+        .why("A saved lighting stores the whole look at once: the rig, the light direction, the exposure, the glare, the backdrop, the head shadow and the HDR map.")
+        .highlight("lighting_tab")
+        .allow(VIEWPORT),
+    )
+    .step(
+        GuideStep::new(
+            "The stone's material",
+            "The toolbar shows the material of the picture as a small chip. The material itself belongs to the design and is changed in the Stone tab.",
+        )
+        .actions([
+            "Open the Stone tab (the gem button, or Ctrl+Alt+1). Its Material drop-down changes the design's own material, and you can undo it.",
+            "Preview As... shows the same stone in another material without changing the design. While it is on, an amber Previewing badge says so in the toolbar and in the export dialogs, and Back to Design ends it.",
+            "New/Edit Material... opens the Material Editor (see the custom materials tutorial).",
+        ])
+        .why("A preview never starts by itself, so the picture, an export and the tilt video always use the design's material unless you can see the Previewing badge.")
+        .highlight("stone_tab")
         .allow(VIEWPORT),
     )
     .step(
@@ -107,7 +123,7 @@ fn live_render() -> Guide {
 fn design_lighting() -> Guide {
     Guide::new(
         "viewing-design-lighting",
-        "Lighting for this design",
+        "Lighting for This Design",
         "Make a design remember its own lighting, and forget it again.",
         GuideCategory::Viewing,
     )
@@ -120,28 +136,28 @@ fn design_lighting() -> Guide {
         )
         .actions([
             "Open the Lighting drop-down in the toolbar.",
-            "Choose the preset you want this design to keep.",
+            "Choose the rig you want this design to keep.",
         ])
-        .check("A toast names the preset.")
-        .why("Light direction, exposure, surface glare, the backdrop and an environment map belong to the lighting too; the Rendering Settings dialog changes them.")
-        .goal(event(LIGHTING_PRESET_CHOSEN), "A lighting preset chosen")
+        .check("A toast names the rig.")
+        .why("Light Direction, exposure, surface glare, head shadow, the backdrop and an environment map belong to the lighting too; the Lighting & Environment tab changes them.")
+        .goal(event(LIGHTING_PRESET_CHOSEN), "A lighting rig chosen")
         .highlight("lighting_combo")
         .allow(VIEWPORT),
     )
     .step(
         GuideStep::new(
             "Save it for this design",
-            "Saving is one button in the Rendering Settings dialog, which covers this panel while it is open.",
+            "Saving is one button in the Lighting & Environment tab, beside the picture.",
         )
         .actions([
-            "Click the Rendering settings button (the gear) in the Live Render toolbar.",
-            "Find the group called Lighting for this design.",
-            "Click Use this lighting for this design.",
-            "Close the dialog with Done, or press Escape, to come back to this panel.",
+            "Open the Lighting & Environment tab (the bulb button in the toolbar, or Ctrl+Alt+2).",
+            "Look for the group called This Design (Lighting This Design Opens With).",
+            "Click Use This Lighting for This Design.",
         ])
         .check("A toast says Saved. This design will open with this lighting.")
         .why("The lighting is kept in your library on this computer, never in the design file. Saving again replaces it.")
         .goal(event(DESIGN_LIGHTING_SAVED), "Lighting saved for this design")
+        .highlight("lighting_tab")
         .allow(VIEWPORT),
     )
     .step(
@@ -150,12 +166,12 @@ fn design_lighting() -> Guide {
             "The same group holds the way back.",
         )
         .actions([
-            "Open the Rendering settings dialog again.",
-            "In Lighting for this design, click Forget for this design (it appears once lighting is saved).",
-            "Close the dialog.",
+            "Keep the Lighting & Environment tab open.",
+            "Under This Design, click Forget for This Design (it appears once lighting is saved).",
         ])
         .check("A toast says This design now uses your normal lighting.")
         .goal(event(DESIGN_LIGHTING_FORGOTTEN), "Lighting forgotten for this design")
+        .highlight("lighting_tab")
         .allow(VIEWPORT),
     )
     .step(
@@ -174,8 +190,8 @@ fn design_lighting() -> Guide {
 fn custom_material() -> Guide {
     Guide::new(
         "viewing-custom-material",
-        "Custom materials",
-        "Define a material of your own with the Material Editor: refractive index, dispersion, double refraction and colour.",
+        "Custom Materials",
+        "Define a material of your own with the Material Editor: refractive index, dispersion, double refraction and color.",
         GuideCategory::Viewing,
     )
     .starting(StartingState::Template(5))
@@ -187,11 +203,11 @@ fn custom_material() -> Guide {
         .actions([
             "Refractive index (nd) and dispersion (the fire, as the spread between the blue and red lines).",
             "Double refraction (birefringence), the crystal system and the optical character.",
-            "A body colour, and the specific gravity if you know it, which the Rough Planner uses to turn volume into carats.",
+            "A body color, and the specific gravity if you know it, which the Rough Planner uses to turn volume into carats.",
             "Load Preset Template starts you from a built-in material to tweak.",
         ])
         .why("A custom material is saved in your library and appears in every material list, after the built-ins.")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(MATERIALS),
     )
     .step(
@@ -200,16 +216,16 @@ fn custom_material() -> Guide {
             "The Material Editor opens over the window, so this step carries everything you need.",
         )
         .actions([
-            "Click the Edit tab, then New/Edit material... in the Design Settings panel.",
+            "Open the Stone tab of the Parameters dock (View > Stone Properties, or Ctrl+Alt+1), then click New/Edit Material....",
             "Optionally pick a Load Preset Template, for example Quartz.",
             "Type a Material Name that no built-in material uses, for example Tutorial glass.",
             "Move the Refractive Index (nd) and Dispersion sliders to values you like.",
-            "Click Save. Save & Apply would also use it for the Live Render picture.",
+            "Click Save. Save & Apply would also make it the design's material.",
         ])
         .check("A toast says Saved custom material with the name you typed.")
         .why("The name must not be one of the built-in names, because that would hide the built-in material everywhere. Save is refused with a message if it is.")
         .goal(event(CUSTOM_MATERIAL_SAVED), "A custom material saved")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(MATERIALS),
     )
     .step(
@@ -218,8 +234,8 @@ fn custom_material() -> Guide {
             "Saving only adds the material to the lists. The design keeps its own material until you change it.",
         )
         .actions([
-            "In Design Settings, open the Material drop-down: your material is listed after the built-ins.",
-            "Pick it, then click Apply Material.",
+            "In the Stone tab, open the Material drop-down: your material is listed after the built-ins.",
+            "Pick it. It applies at once, and you can undo it.",
             "To change or remove it later, open the Material Editor, pick it and use Save or Delete.",
         ])
         .why("Every control is unlocked again."),
@@ -229,7 +245,7 @@ fn custom_material() -> Guide {
 fn material_coefficients() -> Guide {
     Guide::new(
         "viewing-material-coefficients",
-        "Materials from coefficients",
+        "Materials from Coefficients",
         "Type a published Sellmeier or Cauchy fit as a material's refractive index curve.",
         GuideCategory::Viewing,
     )
@@ -246,7 +262,7 @@ fn material_coefficients() -> Guide {
             "The wavelength λ is always in micrometres, so 589 nm is 0.589.",
         ])
         .why("The stone is then traced with exactly your curve, on the graphics card and on the processor alike.")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(MATERIALS),
     )
     .step(
@@ -255,16 +271,16 @@ fn material_coefficients() -> Guide {
             "The Material Editor opens over the window, so this step carries everything you need.",
         )
         .actions([
-            "Click the Edit tab, then New/Edit material... in the Design Settings panel.",
-            "Switch Refractive index curve from Simple to Coefficients.",
-            "Choose the Sellmeier, 3 terms model, then pick Glass (N-BK7) in Copy from to fill the six fields.",
+            "Open the Stone tab of the Parameters dock (View > Stone Properties, or Ctrl+Alt+1), then click New/Edit Material....",
+            "Switch Refractive Index Curve from Simple to Coefficients.",
+            "Choose the Sellmeier, 3 terms model, then pick Glass (N-BK7) in Copy From to fill the six fields.",
             "Change one number a little and watch the readout under the fields: nd, nF, nC, the spread and the Abbe number.",
             "Type a Material Name that no built-in material uses, for example Tutorial coefficients, and click Save.",
         ])
         .check("A toast says Saved custom material with the name you typed.")
         .why("Save stays disabled while a field is not a number or the curve cannot be traced; the red line under the fields says why.")
         .goal(event(COEFFICIENT_MATERIAL_SAVED), "A coefficient material saved")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(MATERIALS),
     )
     .step(

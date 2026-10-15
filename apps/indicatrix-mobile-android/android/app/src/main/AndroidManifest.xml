@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Remote rendering (later). No other permission: files go through the system
+         pickers, sharing through a FileProvider, printing through the print service. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Vulkan 1.0.3 (0x400003) is preferred, never required: without it the app
+         renders on the CPU. -->
+    <uses-feature
+        android:name="android.hardware.vulkan.version"
+        android:required="false"
+        android:version="0x400003" />
+
+    <application
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="false"
+        android:hardwareAccelerated="true"
+        android:hasCode="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Indicatrix">
+
+        <!-- NativeActivity subclass. `singleTask` keeps exactly one instance (one Rust
+             runtime per process): "Open with" while the app runs arrives in onNewIntent.
+             configChanges: rotation, resizing, dark mode, font scale and the like must
+             not recreate the activity, because that would tear down the native thread. -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale|layoutDirection|locale|colorMode"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="indicatrix_mobile_android" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Open with: the design MIME type, set by Indicatrix itself and by file
+                 managers that know it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.indicatrix.design+toml" />
+            </intent-filter>
+
+            <!-- Open with: by file name, for file managers that report a generic MIME
+                 type. Android's path matching is not greedy, so each extension is listed
+                 for names with up to three dots before it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.isdd" />
+                <data android:pathPattern=".*\\..*\\.isdd" />
+                <data android:pathPattern=".*\\..*\\..*\\.isdd" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.isdd" />
+                <data android:pathPattern=".*\\.indicatrix" />
+                <data android:pathPattern=".*\\..*\\.indicatrix" />
+                <data android:pathPattern=".*\\..*\\..*\\.indicatrix" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.indicatrix" />
+                <data android:pathPattern=".*\\.asc" />
+                <data android:pathPattern=".*\\..*\\.asc" />
+                <data android:pathPattern=".*\\..*\\..*\\.asc" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.asc" />
+                <data android:pathPattern=".*\\.gem" />
+                <data android:pathPattern=".*\\..*\\.gem" />
+                <data android:pathPattern=".*\\..*\\..*\\.gem" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.gem" />
+                <data android:pathPattern=".*\\.gcs" />
+                <data android:pathPattern=".*\\..*\\.gcs" />
+                <data android:pathPattern=".*\\..*\\..*\\.gcs" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.gcs" />
+            </intent-filter>
+
+            <!-- Open with: plain text and generic binary content (a GemCAD .asc file is
+                 plain text; .gem and .gcs often arrive as octet-stream). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+
+            <!-- Share to Indicatrix. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.indicatrix.design+toml" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+        </activity>
+
+        <!-- Share sheet: copies of exported files live in cache/share/. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.indicatrixsuite.mobile.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

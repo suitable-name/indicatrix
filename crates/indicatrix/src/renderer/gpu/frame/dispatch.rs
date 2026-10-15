@@ -28,6 +28,23 @@ use super::{
     scene_buffers::{FrameSceneBuffers, TransportOutputs, WavefrontRayBuffers},
 };
 
+/// A chunk's pixel, tuple or workgroup-thread count as the `u32` the shaders and dispatch
+/// arithmetic use. The GPU buffer limits cap every such count far below `u32::MAX`, so an
+/// overflow here is a bug, not an input.
+pub(super) fn count_u32(count: usize) -> u32 {
+    u32::try_from(count).expect("a chunk's pixel and tuple counts fit u32")
+}
+
+/// Workgroups of [`WORKGROUP_SIZE`] threads covering `count` `u32` items.
+pub(super) fn workgroups_for_u32(count: u32) -> u32 {
+    count.div_ceil(count_u32(WORKGROUP_SIZE))
+}
+
+/// Workgroups of [`WORKGROUP_SIZE`] threads covering `count` items.
+pub(super) fn workgroups_for(count: usize) -> u32 {
+    workgroups_for_u32(count_u32(count))
+}
+
 /// Uploads the scene inputs, binds all eight buffers, and dispatches `transport_main`
 /// over `total_tuples` threads -- then BLOCKS until it finishes.
 ///
@@ -44,7 +61,7 @@ pub fn encode_and_dispatch(args: &TransportDispatchArgs<'_>, total_tuples: usize
         args.outputs.capacity
     );
     let bind_group = build_bind_group(args);
-    let workgroups = (total_tuples as u32).div_ceil(64);
+    let workgroups = count_u32(total_tuples).div_ceil(64);
     compute::dispatch_and_wait(
         &args.ctx.device,
         &args.ctx.queue,
@@ -64,7 +81,7 @@ fn build_chunk_params(
     pixels_this_chunk: usize,
 ) -> GpuTransportParams {
     GpuTransportParams::new(
-        pixels_this_chunk as u32,
+        count_u32(pixels_this_chunk),
         state.scene.max_bounces,
         state.sample_offset,
         state.env_mode,
@@ -76,7 +93,7 @@ fn build_chunk_params(
         state.light_pitch,
         state.white_balance.to_array(),
     )
-    .with_pixel_offset(first_pixel as u32)
+    .with_pixel_offset(count_u32(first_pixel))
     .with_debug_buffers_disabled()
     .with_studio_use_d65(state.use_d65)
     .with_studio_model(state.studio_model)
@@ -162,7 +179,7 @@ impl GpuFrameRenderer {
                     planes_len,
                     outputs,
                 );
-                let workgroups = (tuples as u32).div_ceil(WORKGROUP_SIZE as u32);
+                let workgroups = workgroups_for(tuples);
                 // The compute dispatch's own submission index is unused: waiting for
                 // the readback copy's index (submitted after this one, on the same
                 // queue) is sufficient -- see `compute::finish_map_read`'s doc comment.
@@ -267,10 +284,10 @@ impl GpuFrameRenderer {
             device,
             "wavefront params",
             &[GpuWavefrontParams {
-                chunk_rays: tuples as u32,
-                active_count: tuples as u32,
+                chunk_rays: count_u32(tuples),
+                active_count: count_u32(tuples),
                 bounce: 0,
-                workgroup_count: (tuples as u32).div_ceil(WORKGROUP_SIZE as u32),
+                workgroup_count: workgroups_for(tuples),
             }],
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
@@ -284,7 +301,7 @@ impl GpuFrameRenderer {
             &pipelines.generate,
             &wavefront_generate_bindings(&frame_buffers.camera, params_buf, &wf_params_buf, &rays),
         );
-        let generate_workgroups = (tuples as u32).div_ceil(WORKGROUP_SIZE as u32);
+        let generate_workgroups = workgroups_for(tuples);
         let _ = compute::dispatch(
             device,
             queue,
@@ -308,7 +325,7 @@ impl GpuFrameRenderer {
         // `wavefront_transport.wgsl`'s header comment, kernel sequence steps 2-4.
         let (active_count, bounce) = self.run_wavefront_bounce_rounds(
             state.scene.max_bounces,
-            tuples as u32,
+            count_u32(tuples),
             &rays,
             &wf_params_buf,
             &bind_groups,
@@ -323,13 +340,13 @@ impl GpuFrameRenderer {
                 &wf_params_buf,
                 0,
                 bytemuck::bytes_of(&GpuWavefrontParams {
-                    chunk_rays: tuples as u32,
+                    chunk_rays: count_u32(tuples),
                     active_count,
                     bounce,
-                    workgroup_count: active_count.div_ceil(WORKGROUP_SIZE as u32),
+                    workgroup_count: workgroups_for_u32(active_count),
                 }),
             );
-            let finalize_workgroups = active_count.div_ceil(WORKGROUP_SIZE as u32);
+            let finalize_workgroups = workgroups_for_u32(active_count);
             let _ = compute::dispatch(
                 device,
                 queue,
@@ -363,7 +380,7 @@ impl GpuFrameRenderer {
         let mut active_count = chunk_rays;
         let mut bounce = 0u32;
         while active_count > 0 && bounce < max_bounces {
-            let workgroup_count = active_count.div_ceil(WORKGROUP_SIZE as u32);
+            let workgroup_count = workgroups_for_u32(active_count);
             queue.write_buffer(
                 wf_params_buf,
                 0,
@@ -462,6 +479,11 @@ impl GpuFrameRenderer {
                 .max(1);
         };
         let target_tuples = (TARGET_CHUNK_MS * 1.0e6 / ns_per_tuple).max(1.0);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "target_tuples is clamped to >= 1.0 and finite for a positive ns_per_tuple; `as` saturates and the result is clamped to the byte budget below"
+        )]
         let target_pixels = ((target_tuples / spp_usize as f64).floor() as usize).max(1);
         let min_pixels = chunk_pixels_for(MIN_CHUNK_BYTES, spp, num_pixels).min(byte_budget_pixels);
         target_pixels.clamp(min_pixels, byte_budget_pixels)

@@ -38,7 +38,12 @@ where
     D: serde::Deserializer<'de>,
 {
     let raw = <f64 as serde::Deserialize>::deserialize(deserializer)?;
-    Ok(clamp_head_shadow_deg(raw as f32))
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the stored precision; a hand-edited degree value is clamped to 0..=30 right after"
+    )]
+    let narrowed = raw as f32;
+    Ok(clamp_head_shadow_deg(narrowed))
 }
 
 #[cfg(test)]

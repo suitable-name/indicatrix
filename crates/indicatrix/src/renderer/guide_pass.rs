@@ -64,7 +64,10 @@ use crate::{
 };
 use glam::Vec3;
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     thread,
 };
 
@@ -431,9 +434,9 @@ fn fill_with_threads(job: GuideJob<'_>, num_threads: usize, out: &mut GuideBuffe
 
     let soa = build_plane_soa(planes);
     let soa = &soa;
-    let rows_per_chunk = (height as usize).div_ceil(num_threads.max(1));
+    let threads = num_threads.max(1).min(height as usize);
 
-    if rows_per_chunk >= height as usize {
+    if threads <= 1 {
         fill_rows(
             job,
             soa,
@@ -444,34 +447,59 @@ fn fill_with_threads(job: GuideJob<'_>, num_threads: usize, out: &mut GuideBuffe
             &mut out.path_sig,
         );
     } else {
-        let chunk_len = rows_per_chunk * width as usize;
-        thread::scope(|s| {
-            let chunks = out
-                .depth
-                .chunks_mut(chunk_len)
-                .zip(out.normal.chunks_mut(chunk_len))
-                .zip(out.facet_id.chunks_mut(chunk_len))
-                .zip(out.path_sig.chunks_mut(chunk_len));
-            for (chunk_idx, (((depth_chunk, normal_chunk), facet_chunk), sig_chunk)) in
-                chunks.enumerate()
-            {
-                let start_y = chunk_idx * rows_per_chunk;
-                s.spawn(move || {
-                    fill_rows(
-                        job,
-                        soa,
-                        start_y,
-                        depth_chunk,
-                        normal_chunk,
-                        facet_chunk,
-                        sig_chunk,
-                    );
-                });
-            }
-        });
+        fill_rows_dynamic(job, soa, threads, out);
     }
 
     !cancel.load(Ordering::Relaxed)
+}
+
+/// One image row's four output slices, as handed to a worker by [`fill_rows_dynamic`].
+type GuideRowSlices<'a> = (&'a mut [f32], &'a mut [Vec3], &'a mut [i32], &'a mut [u32]);
+
+/// Fills every row of `out` on `threads` scoped threads that claim rows one at a time
+/// from an atomic counter (the scheme `scanline.rs` uses), instead of one static band
+/// each. Rows cost very different amounts -- a miss is one failed intersection, a gem row
+/// with the path signature is up to four -- so equal-height bands left the thread holding
+/// the stone's centre running long after the others finished. Every row is a pure
+/// function of the camera and planes and lands in its own fixed slice, so the output is
+/// bit-identical to the static split; only which thread fills which row varies.
+fn fill_rows_dynamic(job: GuideJob<'_>, soa: &PlanesSoA32, threads: usize, out: &mut GuideBuffers) {
+    let width = job.width as usize;
+    let rows: Vec<Option<GuideRowSlices<'_>>> = out
+        .depth
+        .chunks_mut(width)
+        .zip(out.normal.chunks_mut(width))
+        .zip(out.facet_id.chunks_mut(width))
+        .zip(out.path_sig.chunks_mut(width))
+        .map(|(((depth, normal), facet), sig)| Some((depth, normal, facet, sig)))
+        .collect();
+    let row_count = rows.len();
+    let rows = Mutex::new(rows);
+    let next_row = AtomicUsize::new(0);
+    thread::scope(|s| {
+        for _ in 0..threads {
+            let (rows, next_row) = (&rows, &next_row);
+            s.spawn(move || {
+                loop {
+                    let y = next_row.fetch_add(1, Ordering::Relaxed);
+                    if y >= row_count || job.cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // The lock is held only to take the row's slices out, never while
+                    // tracing it.
+                    let claimed = rows
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)[y]
+                        .take();
+                    // `fetch_add` hands each index out once, so `None` cannot happen.
+                    let Some((depth, normal, facet, sig)) = claimed else {
+                        break;
+                    };
+                    fill_rows(job, soa, y, depth, normal, facet, sig);
+                }
+            });
+        }
+    });
 }
 
 /// Interior hits the path signature follows after the entry refraction.
@@ -498,7 +526,11 @@ const fn fnv_mix(mut hash: u32, word: u32) -> u32 {
 
 /// Plain `x*x + y*y + z*z` dot product (no fused multiply-add).
 #[inline]
-#[allow(clippy::suboptimal_flops)] // FMA would break wasm/x86 signature parity
+#[allow(
+    clippy::suboptimal_flops,
+    reason = "a fused multiply-add rounds once where wasm32 rounds twice, so x86 and wasm \
+              would hash different signatures for the same pixel"
+)]
 fn dot3(a: Vec3, b: Vec3) -> f32 {
     a.x * b.x + a.y * b.y + a.z * b.z
 }
@@ -518,7 +550,11 @@ fn unit(v: Vec3) -> Vec3 {
 /// facet ends it with [`SIG_ESCAPE`]. The facet words are folded with FNV-1a, so two pixels
 /// share a signature exactly when their rays met the same facets in the same order. Plain
 /// `f32` operations only (see the module docs).
-#[allow(clippy::suboptimal_flops)] // FMA would break wasm/x86 signature parity
+#[allow(
+    clippy::suboptimal_flops,
+    reason = "the Snell and reflection arithmetic must stay unfused: an FMA would change \
+              the refracted direction in the last bit and so the facet hash on x86 vs wasm32"
+)]
 fn path_signature(
     ray: Ray,
     first: &HitRecord,
@@ -529,7 +565,10 @@ fn path_signature(
     if n_d.is_nan() || n_d <= 1.0 {
         return 0;
     }
-    let mut hash = fnv_mix(0x811c_9dc5, first.facet_idx as u32);
+    let mut hash = fnv_mix(
+        0x811c_9dc5,
+        u32::try_from(first.facet_idx).expect("the facet index fits u32"),
+    );
 
     // Entry refraction, air -> stone.
     let incident = unit(ray.dir);
@@ -552,7 +591,7 @@ fn path_signature(
             break;
         };
         origin = probe.origin + dir * hit.t;
-        let facet = (hit.facet_idx as u32) & 0x7FFF;
+        let facet = u32::try_from(hit.facet_idx & 0x7FFF).expect("masked to 15 bits");
         let cos_t = dot3(dir, hit.normal);
         let sin_sq = n_d * n_d * (1.0 - cos_t * cos_t);
         if sin_sq > 1.0 {
@@ -611,7 +650,9 @@ fn fill_rows(
 
             *depth_out = hit.map_or(1.0e6, |h| h.t);
             *normal_out = hit.map_or(Vec3::ZERO, |h| h.normal);
-            *facet_out = hit.map_or(-1, |h| h.facet_idx as i32);
+            *facet_out = hit.map_or(-1, |h| {
+                i32::try_from(h.facet_idx).expect("the facet index fits i32")
+            });
             *sig_out = hit.map_or(0, |h| path_signature(ray, &h, soa, job.tools, job.n_d));
         }
     }
@@ -642,7 +683,7 @@ mod tests {
         );
         for &id in &guides.facet_id {
             assert!(
-                id == -1 || (id as usize) < planes.len(),
+                id == -1 || usize::try_from(id).is_ok_and(|index| index < planes.len()),
                 "facet id {id} out of range for {} planes",
                 planes.len()
             );
@@ -896,7 +937,7 @@ mod tests {
                 tools: &tools,
             },
         );
-        let first_tool_id = planes.len() as i32;
+        let first_tool_id = i32::try_from(planes.len()).expect("the plane count fits i32");
         assert!(
             guides.facet_id.contains(&first_tool_id),
             "the groove floor must appear as tool facet {first_tool_id}"

@@ -106,7 +106,7 @@ fn adversarial_07_refractive_index_zero_or_negative() {
     assert!(
         matches!(
             err,
-            AscParseError::RefractiveIndexOutOfRange { value, .. } if value == -1.0
+            AscParseError::RefractiveIndexOutOfRange { value, .. } if value.total_cmp(&-1.0).is_eq()
         ),
         "{err:?}"
     );

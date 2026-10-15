@@ -81,8 +81,8 @@ pub fn check_cut_order(design: &Design) -> Vec<ManufacturabilityWarning> {
         let MeetConstraint::MeetNamed(names) = &tier.constraint else {
             continue;
         };
-        let resolved = resolver.resolve_names(names);
-        for &target in &resolved.refs {
+        let resolution = resolver.resolve_names(names);
+        for &target in &resolution.refs {
             if target >= tier_index {
                 warnings.push(ManufacturabilityWarning::OutOfOrderMeet {
                     tier_index,

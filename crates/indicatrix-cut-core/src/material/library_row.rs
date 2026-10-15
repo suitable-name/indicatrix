@@ -86,6 +86,64 @@ pub fn optical_character_from_name(name: &str) -> Option<OpticalCharacter> {
         .find(|character| optical_character_name(*character) == name)
 }
 
+/// Whether `character` is one of the two biaxial optical characters (the only ones a
+/// `biaxial_delta_beta_alpha` means anything for).
+#[must_use]
+pub const fn is_biaxial(character: OpticalCharacter) -> bool {
+    matches!(
+        character,
+        OpticalCharacter::BiaxialPositive | OpticalCharacter::BiaxialNegative
+    )
+}
+
+/// The biaxial optical character a stored `n_beta - n_alpha` implies, by the optic-sign rule.
+///
+/// A biaxial crystal has three principal indices `alpha < beta < gamma`. It is optically
+/// POSITIVE when `beta` lies nearer `alpha` (`gamma` is then the acute bisectrix) and NEGATIVE
+/// when `beta` lies nearer `gamma`. With `delta_beta_alpha = beta - alpha` and
+/// `birefringence = gamma - alpha` (the full spread, as `GemMaterial::birefringence_delta`
+/// holds it for a biaxial material) that reads
+///
+/// ```text
+/// positive:  beta - alpha < gamma - beta   <=>   2 * delta_beta_alpha < birefringence
+/// negative:  otherwise
+/// ```
+///
+/// The boundary `2 * delta_beta_alpha == birefringence` (`beta` exactly halfway) is NEGATIVE:
+/// positive needs `beta` strictly nearer `alpha`. The sign of `birefringence` is ignored (the
+/// uniaxial inference of `GemMaterial::new_custom` reads it signed, a biaxial spread is a
+/// magnitude), so its absolute value stands for `gamma - alpha`.
+///
+/// `None` when the pair cannot describe a biaxial material: a delta that is not finite, zero or
+/// negative, a birefringence that is not finite, or a delta larger than the birefringence
+/// (`beta` would lie beyond `gamma`). A delta equal to the birefringence (`beta` on `gamma`) is
+/// still NEGATIVE, by the rule above. The caller then keeps the character it already has,
+/// exactly as before this rule existed.
+///
+/// The library row and the file snapshot both call this when a stored delta comes with no
+/// readable optical-character name (rows written before the names were stored, hand-edited
+/// files, the web protocol's custom-material spec): the delta is only ever written for a
+/// biaxial material, so its presence is evidence of one. A name that parses always wins.
+#[must_use]
+pub const fn biaxial_character_from_deltas(
+    delta_beta_alpha: f64,
+    birefringence: f64,
+) -> Option<OpticalCharacter> {
+    let gamma_minus_alpha = birefringence.abs();
+    let usable = delta_beta_alpha.is_finite()
+        && gamma_minus_alpha.is_finite()
+        && delta_beta_alpha > 0.0
+        && delta_beta_alpha <= gamma_minus_alpha;
+    if !usable {
+        return None;
+    }
+    Some(if 2.0 * delta_beta_alpha < gamma_minus_alpha {
+        OpticalCharacter::BiaxialPositive
+    } else {
+        OpticalCharacter::BiaxialNegative
+    })
+}
+
 /// One custom material of the design library, as plain values: the fields of
 /// `indicatrix_vault::model::material::CustomMaterialRow` that describe the material, copied
 /// one for one by the caller.
@@ -164,6 +222,11 @@ impl LibraryMaterial<'_> {
     /// saved before those fields existed has none of them, so it renders exactly as it always
     /// did.
     ///
+    /// A row that stores a biaxial delta but no readable optical-character name (empty, `None`
+    /// or unrecognised) takes its biaxial character from [`biaxial_character_from_deltas`]
+    /// (the optic-sign rule on the delta and the birefringence), since the delta is only ever
+    /// stored for a biaxial material; a delta that rule rejects leaves the inferred character.
+    ///
     /// A row whose `dispersion_model_json` holds a usable Sellmeier or Cauchy model builds its
     /// curve with `GemMaterial::new_custom_with_dispersion`; a row without one (or with one that
     /// fails `DispersionModel::validate`) takes the `new_custom` path from `refractive_index`
@@ -196,7 +259,15 @@ impl LibraryMaterial<'_> {
         if let Some(system) = self.crystal_system.and_then(crystal_system_from_name) {
             material.crystal_system = system;
         }
-        if let Some(character) = self.optical_character.and_then(optical_character_from_name) {
+        // A name that parses wins; without one, the stored delta is evidence of a biaxial
+        // material and the optic-sign rule picks which of the two.
+        let named = self.optical_character.and_then(optical_character_from_name);
+        let from_delta = || {
+            self.biaxial_delta_beta_alpha.and_then(|delta| {
+                biaxial_character_from_deltas(f64::from(delta), f64::from(self.birefringence))
+            })
+        };
+        if let Some(character) = named.or_else(from_delta) {
             material.optical_character = character;
         }
         if let Some(delta) = self.biaxial_delta_beta_alpha {
@@ -231,8 +302,11 @@ impl LibraryMaterial<'_> {
     /// The snapshot holds the numbers the cutter typed (refractive index, dispersion,
     /// birefringence, specific gravity) rather than anything re-derived from the resolved
     /// material, and the dispersion model when one is stored and valid. The crystal system and
-    /// optical character go in as plain text for a person reading the file; reading the
-    /// snapshot back re-derives both from the birefringence.
+    /// optical character go in as plain text, and the biaxial delta as a number; the open path
+    /// (`gem_material_from_custom_snapshot`) restores all three, so a biaxial material keeps its
+    /// crystal optics on a machine without the library row. An empty or unrecognised name
+    /// leaves what the birefringence implies, unless a usable biaxial delta is stored with it
+    /// ([`biaxial_character_from_deltas`] then picks the biaxial character on the open path).
     ///
     /// Both colour payloads travel: the top-level body colour, and, when the row holds a
     /// recipe, the typed [`ColorMode`] with its fallback colour recorded exactly as the
@@ -248,6 +322,7 @@ impl LibraryMaterial<'_> {
             self.crystal_system.unwrap_or_default(),
             self.optical_character.unwrap_or_default(),
         )
+        .with_biaxial_delta(self.biaxial_delta_beta_alpha.map(f64::from))
         .with_body_color(Some(self.absorption_rgb))
         .with_dispersion_model(
             self.dispersion_model_json

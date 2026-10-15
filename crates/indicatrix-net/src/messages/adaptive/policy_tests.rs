@@ -189,9 +189,9 @@ fn picture(noise: bool) -> Vec<u8> {
             state ^= state >> 17;
             state ^= state << 5;
             if noise {
-                (state >> 9) as u8
+                u8::try_from((state >> 9) & 0xff).expect("masked to a byte")
             } else {
-                (i / 64) as u8
+                u8::try_from(i / 64).expect("i / 64 is at most 191")
             }
         })
         .collect()
@@ -239,19 +239,19 @@ fn consecutive_frames_with_different_encodings_decode_on_one_decoder() {
     ];
     let mut used: Vec<PayloadEncoding> = Vec::new();
     for (w, h, raw) in &frames {
-        let encoded = encoder.encode(raw, BandwidthTier::DEFAULT);
-        assert_eq!(encoded.raw_len as usize, raw.len());
-        if !used.contains(&encoded.encoding) {
-            used.push(encoded.encoding);
+        let packet = encoder.encode(raw, BandwidthTier::DEFAULT);
+        assert_eq!(packet.raw_len as usize, raw.len());
+        if !used.contains(&packet.encoding) {
+            used.push(packet.encoding);
         }
-        let decoded = decoder
-            .decode_to_vec(encoded.encoding, encoded.raw_len, encoded.bytes, *w, *h)
+        let restored = decoder
+            .decode_to_vec(packet.encoding, packet.raw_len, packet.bytes, *w, *h)
             .unwrap();
-        let bytes: &[u8] = bytemuck::cast_slice(&decoded);
+        let bytes: &[u8] = bytemuck::cast_slice(&restored);
         assert!(
             bytes == raw.as_slice(),
             "{:?} frame {w}x{h} differs",
-            encoded.encoding
+            packet.encoding
         );
     }
     if cfg!(feature = "compression") {
@@ -274,12 +274,12 @@ fn releasing_the_buffers_keeps_the_encoding_and_the_output_identical() {
     );
     let tier = BandwidthTier::DEFAULT;
     let before = {
-        let encoded = encoder.encode(&raw, tier);
-        (encoded.encoding, encoded.bytes.to_vec())
+        let packet = encoder.encode(&raw, tier);
+        (packet.encoding, packet.bytes.to_vec())
     };
     encoder.release_buffers();
-    let encoded = encoder.encode(&raw, tier);
-    assert_eq!((encoded.encoding, encoded.bytes.to_vec()), before);
+    let packet = encoder.encode(&raw, tier);
+    assert_eq!((packet.encoding, packet.bytes.to_vec()), before);
 }
 
 #[test]

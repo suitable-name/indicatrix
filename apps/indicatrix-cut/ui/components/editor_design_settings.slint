@@ -6,17 +6,13 @@ import { GuideModel } from "../models/guide.slint";
 import { HelpTopics } from "../models/help.slint";
 import { DesignSettingsModel } from "../models/design_settings.slint";
 import { SectionHeader } from "section_header.slint";
-// `ViewportModel.material_editor_open` and `viewport_material_linked` are shared
-// with the Live Render tab's `gem_viewport.slint`; this file reads/writes the same
-// globals so the custom-material create path and the "Linked to design" toggle sit
-// next to the Edit tab's own material combo instead of requiring a tab switch.
+import { ParametersModel } from "../models/parameters.slint";
+import { MaterialChip, PreviewBadge } from "material_chip.slint";
+// The material is shown here as a read-only chip (`MaterialChip`, with the amber "Previewing"
+// badge while a preview is on); the Stone tab of the Parameters dock edits it.
 import { ViewportModel } from "../models/viewport.slint";
-import { PhysicscolorModel } from "../models/physics_color.slint";
-import { MaterialGuessBadge } from "material_guess.slint";
 import { GuideLockTip } from "guide_lock.slint";
 import { HelpButton } from "help_button.slint";
-import { LchEditor } from "material_editor/lch_editor.slint";
-import { BodyColorEditorModel } from "../models/body_color_editor.slint";
 import { TipButton } from "compact_controls.slint";
 import { ToggleRow } from "toggle_switch.slint";
 import { AdvancedNote } from "advanced_note.slint";
@@ -68,7 +64,7 @@ export component EditorDesignSettings inherits Rectangle {
     property <bool> advanced: GuideModel.shows_advanced();
     // The Simple interface hides some fields that are off their default: say so.
     property <bool> advanced_note_visible: !root.advanced && DesignSettingsModel.advanced_in_use(
-        EditorModel.ri_override_text,
+        "",
         EditorModel.design_extra_headers,
         EditorModel.design_footnotes,
         EditorModel.design_gear_reference_angle,
@@ -81,9 +77,6 @@ export component EditorDesignSettings inherits Rectangle {
     // `yield_pending`. A background refresh only re-seeds a section's scratch
     // fields when the underlying DESIGN value actually changed, so it cannot
     // silently flip `pending` back to `false` by reasserting a just-typed value.
-    property <bool> material_pending: false;
-    // The inline hue/saturation/brightness picker under the colour combo ("Custom...").
-    property <bool> color_picker_open: false;
     property <bool> gear_pending: false;
     property <bool> symmetry_pending: false;
     // "Apply Details" pending marker -- same treatment.
@@ -96,7 +89,6 @@ export component EditorDesignSettings inherits Rectangle {
     // `changed` can watch a global's property, as `editor_inspector.slint` does.
     property <int> tracked_form_reset_pulse: EditorModel.form_reset_pulse;
     changed tracked_form_reset_pulse => {
-        root.material_pending = false;
         root.gear_pending = false;
         root.symmetry_pending = false;
         root.meta_pending = false;
@@ -121,7 +113,7 @@ export component EditorDesignSettings inherits Rectangle {
 
         SectionHeader {
             title: "DESIGN";
-            hint: "The material, index gear, symmetry and details of the open design. Click to show or hide them.";
+            hint: "The index gear, symmetry and details of the open design, and its material at a glance (edited in the Stone tab). Click to show or hide them.";
             collapsed: EditorModel.settings_collapsed;
             toggled => { EditorModel.settings_collapsed = !EditorModel.settings_collapsed; }
             // The manual page for this panel stays reachable while it is collapsed.
@@ -137,232 +129,29 @@ export component EditorDesignSettings inherits Rectangle {
         if !EditorModel.settings_collapsed: VerticalLayout {
             spacing: 6px;
 
-        // Row 1: material / RI.
+        // Row 1: the material, read-only. It is edited in the Stone tab (one place for the
+        // stone's material, colour, size and effects); this chip shows what the design has.
         HorizontalLayout {
             spacing: 10px;
-            VerticalLayout {
-                horizontal-stretch: 1;
-                spacing: 3px;
-                SettingLabel {
-                    text: "Material";
-                    hint: "The gem material: built-ins first, then your own custom materials, then \"Custom RI…\" for a refractive index you type. It sets the critical angle, the optimizer's targets, the tilt curves and, while linked, the Live Render material. A custom material with only a flat refractive index renders without dispersion (no rainbow fire).";
-                }
-                ComboBox {
-                    enabled: root.unlocked;
-                    min-width: 0px;
-                    max-width: 240px;
-                    model: EditorModel.material_combo_options;
-                    current-index <=> EditorModel.material_combo_index;
-                    accessible-label: "Material";
-                    accessible-description: "The gem material of this design. Press Apply Material to use it.";
-                    selected => { root.material_pending = true; }
-                }
+            material-chip-l136 := MaterialChip {
+                show_ri: true;
+                row_height: 28px;
+                hint: "The design's material. Press to edit it in the Stone tab.";
             }
-            // The RI override is an advanced field; the Simple interface leaves it out (its value
-            // still applies and the note at the bottom says when one is set).
-            if root.advanced: VerticalLayout {
-                spacing: 3px;
-                SettingLabel {
-                    text: "RI Override";
-                    hint: "Refractive index (RI): how strongly the stone bends light. Leave this blank to use the material's own value, or type your own (above 1, for example 1.76). It moves the critical angle. See the glossary.";
-                }
-                LineEdit {
-                    enabled: root.unlocked;
-                    width: 90px;
-                    text <=> EditorModel.ri_override_text;
-                    placeholder-text: "auto";
-                    accessible-label: "Refractive index override";
-                    accessible-description: "Blank uses the material's own refractive index. Press Enter to apply.";
-                    edited => { root.material_pending = true; }
-                    accepted => {
-                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_color_index);
-                        root.material_pending = false;
-                    }
-                    changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                }
+            if ViewportModel.previewing: PreviewBadge {
+                compact: true;
+                row_height: 28px;
             }
             VerticalLayout {
-                spacing: 3px;
-                SettingLabel {
-                    text: "Body Color";
-                    hint: "Show this design in a different color of the same material, for example a yellow instead of a blue sapphire, without making a custom material. \"Custom…\" opens an editor for any tone, saturation and hue (with a picker as an alternative); the colour depends on the size of the stone, and the closest colour the material model can reach is used, and the same entry shows when the color was set somewhere else (the Live Render toolbar) and is not one of the presets. The material's own color shading by direction (pleochroism) is not modelled while a color is set.";
-                }
-                ComboBox {
-                    // Greyed out for a physics-color material: the override would replace the
-                    // physical color (spec 5).
-                    enabled: root.unlocked && !EditorModel.design_material_is_physics;
-                    min-width: 0px;
-                    max-width: 160px;
-                    model: EditorModel.body_color_options;
-                    current-index <=> EditorModel.body_color_index;
-                    accessible-label: "Body color";
-                    accessible-description: "The color this design is shown in. Press Apply Material to use it. The last entry, Custom, opens an editor for tone, saturation and hue.";
-                    selected => {
-                        if self.current-index == EditorModel.body_color_options.length - 1 {
-                            root.color_picker_open = true;
-                            BodyColorEditorModel.target = 0;
-                            BodyColorEditorModel.open_requested();
-                        } else {
-                            root.color_picker_open = false;
-                            root.material_pending = true;
-                        }
-                    }
-                }
-                if EditorModel.body_color_index == EditorModel.body_color_options.length - 1 && !root.color_picker_open: TipButton {
-                    enabled: root.unlocked && !EditorModel.design_material_is_physics;
-                    text: BodyColorEditorModel.busy ? "Matching..." : "Choose colour...";
-                    hint: "Open the colour editor to choose the tone, saturation and hue of this design's colour.";
-                    clicked => {
-                        root.color_picker_open = true;
-                        BodyColorEditorModel.target = 0;
-                        BodyColorEditorModel.open_requested();
-                    }
-                }
-                if root.color_picker_open: VerticalLayout {
-                    spacing: 4px;
-                    max-width: 300px;
-                    Text {
-                        text: "Tone, saturation and hue of the colour. It depends on the size of the stone: the swatches show it at 3, 5 and 10 mm and at this stone. The closest colour the material model can reach is used. It changes this design and you can undo it.";
-                        font-size: 9px;
-                        color: Theme.text-muted;
-                        wrap: word-wrap;
-                        accessible-role: AccessibleRole.text;
-                    }
-                    LchEditor {
-                        enabled: root.unlocked && !EditorModel.design_material_is_physics;
-                        applied => { root.color_picker_open = false; }
-                        cancelled => { root.color_picker_open = false; }
-                    }
-                }
-                // Wording that names the physics color only in a build that has the physics color
-                // editor (`physical-color`); without it the feature is not visible, so the note
-                // just says the material brings its own color.
-                if EditorModel.design_material_is_physics : HorizontalLayout {
-                    spacing: 4px;
-                    max-width: 160px;
-                    if EditorModel.physics_override_conflict : Image {
-                        source: @image-url("../icons/warning.svg");
-                        colorize: Theme.accent-amber;
-                        width: 10px;
-                        height: 10px;
-                        vertical-alignment: top;
-                    }
-                    Text {
-                        text: EditorModel.physics_override_conflict
-                            ? (PhysicscolorModel.ui_enabled
-                                ? "A color override is set and replaces this material's physical color. Choose \"Material default\" to restore it."
-                                : "A color override is set and replaces this material's own color. Choose \"Material default\" to restore it.")
-                            : (PhysicscolorModel.ui_enabled
-                                ? "Replaces the physical color \u{2014} unavailable for physics materials."
-                                : "This material defines its own color.");
-                        font-size: 9px;
-                        color: EditorModel.physics_override_conflict ? Theme.accent-amber : Theme.text-muted;
-                        wrap: word-wrap;
-                        horizontal-stretch: 1;
-                        accessible-role: AccessibleRole.text;
-                    }
-                }
-            }
-            VerticalLayout {
-                // Bottom-aligns the button to the labelled fields' baseline rather
-                // than faking the gap with a blank spacer `Text` (which breaks when
-                // a label wraps or the font changes). `alignment: end` sizes this
-                // column to its natural content and pins it to the row's bottom.
-                alignment: end;
+                alignment: center;
                 TipButton {
-                    enabled: root.unlocked;
-                    // Amber "*" marks unapplied edits, matching the inspector's
-                    // Apply buttons.
-                    text: root.material_pending ? "Apply Material *" : "Apply Material";
-                    reader_label: "Apply Material";
-                    hint: root.material_pending
-                        ? "Use the material, refractive index and color you picked. Not applied yet."
-                        : "Use the material, refractive index and color shown. Nothing to apply right now.";
-                    primary: root.material_pending;
-                    clicked => {
-                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_color_index);
-                        root.material_pending = false;
-                    }
+                    text: "Edit in Stone Tab";
+                    hint: "Open the Stone tab to change the material, refractive index, body color, size and render effects.";
+                    clicked => { ParametersModel.show_tab(0); }
                 }
             }
             Rectangle { horizontal-stretch: 1; }
         }
-
-        // Row 1b: read-only chips, material editor and the render link toggle,
-        // split from row 1a so neither row exceeds the dock's 576px minimum.
-        HorizontalLayout {
-            spacing: 10px;
-            // Read-only chips, same small-rounded-rectangle style as
-            // `detail_header.slint`'s metric grid.
-            VerticalLayout {
-                alignment: end;
-                Rectangle {
-                    background: Theme.bg-input;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    accessible-role: AccessibleRole.text;
-                    accessible-label: "Effective refractive index " + (EditorModel.effective_ri_text == "" ? "not known" : EditorModel.effective_ri_text);
-                    Tooltip { text: @markdown("Effective refractive index (RI) in use, after any override. See the glossary."); }
-                    HorizontalLayout {
-                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                        Text { text: "Eff. RI:"; font-size: 11px; color: Theme.text-muted; }
-                        Text { text: EditorModel.effective_ri_text == "" ? "-" : EditorModel.effective_ri_text; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
-                    }
-                }
-            }
-            VerticalLayout {
-                alignment: end;
-                Rectangle {
-                    background: Theme.bg-input;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    accessible-role: AccessibleRole.text;
-                    accessible-label: "Critical angle " + (EditorModel.critical_angle_text == "" ? "not known" : EditorModel.critical_angle_text);
-                    Tooltip { text: @markdown("Critical angle: below this angle light leaks out of a pavilion facet instead of bouncing back (see the tier list's MARGIN column). It follows from the refractive index. See the glossary."); }
-                    HorizontalLayout {
-                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                        Text { text: "Crit.:"; font-size: 11px; color: Theme.text-muted; }
-                        Text { text: EditorModel.critical_angle_text == "" ? "-" : EditorModel.critical_angle_text; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
-                    }
-                }
-            }
-            // Opens the custom-material editor next to the combo that consumes it,
-            // so creating a material does not require leaving the Edit tab;
-            // `components/app/global_dialogs.slint` mounts `MaterialEditorDialog` window-wide.
-            VerticalLayout {
-                alignment: end;
-                TipButton {
-                    enabled: root.unlocked;
-                    text: "New/Edit material...";
-                    hint: "Open the material editor to make your own material (a name, a refractive index and optionally color and dispersion) or change one you made.";
-                    clicked => { ViewportModel.material_editor_open = true; }
-                }
-            }
-            // Mirrors the Live Render tab's "Linked to design" toggle right where
-            // the design's material is set, so a cutter who unlinked the render
-            // material elsewhere can see and undo it without switching tabs.
-            VerticalLayout {
-                alignment: end;
-                width: 176px;
-                ToggleRow {
-                    text: "Linked to design";
-                    hint: "While on, the Live Render and Solid views use this design's own material. Turn it off to try another render material without changing the design.";
-                    checked: ViewportModel.viewport_material_linked;
-                    enabled: root.unlocked;
-                    toggled => {
-                        ViewportModel.viewport_material_linked = !ViewportModel.viewport_material_linked;
-                        ViewportModel.viewport_material_linked_changed(ViewportModel.viewport_material_linked);
-                    }
-                }
-            }
-            Rectangle { horizontal-stretch: 1; }
-        }
-
-        // The inferred-material guess badge -- renders nothing while
-        // `design.material.name` is set. See `MaterialGuessBadge`'s doc comment.
-        MaterialGuessBadge { }
 
         Rectangle { height: 1px; background: Theme.border-subtle; }
 
@@ -382,7 +171,7 @@ export component EditorDesignSettings inherits Rectangle {
                     max-width: 160px;
                     model: ["96", "80", "77", "72", "64", "120", "Custom"];
                     current-index <=> EditorModel.gear_index;
-                    accessible-label: "Index gear";
+                    accessible-label: "Index Gear";
                     accessible-description: "The tooth count of the index wheel. Press Apply Gear to use it.";
                     selected => { root.gear_pending = true; }
                 }
@@ -397,7 +186,7 @@ export component EditorDesignSettings inherits Rectangle {
                     enabled: root.unlocked;
                     width: 70px;
                     text <=> EditorModel.gear_custom_text;
-                    accessible-label: "Custom gear teeth";
+                    accessible-label: "Custom Gear Teeth";
                     accessible-description: "The tooth count of your own index gear. Press Apply Gear to use it.";
                     edited => { root.gear_pending = true; }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
@@ -406,7 +195,7 @@ export component EditorDesignSettings inherits Rectangle {
             VerticalLayout {
                 // Bottom-aligned to the fields' baseline, as with Apply Material.
                 alignment: end;
-                TipButton {
+                tip-button-gear-pending := TipButton {
                     enabled: root.unlocked;
                     // Gear applies through the `GearRemapDialog` confirmation rather
                     // than immediately, so this marks "a remap has been requested
@@ -432,7 +221,7 @@ export component EditorDesignSettings inherits Rectangle {
                     enabled: root.unlocked;
                     width: 60px;
                     text <=> EditorModel.symmetry_order_text;
-                    accessible-label: "Symmetry order";
+                    accessible-label: "Symmetry Order";
                     accessible-description: "How many times the pattern repeats around the stone. Press Enter to apply.";
                     edited => {
                         EditorModel.request_symmetry_preview(self.text, EditorModel.mirror);
@@ -467,7 +256,7 @@ export component EditorDesignSettings inherits Rectangle {
             if root.advanced: VerticalLayout {
                 // Bottom-aligned to the fields' baseline, as with Apply Material.
                 alignment: end;
-                TipButton {
+                tip-button-symmetry-pending := TipButton {
                     enabled: root.unlocked;
                     // Amber "*" marks unapplied edits, as with Apply Material.
                     text: root.symmetry_pending ? "Apply Symmetry *" : "Apply Symmetry";
@@ -509,7 +298,7 @@ export component EditorDesignSettings inherits Rectangle {
                     max-width: 220px;
                     horizontal-stretch: 1;
                     text <=> EditorModel.design_title;
-                    accessible-label: "Design title";
+                    accessible-label: "Design Title";
                     accessible-description: "The name of the design. Press Apply Details to use it.";
                     edited => { root.meta_pending = true; }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
@@ -529,7 +318,7 @@ export component EditorDesignSettings inherits Rectangle {
                     max-width: 220px;
                     horizontal-stretch: 1;
                     text <=> EditorModel.design_extra_headers;
-                    accessible-label: "Extra header lines";
+                    accessible-label: "Extra Header Lines";
                     accessible-description: "More header lines after the title. Separate several with a semicolon. Press Apply Details to use them.";
                     edited => { root.meta_pending = true; }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
@@ -565,7 +354,7 @@ export component EditorDesignSettings inherits Rectangle {
                     enabled: root.unlocked;
                     width: 70px;
                     text <=> EditorModel.design_gear_reference_angle;
-                    accessible-label: "Gear reference angle in degrees";
+                    accessible-label: "Gear Reference Angle in Degrees";
                     accessible-description: "Where the index wheel's zero tooth points. Press Apply Details to use it.";
                     edited => { root.meta_pending = true; }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
@@ -574,7 +363,7 @@ export component EditorDesignSettings inherits Rectangle {
             VerticalLayout {
                 // Bottom-aligned to the fields' baseline, as with Apply Material.
                 alignment: end;
-                TipButton {
+                tip-button-meta-pending := TipButton {
                     enabled: root.unlocked;
                     // Amber "*" marks unapplied edits, as with Apply Material.
                     text: root.meta_pending ? "Apply Details *" : "Apply Details";
@@ -608,16 +397,16 @@ export component EditorDesignSettings inherits Rectangle {
                 }
                 HorizontalLayout {
                     spacing: 4px;
-                    LineEdit { enabled: root.unlocked; width: 60px; text <=> EditorModel.printed_vol_w3_text; placeholder-text: "Vol/W\u{b3}"; accessible-label: "Printed volume over width cubed"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_lw_text; placeholder-text: "L/W"; accessible-label: "Printed length over width"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_cw_text; placeholder-text: "C/W"; accessible-label: "Printed crown height over width"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_pw_text; placeholder-text: "P/W"; accessible-label: "Printed pavilion height over width"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_hw_text; placeholder-text: "H/W"; accessible-label: "Printed total height over width"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 60px; text <=> EditorModel.printed_vol_w3_text; placeholder-text: "Vol/W\u{b3}"; accessible-label: "Printed Volume over Width Cubed"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_lw_text; placeholder-text: "L/W"; accessible-label: "Printed Length over Width"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_cw_text; placeholder-text: "C/W"; accessible-label: "Printed Crown Height over Width"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_pw_text; placeholder-text: "P/W"; accessible-label: "Printed Pavilion Height over Width"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_hw_text; placeholder-text: "H/W"; accessible-label: "Printed Total Height over Width"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                 }
             }
             VerticalLayout {
                 alignment: end;
-                TipButton {
+                tip-button-printed-pending := TipButton {
                     enabled: root.unlocked;
                     text: root.printed_pending ? "Apply Printed *" : "Apply Printed";
                     reader_label: "Apply Printed";
@@ -701,7 +490,7 @@ export component GearRemapDialog inherits Rectangle {
         drop-shadow-color: Theme.modal-shadow;
         clip: true;
         accessible-role: AccessibleRole.groupbox;
-        accessible-label: "Confirm index remap";
+        accessible-label: "Confirm Index Remap";
         accessible-description: "Every tier's indices are recomputed for the new gear. Confirm Remap applies it, Cancel keeps the old gear.";
 
         TouchArea {} // Isolate clicks inside the modal.

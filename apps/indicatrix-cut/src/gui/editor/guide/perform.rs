@@ -15,7 +15,9 @@
 //! has no result yet when it returns, so the button waits ([`GuideModel`]'s `perform_busy`) and
 //! the overlay layer's timer calls [`tick`] a few times a second until the goal is met or the
 //! recipe's ticks ([`SETTLE_TICKS`] for a solve or a new design, [`QUICK_TICKS`] otherwise) have
-//! passed.
+//! passed. A recipe that presses Solve while a solve is still running (typically the
+//! auto-solve after the previous step's edit) waits for it to finish first, as the learner
+//! would, instead of being refused; the running solve's own result may already meet the goal.
 
 use super::{launch, progress, runtime};
 use crate::{
@@ -45,11 +47,40 @@ const SETTLE_TICKS: u32 = 10;
 /// a goal that is not met after a moment will not be met by waiting.
 const QUICK_TICKS: u32 = 2;
 
+/// How many ticks a recipe that solves waits for an already running solve to finish before it
+/// runs anyway (and so says why it cannot): a Deep Solve or Optimize may run for long.
+const BUSY_WAIT_TICKS: u32 = 100;
+
+/// A recipe that solves, held back until the running solve has finished.
+struct Pending {
+    /// The guide and step it belongs to: a learner who moved on drops it.
+    guide_id: String,
+    index: i32,
+    recipe: Perform,
+}
+
 thread_local! {
-    /// Timer ticks since the recipe ran.
+    /// Timer ticks since the recipe ran (or, while one is pending, since it was held back).
     static TICKS: Cell<u32> = const { Cell::new(0) };
     /// How many ticks the running recipe may take.
     static TICK_LIMIT: Cell<u32> = const { Cell::new(QUICK_TICKS) };
+    /// The recipe waiting for a running solve to finish.
+    static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
+}
+
+/// Whether `perform` presses Solve.
+fn starts_solve(perform: &Perform) -> bool {
+    match perform {
+        Perform::Command(id) => id == CMD_SOLVE,
+        Perform::Sequence(parts) => parts.iter().any(starts_solve),
+        _ => false,
+    }
+}
+
+/// Whether a Solve, Deep Solve or Optimize is running: the palette's own "busy" fact, which
+/// refuses Solve.
+fn editor_busy(ui: &MainWindow) -> bool {
+    !ui.global::<EditorModel>().get_busy_action().is_empty()
 }
 
 /// Whether the result of `perform` arrives after it returns: a solve, or a new design that may
@@ -75,6 +106,7 @@ pub(super) fn start(ui: &MainWindow, index: i32) {
         return;
     };
     TICKS.set(0);
+    PENDING.set(None);
     TICK_LIMIT.set(if waits_for_result(&recipe) {
         SETTLE_TICKS
     } else {
@@ -91,20 +123,56 @@ pub(super) fn start(ui: &MainWindow, index: i32) {
             model.set_perform_busy(false);
             return;
         }
-        if let Err(message) = execute(&ui, &recipe) {
-            show_toast(&ui, &message, "error");
-            give_up(&ui);
+        // A solve (the auto-solve after the last edit, or one the learner started) is still
+        // running: Solve would be refused with an error toast. The learner's own move is to
+        // wait for it, so the recipe waits too; the running solve may already meet the goal.
+        if starts_solve(&recipe) && editor_busy(&ui) {
+            PENDING.set(Some(Pending {
+                guide_id,
+                index,
+                recipe,
+            }));
             return;
         }
-        progress::check_now(&ui);
-        settle_if_done(&ui);
+        run(&ui, &recipe);
     });
 }
 
-/// `GuideModel.perform_tick`: the recipe has run and the goal is not met yet.
+/// Runs `recipe` now and checks the goal; a refusal is a toast and the button gives up.
+fn run(ui: &MainWindow, recipe: &Perform) {
+    TICKS.set(0);
+    if let Err(message) = execute(ui, recipe) {
+        show_toast(ui, &message, "error");
+        give_up(ui);
+        return;
+    }
+    progress::check_now(ui);
+    settle_if_done(ui);
+}
+
+/// `GuideModel.perform_tick`: the recipe has run, or waits for a running solve, and the goal
+/// is not met yet.
 pub(super) fn tick(ui: &MainWindow) {
     progress::check_now(ui);
     if settle_if_done(ui) {
+        PENDING.set(None);
+        return;
+    }
+    if let Some(pending) = PENDING.take() {
+        let model = ui.global::<GuideModel>();
+        if model.get_guide_id().as_str() != pending.guide_id
+            || model.get_step_index() != pending.index
+        {
+            return;
+        }
+        let waited = TICKS.get() + 1;
+        if editor_busy(ui) && waited < BUSY_WAIT_TICKS {
+            TICKS.set(waited);
+            PENDING.set(Some(pending));
+        } else {
+            // Idle now (or waited long enough: running it says why it cannot run).
+            run(ui, &pending.recipe);
+        }
         return;
     }
     let ticks = TICKS.get() + 1;
@@ -317,7 +385,8 @@ fn generate_steps(ui: &MainWindow, series: &StepSeries) {
     }
 }
 
-/// Design Settings: pick `name` in the Material list, then Apply Material.
+/// The Stone tab: pick `name` in the Material list. The tab applies a pick at once through
+/// `EditorModel.apply_design_material` (the callback this calls), as one undo step.
 fn apply_material(ui: &MainWindow, name: &str) -> Result<(), String> {
     let editor = ui.global::<EditorModel>();
     let options = editor.get_material_combo_options();
@@ -363,6 +432,16 @@ mod tests {
         assert!(!waits_for_result(&Perform::add_tier(
             "90", 2, "1", "G1", "0:12:96"
         )));
+    }
+
+    #[test]
+    fn only_a_recipe_that_presses_solve_waits_for_a_running_solve() {
+        assert!(starts_solve(&Perform::solve()));
+        assert!(starts_solve(
+            &Perform::select("Table").then(Perform::solve())
+        ));
+        assert!(!starts_solve(&Perform::undo()));
+        assert!(!starts_solve(&Perform::ViewMode(1)));
     }
 
     #[test]

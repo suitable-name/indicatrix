@@ -62,6 +62,10 @@ fn build_biaxial_eigen_polarization_cases() -> Vec<BiaxialEigenPolarizationCase>
 }
 
 /// Runs the biaxial eigen polarization check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_biaxial_eigen_polarization(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -92,7 +96,9 @@ pub fn run_biaxial_eigen_polarization(
         &pipeline,
         &[(38, &in_buf), (39, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

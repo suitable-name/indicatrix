@@ -208,12 +208,13 @@ fn immersion_with_equal_indices_gives_straight_rays() {
         }
         let list = view.pixel_records(p, 0, records.spectral.traced_bins);
         assert_eq!(list.len(), 1, "a straight pixel is one record");
+        let record = list.get(0);
         assert!(
-            (f64::from(list[0].lengths[0]) - chord).abs() < 2e-3,
+            (f64::from(record.lengths[0]) - chord).abs() < 2e-3,
             "length {} against the chord {chord}",
-            list[0].lengths[0]
+            record.lengths[0]
         );
-        assert!((list[0].weight - 1.0).abs() < 1e-4, "no reflection loss");
+        assert!((record.weight - 1.0).abs() < 1e-4, "no reflection loss");
         seen += 1;
     }
     assert!(seen >= 32, "most of the 8 x 8 pixels see the stone");
@@ -273,11 +274,12 @@ fn zone_lengths_in_records_equal_the_kernel_for_a_straight_path() {
         let expected = zone_lengths(&zoned, entry, exit);
         let list = view.pixel_records(p, 0, records.spectral.traced_bins);
         assert_eq!(list.len(), 1);
+        let record = list.get(0);
         for (z, &expected_length) in expected.iter().take(2).enumerate() {
             assert!(
-                (f64::from(list[0].lengths[z]) - expected_length).abs() < 2e-3,
+                (f64::from(record.lengths[z]) - expected_length).abs() < 2e-3,
                 "pixel {p} zone {z}: {} against {}",
-                list[0].lengths[z],
+                record.lengths[z],
                 expected_length
             );
         }
@@ -292,6 +294,7 @@ fn records_are_bitwise_identical_for_any_thread_count() {
     let mut fixture = cube_fixture(position, 1.6, 1.0);
     fixture.surfaces = SurfaceMap::frosted(0.15);
     fixture.index = StoneIndex::Dispersion(DispersionModel::Sellmeier1 { b1: 1.2, c1: 0.01 });
+    fixture.options.trace_dispersion = true;
     fixture.options.samples = 24;
     fixture.options.max_sample_factor = 2;
     fixture.zones = Some(bicolour());

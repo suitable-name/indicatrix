@@ -2,13 +2,17 @@
 //! `Database` read behind a search/filter, and applies the result onto `ui`.
 
 use crate::{
-    DiagramItem, LibraryModel, MainWindow, gui::library::detail::clear_current_detail_display,
+    DiagramItem, LibraryModel, MainWindow,
+    gui::library::{detail::clear_current_detail_display, read_access::with_read_db},
 };
 use anyhow::Result;
 use indicatrix_net::library::DesignSummary;
 use indicatrix_vault::{
     db::sqlite::{Database, DisplayFilters, SortOrder},
-    model::{entry::DiagramListItem, filter::RangeFilter},
+    model::{
+        entry::DiagramListItem,
+        filter::{AttributeRanges, RangeFilter},
+    },
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::{
@@ -25,6 +29,19 @@ fn is_local_url(url: &str) -> bool {
     url.starts_with("local://")
 }
 
+/// Converts a database id to the `i32` a Slint `DiagramItem.id` holds. Ids are
+/// auto-increment row ids far below `i32::MAX`; saturating keeps the conversion total
+/// and identical for the row-to-item and the row-matches-item comparison.
+pub(super) fn slint_id(id: i64) -> i32 {
+    i32::try_from(id).unwrap_or(i32::MAX)
+}
+
+/// Converts a result count to the `i32` a Slint count property holds (saturating; the
+/// counts are `SEARCH_RESULT_CAP`-bounded and nowhere near `i32::MAX`).
+pub(super) fn slint_count(count: usize) -> i32 {
+    i32::try_from(count).unwrap_or(i32::MAX)
+}
+
 /// Reads [`DesignSummary::ignored`] straight off the row, giving a remote-sourced row
 /// the same ignored flag a local-sourced
 /// [`indicatrix_vault::model::entry::DiagramListItem::ignored`] already carries. Same
@@ -33,7 +50,7 @@ fn is_local_url(url: &str) -> bool {
 /// local one, from the same `url` field.
 pub(super) fn to_diagram_item(item: &DesignSummary) -> DiagramItem {
     DiagramItem {
-        id: item.entry_id as i32,
+        id: slint_id(item.entry_id),
         title: item.title.clone().into(),
         shape: item.shape.clone().unwrap_or_default().into(),
         gear: item.index_gear.clone().unwrap_or_default().into(),
@@ -315,32 +332,35 @@ pub(super) fn fetch_diagram_list_with_own_connection(
     range: &RangeFilter,
     options: DisplaySearchOptions<'_>,
 ) -> Result<FetchedDiagramList> {
-    match Database::open_read_only(crate::gui::DB_PATH) {
-        Ok(read_db) => {
-            fetch_diagram_list_from_db(&read_db, search, shape_filter, gear_filter, range, options)
-        }
-        Err(e) => {
-            warn!(
-                "background search: could not open a dedicated read-only connection to \
-                 {:?} ({e}); falling back to the shared database lock for this query",
-                crate::gui::DB_PATH
-            );
-            fetch_diagram_list_with_options(
-                db_mutex,
-                search,
-                shape_filter,
-                gear_filter,
-                range,
-                options,
-            )
-        }
-    }
+    with_read_db(db_mutex, |db| {
+        fetch_diagram_list_from_db(db, search, shape_filter, gear_filter, range, options)
+    })
+}
+
+/// [`fetch_diagram_list_with_own_connection`] plus the catalogue's attribute ranges, both
+/// read through ONE dedicated read-only connection -- the whole post-write refresh
+/// ([`crate::gui::library::local::helpers::refresh_after_library_change`], the metadata
+/// save) in a single open, with no hold on the shared `Mutex<Database>` (DB-1).
+pub(in crate::gui) fn fetch_list_and_ranges_with_own_connection(
+    db_mutex: &Arc<Mutex<Database>>,
+    search: &str,
+    shape_filter: &str,
+    gear_filter: &str,
+    range: &RangeFilter,
+    options: DisplaySearchOptions<'_>,
+) -> (Option<AttributeRanges>, Result<FetchedDiagramList>) {
+    with_read_db(db_mutex, |db| {
+        let ranges = db.get_attribute_ranges().ok();
+        let list =
+            fetch_diagram_list_from_db(db, search, shape_filter, gear_filter, range, options);
+        (ranges, list)
+    })
 }
 
 /// The Slint-facing row for one fetched catalogue row.
 fn row_to_item(row: DiagramListRow) -> DiagramItem {
     DiagramItem {
-        id: row.item.id as i32,
+        id: slint_id(row.item.id),
         title: row.item.title.into(),
         shape: row.item.shape.unwrap_or_default().into(),
         gear: row.item.index_gear.unwrap_or_default().into(),
@@ -375,7 +395,7 @@ fn list_unchanged(model: &ModelRc<DiagramItem>, rows: &[DiagramListRow]) -> bool
 /// Whether `shown` is what [`row_to_item`] would build from `row`.
 fn row_matches_item(row: &DiagramListRow, shown: &DiagramItem) -> bool {
     let item = &row.item;
-    shown.id == item.id as i32
+    shown.id == slint_id(item.id)
         && shown.title.as_str() == item.title
         && text_matches(&shown.shape, item.shape.as_deref())
         && text_matches(&shown.gear, item.index_gear.as_deref())
@@ -437,16 +457,16 @@ pub fn apply_diagram_list_to_ui(ui: &MainWindow, fetched: FetchedDiagramList) {
             .set_diagram_list(ModelRc::new(VecModel::from(slint_items)));
     }
     ui.global::<LibraryModel>()
-        .set_total_count(fetched.total as i32);
+        .set_total_count(slint_count(fetched.total));
     // Real match count for the active search/filters -- see
     // `FetchedDiagramList::matched_count`'s doc comment. Nowhere near `i32::MAX` for
     // the same reason `total`/`excluded_for_missing_curves` below aren't.
     ui.global::<LibraryModel>()
-        .set_matched_count(fetched.matched_count as i32);
+        .set_matched_count(slint_count(fetched.matched_count));
     // Counts designs within one query's result set (`SEARCH_RESULT_CAP`-bounded,
     // currently 1000), nowhere near `i32::MAX`.
     ui.global::<LibraryModel>()
-        .set_performance_excluded_count(fetched.excluded_for_missing_curves as i32);
+        .set_performance_excluded_count(slint_count(fetched.excluded_for_missing_curves));
 
     // Say so, in plain text, rather than quietly showing a fallback total
     // that happens to equal the page size -- the rows above are still rendered

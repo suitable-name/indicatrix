@@ -52,7 +52,10 @@ fn shape_vocabulary_migration_is_idempotent_across_two_opens() {
             .conn
             .query_row("SELECT COUNT(*) FROM shape_vocabulary", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, DEFAULT_SHAPES.len() as i64);
+        assert_eq!(
+            count,
+            i64::try_from(DEFAULT_SHAPES.len()).expect("a short seed list")
+        );
     }
 
     // Second open must not duplicate rows: INSERT OR IGNORE skips existing names.
@@ -61,7 +64,10 @@ fn shape_vocabulary_migration_is_idempotent_across_two_opens() {
         .conn
         .query_row("SELECT COUNT(*) FROM shape_vocabulary", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, DEFAULT_SHAPES.len() as i64);
+    assert_eq!(
+        count,
+        i64::try_from(DEFAULT_SHAPES.len()).expect("a short seed list")
+    );
 
     let _ = std::fs::remove_file(&path);
 }

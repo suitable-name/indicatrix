@@ -272,7 +272,21 @@ impl MeshCache {
     /// with the same planes passed to [`Self::get_or_build`] and builds the
     /// identical mesh. Tool `k` is facet id `planes.len() + k`.
     pub fn get_or_build_geometry(&mut self, geometry: &StoneGeometryBuf) -> Option<&CachedMesh> {
-        let key = geometry.cache_key();
+        self.get_or_build_geometry_keyed(geometry.cache_key(), geometry)
+    }
+
+    /// [`Self::get_or_build_geometry`] with the caller's own `key`, which MUST be
+    /// `geometry.cache_key()` of this very `geometry`.
+    ///
+    /// A redraw looks the same stone up twice (once to name an unbounded tier in
+    /// `resolve_request_state`, once to render it); the second lookup passes the first
+    /// one's key so the plane list is hashed once per request instead of twice (perf
+    /// review UI-7). The result is identical to the unkeyed call.
+    pub fn get_or_build_geometry_keyed(
+        &mut self,
+        key: u64,
+        geometry: &StoneGeometryBuf,
+    ) -> Option<&CachedMesh> {
         self.get_or_build_keyed(
             key,
             geometry.as_geometry().facet_count(),

@@ -1,13 +1,14 @@
 //! Unit tests for the pure helpers scattered across this module group.
 
 use super::{
-    materials_symmetry::ri_override_for_material_pick,
+    materials_symmetry::{explicit_edits, ri_override_for_material_pick},
     new_design::install_new_design,
     solid_picking::letterbox_margin,
     tier_form::tier_form_error_field,
     viewport_material::{parse_printed_proportions_field, parse_printed_proportions_form},
 };
 use crate::gui::editor::{loading::parse_new_design_form, state::EditorState};
+use glam::DVec3;
 use indicatrix_cut_core::PreformSpec;
 
 // --- ri_override_for_material_pick ---
@@ -202,7 +203,9 @@ fn creating_from_the_empty_template_marks_the_design_as_present() {
     install_new_design(&mut st, worked_example_spec(), 0);
     assert!(st.has_design);
     assert_eq!(st.design.tiers.len(), 0, "no template tiers were seeded");
-    assert!(!st.is_dirty(), "a freshly created design starts clean");
+    assert!(st.is_dirty(), "a design the user created is unsaved");
+    st.session.mark_saved();
+    assert!(!st.is_dirty(), "saving makes it clean");
 }
 
 #[test]
@@ -257,4 +260,222 @@ fn zero_tier_hint_condition_differs_from_the_empty_state_condition() {
     // A design with tiers shows neither.
     assert!(!shows_empty_state(true, true));
     assert!(!shows_zero_tier_hint(true, true, 8));
+}
+
+// --- the Stone tab is the design: no silent unlink, one stone width ---
+
+/// The Stone tab's width field and the Preform tab's Girdle Diameter field are one value:
+/// both go through `parse_yield_form` into `Edit::SetGirdleDiameterMm`, so the same text gives
+/// the same width (arithmetic included), and the design holds exactly that one number.
+#[test]
+fn the_stone_tab_and_the_preform_field_edit_the_same_design_width() {
+    use indicatrix_cut_core::Edit;
+    use indicatrix_editor::material::parse_yield_form;
+
+    let mut state = EditorState::fresh();
+    assert_eq!(state.design.girdle_diameter_mm, None);
+    let current = state.design.material.clone();
+
+    // The Stone tab sends the width alone; the Preform tab sends it with its specific gravity.
+    let (from_stone, _) = parse_yield_form("6.5+0.25", 0, "", &current).expect("parses");
+    let (from_preform, _) = parse_yield_form("6.5+0.25", 0, "3.52", &current).expect("parses");
+    assert_eq!(from_stone, Some(6.75));
+    assert_eq!(from_stone, from_preform);
+
+    state
+        .apply(Edit::SetGirdleDiameterMm {
+            girdle_diameter_mm: from_stone,
+        })
+        .expect("the width applies");
+    assert_eq!(state.design.girdle_diameter_mm, Some(6.75));
+    assert!(state.undo().expect("undoes"));
+    assert_eq!(state.design.girdle_diameter_mm, None);
+
+    assert!(
+        parse_yield_form("0", 0, "", &current).is_err(),
+        "a zero width is refused"
+    );
+    assert!(parse_yield_form("abc", 0, "", &current).is_err());
+}
+
+/// A design refresh pushes the design's values into the forms only for the groups that
+/// changed since the last push. A material edit leaves the width group alone (so a width the
+/// user is still typing is never overwritten), a width edit flags only the width, and a
+/// refresh with nothing changed flags nothing.
+#[test]
+fn a_design_refresh_never_flags_a_group_the_edit_did_not_touch() {
+    use indicatrix_cut_core::{Edit, MaterialSelection};
+
+    let mut state = EditorState::fresh();
+    let first = state.record_scratch_push();
+    assert!(
+        first.material && first.girdle,
+        "the first push seeds every group"
+    );
+
+    state
+        .apply(Edit::SetMaterial {
+            material: MaterialSelection {
+                name: Some("Ruby".to_string()),
+                ..MaterialSelection::default()
+            },
+        })
+        .expect("the material applies");
+    let after_material = state.record_scratch_push();
+    assert!(after_material.material);
+    assert!(
+        !after_material.girdle,
+        "a pending width edit survives a material change"
+    );
+
+    state
+        .apply(Edit::SetGirdleDiameterMm {
+            girdle_diameter_mm: Some(7.0),
+        })
+        .expect("the width applies");
+    let after_width = state.record_scratch_push();
+    assert!(after_width.girdle);
+    assert!(!after_width.material);
+
+    let unchanged = state.record_scratch_push();
+    assert!(!unchanged.material && !unchanged.girdle && !unchanged.preform);
+}
+
+// --- explicit_edits: the one apply path of "use this material / width / preform" ---
+
+/// A planned piece of rough as the Rough Planner hands it over: the box `|x|, |y|, |z| <= 1`.
+fn planned_piece() -> PreformSpec {
+    let planes = vec![
+        (DVec3::X, 1.0),
+        (DVec3::NEG_X, 1.0),
+        (DVec3::Y, 1.0),
+        (DVec3::NEG_Y, 1.0),
+        (DVec3::Z, 1.0),
+        (DVec3::NEG_Z, 1.0),
+    ];
+    PreformSpec::from_planes(planes, "Rough plan, result 1, stone 1".to_owned())
+        .expect("a closed box is a preform")
+}
+
+/// A design with a block preform and no girdle diameter, as a freshly loaded library design is.
+fn state_with_a_block_preform() -> EditorState {
+    use indicatrix_cut_core::Edit;
+
+    let mut state = EditorState::fresh();
+    state
+        .apply(Edit::SetPreform {
+            preform: PreformSpec::block(1.0, 1.0, 1.0),
+        })
+        .expect("the block applies");
+    assert_eq!(state.design.girdle_diameter_mm, None);
+    assert!(!state.design.preform.is_plane_set());
+    state
+}
+
+#[test]
+fn an_explicit_apply_lists_the_material_then_the_width_then_the_preform() {
+    use indicatrix_cut_core::Edit;
+
+    let mut state = state_with_a_block_preform();
+    let piece = planned_piece();
+
+    let edits = explicit_edits(
+        &state.design,
+        Some("Melon - Round color"),
+        Some(6.5),
+        Some(&piece),
+    );
+    assert_eq!(edits.len(), 3, "{edits:?}");
+    assert!(matches!(edits[0], Edit::SetMaterial { .. }), "{edits:?}");
+    assert_eq!(
+        edits[1],
+        Edit::SetGirdleDiameterMm {
+            girdle_diameter_mm: Some(6.5)
+        }
+    );
+    assert_eq!(
+        edits[2],
+        Edit::SetPreform {
+            preform: piece.clone()
+        }
+    );
+
+    // A design whose preform was shifted gets the shift put back: the planes place the piece.
+    state
+        .apply(Edit::SetPreformYOffset { y_offset: 0.25 })
+        .expect("the offset applies");
+    let material_before = state.design.material.clone();
+    let preform_before = state.design.preform.clone();
+    let _ = state.record_scratch_push();
+    let shifted = explicit_edits(
+        &state.design,
+        Some("Melon - Round color"),
+        Some(6.5),
+        Some(&piece),
+    );
+    assert_eq!(shifted.len(), 4, "{shifted:?}");
+    assert_eq!(shifted[3], Edit::SetPreformYOffset { y_offset: 0.0 });
+
+    // The whole action is ONE undo step, and it reaches the Preform tab's form.
+    state
+        .apply(Edit::Batch(shifted))
+        .expect("the batch applies");
+    assert_eq!(
+        state.design.material.name.as_deref(),
+        Some("Melon - Round color")
+    );
+    assert_eq!(state.design.girdle_diameter_mm, Some(6.5));
+    assert_eq!(state.design.preform, piece);
+    assert_eq!(state.design.preform_y_offset, 0.0);
+    assert!(state.record_scratch_push().preform);
+    assert!(state.undo().expect("undoes"));
+    assert_eq!(state.design.material, material_before);
+    assert_eq!(state.design.girdle_diameter_mm, None);
+    assert_eq!(state.design.preform, preform_before);
+    assert_eq!(state.design.preform_y_offset, 0.25);
+}
+
+#[test]
+fn an_explicit_apply_the_design_already_has_makes_no_edit() {
+    use indicatrix_cut_core::Edit;
+
+    let mut state = state_with_a_block_preform();
+    let piece = planned_piece();
+    let first = explicit_edits(
+        &state.design,
+        Some("Melon - Round color"),
+        Some(6.5),
+        Some(&piece),
+    );
+    state.apply(Edit::Batch(first)).expect("the batch applies");
+    assert!(
+        explicit_edits(
+            &state.design,
+            Some("Melon - Round color"),
+            Some(6.5),
+            Some(&piece)
+        )
+        .is_empty(),
+        "the second apply finds everything in place"
+    );
+
+    // What is not asked for is not touched.
+    assert!(
+        explicit_edits(&state.design, None, None, None).is_empty(),
+        "no request asks for no edits"
+    );
+    // A width that is no width asks nothing.
+    for width in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            explicit_edits(&state.design, None, Some(width), None).is_empty(),
+            "{width}"
+        );
+    }
+    // Another width is the one edit.
+    assert_eq!(
+        explicit_edits(&state.design, None, Some(7.0), None),
+        vec![Edit::SetGirdleDiameterMm {
+            girdle_diameter_mm: Some(7.0)
+        }]
+    );
 }

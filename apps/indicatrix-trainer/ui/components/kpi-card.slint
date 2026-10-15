@@ -1,0 +1,55 @@
+import { TrainerTheme } from "../theme.slint";
+
+// One figure with a caption and a tooltip. `value` is "—" until the worker measured it.
+export component KpiCard inherits Rectangle {
+    in property <string> title;
+    in property <string> value: "—";
+    in property <string> subtitle;
+    in property <string> tip;
+    in property <color> accent: TrainerTheme.accent-cyan;
+
+    min-height: 66px;
+    background: ta.has-hover ? TrainerTheme.bg-card-hover : TrainerTheme.bg-card;
+    border-radius: TrainerTheme.radius;
+    border-width: 1px;
+    border-color: TrainerTheme.border-subtle;
+
+    accessible-role: text;
+    accessible-label: root.title + ": " + root.value + (root.subtitle != "" ? ", " + root.subtitle : "");
+    accessible-description: root.tip;
+
+    VerticalLayout {
+        padding: 10px;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 2px;
+        alignment: center;
+
+        Text {
+            text: root.title;
+            color: TrainerTheme.text-muted;
+            font-size: 11px;
+            font-weight: 700;
+            overflow: elide;
+        }
+        Text {
+            text: root.value;
+            color: root.value == "—" ? TrainerTheme.text-muted : root.accent;
+            font-size: 20px;
+            font-weight: 800;
+            overflow: elide;
+        }
+        Text {
+            text: root.subtitle == "" ? " " : root.subtitle;
+            color: TrainerTheme.text-secondary;
+            font-size: 11px;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: MouseCursor.default;
+    }
+    if root.tip != "": Tooltip {
+        text: @markdown("\{root.tip}");
+    }
+}

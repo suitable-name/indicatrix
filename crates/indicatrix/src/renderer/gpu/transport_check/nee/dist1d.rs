@@ -29,8 +29,8 @@ fn build_dist1d_find_bucket_cases(
 ) -> (Vec<Dist1dFindBucketCase>, Vec<usize>) {
     let mut cases = Vec::new();
     let mut cpu_expected = Vec::new();
-    let width = map.width() as u32;
-    let height = map.height() as u32;
+    let width = u32::try_from(map.width()).expect("an environment map width fits u32");
+    let height = u32::try_from(map.height()).expect("an environment map height fits u32");
     let dist: &Distribution2D = map.distribution();
 
     let u_vals = [
@@ -40,7 +40,7 @@ fn build_dist1d_find_bucket_cases(
     // Conditional distributions (rows)
     for (row_idx, row_dist) in dist.conditional().iter().enumerate() {
         let row_dist: &Distribution1D = row_dist;
-        let cdf_start = (row_idx as u32) * (width + 1);
+        let cdf_start = u32::try_from(row_idx).expect("a map row index fits u32") * (width + 1);
         for &u in &u_vals {
             cases.push(Dist1dFindBucketCase {
                 cdf_start,
@@ -69,6 +69,10 @@ fn build_dist1d_find_bucket_cases(
 }
 
 /// Runs the Tier 2 check for [`Distribution1D::find_bucket`].
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_dist1d_find_bucket(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -102,7 +106,9 @@ pub fn run_dist1d_find_bucket(
         &pipeline,
         &[(63, &gpu_data.dist_cdf), (67, &in_buf), (68, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

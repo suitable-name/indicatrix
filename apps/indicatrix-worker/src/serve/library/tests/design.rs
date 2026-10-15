@@ -340,7 +340,7 @@ fn fetch_design_source_for_an_unknown_entry_is_not_found() {
     std::fs::remove_file(&path).ok();
 }
 
-/// `FetchDesignNative` returns the `.indicatrix` attachment's bytes untouched (a binary
+/// `FetchDesignNative` returns the `.isdd` attachment's bytes untouched (a binary
 /// payload with a NUL and a non-UTF-8 byte, so any text round trip would corrupt it),
 /// and a design without one is `DesignNativeNotAvailable`, an unknown id `NotFound`.
 #[test]
@@ -362,7 +362,7 @@ fn fetch_design_native_returns_the_attachment_bytes_verbatim() {
             1,
             vec![
                 ("schedule.pdf", b"%PDF".to_vec()),
-                ("scooped.indicatrix", vec![b'v', 0, 0xFF, b'\n']),
+                ("scooped.isdd", vec![b'v', 0, 0xFF, b'\n']),
             ],
         ),
         (2, vec![("schedule.pdf", b"%PDF".to_vec())]),
@@ -399,7 +399,7 @@ fn fetch_design_native_returns_the_attachment_bytes_verbatim() {
         handle_request(&LibraryRequest::FetchDesignNative { entry_id: ids[0] }, &ro),
         LibraryResponse::DesignNative {
             entry_id: ids[0],
-            file_name: "scooped.indicatrix".to_string(),
+            file_name: "scooped.isdd".to_string(),
             content: vec![b'v', 0, 0xFF, b'\n'],
         }
     );

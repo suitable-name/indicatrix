@@ -7,7 +7,7 @@ use crate::rough_plan::locate::RigProfile;
 /// holder, the measured white frames).
 ///
 /// Kept apart from the profile on purpose: the profile is saved with the user's rig, and its
-/// bytes must not change with the `zoning` feature.
+/// bytes must not change with the rough colour.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColourRig {
     /// The cameras and the refractive indices of the stone and its surroundings.

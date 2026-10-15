@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------------
-// Zoned absorption, unit 3 of 3: the zoned interior segment. `zoning` feature only.
+// Zoned absorption, unit 3 of 3: the zoned interior segment.
 //
 // WGSL twin of `optics::raytracer::zoned::segment_optical_depths` plus the exp attenuation
 // of `absorption::apply_segment_absorption`. It replaces the homogeneous
@@ -25,7 +25,12 @@
 // Per-zone path length in mm of the segment origin + dir * t, t in [0, hit_t] (model
 // units): `ZonedCache::lengths_mm` with t0 = 0.
 fn zone_lengths_mm(origin: vec3<f32>, dir: vec3<f32>, hit_t: f32, path_scale: f32) -> array<f32, 5> {
+    // Explicit zeros, as in `zone_fractions_sharp`: both early returns hand back a partly
+    // written array.
     var out: array<f32, 5>;
+    for (var i: u32 = 0u; i < 5u; i = i + 1u) {
+        out[i] = 0.0;
+    }
     let scaled = hit_t * path_scale;
     if (!(scaled > 0.0)) {
         return out;

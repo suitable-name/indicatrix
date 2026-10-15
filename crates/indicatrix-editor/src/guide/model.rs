@@ -55,7 +55,7 @@ impl GuideCategory {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::GettingStarted => "Getting started",
+            Self::GettingStarted => "Getting Started",
             Self::Tiers => "Tiers",
             Self::Solving => "Solving",
             Self::Optimizing => "Optimizing",
@@ -63,7 +63,7 @@ impl GuideCategory {
             Self::Output => "Output",
             Self::Library => "Library",
             Self::Preferences => "Preferences",
-            Self::BuildThisDesign => "Built from the library",
+            Self::BuildThisDesign => "Built from the Library",
         }
     }
 }

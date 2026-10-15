@@ -134,6 +134,7 @@ fn admits(guard: &ShapeGuard, measured: &Measured) -> bool {
         &measured.solved,
         &measured.planes,
         &measured.mesh,
+        measure_solid(&measured.planes).as_ref(),
     )
 }
 
@@ -384,6 +385,7 @@ fn evaluate_candidate_rejects_what_the_guard_rejects() {
             CANONICAL_LIGHTING_PRESET,
             guard,
             None,
+            candidate::preform_volume(&start.design),
         )
     };
     assert!(matches!(evaluate(None), CandidateOutcome::Accepted { .. }));

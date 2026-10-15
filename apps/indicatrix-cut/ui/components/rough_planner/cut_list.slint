@@ -227,8 +227,8 @@ component CutRowItem inherits Rectangle {
             }
 
             // Deleting edits the model, which a running plan is using.
-            CutDelete {
-                label: "Delete cut " + (root.index + 1) + ": " + root.cut.title;
+            cut-delete-index := CutDelete {
+                label: "Delete Cut "+ (root.index + 1) + ": " + root.cut.title;
                 enabled: !RoughPlanModel.running;
                 clicked => { root.remove(); }
             }
@@ -243,8 +243,8 @@ component CutRowItem inherits Rectangle {
         }
 
         // Which edge or corner the cut sits on (faces have a direction instead)
-        if root.cut.kind != 2: FaceCombo {
-            label: root.cut.kind == 0 ? "Edge of the cut" : "Corner of the cut";
+        if root.cut.kind != 2: face-combo-cut := FaceCombo {
+            label: root.cut.kind == 0 ? "Edge of the Cut" : "Corner of the Cut";
             hint: root.cut.kind == 0 ? "Which edge of the block this cut takes off." : "Which corner of the block this cut takes off.";
             options: root.cut.kind == 0 ? RoughPlanModel.edge_options : RoughPlanModel.corner_options;
             index: root.cut.face_index;
@@ -427,7 +427,7 @@ export component CutList inherits VerticalLayout {
             clicked => { RoughPlanModel.add_cut(2); }
         }
         RoughPill {
-            text: "Face from view";
+            text: "Face from View";
             hint: RoughPlanModel.running ? "Not while a plan is running."
                 : (RoughPlanModel.view_mode != 0 && !RoughPlanModel.face_from_view_armed
                     ? "Show the Rough view first: a face is picked on the rough, not on a result."

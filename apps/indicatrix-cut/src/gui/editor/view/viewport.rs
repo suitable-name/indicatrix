@@ -15,7 +15,7 @@ use crate::{
     bridge::render_thread::{PlanesOwner, RenderContext},
     gui::{
         editor::auto_solve,
-        render::camera_lighting::contained_request_size,
+        render::camera_lighting::{contained_request_size, device_pixels, view_mode_index},
         solid_preview::{
             cut_slider,
             preview_state::{CameraPose, SolidPreviewState},
@@ -58,8 +58,8 @@ pub(in crate::gui::editor) use replan::{
 pub(in crate::gui::editor) fn scaled_viewport_size(ui: &MainWindow) -> (u32, u32) {
     let scale = ui.window().scale_factor();
     (
-        (ui.global::<SolidPreviewModel>().get_viewport_width() * scale) as u32,
-        (ui.global::<SolidPreviewModel>().get_viewport_height() * scale) as u32,
+        device_pixels(ui.global::<SolidPreviewModel>().get_viewport_width() * scale),
+        device_pixels(ui.global::<SolidPreviewModel>().get_viewport_height() * scale),
     )
 }
 
@@ -89,13 +89,14 @@ pub(super) fn push_trace_staleness(
     state: &EditorState,
 ) {
     let generation = state.generation.load(std::sync::atomic::Ordering::Relaxed);
-    let stale = {
+    let planes_stale = {
         let ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ctx.traced_planes_are_stale(generation)
     };
-    ui.global::<crate::ViewportModel>().set_trace_stale(stale);
+    ui.global::<crate::ViewportModel>()
+        .set_trace_stale(planes_stale);
 }
 
 /// `solved` is the SAME solve [`super::panel::refresh_editor_panel`] already
@@ -136,14 +137,16 @@ fn refresh_viewport(
     // but it goes through the same single write path as every other writer so the
     // ownership stamp stays truthful, which is what stops a later catalogue click
     // from silently replacing the design under the cutter's hands.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the GPU/storage precision of the gear reference angle (degrees)"
+    )]
+    let gear_reference_angle = state.design.meta.gear_reference_angle as f32;
     ctx.claim_active_geometry(
         std::sync::Arc::new(planes_for_claim),
         std::sync::Arc::new(tools_for_claim),
         placements_for_claim,
-        Some((
-            state.design.meta.gear_teeth_abs(),
-            state.design.meta.gear_reference_angle as f32,
-        )),
+        Some((state.design.meta.gear_teeth_abs(), gear_reference_angle)),
         PlanesOwner::Editor {
             generation: state.generation.load(std::sync::atomic::Ordering::Relaxed),
         },
@@ -157,7 +160,7 @@ fn refresh_viewport(
         tools: ctx.active_tools.as_ref().clone(),
         placements: ctx.active_placements.clone(),
     };
-    let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
+    let view_mode = view_mode_index(ui.global::<SolidPreviewModel>().get_view_mode());
     // Letterboxes the request to the traced image's own
     // rectangle in Path-traced/Both, exactly like `camera_lighting::
     // resubmit_at_current_pose` already does for a camera drag/zoom/view-mode

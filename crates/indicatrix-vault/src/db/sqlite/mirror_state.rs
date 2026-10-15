@@ -151,8 +151,8 @@ impl Database {
                 |row| row.get(0),
             )
             .context("Failed to count mirror states without a matching diagram entry")?;
-        // A SQL COUNT(*) is never negative (workspace-wide `cast_sign_loss` = "allow").
-        Ok(count as u64)
+        // A SQL COUNT(*) is never negative, so the bit pattern is the count.
+        Ok(count.cast_unsigned())
     }
 }
 

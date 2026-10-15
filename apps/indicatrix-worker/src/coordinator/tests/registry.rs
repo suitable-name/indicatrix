@@ -130,7 +130,7 @@ fn discard_unregisters_and_notifies_subscribers() {
 #[test]
 fn viewer_advertisement_follows_o5() {
     let own_cpu = capability(Backend::Cpu { threads: 16 });
-    let own_gpu = capability(Backend::Gpu {
+    let own_rtx = capability(Backend::Gpu {
         adapter: "rtx".to_string(),
     });
     let none = Capacity::default();
@@ -149,8 +149,8 @@ fn viewer_advertisement_follows_o5() {
         Some(own_cpu.clone())
     );
     assert_eq!(
-        viewer_render_capability(Some(&own_gpu), None, false),
-        Some(own_gpu.clone())
+        viewer_render_capability(Some(&own_rtx), None, false),
+        Some(own_rtx.clone())
     );
 
     let bare = viewer_render_capability(None, Some(two), false).unwrap();
@@ -173,7 +173,7 @@ fn viewer_advertisement_follows_o5() {
             gpus: 1
         }
     );
-    let with_gpu = viewer_render_capability(Some(&own_gpu), Some(two), false).unwrap();
+    let with_gpu = viewer_render_capability(Some(&own_rtx), Some(two), false).unwrap();
     assert_eq!(
         with_gpu.backend,
         Backend::Coordinator {

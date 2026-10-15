@@ -9,18 +9,27 @@
 //! so windowing, extinction and (flipped) brilliance count equally, each averaged over
 //! a table-up and two tilted poses.
 //!
-//! # Stone size (limitation)
+//! # Stone size
 //!
-//! The candidates are the plain built-in presets, scored unsized: the batch has no girdle
-//! diameter to size them with (`FullDiagramRecord` and the vault carry no
-//! `Design::girdle_diameter_mm`, and the angle-table fallback has none either), so this module
-//! and the library tilt/preview batches that use it trace the bare material. That equals the
-//! render of an unsized, unlinked library design (Stone Size "not set": a `ModelUnit` built-in is
-//! untouched); a library design whose own file carries a girdle diameter renders its linked view
-//! with that size, so its batch tilt curves can differ from the live view by the
-//! `girdle_mm / 7` absorption factor. Sizing them needs the diameter threaded through the record
-//! (then `render_setup::material_for_stone(material, mm, planes)` in [`balanced_loss`]'s caller
-//! and the engines' `resolve_design`).
+//! This module only PICKS the material, and it scores the candidates unsized
+//! (`material_for_stone` at width `0.0`, the 7 mm calibration), as it always has: the pick is
+//! persisted write-once, so it must depend on the design's geometry and index alone, never on a
+//! size that can change when the design is edited.
+//!
+//! The picked material is not what the batches draw and sweep as it stands.
+//! `super::catalogue_material::catalogue_material` sizes it by the design's own girdle diameter
+//! (`Design::girdle_diameter_mm` of the design file, carried by
+//! `gui::editor::CataloguePlanes::girdle_diameter_mm`), exactly as the editor's viewport and the
+//! exports size a stone, so a library design shows and is scored at the size the editor shows. A
+//! design whose file names a material is not drawn in this pick at all but in that material (the
+//! editor's own rule, with the file's refractive-index and body-color overrides). A design with
+//! neither -- an angle-table design, an `.asc` alone, a file without a girdle diameter -- keeps
+//! the unsized pick, and with it the same thumbnails, curves and cache fingerprint it had before.
+//!
+//! What remains approximate: for a design whose file sets a girdle diameter but names no
+//! material, the pick itself was scored at 7 mm, so a size far from 7 mm can leave a different
+//! candidate of the shortlist the better one at the real size. The pick is not redone per size,
+//! to keep it stable.
 
 use crate::bridge::preview_render::{PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW};
 use indicatrix::{

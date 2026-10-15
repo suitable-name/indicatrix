@@ -23,7 +23,7 @@
 //!   desktop's conversions.
 //! - [`custom_material`]: the Design settings dialog's custom-material fields turned into
 //!   a `GemMaterial` and the snapshot a design file stores for it.
-//! - [`design_meta`]: the `.indicatrix` file's descriptive `[meta]` table as the page
+//! - [`design_meta`]: the `.isdd` file's descriptive `[meta]` table as the page
 //!   keeps and stamps it (ISO-8601 UTC time, UUID v4 from caller-supplied bytes).
 //! - [`guide`]: the guided walkthrough's tab-session state (open, step, collapsed,
 //!   where the floating panel was dragged to).
@@ -31,6 +31,12 @@
 //! - [`input`]: the size limits checked on a picked or dropped file before it is read.
 //! - [`open_route`]: what the Open picker offers and the design file's name (which loader
 //!   a file goes to is `indicatrix_editor::files::InputFileKind::classify`).
+//! - [`rows`]: the tier table's row ids, the driven-angle refusal, the schedule notes and
+//!   the history labels (pure helpers of the page's editor).
+//! - [`new_design`]: the New Design dialog's template path without the window.
+//! - [`storage_keys`]: the `indicatrix.<name>.v<n>` storage key builders.
+//! - [`tab_state`]: the design name and unsaved flag, which belong to one tab
+//!   (`sessionStorage`) rather than to the shared settings.
 //! - [`worker`]: [`worker::WorkerHandler`], the whole message-handling state machine a
 //!   Worker runs; the `indicatrix-web-compute` crate only moves bytes in and out of it.
 //! - [`host`] (wasm32 only): the page-side pool, [`host::WorkerPool`] with its
@@ -44,13 +50,17 @@ pub mod hdr;
 #[cfg(target_arch = "wasm32")]
 pub mod host;
 pub mod input;
+pub mod new_design;
 pub mod open_route;
 pub mod protocol;
 pub mod render;
+pub mod rows;
 pub mod scene;
 pub mod settings;
 pub mod solve;
 pub mod solve_error;
+pub mod storage_keys;
+pub mod tab_state;
 pub mod worker;
 
 /// Where the host finds the Worker script: the loader shim Trunk writes next to the

@@ -36,11 +36,12 @@ fn hg_phase_integrates_to_one_over_the_sphere() {
         let mut integral = 0.0f64;
         for i in 0..steps {
             let mu = f64::mul_add(f64::from(i) + 0.5, dmu, -1.0);
-            integral = f64::mul_add(
-                f64::from(henyey_greenstein_phase(mu as f32, g)),
-                dmu,
-                integral,
-            );
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "mu is within -1..=1; the phase function takes an f32 cosine"
+            )]
+            let mu_f32 = mu as f32;
+            integral = f64::mul_add(f64::from(henyey_greenstein_phase(mu_f32, g)), dmu, integral);
         }
         integral *= 2.0 * std::f64::consts::PI;
         assert!(
@@ -81,6 +82,10 @@ fn hg_sampling_mean_cos_theta_converges_to_g() {
             let dir = sample_henyey_greenstein_direction(u1, u2, g, forward);
             sum += f64::from(dir.dot(forward));
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the mean cosine is within -1..=1; the test compares it in f32 like the sampler"
+        )]
         let mean = (sum / f64::from(trials)) as f32;
         assert!(
             (mean - g).abs() < 0.01,
@@ -142,7 +147,7 @@ fn default_off_scattering_is_bit_identical_regardless_of_g() {
             for ix in 0..6usize {
                 let ray = camera.generate_ray(ix as f32, iy as f32, 6.0, 6.0, 0.5, 0.5);
                 for s in 0..4u32 {
-                    let pixel_id = (iy as u32) * 6 + (ix as u32);
+                    let pixel_id = u32::try_from(iy * 6 + ix).expect("the pixel index fits u32");
                     let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0x1357_9BDF));
                     let hero_rand = (hash_u32(seed) as f32) / 4_294_967_295.0;
                     let a = trace_spectral_ray(
@@ -204,7 +209,7 @@ fn lossless_scattering_white_furnace_energy_conservation_holds() {
         for ix in 0..GRID {
             let ray = camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
             for s in 0..SAMPLES_PER_PIXEL {
-                let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
+                let pixel_id = u32::try_from(iy * GRID + ix).expect("the pixel index fits u32");
                 let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0x5CA1_AB1E));
                 sum += trace_spectral_ray(
                     ray,
@@ -277,7 +282,7 @@ fn dispersive_lossless_scattering_white_furnace_energy_conservation_holds() {
         for ix in 0..GRID {
             let ray = camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
             for s in 0..SAMPLES_PER_PIXEL {
-                let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
+                let pixel_id = u32::try_from(iy * GRID + ix).expect("the pixel index fits u32");
                 let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0xD15D_A1A1));
                 sum += trace_spectral_ray(
                     ray,
@@ -343,7 +348,7 @@ fn scattering_measurably_changes_face_up_appearance() {
         for ix in 0..GRID {
             let ray = camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
             for s in 0..SAMPLES_PER_PIXEL {
-                let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
+                let pixel_id = u32::try_from(iy * GRID + ix).expect("the pixel index fits u32");
                 let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0x0BAD_F00D));
                 let hero_rand = (hash_u32(seed) as f32) / 4_294_967_295.0;
                 sum_clear +=

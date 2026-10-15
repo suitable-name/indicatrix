@@ -7,14 +7,6 @@ fn kinds_are_read_from_the_extension_case_insensitively() {
         Some(InputFileKind::Asc)
     );
     assert_eq!(
-        InputFileKind::from_file_name("round.indicatrix.toml"),
-        Some(InputFileKind::Sidecar)
-    );
-    assert_eq!(
-        InputFileKind::from_file_name("old.gemcut.toml"),
-        Some(InputFileKind::Sidecar)
-    );
-    assert_eq!(
         InputFileKind::from_file_name("x.Gem"),
         Some(InputFileKind::Gem)
     );
@@ -26,16 +18,32 @@ fn kinds_are_read_from_the_extension_case_insensitively() {
         InputFileKind::from_file_name("sky.HDR"),
         Some(InputFileKind::Hdr)
     );
-    assert_eq!(
-        InputFileKind::from_file_name("round.INDICATRIX"),
-        Some(InputFileKind::Design)
-    );
     assert_eq!(InputFileKind::from_file_name("notes.pdf"), None);
     assert_eq!(InputFileKind::from_file_name("no_extension"), None);
     assert!(!InputFileKind::Hdr.is_design());
     assert!(InputFileKind::Gcs.is_design());
     assert!(InputFileKind::Design.is_design());
-    assert!(InputFileKind::Sidecar.is_design());
+}
+
+/// Both design extensions are design files, in any case; the removed overlay sidecar
+/// names (and any other `.toml`) are not.
+#[test]
+fn isdd_and_the_legacy_indicatrix_extension_are_design_files() {
+    for name in [
+        "round.isdd",
+        "ROUND.ISDD",
+        "round.indicatrix",
+        "round.INDICATRIX",
+    ] {
+        assert_eq!(
+            InputFileKind::from_file_name(name),
+            Some(InputFileKind::Design),
+            "{name}"
+        );
+    }
+    for name in ["round.indicatrix.toml", "old.gemcut.toml", "settings.toml"] {
+        assert_eq!(InputFileKind::from_file_name(name), None, "{name}");
+    }
 }
 
 const DESIGN_HEADER: &str = "format = \"indicatrix-design\"\nversion = 1\n";
@@ -53,12 +61,14 @@ fn names_alone_decide_the_binary_and_text_kinds() {
 }
 
 #[test]
-fn a_design_file_is_routed_by_its_content_whatever_it_is_called() {
+fn a_design_file_is_a_design_under_either_extension() {
     let bytes = DESIGN_HEADER.as_bytes();
     for name in [
+        "round.isdd",
+        "ROUND.ISDD",
         "round.indicatrix",
         "ROUND.INDICATRIX",
-        "round.indicatrix.toml",
+        // A design body under a `.toml` name is still read as one.
         "round.toml",
     ] {
         assert_eq!(
@@ -69,40 +79,39 @@ fn a_design_file_is_routed_by_its_content_whatever_it_is_called() {
     }
 }
 
+/// The removed overlay sidecar is not opened under any name: its `.toml` names are no
+/// design file, and under a design name it stays a design for the loader to refuse.
 #[test]
-fn an_old_sidecar_keeps_the_paired_flow_under_every_name() {
+fn an_old_sidecar_is_not_opened_by_its_toml_names() {
     let bytes = SIDECAR_HEADER.as_bytes();
-    for name in [
-        "round.indicatrix.toml",
-        "round.gemcut.toml",
-        "round.toml",
-        // Saved under the new extension by mistake: the content still wins.
-        "round.indicatrix",
-    ] {
-        assert_eq!(
-            InputFileKind::classify(name, bytes),
-            Some(InputFileKind::Sidecar),
-            "{name}"
-        );
+    for name in ["round.indicatrix.toml", "round.gemcut.toml", "round.toml"] {
+        assert_eq!(InputFileKind::classify(name, bytes), None, "{name}");
     }
+    // Saved under a design extension by mistake: the loader reports what is wrong.
+    assert_eq!(
+        InputFileKind::classify("round.indicatrix", bytes),
+        Some(InputFileKind::Design)
+    );
+    assert_eq!(
+        InputFileKind::classify("round.isdd", bytes),
+        Some(InputFileKind::Design)
+    );
 }
 
 #[test]
 fn an_unrecognised_header_falls_back_to_the_extension() {
     let kind = InputFileKind::classify;
+    assert_eq!(kind("a.isdd", b"x = 1\n"), Some(InputFileKind::Design));
     assert_eq!(
         kind("a.indicatrix", b"x = 1\n"),
         Some(InputFileKind::Design)
     );
-    assert_eq!(kind("a.toml", b"x = 1\n"), Some(InputFileKind::Sidecar));
+    assert_eq!(kind("a.toml", b"x = 1\n"), None);
     assert_eq!(
-        kind("a.indicatrix", &[0xff, 0xfe, 0x00]),
+        kind("a.isdd", &[0xff, 0xfe, 0x00]),
         Some(InputFileKind::Design)
     );
-    assert_eq!(
-        kind("a.toml", &[0xff, 0xfe, 0x00]),
-        Some(InputFileKind::Sidecar)
-    );
+    assert_eq!(kind("a.toml", &[0xff, 0xfe, 0x00]), None);
 }
 
 #[test]
@@ -135,45 +144,6 @@ fn a_corrupt_gem_is_a_typed_error_and_asc_is_refused() {
 }
 
 #[test]
-fn native_names_guess_their_asc() {
-    assert_eq!(
-        asc_name_for_native("Round.indicatrix.toml").as_deref(),
-        Some("Round.asc")
-    );
-    assert_eq!(
-        asc_name_for_native("old.GEMCUT.TOML").as_deref(),
-        Some("old.asc")
-    );
-    assert_eq!(asc_name_for_native("settings.toml"), None);
-}
-
-#[test]
-fn pairing_prefers_the_recorded_name_then_the_guess_then_a_lone_asc() {
-    let names = ["other.asc", "Round.ASC", "round.asc"];
-    assert_eq!(
-        paired_asc_index("round.asc", "x.indicatrix.toml", &names),
-        Some(2)
-    );
-    assert_eq!(
-        paired_asc_index("ROUND.asc", "x.indicatrix.toml", &names),
-        Some(1)
-    );
-    assert_eq!(
-        paired_asc_index("missing.asc", "other.indicatrix.toml", &names),
-        Some(0)
-    );
-    assert_eq!(
-        paired_asc_index("missing.asc", "x.indicatrix.toml", &["lone.asc"]),
-        Some(0)
-    );
-    assert_eq!(
-        paired_asc_index("missing.asc", "x.indicatrix.toml", &names),
-        None
-    );
-    assert_eq!(paired_asc_index("a.asc", "a.indicatrix.toml", &[]), None);
-}
-
-#[test]
 fn file_names_follow_the_desktop_rules() {
     assert_eq!(suggested_asc_file_name(Some("mine.asc"), &[]), "mine.asc");
     assert_eq!(
@@ -185,11 +155,6 @@ fn file_names_follow_the_desktop_rules() {
         "edited_design.asc"
     );
     assert_eq!(suggested_asc_file_name(None, &[]), "edited_design.asc");
-    assert_eq!(
-        native_file_name_for_asc("round.asc"),
-        "round.indicatrix.toml"
-    );
-    assert_eq!(native_file_name_for_asc("round"), "round.indicatrix.toml");
     assert_eq!(
         cutting_sheet_file_name("round.asc"),
         "round_cutting_sheet.html"

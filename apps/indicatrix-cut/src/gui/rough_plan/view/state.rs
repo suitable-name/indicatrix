@@ -140,6 +140,10 @@ pub(super) enum SelectStep {
 }
 
 /// The view's UI-thread state.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "dragging, wheeling, resizing and rehover are independent interaction flags"
+)]
 pub(in crate::gui::rough_plan) struct ViewState {
     /// The camera.
     pub(super) pose: CameraPose,

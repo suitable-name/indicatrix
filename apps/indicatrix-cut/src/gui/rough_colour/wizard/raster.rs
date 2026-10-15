@@ -56,7 +56,7 @@ impl Rgba {
         let i = (y * self.width + x) * 4;
         for (channel, &source) in self.data[i..i + 3].iter_mut().zip(&colour) {
             let mixed = f32::mul_add(f32::from(source), a, f32::from(*channel) * (1.0 - a));
-            *channel = mixed.round().clamp(0.0, 255.0) as u8;
+            *channel = to_byte(mixed.round().clamp(0.0, 255.0));
         }
         self.data[i + 3] = 255;
     }
@@ -74,9 +74,31 @@ pub fn encode_linear(value: f32) -> u8 {
     if !value.is_finite() {
         return 0;
     }
-    (linear_to_srgb(value.clamp(0.0, 1.0)) * 255.0)
-        .round()
-        .clamp(0.0, 255.0) as u8
+    to_byte(
+        (linear_to_srgb(value.clamp(0.0, 1.0)) * 255.0)
+            .round()
+            .clamp(0.0, 255.0),
+    )
+}
+
+/// A whole-number pixel coordinate as an index: negative values become 0 and NaN maps to 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to >= 0 first; `as` saturates for huge values and maps NaN to 0"
+)]
+const fn to_index(v: f64) -> usize {
+    v.max(0.0) as usize
+}
+
+/// A rounded channel value as a byte; the cast saturates to 0..=255 and maps NaN to 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a saturating float-to-byte cast is the intent; callers pass values already near 0..=255"
+)]
+const fn to_byte(v: f32) -> u8 {
+    v as u8
 }
 
 /// A linear RGB picture (relative to the empty backlight) shown with exposure `gain`.
@@ -152,13 +174,13 @@ fn draw_line(image: &mut Rgba, from: [f64; 2], to: [f64; 2], colour: [u8; 3]) {
         return;
     }
     let length = (to[0] - from[0]).hypot(to[1] - from[1]);
-    let steps = length.ceil().clamp(1.0, 20_000.0) as usize;
+    let steps = to_index(length.ceil().clamp(1.0, 20_000.0));
     for step in 0..=steps {
         let t = step as f64 / steps as f64;
         let x = (to[0] - from[0]).mul_add(t, from[0]).floor();
         let y = (to[1] - from[1]).mul_add(t, from[1]).floor();
-        if x >= 0.0 && y >= 0.0 && (x as usize) < image.width && (y as usize) < image.height {
-            image.blend(x as usize, y as usize, colour, 1.0);
+        if x >= 0.0 && y >= 0.0 && to_index(x) < image.width && to_index(y) < image.height {
+            image.blend(to_index(x), to_index(y), colour, 1.0);
         }
     }
 }
@@ -169,10 +191,10 @@ pub fn draw_disc(image: &mut Rgba, centre: [f64; 2], radius: f64, colour: [u8; 3
         return;
     }
     let r = radius.clamp(0.5, 200.0);
-    let x_lo = (centre[0] - r).floor().max(0.0) as usize;
-    let y_lo = (centre[1] - r).floor().max(0.0) as usize;
-    let x_hi = ((centre[0] + r).ceil().max(0.0) as usize).min(image.width - 1);
-    let y_hi = ((centre[1] + r).ceil().max(0.0) as usize).min(image.height - 1);
+    let x_lo = to_index((centre[0] - r).floor());
+    let y_lo = to_index((centre[1] - r).floor());
+    let x_hi = to_index((centre[0] + r).ceil()).min(image.width - 1);
+    let y_hi = to_index((centre[1] + r).ceil()).min(image.height - 1);
     for y in y_lo..=y_hi {
         for x in x_lo..=x_hi {
             if (x as f64 + 0.5 - centre[0]).hypot(y as f64 + 0.5 - centre[1]) <= r {
@@ -202,17 +224,17 @@ pub fn heat_colour(delta_e: f32) -> [u8; 3] {
     };
     let last = HEAT_STOPS[HEAT_STOPS.len() - 1];
     if d >= last.0 {
-        return [last.1[0] as u8, last.1[1] as u8, last.1[2] as u8];
+        return [to_byte(last.1[0]), to_byte(last.1[1]), to_byte(last.1[2])];
     }
     for pair in HEAT_STOPS.windows(2) {
         let (a, b) = (pair[0], pair[1]);
         if d <= b.0 {
             let t = (d - a.0) / (b.0 - a.0);
-            let mix = |c: usize| (b.1[c] - a.1[c]).mul_add(t, a.1[c]).round() as u8;
+            let mix = |c: usize| to_byte((b.1[c] - a.1[c]).mul_add(t, a.1[c]).round());
             return [mix(0), mix(1), mix(2)];
         }
     }
-    [last.1[0] as u8, last.1[1] as u8, last.1[2] as u8]
+    [to_byte(last.1[0]), to_byte(last.1[1]), to_byte(last.1[2])]
 }
 
 /// The color of a pixel that was not compared.
@@ -243,12 +265,16 @@ pub fn crop_zoom(image: &Rgba, centre: [f64; 2], zoom: u32) -> Rgba {
         return image.clone();
     }
     let (w, h) = ((image.width / zoom).max(1), (image.height / zoom).max(1));
-    let x0 = f64::mul_add(centre[0], image.width as f64, -(w as f64 / 2.0))
-        .round()
-        .clamp(0.0, (image.width - w) as f64) as usize;
-    let y0 = f64::mul_add(centre[1], image.height as f64, -(h as f64 / 2.0))
-        .round()
-        .clamp(0.0, (image.height - h) as f64) as usize;
+    let x0 = to_index(
+        f64::mul_add(centre[0], image.width as f64, -(w as f64 / 2.0))
+            .round()
+            .clamp(0.0, (image.width - w) as f64),
+    );
+    let y0 = to_index(
+        f64::mul_add(centre[1], image.height as f64, -(h as f64 / 2.0))
+            .round()
+            .clamp(0.0, (image.height - h) as f64),
+    );
     let mut out = Rgba::filled(w, h, [0, 0, 0, 255]);
     for y in 0..h {
         for x in 0..w {

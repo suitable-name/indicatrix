@@ -473,6 +473,69 @@ fn apply_overrides_prefers_the_bands_and_their_path_scale() {
     assert!(text.contains("body_color_bands_override") && text.contains("24.5"));
 }
 
+/// A zoned material's colour is its zones: a body-colour override (triple or N-band) must not
+/// touch its zoning, its absorption, its `PerMm` unit or its path scale (the zone kernel maps
+/// model units to millimetres with that scale), while the refractive-index override still applies.
+#[test]
+fn apply_overrides_leaves_a_zoned_material_colour_alone() {
+    use glam::DVec3;
+    use indicatrix::optics::{
+        absorption::{AbsorptionBand, AbsorptionTensor},
+        materials::AbsorptionUnit,
+        zoning::{Zone, ZoneAbsorption, ZoneShape, ZonedAbsorption},
+    };
+    let absorber = |centre_nm: f32, peak: f32| {
+        ZoneAbsorption::per_mm(AbsorptionTensor::isotropic(vec![AbsorptionBand::new(
+            centre_nm, 40.0, peak,
+        )]))
+    };
+    let mut zoning = ZonedAbsorption::new(absorber(480.0, 0.05));
+    zoning.zones.push(Zone {
+        shape: ZoneShape::HalfSpace {
+            normal: DVec3::Y,
+            offset: 1.0,
+        },
+        absorption: absorber(600.0, 0.9),
+    });
+    let mut zoned = GemMaterial::sapphire().with_zoning(zoning);
+    zoned.absorption_path_scale = 1.7;
+
+    let triple = MaterialSelection::none().with_body_color(Some([0.2, 0.4, 2.8]));
+    let bands = MaterialSelection::none().with_body_color_bands(
+        Some([0.2, 0.4, 2.8]),
+        Some(vec![[460.0f32, 45.0, 0.25]]),
+        Some(24.5),
+    );
+    for selection in [triple, bands] {
+        let out = selection.apply_overrides(zoned.clone());
+        assert_eq!(out, zoned, "the colour override must be a no-op");
+        assert!(out.zoning.is_some());
+        assert_eq!(out.absorption, zoned.absorption);
+        assert_eq!(out.absorption_unit, AbsorptionUnit::PerMm);
+        assert_eq!(
+            out.absorption_path_scale.to_bits(),
+            zoned.absorption_path_scale.to_bits(),
+            "a recolour never changes the zone path scale"
+        );
+    }
+
+    // The refractive-index override still applies, and only it.
+    let ri = MaterialSelection {
+        refractive_index_override: Some(1.7),
+        ..MaterialSelection::none()
+    }
+    .with_body_color(Some([0.2, 0.4, 2.8]));
+    let out = ri.apply_overrides(zoned.clone());
+    assert!((out.dispersion.n_d() - 1.7).abs() < 1e-6);
+    assert_eq!(out.zoning, zoned.zoning);
+    assert_eq!(out.absorption, zoned.absorption);
+    assert_eq!(out.absorption_unit, AbsorptionUnit::PerMm);
+    assert_eq!(
+        out.absorption_path_scale.to_bits(),
+        zoned.absorption_path_scale.to_bits()
+    );
+}
+
 /// The hand-written `Debug` prints exactly the pre-color field list when no color
 /// is set (the desktop's identity pins hash these dumps), and names the color when
 /// one is.

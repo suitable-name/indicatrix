@@ -11,8 +11,18 @@ pub(super) fn blend_toward(base: [u8; 3], target: [u8; 3], amount: f32) -> [u8; 
     std::array::from_fn(|i| {
         let b = f32::from(base[i]);
         let t = f32::from(target[i]);
-        amount.mul_add(t - b, b).round().clamp(0.0, 255.0) as u8
+        to_byte(amount.mul_add(t - b, b))
     })
+}
+
+/// A color channel value as a byte: rounded and clamped to `0..=255` first.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is rounded and clamped to 0..=255 before the conversion"
+)]
+const fn to_byte(value: f32) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
 }
 
 /// Flat Lambert shading from a fixed key light, plus a small Fresnel-style rim
@@ -37,14 +47,8 @@ pub(super) fn shade(
         .mul_add(n_dot_l, style.ambient + rim)
         .clamp(0.0, 1.0);
     [
-        (f32::from(base_color[0]) * intensity)
-            .round()
-            .clamp(0.0, 255.0) as u8,
-        (f32::from(base_color[1]) * intensity)
-            .round()
-            .clamp(0.0, 255.0) as u8,
-        (f32::from(base_color[2]) * intensity)
-            .round()
-            .clamp(0.0, 255.0) as u8,
+        to_byte(f32::from(base_color[0]) * intensity),
+        to_byte(f32::from(base_color[1]) * intensity),
+        to_byte(f32::from(base_color[2]) * intensity),
     ]
 }

@@ -9,10 +9,15 @@
 //! u = (obs_c - g_v r_c) / sigma,   sigma^2 = photo variance + (obs_c * rel_mc)^2 + floor
 //! ```
 //!
-//! `rel_mc = sqrt(mc_variance) / mc_mean` is the relative Monte-Carlo error of the pixel's
-//! records (the tracer's estimate at the reference absorption). The Monte-Carlo term is scaled by
-//! the observation, not the prediction, so the weights do not move during the iteration and the
-//! objective stays comparable between steps.
+//! `rel_mc^2 = var / mean^2` is the relative Monte-Carlo variance of the pixel's records. The
+//! tracer stores it at two absorptions, the clear stone (`mc_*_clear`) and the pixel's own
+//! reference absorption of optical depth 1 (`mc_mean`, `mc_variance`); per channel it is
+//! interpolated linearly in the optical depth `tau_c = -ln(obs_c / mc_mean_clear)` clamped to
+//! `0..=1` (the channel-mean clear estimate; the error this puts into the interpolated weight is
+//! `ln` of the panel's colour factor, a few percent of a term that is itself about 1e-4
+//! relative), so pale and saturated stones are weighted by the error they really have (ZC-7). The
+//! Monte-Carlo term is scaled by the observation, not the prediction, so the weights do not move
+//! during the iteration and the objective stays comparable between steps.
 //!
 //! The objective is `sum rho(u) + priors` with the Huber function `rho` (`rho = u^2 / 2` up to
 //! `|u| = k`, then linear; `k = 2` by default). The Gauss-Newton matrix uses the Huber weights
@@ -26,11 +31,14 @@ use indicatrix::color::body_color::{delta_e_2000, xyz_to_lab};
 
 use super::{
     FitConfig, FitError, GAIN_FIXED_SIGMA,
+    diagnostics::whitened_f32,
     models::{FitModel, PriorContext, PriorRow, PriorTag},
     output::ResidualMap,
 };
 use crate::rough_plan::{
-    colour_fit::forward::{ForwardRecords, PixelJacobian, SpectralModel, for_each_pixel_jacobian},
+    colour_fit::forward::{
+        ForwardRecords, PixelJacobian, SpectralModel, fold_pixel_jacobian, for_each_pixel_jacobian,
+    },
     photometry::ResampledImage,
 };
 
@@ -138,6 +146,9 @@ pub(super) struct Normal {
     pub prior: PriorTerms,
     /// `sum u^2` of the data.
     pub chi2: f64,
+    /// `sum w u^2` of the data with the Huber weights `w = min(1, k / |u|)` (round 5, ZC-18):
+    /// `sum min(u^2, k |u|)`, which an outlier contributes linearly instead of quadratically.
+    pub chi2_robust: f64,
     /// The residuals in the data term.
     pub n_data: usize,
 }
@@ -169,6 +180,121 @@ impl SpectralModel for Frozen<'_> {
     }
 
     fn dalpha(&self, _zone: usize, _lambda_nm: f64, _params: &[f64], _out: &mut [f64]) {}
+}
+
+/// Pixels per chunk of the normal-equation pass. Fixed (never derived from the core count): each
+/// chunk is summed serially in pixel order and the chunks are combined in order, so the sums are
+/// the same for any thread count. About 30 chunks per default view of 60 000 pixels.
+const NORMAL_CHUNK_PIXELS: usize = 2048;
+
+/// The data part of the normal equations over one chunk of pixels (or, merged, over all).
+pub(super) struct NormalPart {
+    /// Upper triangle of the `n x n` Gauss-Newton matrix (row-major, the lower half stays 0).
+    pub h: Vec<f64>,
+    pub g: Vec<f64>,
+    pub data_cost: f64,
+    pub chi2: f64,
+    pub chi2_robust: f64,
+    pub count: usize,
+    /// Scratch: the scaled Jacobian row of one channel.
+    pub row: Vec<f64>,
+}
+
+impl NormalPart {
+    /// An empty part for `np` model parameters and `n` unknowns.
+    pub(super) fn new(np: usize, n: usize) -> Self {
+        Self {
+            h: vec![0.0; n * n],
+            g: vec![0.0; n],
+            data_cost: 0.0,
+            chi2: 0.0,
+            chi2_robust: 0.0,
+            count: 0,
+            row: vec![0.0; np],
+        }
+    }
+
+    /// Adds `other` to `self`; called in chunk order.
+    fn merge(&mut self, other: &Self) {
+        for (a, b) in self.h.iter_mut().zip(&other.h) {
+            *a += b;
+        }
+        for (a, b) in self.g.iter_mut().zip(&other.g) {
+            *a += b;
+        }
+        self.data_cost += other.data_cost;
+        self.chi2 += other.chi2;
+        self.chi2_robust += other.chi2_robust;
+        self.count += other.count;
+    }
+}
+
+/// What the per-pixel accumulation of [`Problem::normal`] reads (shared by all chunks).
+pub(super) struct PixelPass<'a> {
+    pub views: &'a [ViewData],
+    pub gains: &'a [f64],
+    pub active: &'a [bool],
+    pub k: f64,
+    pub np: usize,
+    pub n: usize,
+}
+
+impl PixelPass<'_> {
+    /// Adds the residuals of one pixel to `part`.
+    pub(super) fn add(&self, part: &mut NormalPart, px: &PixelJacobian<'_>) {
+        let (np, n, k) = (self.np, self.n, self.k);
+        let slot = px.view_slot;
+        if !self.active[slot] {
+            return;
+        }
+        let view = &self.views[slot];
+        let s = view.inv_sigma[px.pixel];
+        let o = view.obs[px.pixel];
+        let gain = self.gains[slot];
+        let q = np + slot;
+        let NormalPart {
+            h,
+            g,
+            data_cost,
+            chi2,
+            chi2_robust,
+            count,
+            row,
+        } = part;
+        for c in 0..3 {
+            let sc = f64::from(s[c]);
+            if sc == 0.0 {
+                continue;
+            }
+            let u = sc * (f64::from(o[c]) - gain * px.rgb[c]);
+            let a = u.abs();
+            let w = if a <= k { 1.0 } else { k / a };
+            *data_cost += if a <= k {
+                0.5 * u * u
+            } else {
+                k * a - 0.5 * k * k
+            };
+            *chi2 += u * u;
+            *chi2_robust += w * u * u;
+            *count += 1;
+            let factor = -sc * gain;
+            let jac = &px.jacobian[c * np..(c + 1) * np];
+            for j in 0..np {
+                row[j] = factor * jac[j];
+            }
+            let row_gain = factor * px.rgb[c];
+            for j in 0..np {
+                let wj = w * row[j];
+                g[j] += wj * u;
+                for l in j..np {
+                    h[j * n + l] += wj * row[l];
+                }
+                h[j * n + q] += wj * row_gain;
+            }
+            g[q] += w * u * row_gain;
+            h[q * n + q] += w * row_gain * row_gain;
+        }
+    }
 }
 
 /// The observed photos prepared against a set of records.
@@ -205,12 +331,19 @@ impl<'a> Problem<'a> {
                 if !vr.is_valid(p) {
                     continue;
                 }
-                let mean = f64::from(vr.mc_mean[p]);
-                let rel2 = (if mean > 1e-6 {
-                    f64::from(vr.mc_variance[p]) / (mean * mean)
-                } else {
-                    0.0
-                }) * config.mc_variance_scale;
+                // The relative Monte-Carlo variance at absorption 0 and at the pixel's reference
+                // absorption (optical depth 1), interpolated per channel below.
+                let relative = |variance: f32, mean: f32| {
+                    let mean = f64::from(mean);
+                    if mean > 1e-6 {
+                        f64::from(variance) / (mean * mean)
+                    } else {
+                        0.0
+                    }
+                };
+                let rel2_clear = relative(vr.mc_variance_clear[p], vr.mc_mean_clear[p]);
+                let rel2_ref = relative(vr.mc_variance[p], vr.mc_mean[p]);
+                let mean_clear = f64::from(vr.mc_mean_clear[p]);
                 let mut any = false;
                 for c in 0..3 {
                     let value = f64::from(obs.values[p][c]);
@@ -218,8 +351,22 @@ impl<'a> Problem<'a> {
                     if !(value.is_finite() && photo.is_finite()) {
                         continue;
                     }
+                    // The optical depth of the channel from the observation (so the weights stay
+                    // fixed during the iteration), clamped to the stored range 0 to 1.
+                    let depth = if value > 0.0 && mean_clear > 1e-6 {
+                        (-(value / mean_clear).ln()).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+                    let rel2 = (rel2_ref - rel2_clear).mul_add(depth, rel2_clear)
+                        * config.mc_variance_scale;
                     let variance = (photo + value * value * rel2).max(config.variance_floor);
-                    inv_sigma[p][c] = (1.0 / variance.sqrt()) as f32;
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "inverse sigma is a weight stored as f32 in the per-pixel table"
+                    )]
+                    let weight = (1.0 / variance.sqrt()) as f32;
+                    inv_sigma[p][c] = weight;
                     any = true;
                 }
                 if any {
@@ -252,71 +399,66 @@ impl<'a> Problem<'a> {
         self.views.iter().map(|v| v.used_pixels).sum()
     }
 
-    /// The gradient and Gauss-Newton matrix at `x`, over the views marked `active`.
+    /// The data part of the normal equations at `x`: the pixel pass, in fixed chunks of
+    /// [`NORMAL_CHUNK_PIXELS`] pixels on `threads` threads, each chunk summed serially in pixel
+    /// order and the chunk partials combined in chunk order here. The chunking does not depend
+    /// on `threads`, so the result is bitwise the same for any thread count.
+    pub(super) fn data_pass(
+        &self,
+        model: &dyn FitModel,
+        x: &[f64],
+        active: &[bool],
+        threads: usize,
+    ) -> Result<NormalPart, FitError> {
+        let np = model.n_params();
+        let n = x.len();
+        let gains: Vec<f64> = x[np..].iter().map(|g| g.exp()).collect();
+        let pass = PixelPass {
+            views: &self.views,
+            gains: &gains,
+            active,
+            k: self.config.huber_k,
+            np,
+            n,
+        };
+        let parts = fold_pixel_jacobian(
+            self.records,
+            &x[..np],
+            model.as_spectral(),
+            NORMAL_CHUNK_PIXELS,
+            threads,
+            &|| NormalPart::new(np, n),
+            &|part: &mut NormalPart, px: PixelJacobian<'_>| pass.add(part, &px),
+        )?;
+        let mut total = NormalPart::new(np, n);
+        for part in &parts {
+            total.merge(part);
+        }
+        Ok(total)
+    }
+
+    /// The gradient and Gauss-Newton matrix at `x`, over the views marked `active`, with the
+    /// pixel pass on up to `threads` threads (the answer does not depend on it).
     pub(super) fn normal(
         &self,
         model: &dyn FitModel,
         x: &[f64],
         active: &[bool],
         ctx: &PriorContext<'_>,
+        threads: usize,
     ) -> Result<Normal, FitError> {
         let np = model.n_params();
         let n = x.len();
         let params = &x[..np];
-        let gains: Vec<f64> = x[np..].iter().map(|g| g.exp()).collect();
-        let k = self.config.huber_k;
-        let mut h = vec![0.0; n * n];
-        let mut g = vec![0.0; n];
-        let (mut data_cost, mut chi2, mut count) = (0.0, 0.0, 0_usize);
-        let mut row = vec![0.0; np];
-        for_each_pixel_jacobian(
-            self.records,
-            params,
-            model.as_spectral(),
-            &mut |px: PixelJacobian<'_>| {
-                let slot = px.view_slot;
-                if !active[slot] {
-                    return;
-                }
-                let view = &self.views[slot];
-                let s = view.inv_sigma[px.pixel];
-                let o = view.obs[px.pixel];
-                let gain = gains[slot];
-                let q = np + slot;
-                for c in 0..3 {
-                    let sc = f64::from(s[c]);
-                    if sc == 0.0 {
-                        continue;
-                    }
-                    let u = sc * (f64::from(o[c]) - gain * px.rgb[c]);
-                    let a = u.abs();
-                    let w = if a <= k { 1.0 } else { k / a };
-                    data_cost += if a <= k {
-                        0.5 * u * u
-                    } else {
-                        k * a - 0.5 * k * k
-                    };
-                    chi2 += u * u;
-                    count += 1;
-                    let factor = -sc * gain;
-                    let jac = &px.jacobian[c * np..(c + 1) * np];
-                    for j in 0..np {
-                        row[j] = factor * jac[j];
-                    }
-                    let row_gain = factor * px.rgb[c];
-                    for j in 0..np {
-                        let wj = w * row[j];
-                        g[j] += wj * u;
-                        for l in j..np {
-                            h[j * n + l] += wj * row[l];
-                        }
-                        h[j * n + q] += wj * row_gain;
-                    }
-                    g[q] += w * u * row_gain;
-                    h[q * n + q] += w * row_gain * row_gain;
-                }
-            },
-        )?;
+        let NormalPart {
+            mut h,
+            mut g,
+            data_cost,
+            chi2,
+            chi2_robust,
+            count,
+            ..
+        } = self.data_pass(model, x, active, threads)?;
         // Mirror the upper triangle.
         for j in 0..n {
             for l in (j + 1)..n {
@@ -356,8 +498,29 @@ impl<'a> Problem<'a> {
             data_cost,
             prior,
             chi2,
+            chi2_robust,
             n_data: count,
         })
+    }
+
+    /// The constraint function of the colour search (round 5, ZC-4) at `x`: the plain data
+    /// chi-square plus twice the cost of the gain prior (all views active, the common mode pinned
+    /// by `config.fix_common_gain`), i.e. `-2 ln` of the likelihood with the calibration
+    /// knowledge about the gains but without the priors of the spectral model.
+    pub(super) fn constraint_value(
+        &self,
+        model: &dyn FitModel,
+        x: &[f64],
+    ) -> Result<f64, FitError> {
+        let np = model.n_params();
+        let chi2 = self.data_chi2(model, x)?;
+        let n = x.len();
+        let active = vec![true; self.view_count()];
+        let mut h = vec![0.0; n * n];
+        let mut g = vec![0.0; n];
+        let mut cost = 0.0;
+        self.add_gain_prior(x, np, &active, false, &mut h, &mut g, &mut cost);
+        Ok(2.0f64.mul_add(cost, chi2))
     }
 
     /// The prior terms alone at `params` and `log_gains` (all views active, the config's own gain
@@ -604,7 +767,7 @@ impl<'a> Problem<'a> {
                 height: view.height,
                 whitened: pixels
                     .iter()
-                    .map(|p| p.map_or([0.0; 3], |u| [u[0] as f32, u[1] as f32, u[2] as f32]))
+                    .map(|p| p.map_or([0.0; 3], whitened_f32))
                     .collect(),
                 valid: pixels.iter().map(Option::is_some).collect(),
                 moran: 0.0,

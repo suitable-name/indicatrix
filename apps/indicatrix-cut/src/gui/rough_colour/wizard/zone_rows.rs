@@ -43,7 +43,7 @@ impl ShapeKind {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::HalfSpace => "Half space",
+            Self::HalfSpace => "Half Space",
             Self::Slab => "Slab",
             Self::Cylinder => "Cylinder",
             Self::Prism => "Prism",
@@ -118,12 +118,12 @@ pub fn placeholder_zone(shape: ZoneShape) -> Zone {
 #[must_use]
 pub const fn shape_name(shape: &ZoneShape) -> &'static str {
     match shape {
-        ZoneShape::HalfSpace { .. } => "Half space",
+        ZoneShape::HalfSpace { .. } => "Half Space",
         ZoneShape::Slab { .. } => "Slab",
         ZoneShape::CoaxialCylinder { .. } => "Cylinder",
         ZoneShape::CoaxialPrism { .. } => "Prism",
         ZoneShape::Sector { .. } => "Sector",
-        ZoneShape::MeshShell { .. } => "Mesh shell",
+        ZoneShape::MeshShell { .. } => "Mesh Shell",
     }
 }
 
@@ -168,7 +168,7 @@ fn number(value: f64) -> String {
 #[must_use]
 pub fn zone_rows(zoned: &ZonedAbsorption) -> Vec<ZoneRow> {
     let mut rows = vec![ZoneRow {
-        title: "Base zone".to_owned(),
+        title: "Base Zone".to_owned(),
         summary: "Everywhere no zone covers".to_owned(),
     }];
     for (i, zone) in zoned.zones.iter().enumerate() {
@@ -257,6 +257,11 @@ pub fn parameter_of_row(zoned: &ZonedAbsorption, zone: usize, row: usize) -> Opt
 }
 
 /// The range of the "Refinement iterations" spin box.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "const context cannot use try_from; MAX_REFINE_ITERATIONS is 25, far below i32::MAX"
+)]
 pub const ITERATIONS_RANGE: std::ops::RangeInclusive<i32> = 1..=(MAX_REFINE_ITERATIONS as i32);
 
 /// The tooltip of the spin box.
@@ -266,11 +271,12 @@ pub const ITERATIONS_HINT: &str = "How many rounds the zone boundaries are moved
 /// default, anything outside `1..=25` is clamped.
 #[must_use]
 pub fn iterations_from_text(text: &str) -> usize {
+    let most = i64::try_from(MAX_REFINE_ITERATIONS).unwrap_or(i64::MAX);
     text.trim()
         .parse::<i64>()
         .ok()
         .map_or(DEFAULT_REFINE_ITERATIONS, |n| {
-            n.clamp(1, MAX_REFINE_ITERATIONS as i64) as usize
+            usize::try_from(n.clamp(1, most)).unwrap_or(DEFAULT_REFINE_ITERATIONS)
         })
 }
 
@@ -318,7 +324,7 @@ mod tests {
     fn the_list_names_the_zones_and_their_numbers() {
         let rows = zone_rows(&with_zone(ShapeKind::Slab));
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].title, "Base zone");
+        assert_eq!(rows[0].title, "Base Zone");
         assert_eq!(rows[1].title, "Zone 1: Slab");
         assert_eq!(rows[1].summary, "lower offset -0.5, upper offset 2.5");
     }

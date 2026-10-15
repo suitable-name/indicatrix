@@ -9,7 +9,9 @@
 //! ([`GemMaterial::new_custom`], `with_*`), [`body_color`] holds the body-color
 //! preset table [`GemMaterial::with_body_color`] is fed from, [`lookup`] holds [`GemMaterial::by_name`]
 //! and the convenience accessors, and [`optics`] holds the biaxial-indicatrix/
-//! extraordinary-index/GPU-routing methods. Every path reachable as `materials::X`
+//! extraordinary-index/GPU-routing methods. It also holds the zoned-absorption
+//! helpers (`zoned`) and the one zoned built-in, Ametrine (`ametrine`: bicolour quartz, the only
+//! built-in that carries `GemMaterial::zoning`). Every path reachable as `materials::X`
 //! before the split is still reachable at exactly that path: [`GemMaterial`],
 //! [`CrystalSystem`] and [`OpticalCharacter`] are still defined directly here.
 
@@ -17,6 +19,7 @@ use super::{absorption::AbsorptionTensor, dispersion::DispersionModel};
 use glam::Vec3;
 
 mod amethyst_through_citrine;
+mod ametrine;
 mod andalusite_through_glass;
 mod aquamarine_through_citrine;
 pub mod body_color;
@@ -33,9 +36,8 @@ mod tanzanite_through_cubic_zirconia;
 #[cfg(test)]
 mod tests;
 mod zircon_through_topaz;
-#[cfg(feature = "zoning")]
 mod zoned;
-#[cfg(feature = "zoning")]
+pub use ametrine::{AMETRINE_AMETHYST_FE_PPMA, AMETRINE_CITRINE_FE_PPMA, ametrine_zoning};
 pub use zoned::{ZONE_SWATCH_FALLBACK_MODEL_WIDTH, zone_swatches};
 
 /// A gemstone material's crystallographic system.
@@ -84,8 +86,9 @@ pub enum OpticalCharacter {
 /// The two variants are the two calibrations the crate has:
 ///
 /// * [`Self::ModelUnit`]: the number is an optical density per MODEL unit of path, tuned by eye
-///   for a stone about 7 mm wide, as the swatch looks over ONE model unit (the built-in table,
-///   the legacy `[R, G, B]` triples and the fantasy customs built from them). Light leaving a
+///   for a stone about 7 mm wide, as the swatch looks over ONE model unit (the built-in table
+///   apart from the zoned Ametrine, the legacy `[R, G, B]` triples and the
+///   fantasy customs built from them). Light leaving a
 ///   face-up stone has travelled about `render_setup::MODEL_UNIT_FACE_UP_PATH` model units, so
 ///   the render scale is `W / 7 / MODEL_UNIT_FACE_UP_PATH` (`W` = 7 mm with no size set): the
 ///   face-up look then equals the swatch at 7 mm, and a stone of width `W` mm is `W / 7` times
@@ -196,7 +199,7 @@ pub struct GemMaterial {
     pub absorption_path_scale: f32,
     /// What the numbers of [`Self::absorption`] are measured per -- see [`AbsorptionUnit`].
     /// CPU-side metadata for `render_setup::apply_material_overrides`; the GPU material
-    /// layout does not carry it. Every built-in and every legacy-triple colour is
+    /// layout does not carry it. Every built-in except the zoned Ametrine (which is [`AbsorptionUnit::PerMm`]) and every legacy-triple colour is
     /// [`AbsorptionUnit::ModelUnit`]; band colours ([`Self::with_body_color_bands`]) and physics
     /// chromophore absorption ([`Self::with_chromophore_absorption`]) are
     /// [`AbsorptionUnit::PerMm`]. `#[serde(default)]` keeps an older serialized material loading
@@ -210,7 +213,8 @@ pub struct GemMaterial {
     /// birefringence is not wavelength-flat, but modelling that needs the
     /// extraordinary ray's own independent dispersion curve. Four built-ins set it:
     /// Quartz, Amethyst and Citrine (all one `SiO2` host, from G. Ghosh 1999 -- see the
-    /// Quartz entry's comment) and Rutile (`DeVore` 1951).
+    /// Quartz entry's comment; Ametrine, which is Citrine's optics, sets it too) and
+    /// Rutile (`DeVore` 1951).
     ///
     /// `None` (every other built-in, and [`Self::new_custom`]'s default) falls back to
     /// `n_o + birefringence_delta` in `extraordinary_index_at`. Meaningless for an
@@ -230,17 +234,17 @@ pub struct GemMaterial {
     /// `per_channel_uniaxial_index` in that physics file takes only the constant-offset
     /// form and does not read this curve.
     pub uniaxial_extraordinary_dispersion: Option<DispersionModel>,
-    /// Spatially zoned absorption (colour zoning, bicolour, watermelon), `zoning` feature only.
+    /// Spatially zoned absorption (colour zoning, bicolour, watermelon).
     ///
-    /// `None` (every built-in and custom material) keeps the homogeneous Beer-Lambert path.
-    /// `Some` makes the CPU tracer integrate the optical depth through the zones
-    /// (`raytracer::absorption::apply_segment_absorption`, and `raytracer::zoned` for the
+    /// `None` (every built-in except Ametrine, and every custom material) keeps the homogeneous
+    /// Beer-Lambert path. `Some` makes the CPU tracer integrate the optical depth through the
+    /// zones (`raytracer::absorption::apply_segment_absorption`, and `raytracer::zoned` for the
     /// tables and the frame chain); [`Self::absorption`] is then ignored in favour of the base
-    /// zone (see [`Self::with_zoning`]). Zoned
-    /// materials are [`AbsorptionUnit::PerMm`] only and carry no fluorescence. Never serialised
-    /// inside the material: zones travel in the zoning payload, so wire and file bytes are
-    /// unchanged.
-    #[cfg(feature = "zoning")]
+    /// zone (see [`Self::with_zoning`]). Zoned materials are [`AbsorptionUnit::PerMm`] only and
+    /// carry no fluorescence. Never serialised inside the material: zones travel in the zoning
+    /// payload, so wire and file bytes are unchanged. The colour setters
+    /// ([`Self::with_body_color`], [`Self::with_body_color_bands`]) drop the zones: a zoned
+    /// material's colour is its zones.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub zoning: Option<crate::optics::zoning::ZonedAbsorption>,
 }
@@ -260,6 +264,8 @@ impl GemMaterial {
         // is included.
         materials.extend(Self::built_in_materials_aquamarine_through_citrine());
         materials.extend(Self::built_in_materials_amethyst_through_citrine());
+        // The one zoned built-in, right after the Amethyst and Citrine entries it combines.
+        materials.push(Self::built_in_material_ametrine());
         materials.extend(Self::built_in_materials_garnets_pyrope_through_spessartine());
         materials.extend(Self::built_in_materials_garnet_color_change());
         materials.extend(Self::built_in_materials_garnets_grossular_and_andradite());

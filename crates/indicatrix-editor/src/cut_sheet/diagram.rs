@@ -123,6 +123,10 @@ pub fn render_cut_views(
 }
 
 /// The diagram's frame size and index wheel for `design`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "DiagramConfig stores the gear reference angle as f32; an angle in degrees is in the normal float range"
+)]
 const fn diagram_config(design: &Design, width: u32, height: u32) -> DiagramConfig {
     DiagramConfig {
         width,

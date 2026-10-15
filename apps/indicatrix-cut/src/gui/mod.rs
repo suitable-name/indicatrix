@@ -14,6 +14,8 @@ mod editor;
 // in its own module purely to keep this file from growing further; see this
 // module's own doc comment.
 mod editor_layout;
+// The Parameters dock's persisted open/tab state -- see the module's own doc comment.
+mod parameters_dock;
 // "Is an export running?" for the start guards, the header export indicator's wording and the
 // close guard's sentence for a dialog export -- see the module's own doc comment.
 mod export_run;
@@ -58,11 +60,10 @@ pub mod render_jobs;
 // The Library menu's "Plan Rough..." dialog: up to K stones of library designs out of
 // one rough block -- see the module's own doc comment.
 mod rough_plan;
-// Rough colour and colour zoning (`zoning` feature only): the vault storage API the Rough colour
+// Rough colour and colour zoning: the vault storage API the Rough colour
 // UI calls, the planner pose choice, the adopt flow and the render-job persistence -- see the
 // module's own doc comment. Deliberately NOT under `rough_plan`, so its tests are independent of
 // that module's test filter.
-#[cfg(feature = "zoning")]
 pub mod rough_colour;
 pub mod solid_preview;
 // The real `PreviewSink` that hops a finished solid-preview frame back onto the UI
@@ -85,11 +86,17 @@ pub(crate) mod tutorial_events;
 // Fits the main window to its monitor on first show -- see the module doc for why the
 // .slint preferred size alone is not enough on Full HD displays.
 mod window_sizing;
+// The new-version check (consent, Preferences switch, notice) -- see the module's own doc
+// comment.
+mod update_check;
 // The window-close unsaved-changes guard's Save/Discard callbacks -- see the
 // module's own doc comment.
 mod window_close;
-// The `zoning` feature's UI switch (`ZONING_UI`, pushed to the Slint global `Zoning` per
-// window) -- see the module's own doc comment.
+// Clears the handles a previous main window left in thread-locals (the UI harness builds one
+// window per scenario) -- see the module's own doc comment.
+mod window_release;
+// The zoning UI's host-picker switch (follows the physical color feature) -- see the module's
+// own doc comment.
 pub(crate) mod zoning_ui;
 // A rolling, regression-based time-remaining estimator shared by the still-image
 // export queue (`render::render_export::queue`) and the tilt-video export
@@ -113,6 +120,20 @@ pub use library::search;
 // `gui::build_main_window`) is unchanged for the downstream binary
 // `lib.rs`'s own doc comment describes.
 pub use main_window::{MainWindowHandle, build_main_window};
+// For the UI harness (`harness_support::release_window_state`); not part of the app.
+#[cfg(feature = "ui-harness")]
+pub(crate) use window_release::{live_holders, release_window_state};
+// The secondary windows' accessors for the UI harness (`harness_support`); not part of the app.
+#[cfg(feature = "ui-harness")]
+pub(crate) use {
+    editor::harness_compare_window,
+    library::local::apply_measured_metadata as harness_apply_measured_metadata,
+    rough_plan::{
+        EXPORT_SUFFIX as ROUGH_PLAN_EXPORT_SUFFIX,
+        LEGACY_EXPORT_SUFFIX as ROUGH_PLAN_LEGACY_EXPORT_SUFFIX, harness_locate_window,
+        harness_planner_window, harness_rig_window,
+    },
+};
 // `gui::library::search::fetch` opens a read-only connection to the same on-disk
 // design library for background search -- see `DB_PATH`'s own doc comment.
 pub(in crate::gui) use main_window::DB_PATH;

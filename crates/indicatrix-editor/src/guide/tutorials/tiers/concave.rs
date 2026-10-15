@@ -41,7 +41,7 @@ fn concave_moves(design: &Design, name: &str, motion: ToolMotion) -> bool {
 fn cylinder_and_cone() -> Guide {
     Guide::new(
         "tiers-concave-cylinder-cone",
-        "Concave tiers: cylinder and cone",
+        "Concave Tiers: Cylinder and Cone",
         "Cut a groove with a cylinder and a bevel with a cone, using the concave tier form.",
         GuideCategory::Tiers,
     )
@@ -97,12 +97,12 @@ fn cylinder_and_cone() -> Guide {
             "Angle (deg): -44",
             "Indices: 6, 30, 54, 78",
             "Tool: Cone (CON)",
-            "Tool angle: 60",
+            "Tool Angle: 60",
             "D/W: 0.3",
             "Click Add Concave Tier.",
         ])
-        .check("a Bevel row next to Groove, and Tool angle enabled for as long as Cone is the tool.")
-        .why("The Tool angle field is enabled for a cone and a disc only, and it must lie between 0 and 180 degrees. A cylinder, circle or sphere has no angle to give.")
+        .check("a Bevel row next to Groove, and Tool Angle enabled for as long as Cone is the tool.")
+        .why("The Tool Angle field is enabled for a cone and a disc only, and it must lie between 0 and 180 degrees. A cylinder, circle or sphere has no angle to give.")
         .goal(
             check("a cone tier Bevel at -44 degrees with a 60 degree tool", |ctx| {
                 concave_is(ctx.design, "Bevel", ConcaveTool::Cone, -44.0)
@@ -131,7 +131,7 @@ fn cylinder_and_cone() -> Guide {
 fn sphere_and_disc() -> Guide {
     Guide::new(
         "tiers-concave-sphere-disc",
-        "Concave tiers: sphere, disc and plunge",
+        "Concave Tiers: Sphere, Disc and Plunge",
         "Cut a dimple with a sphere and a groove with a disc, and choose whether the tool is stroked or plunged.",
         GuideCategory::Tiers,
     )
@@ -142,7 +142,7 @@ fn sphere_and_disc() -> Guide {
             "A sphere leaves a round dimple; a disc is a wheel with a V-shaped rim.",
         )
         .actions([
-            "A sphere has no angle, so its Tool angle field stays disabled.",
+            "A sphere has no angle, so its Tool Angle field stays disabled.",
             "A disc needs a tool angle, just like a cone.",
             "Reciprocating says whether the tool is stroked back and forth (ticked) or pressed straight in (unticked).",
         ])
@@ -165,7 +165,7 @@ fn sphere_and_disc() -> Guide {
             "Leave Reciprocating unticked.",
             "Click Add Concave Tier.",
         ])
-        .check("a Dimple row in the table, and the Tool angle field greyed out while Sphere is chosen.")
+        .check("a Dimple row in the table, and the Tool Angle field greyed out while Sphere is chosen.")
         .why("A sphere with a tool angle is refused: the form names the field it is about, in red.")
         .goal(
             check("a sphere tier Dimple at -40 degrees, plunged", |ctx| {
@@ -188,7 +188,7 @@ fn sphere_and_disc() -> Guide {
             "Angle (deg): -38",
             "Indices: 12, 36, 60, 84",
             "Tool: Disc (DSC)",
-            "Tool angle: 90",
+            "Tool Angle: 90",
             "D/W: 2",
             "Tick Reciprocating.",
             "Click Add Concave Tier.",
@@ -234,7 +234,7 @@ fn sphere_and_disc() -> Guide {
         )
         .actions([
             "The second line holds the tool code, theta, X / Y / Z, D/W, the tool angle (for a cone or disc) and the motion.",
-            "Open Cutting mode to see the same two lines while you cut.",
+            "Open Cutting Mode to see the same two lines while you cut.",
         ])
         .why("Every control is unlocked again."),
     )

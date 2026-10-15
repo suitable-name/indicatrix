@@ -8,12 +8,10 @@ use indicatrix_cut_core::{ConstraintTier, Design, MaterialSelection, RemapRoundi
 fn material_index_and_name_round_trip_for_every_preset() {
     let names = builtin_preset_names();
     for (index, name) in names.iter().enumerate() {
+        let index = i32::try_from(index).expect("a test index fits i32");
         let expected_name = (name != "(none)").then(|| name.clone());
-        assert_eq!(material_name_from_index(index as i32), expected_name);
-        assert_eq!(
-            material_index_from_name(expected_name.as_deref()),
-            index as i32
-        );
+        assert_eq!(material_name_from_index(index), expected_name);
+        assert_eq!(material_index_from_name(expected_name.as_deref()), index);
     }
 }
 
@@ -170,7 +168,7 @@ fn design_material_index_and_name_round_trip_for_a_built_in_and_a_custom() {
 fn design_material_name_from_index_is_none_for_none_and_the_custom_ri_sentinel() {
     let options = design_material_options(&[]);
     assert_eq!(design_material_name_from_index(0, &options), None);
-    let last = (options.len() - 1) as i32;
+    let last = i32::try_from(options.len() - 1).expect("a test option count fits i32");
     assert_eq!(design_material_name_from_index(last, &options), None);
 }
 
@@ -239,7 +237,7 @@ fn parse_design_material_form_keeps_the_body_color_only_for_the_same_material() 
 #[test]
 fn body_color_combo_index_round_trips_every_preset_and_the_default() {
     let options = body_color_options();
-    assert_eq!(options[0], "Material default");
+    assert_eq!(options[0], "Material Default");
     assert_eq!(options.len(), 11);
     assert_eq!(
         options.last().map(String::as_str),
@@ -281,19 +279,23 @@ fn an_unlisted_body_color_triple_maps_to_the_custom_entry() {
 #[test]
 fn gear_index_and_choice_round_trip_for_every_preset() {
     for (i, &teeth) in GEAR_PRESETS.iter().enumerate() {
-        assert_eq!(gear_index_from_teeth(teeth), i as i32);
-        assert_eq!(gear_choice_to_teeth(i as i32, "").unwrap(), teeth);
+        let i = i32::try_from(i).expect("a preset index fits i32");
+        assert_eq!(gear_index_from_teeth(teeth), i);
+        assert_eq!(gear_choice_to_teeth(i, "").unwrap(), teeth);
     }
 }
 
 #[test]
 fn gear_index_from_teeth_is_the_custom_slot_for_an_unlisted_gear() {
-    assert_eq!(gear_index_from_teeth(50), GEAR_PRESETS.len() as i32);
+    assert_eq!(
+        gear_index_from_teeth(50),
+        i32::try_from(GEAR_PRESETS.len()).expect("the preset count fits i32")
+    );
 }
 
 #[test]
 fn gear_choice_to_teeth_reads_the_custom_text_field_outside_the_preset_list() {
-    let custom_index = GEAR_PRESETS.len() as i32;
+    let custom_index = i32::try_from(GEAR_PRESETS.len()).expect("the preset count fits i32");
     assert_eq!(gear_choice_to_teeth(custom_index, "50").unwrap(), 50);
     assert!(gear_choice_to_teeth(custom_index, "0").is_err());
     assert!(gear_choice_to_teeth(custom_index, "-5").is_err());

@@ -2,7 +2,7 @@
 //! that bounds it.
 //!
 //! The desktop's catalogue-record path (a vault record, possibly
-//! with a design file or older sidecar attached) stays with the desktop and calls into this.
+//! with a design file attached) stays with the desktop and calls into this.
 
 use indicatrix_cut_core::{
     Design, PreformSpec,
@@ -42,13 +42,13 @@ pub struct LoadedDesign {
     /// The real `.asc`'s own bare file name, `None` on the placeholder path.
     pub asc_filename: Option<String>,
     /// The real `.asc`'s exact original text, `None` on the placeholder path; fed to
-    /// `indicatrix_cut_core::save_paired` so a save can leave the `.asc`
+    /// `indicatrix_cut_core::catalogue_asc` so a save can leave the `.asc`
     /// half byte-for-byte untouched.
     pub original_asc_text: Option<String>,
-    /// The `[meta]` table of a `.indicatrix` file the design came from; all fields
+    /// The `[meta]` table of a design file the design came from; all fields
     /// unset when the source carried none (a bare `.asc` never does).
     pub metadata: DesignMetadata,
-    /// The attachments of a `.indicatrix` file the design came from, bytes decoded and
+    /// The attachments of a design file the design came from, bytes decoded and
     /// verified, in file order; empty for a bare `.asc`.
     pub attachments: Vec<AttachmentBlob>,
 }

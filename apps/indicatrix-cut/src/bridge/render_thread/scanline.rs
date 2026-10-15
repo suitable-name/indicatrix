@@ -57,9 +57,27 @@ pub(super) fn render_frame_scanlines(
     current_sample_count: u32,
     outputs: &mut FrameOutputs<'_>,
 ) {
+    let num_threads = thread::available_parallelism().map_or(8, std::num::NonZero::get);
+    render_frame_scanlines_with_threads(frame, spp, current_sample_count, outputs, num_threads);
+}
+
+/// [`render_frame_scanlines`] on exactly `num_threads` scoped threads (at least one).
+///
+/// The hybrid CPU+GPU frame passes `cores - 2`: the GPU driver thread and the display
+/// thread are both runnable at the same time, and a tracer thread on every core made the
+/// worker's identical split lose to GPU-only (0.58x, `render_core/hybrid.rs`). Rows are
+/// claimed from one atomic counter and each pixel depends only on its index, so the
+/// output is bit-identical for any thread count.
+pub(super) fn render_frame_scanlines_with_threads(
+    frame: &BackendFrame<'_>,
+    spp: u32,
+    current_sample_count: u32,
+    outputs: &mut FrameOutputs<'_>,
+    num_threads: usize,
+) {
     let width = frame.width;
     let height = frame.height;
-    let num_threads = thread::available_parallelism().map_or(8, std::num::NonZero::get);
+    let num_threads = num_threads.max(1);
     let width_usize = width as usize;
 
     // Reborrowed as four disjoint fields so the simultaneous `zip` below borrows each
@@ -121,7 +139,8 @@ pub(super) fn render_frame_scanlines(
                         .expect("each row index is claimed by exactly one thread via fetch_add");
 
                     for x in 0..width_usize {
-                        let global_pixel_idx = (y * width_usize + x) as u32;
+                        let global_pixel_idx = u32::try_from(y * width_usize + x)
+                            .expect("pixel index of a frame fits u32");
                         let mut sample_sum = Vec3::ZERO;
                         let mut primary_hit: Option<HitRecord> = None;
 
@@ -133,8 +152,8 @@ pub(super) fn render_frame_scanlines(
                         let rot = pixel_rotations(global_pixel_idx);
 
                         for s_idx in 0..spp {
-                            let sample_num = current_sample_count - spp + s_idx;
-                            let draws = sample_draws(global_pixel_idx, sample_num, &rot);
+                            let sample_number = current_sample_count - spp + s_idx;
+                            let draws = sample_draws(global_pixel_idx, sample_number, &rot);
 
                             let ray = frame.camera.generate_ray(
                                 x as f32,
@@ -186,7 +205,9 @@ pub(super) fn render_frame_scanlines(
                         // costs at most a conservative edge-stop, never a wrong blend.
                         depth_row[x] = primary_hit.map_or(1.0e6, |h| h.t);
                         normal_row[x] = primary_hit.map_or(Vec3::ZERO, |h| h.normal);
-                        facet_row[x] = primary_hit.map_or(-1, |h| h.facet_idx as i32);
+                        facet_row[x] = primary_hit.map_or(-1, |h| {
+                            i32::try_from(h.facet_idx).expect("facet index fits i32")
+                        });
                     }
                 }
             });

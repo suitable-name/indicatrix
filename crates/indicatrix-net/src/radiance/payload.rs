@@ -104,7 +104,9 @@ impl PayloadEncoder {
     /// the next call. Never fails: see the module doc comment on the per-payload `Raw`
     /// fallback.
     pub fn encode<'a>(&'a mut self, raw: &'a [u8]) -> EncodedPayload<'a> {
-        let raw_len = raw.len() as u32;
+        // Saturating: `encode` never fails, and a length no frame can have is refused by
+        // the receiver's size checks instead of being truncated into a plausible one.
+        let raw_len = u32::try_from(raw.len()).unwrap_or(u32::MAX);
         match self.try_compress(raw) {
             Some(len) => EncodedPayload {
                 encoding: self.encoding,
@@ -290,7 +292,7 @@ impl PayloadDecoder {
         if expected > u64::from(MAX_FRAME_LEN) {
             return Err(RadianceError::TooLarge { width, height });
         }
-        let expected = expected as usize;
+        let expected = usize::try_from(expected).expect("bounded by MAX_FRAME_LEN above");
         if raw_len as usize != expected {
             return Err(RadianceError::RawLenMismatch {
                 width,

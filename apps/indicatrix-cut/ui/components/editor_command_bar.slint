@@ -3,6 +3,7 @@ import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
 import { RetargetModel } from "../models/retarget.slint";
 import { GuideModel } from "../models/guide.slint";
+import { LibraryModel } from "../models/library.slint";
 import { CuttingModeModel } from "../models/cutting_mode.slint";
 import { GuideLockTip } from "guide_lock.slint";
 import { WarningLine } from "warning_line.slint";
@@ -102,7 +103,7 @@ component NewLoadUndoRedoGroup inherits HorizontalLayout {
         load_btn := Button {
             text: "Load Selected";
             accessible-description: "Open the design selected in the library list so you can edit it here.";
-            enabled: GuideModel.allows_file_ops();
+            enabled: GuideModel.allows_file_ops() && LibraryModel.selected_entry_id >= 0;
             clicked => { EditorModel.load_selected(); }
         }
         // The library tutorial's "Load it" step outlines this button.
@@ -236,7 +237,7 @@ component SolveGroup inherits HorizontalLayout {
         HorizontalLayout {
             spacing: 4px;
             auto_solve_label := Text {
-                text: "Auto-solve:";
+                text: "Auto-Solve:";
                 font-size: 10px;
                 color: Theme.text-muted;
                 vertical-alignment: center;
@@ -247,7 +248,7 @@ component SolveGroup inherits HorizontalLayout {
                 // the Solve button.
                 width: root.combo_width;
                 enabled: GuideModel.allows_solve();
-                accessible-label: "Auto-solve";
+                accessible-label: "Auto-Solve";
                 accessible-description: "After an edit, solve again by itself when the last solve was quicker than this time. Off only marks the panel out of date.";
                 model: ["Off", "150 ms", "300 ms", "1 s", "3 s"];
                 current-index: EditorModel.auto_solve_budget_ms == 0 ? 0
@@ -368,7 +369,7 @@ component TierGroup inherits HorizontalLayout {
             // Icon-only; the hover hint above says what it does.
             icon: @image-url("../icons/chevron-up.svg");
             colorize-icon: true;
-            accessible-label: "Move tier up";
+            accessible-label: "Move Tier Up";
             accessible-description: "Move the selected tier earlier in the cutting order. Select a tier first.";
             enabled: root.has_selection && GuideModel.allows_tier_table();
             clicked => { EditorModel.move_tier(EditorModel.selected_tier_index, -1); }
@@ -383,7 +384,7 @@ component TierGroup inherits HorizontalLayout {
             // Icon-only; the hover hint above says what it does.
             icon: @image-url("../icons/chevron-down.svg");
             colorize-icon: true;
-            accessible-label: "Move tier down";
+            accessible-label: "Move Tier Down";
             accessible-description: "Move the selected tier later in the cutting order. Select a tier first.";
             enabled: root.has_selection && GuideModel.allows_tier_table();
             clicked => { EditorModel.move_tier(EditorModel.selected_tier_index, 1); }
@@ -500,7 +501,7 @@ component AnalysisGroup inherits HorizontalLayout {
     // `optimize_cancel_requested` above): `optimize_status` takes several
     // seconds to read back "Cancelling -- finishing the current evaluation...",
     // and a cutter who sees no reaction clicks again.
-    if EditorModel.optimize_running: Button {
+    if EditorModel.optimize_running: button-optimize-cancel-requested := Button {
         text: root.optimize_cancel_requested ? "Cancelling..." : "Cancel Optimize";
         accessible-description: "Stop the running search. It finishes the step it is on first.";
         enabled: !root.optimize_cancel_requested;
@@ -647,7 +648,7 @@ component FileActionsGroup inherits HorizontalLayout {
         }
     }
 
-    // "Save" writes the self-contained `.indicatrix` design file: the whole design
+    // "Save" writes the self-contained `.isdd` design file: the whole design
     // lives in that one file and nothing is written beside it. "Export Edited .asc" exports the design AS EDITED in this tab,
     // distinct from `detail_header.slint`'s catalogue-original "Export .asc"
     // (see that file's own doc comment); the label names the `.asc` in full to
@@ -682,10 +683,10 @@ component FileActionsGroup inherits HorizontalLayout {
         // library -- it writes or updates this design's own catalogue row
         // (`native_io::write_back_to_catalogue`), not just the files on disk,
         // and the hint must say so.
-        changed has-hover => { if self.has-hover { root.set_hint("Save the whole design to its .indicatrix file, and update this design's catalogue entry."); } else { root.clear_hint("Save the whole design to its .indicatrix file, and update this design's catalogue entry."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Save the whole design to its .isdd file, and update this design's catalogue entry."); } else { root.clear_hint("Save the whole design to its .isdd file, and update this design's catalogue entry."); } }
         save_native_btn := Button {
             text: "Save";
-            accessible-description: "Save the whole design to its .indicatrix file and update this design's library entry (Ctrl+S).";
+            accessible-description: "Save the whole design to its .isdd file and update this design's library entry (Ctrl+S).";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.save_native(); }
         }
@@ -708,10 +709,10 @@ component FileActionsGroup inherits HorizontalLayout {
         width: save_warning_text.preferred-width;
         height: 34px;
         accessible-role: AccessibleRole.text;
-        accessible-label: "Will ask before saving";
+        accessible-label: "Will Ask Before Saving";
         accessible-description: EditorModel.status_text + ". Saving or exporting still works, but you are asked to confirm first.";
         save_warning_text := WarningLine {
-            text: "Will ask before saving";
+            text: "Will Ask Before Saving";
             font_weight: 600;
             wrap_text: false;
             centered: true;
@@ -724,10 +725,10 @@ component FileActionsGroup inherits HorizontalLayout {
     TouchArea {
         width: open_native_btn.preferred-width;
         height: open_native_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Open a .indicatrix design file, or a .asc, .gem or .gcs file."); } else { root.clear_hint("Open a .indicatrix design file, or a .asc, .gem or .gcs file."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Open a .isdd design file, or a .asc, .gem or .gcs file."); } else { root.clear_hint("Open a .isdd design file, or a .asc, .gem or .gcs file."); } }
         open_native_btn := Button {
             text: "Open";
-            accessible-description: "Open a .indicatrix design file, or an .asc, .gem or .gcs file (Ctrl+O).";
+            accessible-description: "Open a .isdd design file, or an .asc, .gem or .gcs file (Ctrl+O).";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.open_native(); }
         }

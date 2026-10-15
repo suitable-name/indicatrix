@@ -90,6 +90,11 @@ pub trait JobSink {
 /// `about 2 h 10 min left`. Fractions of a second are dropped.
 #[must_use]
 pub fn format_eta(secs: f64) -> String {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "guarded to a finite positive number of seconds; `as` saturates"
+    )]
     let total = if secs.is_finite() && secs > 0.0 {
         secs as u64
     } else {
@@ -120,6 +125,11 @@ pub fn format_eta(secs: f64) -> String {
 #[must_use]
 pub fn format_progress_line(command_word: &str, progress: &JobProgress, terminal: bool) -> String {
     let video = progress.frames_total > 1;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0..=1 and scaled to 0..=100"
+    )]
     let percent = (progress.fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
     let eta = progress
         .eta_secs

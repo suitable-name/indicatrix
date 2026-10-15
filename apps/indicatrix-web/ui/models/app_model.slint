@@ -73,7 +73,8 @@ export global AppModel {
     // -- Actions ------------------------------------------------------------------
     callback open-file();
     callback save-asc();
-    callback save-native-pair();
+    // Downloads the edited schedule as an experimental Gem Cut Studio `.gcs` file.
+    callback save-gcs();
     callback save-design();
     callback download-cutting-sheet();
     callback download-diagram();

@@ -8,7 +8,7 @@ use crate::{
         Ctx,
         state::{SolveState, WebApp},
     },
-    editor::{optimize, settings},
+    editor::{history, optimize, settings},
 };
 use indicatrix_editor::scratch::{PushedScratch, ScratchDelta};
 use slint::{ComponentHandle, Timer, TimerMode};
@@ -138,6 +138,7 @@ fn push(ctx: &Ctx, now: &Fingerprint) {
         form::clear_all(&ui);
         settings::clear(&ui);
         optimize::clear(&ui);
+        history::clear(&ui);
         return;
     }
     with_pcx(ctx, previous.as_ref(), now, |pcx| {
@@ -146,6 +147,7 @@ fn push(ctx: &Ctx, now: &Fingerprint) {
         preform::push(pcx);
         settings::push(pcx);
         optimize::push(pcx);
+        history::push(pcx);
     });
 }
 

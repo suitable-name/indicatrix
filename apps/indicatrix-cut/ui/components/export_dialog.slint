@@ -4,6 +4,7 @@ import { ExportModel } from "../models/export.slint";
 import { RenderJobsModel } from "../models/render_jobs.slint";
 import { ExportRunModel } from "../models/export_run.slint";
 import { SettingsModel } from "../models/settings.slint";
+import { RemoteWorkerModel } from "../models/remote_worker.slint";
 import { GuideModel } from "../models/guide.slint";
 import { HelpTopics } from "../models/help.slint";
 import { HelpButton } from "help_button.slint";
@@ -13,6 +14,7 @@ import { SegmentPill } from "pill_button.slint";
 import { AdvancedNote } from "advanced_note.slint";
 import { TipBox } from "tip_box.slint";
 // Split-out sections of this dialog -- see each component's own doc comment.
+import { MaterialLine } from "material_chip.slint";
 import { ExportOutputLocation } from "export_dialog/output_location.slint";
 import { ExportComputeAndBounces } from "export_dialog/compute_and_bounces.slint";
 import { ExportSamplesAndPresets } from "export_dialog/samples_and_presets.slint";
@@ -35,7 +37,7 @@ component SectionCaption inherits Rectangle {
 
 // High-resolution render export, independent of the viewport. Follows the
 // same modal-card conventions as `MaterialEditorDialog` (full-viewport backdrop +
-// centered card), the same segmented-pill selector style as `SettingsDialog`
+// centered card), the same segmented-pill selector style as the Parameters panel
 // (quality/bounce pickers) for output size, and the same labelled-value `Slider`
 // pattern as `MaterialEditorDialog`'s RI/dispersion/birefringence controls for the
 // sample count, whose useful range is too wide for a handful of pills. Reads
@@ -46,34 +48,23 @@ component SectionCaption inherits Rectangle {
 // Advanced: a hidden choice keeps its value, and the "advanced settings are in use" note says
 // so when one is off its default.
 export component ExportDialog inherits Rectangle {
-    // Compute target: 0 = Local only, 1 = Remote only, 2 = Local + Remote. Defaults to
-    // Local + Remote whenever a usable worker exists (`ExportModel.remote_available`),
-    // otherwise Local only -- matching `bridge::export_thread::run_export`'s own
-    // default split behaviour (see `gui::render_export`'s doc comment). This is a
-    // plain (non `in-out`) property bound to that default expression rather than a
-    // fixed initial value, so it re-evaluates every time `remote_available` changes --
-    // e.g. right after `check_remote_availability`'s background probe reports back,
-    // which happens every time this dialog opens -- UNTIL the user clicks a pill, at
-    // which point Slint's own "an imperative assignment overrides a binding" rule
-    // takes over and this stops re-deriving from `remote_available` for the rest of
-    // this dialog instance's life.
-    property <int> compute_target: ExportModel.remote_available ? 2 : 0;
+    // Compute target: 0 = Local only, 1 = Remote only, 2 = Local + Remote. The person's
+    // choice lives in `ExportModel.compute_target_index` (seeded from the last-used value
+    // every time the dialog opens); what the export uses is `ExportModel.
+    // effective_compute_target`, which is Local only whenever no usable worker exists
+    // (`RemoteWorkerModel.availability.reachable_render_capable`) -- matching
+    // `bridge::export_thread::run_export`'s own default split behaviour (see
+    // `gui::render_export`'s doc comment). It re-evaluates when the dialog's background
+    // probe (`check_remote_availability`) reports back.
+    property <int> compute_target: ExportModel.effective_compute_target;
 
     // Max ray bounces: the export's OWN cap, independent of the live viewport's --
     // see `bridge::export_thread::scene_snapshot`'s doc comment on why an export must
-    // not silently inherit whatever the viewport happens to be set to. Same six-rung
-    // ladder (4/8/12/24/64/128) and index convention as `settings_dialog.slint`'s
-    // `selected_bounce_index` -- see that file's "Ray Bounces" section for the
-    // `bounce_cost.rs` measurements the ladder itself is backed by.
-    //
-    // Bound directly to `SettingsModel.bounce_index` -- the live
-    // viewport's CURRENT pill index -- rather than mirroring it into a separate
-    // `ExportModel` property, which would risk drifting out of sync if nothing kept
-    // it updated. `selected_bounce_index` is a plain (non `in-out`) property
-    // bound to it, so it re-derives every time `SettingsModel.bounce_index` changes
-    // (i.e. every time this dialog opens showing the CURRENT live value) UNTIL the user
-    // clicks a pill, exactly like `compute_target` above.
-    property <int> selected_bounce_index: SettingsModel.bounce_index;
+    // not silently inherit whatever the viewport happens to be set to. The pill index
+    // lives in `ExportModel.bounce_index` (seeded from the last-used value every time the
+    // dialog opens) and indexes the one ladder Rust publishes as
+    // `SettingsModel.bounce_ladder` (`settings::model::BOUNCE_LADDER`).
+    property <int> selected_bounce_index: ExportModel.bounce_index;
 
     property <int> effective_width: ExportModel.selected_size_preset == 2 ? ExportModel.custom_width : (ExportModel.selected_size_preset == 1 ? 3840 : 1920);
     property <int> effective_height: ExportModel.selected_size_preset == 2 ? ExportModel.custom_height : (ExportModel.selected_size_preset == 1 ? 2160 : 1080);
@@ -84,13 +75,12 @@ export component ExportDialog inherits Rectangle {
     // `{spp}` variable (`bridge::export_thread::filename_template`).
     property <int> sample_exponent: Math.round(ExportModel.sample_exponent_raw);
     property <int> effective_samples: Math.round(Math.pow(2.0, root.sample_exponent));
-    // Index -> rung value, same nested-ternary idiom `effective_width`/`effective_height`
-    // above use for their own pill selectors.
-    property <int> effective_max_bounces: root.selected_bounce_index == 0 ? 4 : (root.selected_bounce_index == 1 ? 8 : (root.selected_bounce_index == 2 ? 12 : (root.selected_bounce_index == 3 ? 24 : (root.selected_bounce_index == 4 ? 64 : 128))));
+    // Index -> rung value, read off the one ladder Rust publishes.
+    property <int> effective_max_bounces: SettingsModel.bounce_ladder[root.selected_bounce_index];
     // Whether a choice the Simple view hides is off its default (the pure rule is
     // `gui::render::render_export::advanced`).
     property <bool> advanced_note_visible: !GuideModel.shows_advanced()
-        && ExportModel.advanced_in_use(ExportModel.selected_color_space_index, ExportModel.transfer_index, ExportModel.remote_available);
+        && ExportModel.advanced_in_use(ExportModel.selected_color_space_index, ExportModel.transfer_index, RemoteWorkerModel.availability.reachable_render_capable);
 
     // `ExportModel` used to carry its own `close()` callback here too, invoked
     // with no Rust `on_close` ever registered for it (dead wiring -- `is_open`
@@ -115,6 +105,9 @@ export component ExportDialog inherits Rectangle {
 
     TouchArea {
         clicked => { if (!ExportModel.is_exporting) { root.close(); } }
+        // Modal: swallow the wheel so it never falls through to the viewport's
+        // `scroll-event` underneath (which would zoom the camera behind the dialog).
+        scroll-event(event) => { accept }
     }
 
     // Escape/Enter/focus handling. Mounted with `if ExportModel.
@@ -150,12 +143,14 @@ export component ExportDialog inherits Rectangle {
 
         // Modal Card Container
         Rectangle {
-            width: 420px;
+            // 420px, but never wider than the viewport it opens over less a 12px margin each
+            // side (the minimum window leaves the Live Render viewport about 380px).
+            width: min(420px, max(240px, root.width - 24px));
             // Content-driven height: without this, `Rectangle`'s default sizing ("expand to
             // fill the parent" when width/height aren't both set explicitly) makes this card
             // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
             // of the window instead of sizing to its content. Same idiom, and same reason, as
-            // `settings_dialog.slint` and `import_dialog.slint`. Capped at the backdrop's
+            // `import_dialog.slint` and the material editor. Capped at the backdrop's
             // height less a 20px margin top and bottom: the body ScrollView below takes
             // the overflow so the header and Start/Cancel footer stay reachable.
             height: min(content.preferred-height, root.height - 40px);
@@ -167,8 +162,13 @@ export component ExportDialog inherits Rectangle {
             drop-shadow-color: Theme.modal-shadow;
             clip: true;
 
-            // Isolate clicks inside modal
-            TouchArea {}
+            // Isolate clicks inside modal. It also swallows the wheel: the body
+            // ScrollView above it scrolls first, and this catches whatever it does not
+            // (header, padding, body already at its end) instead of letting it reach the
+            // viewport's camera zoom.
+            TouchArea {
+                scroll-event(event) => { accept }
+            }
 
             content := VerticalLayout {
                 padding: 16px;
@@ -181,7 +181,12 @@ export component ExportDialog inherits Rectangle {
                     HorizontalLayout {
                         horizontal-stretch: 1;
                         spacing: 8px;
-                        Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                        // Centred by a layout of its own: a fixed-size Image in the row sits at
+                        // the top of its cell.
+                        VerticalLayout {
+                            alignment: center;
+                            Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; }
+                        }
                         Text {
                             text: "Export High-Resolution Render";
                             font-size: 14px;
@@ -200,7 +205,7 @@ export component ExportDialog inherits Rectangle {
                             hint: "Open the manual page on exporting a render";
                         }
                     }
-                    IconButton {
+                    icon-button-is-exporting := IconButton {
                         icon: @image-url("../icons/close.svg");
                         hint: ExportModel.is_exporting ? "Close is off while an export runs. Use Cancel Export to stop it." : "Close the export dialog";
                         enabled: !ExportModel.is_exporting;
@@ -231,6 +236,9 @@ export component ExportDialog inherits Rectangle {
                         // 1b. Output Location: the export directory and filename template --
                         // see `ExportOutputLocation`'s own doc comment
                         // (`export_dialog/output_location.slint`) for why this is split out.
+                        // The material this export will use (read-only; the Stone tab changes it).
+                        MaterialLine {}
+
                         ExportOutputLocation {}
 
                         Rectangle { height: 1px; background: Theme.surface-raised; }
@@ -284,7 +292,7 @@ export component ExportDialog inherits Rectangle {
                                             step-size: 8;
                                             value <=> ExportModel.custom_width;
                                             enabled: !ExportModel.is_exporting;
-                                            accessible-label: "Width in pixels";
+                                            accessible-label: "Width in Pixels";
                                         }
                                     }
                                 }
@@ -301,7 +309,7 @@ export component ExportDialog inherits Rectangle {
                                             step-size: 8;
                                             value <=> ExportModel.custom_height;
                                             enabled: !ExportModel.is_exporting;
-                                            accessible-label: "Height in pixels";
+                                            accessible-label: "Height in Pixels";
                                         }
                                     }
                                 }
@@ -326,7 +334,7 @@ export component ExportDialog inherits Rectangle {
                             spacing: 6px;
                             SectionCaption {
                                 text: "Color Space";
-                                hint: "Which range of colours the picture file can hold. sRGB suits almost every screen. The wider ones need a screen that can show them.";
+                                hint: "Which range of colors the picture file can hold. sRGB suits almost every screen. The wider ones need a screen that can show them.";
                             }
 
                             HorizontalLayout {
@@ -341,14 +349,14 @@ export component ExportDialog inherits Rectangle {
                                 }
                                 SegmentPill {
                                     text: "Display P3";
-                                    hint: "A wider range of colours, for modern phone and laptop screens. The file carries a colour profile.";
+                                    hint: "A wider range of colors, for modern phone and laptop screens. The file carries a color profile.";
                                     selected: ExportModel.selected_color_space_index == 1;
                                     enabled: !ExportModel.is_exporting;
                                     picked => { ExportModel.selected_color_space_index = 1; }
                                 }
                                 SegmentPill {
                                     text: "Rec.2020";
-                                    hint: "An even wider range, for HDR screens and video. The file carries a colour profile.";
+                                    hint: "An even wider range, for HDR screens and video. The file carries a color profile.";
                                     selected: ExportModel.selected_color_space_index == 2;
                                     enabled: !ExportModel.is_exporting;
                                     picked => { ExportModel.selected_color_space_index = 2; }
@@ -367,13 +375,10 @@ export component ExportDialog inherits Rectangle {
                         // 2c/2d. Compute target and Max Ray Bounces -- see
                         // `ExportComputeAndBounces`'s own doc comment
                         // (`export_dialog/compute_and_bounces.slint`) for why this is split
-                        // out. Two-way bound: a click in there writes straight back to this
-                        // dialog's own cached pill-selection state (see `compute_target`/
-                        // `selected_bounce_index`'s own doc comments above). Advanced mode only.
-                        if GuideModel.shows_advanced(): ExportComputeAndBounces {
-                            compute_target <=> root.compute_target;
-                            selected_bounce_index <=> root.selected_bounce_index;
-                        }
+                        // out. A click in there writes straight into `ExportModel`
+                        // (`compute_target_index`, `bounce_index`), which this dialog's
+                        // `compute_target`/`selected_bounce_index` above read. Advanced mode only.
+                        if GuideModel.shows_advanced(): ExportComputeAndBounces { }
 
                         // 3/3b. Sample Count and preset fan-out -- see
                         // `ExportSamplesAndPresets`'s own doc comment
@@ -471,7 +476,7 @@ export component ExportDialog inherits Rectangle {
                                 border-color: Theme.border-dialog;
                                 clip: true;
                                 accessible-role: AccessibleRole.progress-indicator;
-                                accessible-label: "Export progress";
+                                accessible-label: "Export Progress";
                                 accessible-value: Math.round(ExportModel.progress * 100) + " percent";
 
                                 Rectangle {
@@ -517,7 +522,7 @@ export component ExportDialog inherits Rectangle {
                     // Closes the popup and leaves the export running; the header's export
                     // indicator shows its progress and opens this popup again.
                     if ExportModel.is_exporting: ActionButton {
-                        width: 150px;
+                        width: 130px;
                         height: 32px;
                         text: "Run in Background";
                         hint: "Close this window and keep exporting. The header shows the progress; click it to see this window again.";
@@ -526,7 +531,7 @@ export component ExportDialog inherits Rectangle {
                     }
 
                     if !ExportModel.is_exporting: ActionButton {
-                        width: 90px;
+                        width: 70px;
                         height: 32px;
                         text: "Close";
                         hint: "Close this dialog.";
@@ -537,7 +542,7 @@ export component ExportDialog inherits Rectangle {
                     // Saves these settings as a render job, to start later from the Jobs
                     // window (`gui::render_jobs`). Start Export below stays immediate.
                     if !ExportModel.is_exporting: ActionButton {
-                        width: 130px;
+                        width: 112px;
                         height: 32px;
                         text: "Add to Queue";
                         hint: "Save these settings as a render job instead of rendering now. Start it later from File > Render Jobs...";

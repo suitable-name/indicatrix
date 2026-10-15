@@ -18,7 +18,7 @@ use super::{
     ForwardInput, StoneIndex,
     lighting::{LightModel, PanelGeom, RigLighting},
     records::{
-        CacheStatus, EvalPoint, ForwardRecords, ForwardStats, LENGTHS, PathRecord, PixelLoss,
+        CHROMA_MAX_CODE, CacheStatus, EvalPoint, ForwardRecords, ForwardStats, LENGTHS, PixelLoss,
         SpectralSetup, ViewRecords,
     },
     surface::{SurfaceClass, SurfaceMap},
@@ -30,7 +30,14 @@ use crate::rough_plan::{
 };
 
 /// The version of the binary format and of the key. Bump it when either changes.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// Version 2: compact records (`n_zones + 1` floats each), the clear-stone Monte-Carlo
+/// statistics, `trace_dispersion` in the key.
+///
+/// Version 3 (ZC-13): the white frame holds three levels per cell (in the key), and a view stores
+/// its per-channel chroma codes after the records (a count, 0 for a grey light, else three bytes
+/// per record).
+pub const FORMAT_VERSION: u32 = 3;
 
 const MAGIC: [u8; 4] = *b"ZFWD";
 
@@ -155,8 +162,10 @@ fn hash_lighting(h: &mut Fnv, lighting: &RigLighting) {
                         h.usize(w);
                         h.usize(hh);
                         h.f64(scale);
-                        for &level in frame.levels() {
-                            h.f32(level);
+                        for level in frame.levels() {
+                            for &channel in level {
+                                h.f32(channel);
+                            }
                         }
                     }
                 }
@@ -285,6 +294,7 @@ pub fn cache_key(input: &ForwardInput<'_>) -> u64 {
     h.usize(opts.bins);
     hash_f64s(&mut h, &opts.lambda_range_nm);
     h.usize(opts.spectral_sub);
+    h.u64(u64::from(opts.trace_dispersion));
     h.usize(opts.max_records);
     h.usize(opts.max_depth);
     h.usize(opts.max_sample_factor);
@@ -312,6 +322,14 @@ fn put_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
+/// A count or index as the format's `u32`; records hold far fewer than `u32::MAX` items.
+fn put_len(out: &mut Vec<u8>, n: usize) {
+    put_u32(
+        out,
+        u32::try_from(n).expect("a record count or index fits the u32 cache format"),
+    );
+}
+
 fn put_u64(out: &mut Vec<u8>, v: u64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
@@ -334,22 +352,22 @@ pub fn encode(records: &ForwardRecords, key: u64) -> Vec<u8> {
     let spectral = &records.spectral;
     put_f64(&mut out, spectral.lambda_min_nm);
     put_f64(&mut out, spectral.lambda_max_nm);
-    put_u32(&mut out, spectral.bins as u32);
-    put_u32(&mut out, spectral.traced_bins as u32);
-    put_u32(&mut out, spectral.eval_points.len() as u32);
+    put_len(&mut out, spectral.bins);
+    put_len(&mut out, spectral.traced_bins);
+    put_len(&mut out, spectral.eval_points.len());
     for point in &spectral.eval_points {
-        put_u32(&mut out, point.bin as u32);
+        put_len(&mut out, point.bin);
         put_f64(&mut out, point.lambda_nm);
         for w in point.weight {
             put_f64(&mut out, w);
         }
     }
-    put_u32(&mut out, records.n_zones as u32);
+    put_len(&mut out, records.n_zones);
     put_u64(&mut out, records.stats.samples);
     put_f32(&mut out, records.stats.max_cluster_range_mm);
-    put_u32(&mut out, records.views.len() as u32);
+    put_len(&mut out, records.views.len());
     for view in &records.views {
-        put_u32(&mut out, view.view as u32);
+        put_len(&mut out, view.view);
         put_u64(&mut out, view.grid.width as u64);
         put_u64(&mut out, view.grid.height as u64);
         put_f64(&mut out, view.grid.origin[0]);
@@ -365,6 +383,12 @@ pub fn encode(records: &ForwardRecords, key: u64) -> Vec<u8> {
         for &v in &view.mc_variance {
             put_f32(&mut out, v);
         }
+        for &v in &view.mc_mean_clear {
+            put_f32(&mut out, v);
+        }
+        for &v in &view.mc_variance_clear {
+            put_f32(&mut out, v);
+        }
         for loss in &view.loss {
             put_f32(&mut out, loss.depth);
             put_f32(&mut out, loss.invalid);
@@ -374,13 +398,12 @@ pub fn encode(records: &ForwardRecords, key: u64) -> Vec<u8> {
         for &o in &view.offsets {
             put_u32(&mut out, o);
         }
-        put_u64(&mut out, view.records.len() as u64);
-        for record in &view.records {
-            for &l in &record.lengths {
-                put_f32(&mut out, l);
-            }
-            put_f32(&mut out, record.weight);
+        put_u64(&mut out, view.record_count() as u64);
+        for &value in &view.records {
+            put_f32(&mut out, value);
         }
+        put_u64(&mut out, view.chroma.len() as u64);
+        out.extend_from_slice(&view.chroma);
     }
     let mut sum = Fnv::new();
     sum.bytes(&out);
@@ -463,7 +486,7 @@ impl<'a> Reader<'a> {
 
     /// One view's records (the body of the per-view loop of [`decode`]); `None` when truncated
     /// or when the per-pixel offsets are not a monotone cover of the records.
-    fn view_records(&mut self, traced_bins: usize) -> Option<ViewRecords> {
+    fn view_records(&mut self, traced_bins: usize, n_zones: usize) -> Option<ViewRecords> {
         let view = self.u32()? as usize;
         let width = self.usize()?;
         let height = self.usize()?;
@@ -474,6 +497,8 @@ impl<'a> Reader<'a> {
         let samples_per_pixel = self.u16s(n)?;
         let mc_mean = self.f32s(n)?;
         let mc_variance = self.f32s(n)?;
+        let mc_mean_clear = self.f32s(n)?;
+        let mc_variance_clear = self.f32s(n)?;
         let loss_raw = self.f32s(n.checked_mul(4)?)?;
         let loss = loss_raw
             .as_chunks::<4>()
@@ -488,23 +513,19 @@ impl<'a> Reader<'a> {
             .collect();
         let offsets = self.u32s(n.checked_mul(traced_bins)?.checked_add(1)?)?;
         let record_count = self.usize()?;
-        let raw = self.f32s(record_count.checked_mul(LENGTHS + 1)?)?;
-        let records: Vec<PathRecord> = raw
-            .as_chunks::<{ LENGTHS + 1 }>()
-            .0
-            .iter()
-            .map(|c| {
-                let mut lengths = [0.0_f32; LENGTHS];
-                lengths.copy_from_slice(&c[..LENGTHS]);
-                PathRecord {
-                    lengths,
-                    weight: c[LENGTHS],
-                }
-            })
-            .collect();
+        let stride = n_zones + 1;
+        let records = self.f32s(record_count.checked_mul(stride)?)?;
+        let chroma_len = self.usize()?;
+        if chroma_len != 0 && chroma_len != record_count.checked_mul(3)? {
+            return None;
+        }
+        let chroma = self.u8s(chroma_len)?;
+        if chroma.iter().any(|&code| code > CHROMA_MAX_CODE) {
+            return None;
+        }
         let monotone = offsets.first() == Some(&0)
             && offsets.windows(2).all(|w| w[0] <= w[1])
-            && offsets.last().map(|&o| o as usize) == Some(records.len());
+            && offsets.last().map(|&o| o as usize) == Some(record_count);
         if !monotone {
             return None;
         }
@@ -520,9 +541,13 @@ impl<'a> Reader<'a> {
             samples: samples_per_pixel,
             mc_mean,
             mc_variance,
+            mc_mean_clear,
+            mc_variance_clear,
             loss,
             offsets,
+            stride,
             records,
+            chroma,
         })
     }
 }
@@ -573,7 +598,7 @@ pub fn decode(bytes: &[u8], key: u64) -> Option<ForwardRecords> {
     let view_count = r.u32()? as usize;
     let mut views = Vec::new();
     for _ in 0..view_count {
-        views.push(r.view_records(traced_bins)?);
+        views.push(r.view_records(traced_bins, n_zones)?);
     }
     if r.pos != body.len() {
         return None;

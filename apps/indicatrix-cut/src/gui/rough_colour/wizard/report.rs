@@ -75,7 +75,7 @@ pub fn markdown(input: &ReportInput<'_>) -> String {
     let fit = input.fit;
     let mut out = String::new();
     // Writing to a `String` cannot fail, so the `fmt::Result`s are discarded.
-    let _ = writeln!(out, "# Rough colour report: {}\n", input.rough_name);
+    let _ = writeln!(out, "# Rough Color Report: {}\n", input.rough_name);
     let _ = writeln!(out, "{}\n", input.date);
     out.push_str("## Setup\n\n");
     let _ = writeln!(out, "- Rig: {}", input.rig_name);
@@ -112,7 +112,7 @@ pub fn markdown(input: &ReportInput<'_>) -> String {
     }
     out.push('\n');
     if let Some(lovo) = &fit.lovo {
-        out.push_str("## Leave one view out\n\n");
+        out.push_str("## Leave One View Out\n\n");
         for row in lovo_rows(lovo, input.view_names) {
             let _ = writeln!(out, "- {}", row.text);
         }
@@ -120,10 +120,10 @@ pub fn markdown(input: &ReportInput<'_>) -> String {
     }
     let _ = writeln!(
         out,
-        "## Predicted colours (reference 7 mm and {:.0} mm)\n",
+        "## Predicted Colors (Reference 7 mm and {:.0} mm)\n",
         input.planned_mm
     );
-    out.push_str("| Colour | Lab and uncertainty | sRGB |\n|---|---|---|\n");
+    out.push_str("| Color | Lab and Uncertainty | sRGB |\n|---|---|---|\n");
     for chip in chip_rows(fit) {
         let _ = writeln!(
             out,
@@ -218,17 +218,17 @@ mod tests {
         let notes = vec!["+X upper: 12 % of the pixels are masked".to_owned()];
         let text = markdown(&input(&fit, &zoned, &names, &notes));
         for needle in [
-            "# Rough colour report: Tourmaline 1",
+            "# Rough Color Report: Tourmaline 1",
             "## Setup",
             "- Rig: Eight views",
             "## Masks",
             "## Zones",
-            "- Base zone:",
+            "- Base Zone:",
             "## Models",
-            "## Leave one view out",
+            "## Leave One View Out",
             "+X upper: predicted from the other views",
-            "## Predicted colours (reference 7 mm and 12 mm)",
-            "| Base zone, 7 mm, A |",
+            "## Predicted Colors (Reference 7 mm and 12 mm)",
+            "| Base Zone, 7 mm, A |",
             "+/- 1.8 dE",
             "## Warnings",
             "The fit did not converge.",

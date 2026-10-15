@@ -14,6 +14,7 @@ fn cube(side: f64) -> Arc<DesignMesh> {
             .iter()
             .map(|(normal, ring)| DesignFacet::new(*normal, ring.to_vec()))
             .collect(),
+        width_axis_units: side,
     })
 }
 

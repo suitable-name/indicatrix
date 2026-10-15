@@ -7,8 +7,8 @@ use super::fixtures::simple_design;
 use indicatrix::optics::{dispersion::DispersionModel, materials::GemMaterial};
 
 use crate::native::{
-    CustomMaterialSnapshot, DispersionModelDto, SaveExtras, dispersion_model_dto,
-    gem_material_from_custom_snapshot, load_paired, save_paired_extended,
+    CustomMaterialSnapshot, DesignExtras, DispersionModelDto, design_from_str, design_to_string,
+    dispersion_model_dto, gem_material_from_custom_snapshot,
 };
 
 const NAME: &str = "BK7 Copy";
@@ -38,18 +38,16 @@ fn snapshot_for(model: &DispersionModel) -> CustomMaterialSnapshot {
 fn round_trip(snapshot: &CustomMaterialSnapshot) -> (String, CustomMaterialSnapshot) {
     let mut design = simple_design();
     design.material.name = Some(NAME.to_string());
-    let extras = SaveExtras {
+    let extras = DesignExtras {
         custom_material: Some(snapshot),
-        history_entries: &[],
-        custom_catalogue: &[],
+        ..DesignExtras::default()
     };
-    let saved =
-        save_paired_extended(&design, "design.asc", None, None, None, &extras).expect("must save");
-    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("must load back");
+    let text = design_to_string(&design, None, &extras).expect("must save");
+    let loaded = design_from_str(&text).expect("must load back");
     let restored = loaded
         .restorable_custom_material
         .expect("the snapshot is restorable");
-    (saved.native_toml, restored)
+    (text, restored)
 }
 
 /// The model reaches the file as its own table and comes back as the identical curve.
@@ -69,6 +67,10 @@ fn a_dispersion_model_survives_a_save_and_open() {
     assert_eq!(rebuilt.dispersion, model, "the curve is not flattened");
     assert_eq!(rebuilt.dispersion.n_d().to_bits(), model.n_d().to_bits());
     // The plain numbers alone would have built a different curve.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GemMaterial stores f32; the snapshot values are small material constants"
+    )]
     let plain = GemMaterial::new_custom(
         NAME,
         restored.mean_ri as f32,

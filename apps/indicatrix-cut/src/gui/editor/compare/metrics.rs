@@ -239,7 +239,7 @@ impl SessionMetrics {
         self.tilt = match *outcome {
             TiltOutcome::Averages { before, after } => TiltState::Done { before, after },
             TiltOutcome::Stopped => TiltState::Failed(
-                "The tilt average stopped after an internal error. Press Tilt average to try again."
+                "The tilt average stopped after an internal error. Press Tilt Average to try again."
                     .to_owned(),
             ),
         };
@@ -534,7 +534,7 @@ mod tests {
         let strip = metrics.strip();
         assert!(strip.tilt_done && !strip.tilt_running && !strip.tilt_available);
         assert_eq!(strip.rows.len(), 8);
-        assert_eq!(strip.rows[5].label, "Tilt brilliance");
+        assert_eq!(strip.rows[5].label, "Tilt Brilliance");
         assert!(
             strip
                 .summary

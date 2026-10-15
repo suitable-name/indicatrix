@@ -1,0 +1,67 @@
+// Design tokens of the trainer. Hex color literals live here and nowhere else.
+export global TrainerTheme {
+    // Surfaces
+    out property <color> bg-app: #0e1117;
+    out property <color> bg-surface: #151922;
+    out property <color> bg-card: #1c222e;
+    out property <color> bg-card-hover: #242c3b;
+    out property <color> bg-card-pressed: #2c3649;
+    out property <color> bg-input: #10141c;
+    out property <color> bg-selected: #12323d;
+    out property <color> scrim: #000000b0;
+
+    // Borders
+    out property <color> border-subtle: #2b3547;
+    out property <color> border-medium: #3b4860;
+    out property <color> border-accent: #00e5ff;
+    out property <color> focus-ring: #00e5ff;
+
+    // Text
+    out property <color> text-primary: #f0f4fc;
+    out property <color> text-secondary: #a0aec0;
+    out property <color> text-muted: #7a8aa3;
+    out property <color> text-on-accent: #ffffff;
+
+    // Accents
+    out property <color> accent-primary: #00b4d8;
+    out property <color> accent-cyan: #00e5ff;
+    out property <color> accent-green: #10b981;
+    out property <color> accent-amber: #f59e0b;
+    out property <color> accent-ruby: #ef4444;
+    out property <color> accent-purple: #8b5cf6;
+
+    // Tinted backgrounds for banners and chips
+    out property <color> tint-error: #3b1219;
+    out property <color> tint-info: #11303a;
+    out property <color> tint-warning: #3a2a0c;
+    out property <color> tint-success: #0f2f25;
+
+    // Severity colors of the console: info grey, success green, warning amber, error red,
+    // validation cyan.
+    out property <color> sev-info: #94a3b8;
+    out property <color> sev-success: #10b981;
+    out property <color> sev-warning: #f59e0b;
+    out property <color> sev-error: #ef4444;
+    out property <color> sev-validation: #00e5ff;
+
+    out property <length> radius: 8px;
+    out property <length> radius-small: 6px;
+    out property <length> gap: 12px;
+
+    pure public function severity-color(severity: int) -> color {
+        if severity == 1 { return sev-success; }
+        if severity == 2 { return sev-warning; }
+        if severity == 3 { return sev-error; }
+        if severity == 4 { return sev-validation; }
+        return sev-info;
+    }
+
+    // Status pill colors: Idle, Training, Paused, Stopping, Stopped.
+    pure public function status-color(status: string) -> color {
+        if status == "Training" { return accent-green; }
+        if status == "Paused" { return accent-amber; }
+        if status == "Stopping" { return accent-purple; }
+        if status == "Stopped" { return accent-ruby; }
+        return text-muted;
+    }
+}

@@ -107,6 +107,10 @@ fn the_vault_row_and_the_design_snapshot_carry_the_typed_recipe() {
 
 /// An older build that opens the file sees only the top-level color: within `DeltaE00` 15.
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the snapshot stores f64; the material takes f32 and the test compares at f32 precision"
+)]
 fn an_older_build_opening_the_saved_file_is_within_delta_e_15() {
     let mode = ruby_mode();
     let db = db_with(&mode);

@@ -160,7 +160,8 @@ pub enum PkiError {
         path: PathBuf,
         fingerprint_hex: String,
         name: String,
-        source: tls::TlsError,
+        // Boxed: with four strings/paths inline this variant made the whole error large.
+        source: Box<tls::TlsError>,
     },
 }
 
@@ -221,7 +222,8 @@ impl std::error::Error for PkiError {
         match self {
             Self::Io { source, .. } | Self::CaFileUnreadable { source, .. } => Some(source),
             Self::Rcgen { source, .. } | Self::RcgenAtPath { source, .. } => Some(source),
-            Self::Certificate { source, .. } | Self::AllowlistUpdate { source, .. } => Some(source),
+            Self::Certificate { source, .. } => Some(source),
+            Self::AllowlistUpdate { source, .. } => Some(source.as_ref()),
             Self::CaAlreadyExists { .. }
             | Self::NoServerSan
             | Self::EmptyClientName
@@ -512,7 +514,7 @@ pub fn issue_client_with_role(
             path: allowlist_path.clone(),
             fingerprint_hex: fingerprint_hex.clone(),
             name: common_name.clone(),
-            source,
+            source: Box::new(source),
         }
     })?;
 

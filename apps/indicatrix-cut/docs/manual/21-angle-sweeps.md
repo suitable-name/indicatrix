@@ -1,6 +1,6 @@
 # 21. Angle Sweeps
 
-## What you will do
+## What You Will Do
 
 This chapter covers **Edit → Angle Sweep...**: a way to try one tier's angle over a
 range, one angle after another, and read how the stone's figures change. Use it when
@@ -13,10 +13,10 @@ for a spreadsheet. When you find an angle you like, one button makes it the tier
 angle.
 
 A sweep never changes your design while it runs. Every angle is tried on a private
-copy of the design. Only the button **Use this angle** (see below) edits the design,
+copy of the design. Only the button **Use This Angle** (see below) edits the design,
 and it is one undo step.
 
-## Opening the dialog
+## Opening the Dialog
 
 Open a design in the editor, then choose **Edit → Angle Sweep...**. You can also press
 **Ctrl+K** and type `sweep` to run **Angle Sweep...** (Chapter 19). The menu item and
@@ -26,7 +26,7 @@ the palette entry are dim while no design is open, and while the guided walkthro
 The dialog is a window of its own over the main one. **Esc** closes it; while a sweep
 is running, **Esc** stops the sweep first.
 
-## Choosing the tier, the range and the step
+## Choosing the Tier, the Range, and the Step
 
 The top of the dialog is the form.
 
@@ -66,18 +66,18 @@ and how to put it right. For example, "21 angles from 36.00 to 46.00 degrees. Th
 takes about 10 seconds." The time is a rough guess from the size of the design and the
 number of processor cores; it is a guide, not a promise.
 
-### Averaging the tilt performance
+### Averaging the Tilt Performance
 
-The check box **Also average the tilt performance (slower)** adds three more figures to
+The check box **Also Average the Tilt Performance (Slower)** adds three more figures to
 every angle: the brilliance, windowing and extinction of the Tilt Performance graph
 (Chapter 2), averaged over all four tilt axes and every tilt angle. They answer a
 different question from the quick figures: how the stone behaves as it is tilted, not
 only straight down on the table. They cost about a second and a half of work for every
 angle, so a long sweep takes much longer with this on, and the time estimate says so.
 
-## Running a sweep
+## Running a Sweep
 
-Press **Run sweep**. The dialog shows a progress bar and "3 of 21 angles done". The
+Press **Run Sweep**. The dialog shows a progress bar and "3 of 21 angles done". The
 program keeps working while the sweep runs, and a sweep uses all the processor cores
 but one, so the rest of the program may feel slower until it is over.
 
@@ -90,7 +90,9 @@ cut, for example because a facet vanishes, a relation cannot be kept, or the sol
 finds no closed stone, still gets its row. The row is marked **Not valid**, its
 figures are dashes, and the **Notes** column says why.
 
-## Reading the table
+## Reading the Table
+
+![The Angle Sweep dialog after a sweep: the table, the chart and the Use This Angle button.](../../../../assets/angle_sweep.png)
 
 Each row is one angle. The columns are:
 
@@ -98,7 +100,7 @@ Each row is one angle. The columns are:
   valid** for an angle that gives no stone, and empty for the others.
 - **Brilliance %**, **Windowing %** and **Extinction %**, scored looking straight down
   on the table (the same quick score Optimize searches with, Chapter 8), in the
-  material and under the lighting preset the viewport uses. Higher brilliance is
+  material and under the lighting rig the viewport uses. Higher brilliance is
   better; lower windowing and lower extinction are better.
 - **Fire** (the fire index) and **Scint. %** (scintillation). More of either is more
   sparkle, but neither is "better" in a fixed sense, so they are marked like
@@ -116,9 +118,9 @@ best when lowest, the rest when highest. Figures that agree to the two decimals 
 are marked together, and when every row agrees nothing is marked. Only valid rows are
 compared.
 
-Click a row to select it. The chart marks it, and **Use this angle** (below) names it.
+Click a row to select it. The chart marks it, and **Use This Angle** (below) names it.
 
-## Reading the chart
+## Reading the Chart
 
 The chart draws one line per figure over the swept angles, the flattest angle at the left
 and the steepest at the right. Because the figures have different sizes, **each line is
@@ -135,7 +137,7 @@ a line is an angle that is not valid.
   its figures for the lines on the chart, and why it is not valid when it is not.
 - Click the chart to select the row nearest the pointer. The table scrolls to it.
 
-## Using an angle
+## Using an Angle
 
 Select a valid row other than the current one. The button at the bottom then names the
 angle, for example **Use 42.00°**. Press it and the tier takes that angle, on the same
@@ -151,7 +153,7 @@ The dialog stays open, with the **Current** mark moved to the angle you used, so
 try another row. Every row stays true: each is the design with only that tier's angle
 changed.
 
-**Use this angle** is refused when the design has changed since the sweep ran (for
+**Use This Angle** is refused when the design has changed since the sweep ran (for
 example after an Undo from the menu, or after another design was opened), because the
 rows no longer describe the design. Run the sweep again. It is also dim for the current
 angle, for a row that is not valid, and while a sweep runs.
@@ -175,7 +177,7 @@ decimal mark.
 
 - A sweep varies **one tier** at a time. Trying two tiers together, a grid of angles, is
   not offered; sweep one, use its best angle, then sweep the other.
-- The figures are the quick **table-up** score, under one lighting preset. A design that
+- The figures are the quick **table-up** score, under one lighting rig. A design that
   wins here can still lose in the full render; confirm a choice with the Tilt
   Performance graph (Chapter 2), or tick the tilt option.
 - The tools of **concave tiers** (Chapter 16) are not part of the figures: the stone is

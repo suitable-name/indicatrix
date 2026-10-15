@@ -420,6 +420,10 @@ mod tests {
                 ..Default::default()
             }))
             .expect("the override resolves");
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the render precision of absorption_path_scale; the ratio is small"
+            )]
             let expected = (expected_mm / model_width) as f32;
             assert!(
                 (banded_on.material.absorption_path_scale - expected).abs() < 1e-4,

@@ -64,7 +64,7 @@ pub(super) fn spawn_save_folder_rescan(
                 &ui,
                 &format!(
                     "{new_files} new design file(s) found in your last save folder -- open \
-                     Import > Choose folder to bring {} in.",
+                     Import > Choose Folder to bring {} in.",
                     if new_files == 1 { "it" } else { "them" }
                 ),
                 "info",

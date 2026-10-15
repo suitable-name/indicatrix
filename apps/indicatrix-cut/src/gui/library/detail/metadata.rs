@@ -4,16 +4,10 @@ use super::{local_load::load_diagram_detail, shared::non_empty};
 use crate::{
     EditorModel, LibraryModel, MainWindow,
     bridge::{library::source::LibrarySource, render_thread::RenderContext},
-    gui::{
-        library::{
-            diagram_list::sync_range_bounds_to_ui_preserving_filters,
-            search::refresh_diagram_list_via_source,
-        },
-        show_toast,
-    },
+    gui::{library::local::refresh_after_library_change, show_toast},
 };
 use indicatrix_vault::{db::sqlite::Database, model::metadata_update::MetadataUpdate};
-use slint::{ComponentHandle, Model, SharedString};
+use slint::{ComponentHandle, SharedString};
 use std::sync::{Arc, Mutex};
 
 /// Wires up the detail header's metadata editor modal (see
@@ -105,61 +99,71 @@ pub fn setup_save_metadata_callback(
             };
             // Title and metadata in one transaction: a rejected numeric field must not
             // leave the new title applied while the toast below reports a failure.
-            let result = {
-                let db = db_meta
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let result = db.rename_and_update_metadata(entry_id, &title, &update);
-                if result.is_ok() {
-                    invalidate_derived_caches(&db, entry_id);
-                }
-                drop(db);
-                result
-            };
-            match result {
-                Ok(()) => {
-                    show_toast(&ui, "Metadata updated.", "success");
-                    // When this is the design open in the editor, its file now lags the
-                    // row: mark it unsaved so the next Save writes the edit.
-                    if crate::gui::editor::native_io::mark_design_row_edited(entry_id) {
-                        ui.global::<EditorModel>().set_is_dirty(true);
+            //
+            // The write, the three cache deletes and everything after run on a worker
+            // (the same shape as `refresh_after_library_change`): they used to run on
+            // the UI thread behind the shared database lock, followed by two more
+            // synchronous reads. Only the toast, the dirty flag and the reloads that
+            // touch `ui` come back through the event loop.
+            let db = Arc::clone(&db_meta);
+            let source = Arc::clone(&source_meta);
+            let render_ctx = Arc::clone(&render_ctx_meta);
+            let ui_weak = ui.as_weak();
+            let title = title.to_string();
+            std::thread::spawn(move || {
+                let result = {
+                    let guard = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let result = guard.rename_and_update_metadata(entry_id, &title, &update);
+                    if result.is_ok() {
+                        invalidate_derived_caches(&guard, entry_id);
                     }
-                    load_diagram_detail(&ui, &db_meta, &render_ctx_meta, entry_id);
-                    // Refreshes the visible list/filters the same way
-                    // `library::refresh_after_library_change` does for rename/shape --
-                    // that helper is private to `gui::library`, so this repeats its
-                    // essential two steps (range bounds, then the list query) rather
-                    // than reaching into another module's private function. The
-                    // `_preserving_filters` variant: a metadata correction
-                    // is not a request to clear whatever range filters the cutter had
-                    // already narrowed the catalogue to.
-                    sync_range_bounds_to_ui_preserving_filters(&ui, &db_meta);
-                    let search = ui.global::<LibraryModel>().get_search_text();
-                    let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
-                    let shape_filter = ui
-                        .global::<LibraryModel>()
-                        .get_shape_options()
-                        .row_data(shape_idx)
-                        .unwrap_or_default();
-                    let gear_idx = ui.global::<LibraryModel>().get_selected_gear_index() as usize;
-                    let gear_filter = ui
-                        .global::<LibraryModel>()
-                        .get_gear_options()
-                        .row_data(gear_idx)
-                        .unwrap_or_default();
-                    refresh_diagram_list_via_source(
-                        &ui,
-                        &db_meta,
-                        &source_meta,
-                        &search,
-                        &shape_filter,
-                        &gear_filter,
-                    );
-                }
-                Err(e) => show_toast(&ui, &format!("Metadata update failed: {e}"), "error"),
-            }
+                    drop(guard);
+                    result.map_err(|e| e.to_string())
+                };
+                // The queued closure holds the vault weakly, so a window closed meanwhile
+                // does not keep the database file open until the event loop runs it.
+                let db_weak = Arc::downgrade(&db);
+                drop(db);
+                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                    if let Some(db) = db_weak.upgrade() {
+                        finish_save_metadata(&ui, &db, &source, &render_ctx, entry_id, result);
+                    }
+                });
+            });
         },
     );
+}
+
+/// The UI half of the metadata save, run from the event loop once the worker's write
+/// has finished: the toast, the editor's dirty flag, the detail reload and the list /
+/// range refresh (the latter on its own worker, through
+/// [`refresh_after_library_change`], whose range handling preserves the cutter's
+/// narrowed range filters -- a metadata correction is not a request to clear them).
+fn finish_save_metadata(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    entry_id: i64,
+    result: Result<(), String>,
+) {
+    match result {
+        Ok(()) => {
+            show_toast(ui, "Metadata updated.", "success");
+            // When this is the design open in the editor, its file now lags the
+            // row: mark it unsaved so the next Save writes the edit.
+            if crate::gui::editor::native_io::mark_design_row_edited(entry_id) {
+                ui.global::<EditorModel>().set_is_dirty(true);
+            }
+            // The selection may have moved while the worker wrote; reloading the old
+            // row then would put its header over the newly selected design.
+            if i64::from(ui.global::<LibraryModel>().get_selected_entry_id()) == entry_id {
+                load_diagram_detail(ui, db, render_ctx, entry_id);
+            }
+            refresh_after_library_change(ui, db, source);
+        }
+        Err(e) => show_toast(ui, &format!("Metadata update failed: {e}"), "error"),
+    }
 }
 
 /// Deletes `entry_id`'s cached previews, tilt curves and solid extents after a metadata

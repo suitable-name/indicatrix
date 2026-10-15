@@ -133,7 +133,7 @@ component CmStepPanel inherits VerticalLayout {
     }
 
     Text {
-        text: "Indices (click one to tick it off)";
+        text: "Indices (Click One to Tick It Off)";
         font-size: 13px;
         font-weight: 600;
         color: Theme.text-muted;
@@ -171,7 +171,7 @@ component CmStepPanel inherits VerticalLayout {
                 ink: Theme.accent-amber;
             }
             if CuttingModeModel.notes_text != "": CmFact {
-                label: "Your note";
+                label: "Your Note";
                 value: CuttingModeModel.notes_text;
                 ink: Theme.accent-amber;
             }
@@ -205,7 +205,7 @@ component CmSchedule inherits Rectangle {
         content-width: self.width;
         content-height: root.count * root.row_h;
 
-        for row[i] in CuttingModeModel.schedule: Rectangle {
+        for row[i] in CuttingModeModel.schedule: rectangle-code := Rectangle {
             x: 0px;
             y: i * root.row_h;
             width: sv.content-width;
@@ -303,7 +303,7 @@ component CmStonePicture inherits Rectangle {
         source: SolidPreviewModel.image;
         image-fit: contain;
         accessible-role: AccessibleRole.image;
-        accessible-label: "The stone after this step";
+        accessible-label: "The Stone After This Step";
         accessible-description: CuttingModeModel.stone_caption;
     }
     if !SolidPreviewModel.has_solid: Text {
@@ -425,13 +425,13 @@ export component CuttingModeScreen inherits Rectangle {
             alignment: center;
             spacing: 2px;
             Text {
-                text: "Cutting mode";
+                text: "Cutting Mode";
                 font-size: 13px;
                 font-weight: 600;
                 color: Theme.text-muted;
             }
             Text {
-                text: CuttingModeModel.design_name != "" ? CuttingModeModel.design_name : "Untitled design";
+                text: CuttingModeModel.design_name != "" ? CuttingModeModel.design_name : "Untitled Design";
                 font-size: 20px;
                 font-weight: 600;
                 color: Theme.text-secondary;
@@ -492,7 +492,7 @@ export component CuttingModeScreen inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
         }
-        for row[i] in CuttingModeModel.schedule: Rectangle {
+        for row[i] in CuttingModeModel.schedule: rectangle-code-2 := Rectangle {
             x: parent.text_w + 12px + i * (parent.seg_w + 3px);
             y: i == CuttingModeModel.step_index ? 3px : 7px;
             width: parent.seg_w;
@@ -503,7 +503,7 @@ export component CuttingModeScreen inherits Rectangle {
             border-color: Theme.accent-cyan;
 
             accessible-role: AccessibleRole.button;
-            accessible-label: "Go to step " + (i + 1) + ", " + row.code;
+            accessible-label: "Go to Step "+ (i + 1) + ", " + row.code;
             accessible-action-default => { CuttingModeModel.jump_to(i); }
 
             TouchArea {
@@ -693,8 +693,8 @@ export component CuttingModeScreen inherits Rectangle {
                     enabled: CuttingModeModel.has_previous;
                     clicked => { CuttingModeModel.previous(); }
                 }
-                CmButton {
-                    text: CuttingModeModel.step_state == 1 ? "Mark not done" : "Mark step done";
+                cm-button-step-state := CmButton {
+                    text: CuttingModeModel.step_state == 1 ? "Mark Not Done" : "Mark Step Done";
                     hint: CuttingModeModel.step_state == 1
                         ? "Take the done mark back from this step, for example when you have to cut it again."
                         : "Mark this step as cut and remember it. Space or D marks it and goes on to the next step.";
@@ -736,7 +736,7 @@ export component CuttingModeScreen inherits Rectangle {
                     }
                 }
                 CmButton {
-                    text: "Keep my marks";
+                    text: "Keep My Marks";
                     hint: "Do not reset. Esc does the same.";
                     clicked => { CuttingModeModel.confirm_reset = false; }
                 }
@@ -748,7 +748,7 @@ export component CuttingModeScreen inherits Rectangle {
                 if !CuttingModeModel.confirm_reset: CmButton {
                     x: parent.width - self.width;
                     y: 0px;
-                    text: "Reset progress";
+                    text: "Reset Progress";
                     hint: "Remove every done mark of this design. You are asked to confirm first.";
                     icon: @image-url("../../icons/rotate-ccw.svg");
                     clicked => { CuttingModeModel.confirm_reset = true; }

@@ -94,14 +94,14 @@ fn main() {
         unique_rows.len()
     );
 
-    let with_cw = unique_rows.iter().filter(|r| r.cw_ratio.is_some()).count();
-    let with_pw = unique_rows.iter().filter(|r| r.pw_ratio.is_some()).count();
+    let with_crown_ratio = unique_rows.iter().filter(|r| r.cw_ratio.is_some()).count();
+    let with_pavilion_ratio = unique_rows.iter().filter(|r| r.pw_ratio.is_some()).count();
     let with_both = unique_rows
         .iter()
         .filter(|r| r.cw_ratio.is_some() && r.pw_ratio.is_some())
         .count();
     println!(
-        "  of those, {with_cw} have a printed cw_ratio, {with_pw} a printed pw_ratio, {with_both} both."
+        "  of those, {with_crown_ratio} have a printed cw_ratio, {with_pavilion_ratio} a printed pw_ratio, {with_both} both."
     );
     let no_asc_ratio_coverage = count_ratio_coverage_for_designs_without_asc(&conn);
     println!(

@@ -25,7 +25,7 @@ fn error_round_trips() {
 fn frame_message_round_trips_and_validates_payload_len() {
     let xyz_bytes = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
     let header = FrameHeader::for_payload(7, 64, 32, &xyz_bytes);
-    assert_eq!(header.payload_len, xyz_bytes.len() as u32);
+    assert_eq!(header.payload_len, u32::try_from(xyz_bytes.len()).unwrap());
     assert_eq!(header.request_id, 7);
 
     let mut buf = Vec::new();
@@ -65,7 +65,7 @@ fn frame_message_rejects_a_forged_payload_len() {
 fn preview_message_round_trips_and_validates_payload_len() {
     let xyz_bytes = vec![9u8; 24];
     let header = PreviewHeader::for_payload(7, 4, 2, 128, &xyz_bytes);
-    assert_eq!(header.payload_len, xyz_bytes.len() as u32);
+    assert_eq!(header.payload_len, u32::try_from(xyz_bytes.len()).unwrap());
 
     let mut buf = Vec::new();
     write_preview_message(&mut buf, &header, &xyz_bytes).unwrap();
@@ -699,7 +699,7 @@ fn v24_batch_events_are_appended_and_round_trip() {
         request_id: 6,
         item_id: 3,
         samples_done: 64,
-        payload_len: png.len() as u32,
+        payload_len: u32::try_from(png.len()).unwrap(),
     });
     let progress = StreamEvent::BatchItemProgress(BatchItemProgress {
         request_id: 6,
@@ -727,7 +727,10 @@ fn v24_batch_events_are_appended_and_round_trip() {
         (&batch_done, None),
     ] {
         assert_eq!(event.request_id(), Some(6));
-        assert_eq!(event.payload_len(), payload.map(|p| p.len() as u32));
+        assert_eq!(
+            event.payload_len(),
+            payload.map(|p| u32::try_from(p.len()).unwrap())
+        );
         let mut buf = Vec::new();
         write_stream_event(&mut buf, event, payload).unwrap();
         let (decoded, decoded_payload) = read_stream_event(&mut std::io::Cursor::new(buf)).unwrap();

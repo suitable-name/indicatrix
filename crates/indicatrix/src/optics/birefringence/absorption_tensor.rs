@@ -137,6 +137,10 @@ pub fn assigned_mode_alpha(tensor: &AbsorptionTensor3, e_mode_hat: Vec3) -> f32 
 /// ordinary there (no birefringence along the optic axis), and the `(k_hat, c_axis)`
 /// plane itself is undefined.
 #[must_use]
+#[expect(
+    clippy::similar_names,
+    reason = "n_o_hero/n_e_hero are the established ordinary/extraordinary index pair"
+)]
 pub fn assigned_mode_e_field_uniaxial(
     k_hat: Vec3,
     c_axis: Vec3,

@@ -161,9 +161,9 @@ fn concurrent_claim_local_still_partitions_the_budget_exactly() {
 
     let claimed: Vec<Vec<(u32, u32)>> = thread::scope(|s| {
         let mut handles = Vec::new();
-        for i in 0..4 {
+        for i in 0..4_u32 {
             let cursor = &cursor;
-            let want = 30 + i as u32 * 11;
+            let want = 30 + i * 11;
             handles.push(s.spawn(move || {
                 let mut mine = Vec::new();
                 while let Some(range) = cursor.claim_local(want) {

@@ -97,6 +97,10 @@ impl Design {
     /// [`Self::apply_edit`] without the schedule's concave check, which a batch runs once
     /// on its final state instead of on each of its edits (an inverse batch undoes the
     /// remap after the gear, and the order within a batch is the caller's).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match over the edit kinds, one arm per kind; a single line over the limit"
+    )]
     fn apply_edit_unchecked(&mut self, edit: Edit) -> Result<Edit, EditError> {
         let tier_count = self.tiers.len();
         match edit {
@@ -152,6 +156,10 @@ impl Design {
             Edit::SetMaterial { material } => {
                 let previous = std::mem::replace(&mut self.material, material);
                 Ok(Edit::SetMaterial { material: previous })
+            }
+            Edit::SetRenderEffects { effects } => {
+                let previous = std::mem::replace(&mut self.render_effects, effects.sanitised());
+                Ok(Edit::SetRenderEffects { effects: previous })
             }
             Edit::SetMeta {
                 headers,

@@ -20,11 +20,29 @@ use crate::model::performance::{
     Extreme, PerformanceMetric, all_global_extreme_columns, global_extreme_column_name,
 };
 use anyhow::{Context, Result};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// The column every cached artefact table (`diagram_previews`, `diagram_tilt_curves`)
 /// carries to record what its stored result was computed with.
 const PARAMS_FINGERPRINT_COLUMN: &str = "params_fingerprint";
+
+/// The `diagram_previews` column that marks a table as carrying the material provenance
+/// pair (`preview_girdle_mm`, `preview_material_source`).
+const PREVIEW_MATERIAL_SOURCE_COLUMN: &str = "preview_material_source";
+
+/// The entry ids whose catalogue row carries a native design file: a self-contained
+/// `.isdd` file, or one saved under the earlier `.indicatrix` extension (stored names
+/// are never rewritten, so both occur). Only such a file can name a material or a
+/// girdle diameter, which the previews and tilt curves now follow (see
+/// [`Database::migrate_preview_material_provenance`]). The removed overlay sidecar
+/// (`.indicatrix.toml`, `.gemcut.toml`) is not matched: nothing reads it any more, so
+/// re-rendering a design that carries only one could not change its preview.
+const DESIGN_FILE_ENTRY_IDS_SQL: &str = "
+    SELECT dd.entry_id
+    FROM attached_files af
+    JOIN diagram_details dd ON dd.id = af.detail_id
+    WHERE lower(af.name) LIKE '%.isdd'
+       OR lower(af.name) LIKE '%.indicatrix'";
 
 impl Database {
     /// Creates `diagram_previews` for a database created before cached preview
@@ -159,13 +177,39 @@ impl Database {
         reordered_sql: &str,
         carried_columns: &[String],
     ) -> Result<()> {
+        self.rebuild_adding_column(
+            table,
+            PARAMS_FINGERPRINT_COLUMN,
+            reordered_sql,
+            carried_columns,
+        )
+        .map(|_| ())
+    }
+
+    /// The rebuild behind [`Self::add_params_fingerprint_column`]: gives `table` the
+    /// column `new_column` when it lacks it, by rebuilding it from `reordered_sql` and
+    /// copying `carried_columns` across unchanged. `Ok(true)` when the rebuild ran,
+    /// `Ok(false)` when the table already had the column and was left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `table` or a column name is not a valid SQL identifier, or
+    /// the transaction or any statement in it fails.
+    fn rebuild_adding_column(
+        &self,
+        table: &str,
+        new_column: &str,
+        reordered_sql: &str,
+        carried_columns: &[String],
+    ) -> Result<bool> {
         let table = sql_identifier(table)?;
-        if Self::column_exists(&self.conn, table, PARAMS_FINGERPRINT_COLUMN)? {
-            debug!("{table}.{PARAMS_FINGERPRINT_COLUMN} already present; skipping.");
-            return Ok(());
+        let new_column = sql_identifier(new_column)?;
+        if Self::column_exists(&self.conn, table, new_column)? {
+            debug!("{table}.{new_column} already present; skipping.");
+            return Ok(false);
         }
 
-        info!("Adding {table}.{PARAMS_FINGERPRINT_COLUMN}...");
+        info!("Adding {table}.{new_column}...");
         let staging = format!("{table}__reordered");
         let staging = sql_identifier(&staging)?;
         let columns = carried_columns
@@ -173,9 +217,10 @@ impl Database {
             .map(|column| sql_identifier(column))
             .collect::<Result<Vec<_>>>()?
             .join(", ");
-        let tx = self.conn.unchecked_transaction().with_context(|| {
-            format!("Failed to start the {table}.{PARAMS_FINGERPRINT_COLUMN} transaction")
-        })?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .with_context(|| format!("Failed to start the {table}.{new_column} transaction"))?;
         // A fossil staging table from a run that was killed mid-rebuild would make the
         // CREATE below fail.
         tx.execute_batch(&format!("DROP TABLE IF EXISTS {staging};"))
@@ -187,12 +232,90 @@ impl Database {
              DROP TABLE {table};
              ALTER TABLE {staging} RENAME TO {table};"
         ))
-        .with_context(|| format!("Failed to rebuild {table} with {PARAMS_FINGERPRINT_COLUMN}"))?;
-        tx.commit().with_context(|| {
-            format!("Failed to commit the {table}.{PARAMS_FINGERPRINT_COLUMN} rebuild")
-        })?;
-        info!("{table}.{PARAMS_FINGERPRINT_COLUMN} added.");
-        Ok(())
+        .with_context(|| format!("Failed to rebuild {table} with {new_column}"))?;
+        tx.commit()
+            .with_context(|| format!("Failed to commit the {table}.{new_column} rebuild"))?;
+        info!("{table}.{new_column} added.");
+        Ok(true)
+    }
+
+    /// Gives `diagram_previews` the material provenance pair, `preview_girdle_mm` and
+    /// `preview_material_source` (see `DIAGRAM_PREVIEWS_TABLE_SQL`), when it lacks them,
+    /// by the same rebuild that put `params_fingerprint` ahead of the PNG blobs. Every
+    /// existing row is kept with both columns `NULL`, which reads as "no size, a
+    /// refractive-index source": the fingerprint a scan builds from such a row is exactly
+    /// the one it stored before the columns existed.
+    ///
+    /// Previews and tilt curves rendered before this change followed the design's
+    /// refractive index alone, so a design whose own file names a material or a girdle
+    /// diameter has a cached result in another stone than the one the editor and the
+    /// exports show. A scan cannot tell which designs those are without opening every
+    /// design file, so on the one run that adds the columns every design that carries a
+    /// native design file (see `DESIGN_FILE_ENTRY_IDS_SQL`) has its stored fingerprint
+    /// cleared, in both cache tables: the next scan lists it as outdated and it is
+    /// rendered once more, now in its own material at its own size. That step is best
+    /// effort and runs ahead of the rebuild (a failure is logged, and the columns are
+    /// added regardless); it only ever clears fingerprints, so repeating it after an
+    /// interrupted rebuild changes nothing it should not.
+    ///
+    /// Idempotent via the column-presence gate. Runs after
+    /// [`Self::migrate_diagram_tilt_curves_table`], so both cache tables exist, and before
+    /// [`Self::migrate_blob_columns_last`], like every other column add.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the rebuild fails.
+    pub(in crate::db::sqlite) fn migrate_preview_material_provenance(&self) -> Result<()> {
+        if Self::column_exists(
+            &self.conn,
+            "diagram_previews",
+            PREVIEW_MATERIAL_SOURCE_COLUMN,
+        )? {
+            debug!("diagram_previews.{PREVIEW_MATERIAL_SOURCE_COLUMN} already present; skipping.");
+            return Ok(());
+        }
+        self.clear_design_file_fingerprints();
+        let carried: Vec<String> = [
+            "entry_id",
+            "preview_material",
+            "preview_generated_at",
+            PARAMS_FINGERPRINT_COLUMN,
+            "preview_front",
+            "preview_top",
+        ]
+        .map(str::to_string)
+        .into();
+        self.rebuild_adding_column(
+            "diagram_previews",
+            PREVIEW_MATERIAL_SOURCE_COLUMN,
+            DIAGRAM_PREVIEWS_REORDERED_TABLE_SQL,
+            &carried,
+        )
+        .map(|_| ())
+    }
+
+    /// Sets `params_fingerprint` to `NULL` in both cache tables for every design that
+    /// carries a native design file ([`DESIGN_FILE_ENTRY_IDS_SQL`]), so the staleness
+    /// scans list them as outdated. Best effort: a failure is logged and skipped.
+    fn clear_design_file_fingerprints(&self) {
+        for table in ["diagram_previews", "diagram_tilt_curves"] {
+            let cleared = self.conn.execute(
+                &format!(
+                    "UPDATE {table} SET {PARAMS_FINGERPRINT_COLUMN} = NULL
+                     WHERE entry_id IN ({DESIGN_FILE_ENTRY_IDS_SQL})"
+                ),
+                [],
+            );
+            match cleared {
+                Ok(count) => info!(
+                    "Marked {count} {table} row(s) of designs with a design file outdated: \
+                     they are redrawn in the design's own material and size."
+                ),
+                Err(e) => {
+                    warn!("Could not mark the {table} rows of designs with a design file: {e}");
+                }
+            }
+        }
     }
 
     /// Creates `diagram_solid_extents` for a database created before the Rough Planner

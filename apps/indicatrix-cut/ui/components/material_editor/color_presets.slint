@@ -21,7 +21,7 @@ component ColorSwatch inherits Rectangle {
     border-color: swatch_focus.has-focus ? Theme.accent-cyan-hover : (root.chosen ? Theme.accent-cyan : root.edge);
 
     accessible-role: AccessibleRole.radio-button;
-    accessible-label: root.label + " body colour";
+    accessible-label: root.label + " body color";
     accessible-description: root.hint;
     accessible-checkable: true;
     accessible-checked: root.chosen;
@@ -85,7 +85,7 @@ export component MaterialColorPresets inherits VerticalLayout {
 
     Rectangle {
         height: presets_caption.preferred-height;
-        Tooltip { text: @markdown("The colour of the stone body and how much light it lets through. Pick a swatch, or use Pick below for any colour."); }
+        Tooltip { text: @markdown("The color of the stone body and how much light it lets through. Pick a swatch, or use Pick below for any color."); }
         presets_caption := Text { text: "Gem Body Color & Transmission:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
     }
 
@@ -95,7 +95,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 0: Clear / White
         ColorSwatch {
             label: "Clear";
-            hint: "No body colour: a colourless stone.";
+            hint: "No body color: a colorless stone.";
             fill: root.shown == 0 ? Theme.swatch-clear : Theme.swatch-clear-off;
             ink: root.shown == 0 ? Theme.text-on-accent : Theme.text-secondary;
             chosen: root.shown == 0;
@@ -105,7 +105,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 1: Sapphire Blue
         ColorSwatch {
             label: "Blue";
-            hint: "A sapphire blue body colour.";
+            hint: "A sapphire blue body color.";
             fill: #1e40af;
             edge: #1d4ed8;
             chosen: root.shown == 1;
@@ -115,7 +115,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 2: Ruby Red
         ColorSwatch {
             label: "Red";
-            hint: "A ruby red body colour.";
+            hint: "A ruby red body color.";
             fill: #be123c;
             edge: #e11d48;
             chosen: root.shown == 2;
@@ -125,7 +125,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 3: Emerald Green
         ColorSwatch {
             label: "Green";
-            hint: "An emerald green body colour.";
+            hint: "An emerald green body color.";
             fill: #047857;
             edge: #059669;
             chosen: root.shown == 3;
@@ -135,7 +135,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 4: Tanzanite Violet
         ColorSwatch {
             label: "Violet";
-            hint: "A tanzanite violet body colour.";
+            hint: "A tanzanite violet body color.";
             fill: #6b21a8;
             edge: #7c3aed;
             chosen: root.shown == 4;
@@ -145,7 +145,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 5: Canary Yellow
         ColorSwatch {
             label: "Yellow";
-            hint: "A canary yellow body colour.";
+            hint: "A canary yellow body color.";
             fill: #b45309;
             edge: #d97706;
             chosen: root.shown == 5;
@@ -155,7 +155,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 6: Pink Spinel
         ColorSwatch {
             label: "Pink";
-            hint: "A pink spinel body colour.";
+            hint: "A pink spinel body color.";
             fill: #be185d;
             edge: #db2777;
             chosen: root.shown == 6;
@@ -165,7 +165,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 7: Teal / Zircon
         ColorSwatch {
             label: "Teal";
-            hint: "A teal body colour, like blue zircon.";
+            hint: "A teal body color, like blue zircon.";
             fill: #0891b2;
             edge: #06b6d4;
             chosen: root.shown == 7;
@@ -175,7 +175,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 8: Amber Topaz
         ColorSwatch {
             label: "Amber";
-            hint: "An amber topaz body colour.";
+            hint: "An amber topaz body color.";
             fill: #d97706;
             edge: #f59e0b;
             chosen: root.shown == 8;
@@ -192,7 +192,7 @@ export component MaterialColorPresets inherits VerticalLayout {
         // preset by mistake), not just a display-only state.
         ColorSwatch {
             label: "Keep";
-            hint: "Keep the colour this material was saved with. It matches none of the swatches.";
+            hint: "Keep the color this material was saved with. It matches none of the swatches.";
             fill: Theme.swatch-keep;
             ink: root.shown == 9 ? Theme.text-primary : Theme.text-secondary;
             chosen: root.shown == 9;

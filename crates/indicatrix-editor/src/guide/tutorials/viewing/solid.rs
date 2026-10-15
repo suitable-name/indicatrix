@@ -36,7 +36,7 @@ const START_TIERS: usize = 4;
 fn solid_picking() -> Guide {
     Guide::new(
         "viewing-solid-picking",
-        "Picking facets in the Solid view",
+        "Picking Facets in the Solid View",
         "Point at a facet to read its tier, angle and index, then click it to select its whole tier.",
         GuideCategory::Viewing,
     )
@@ -128,7 +128,7 @@ fn solid_picking() -> Guide {
 fn drag_handles() -> Guide {
     Guide::new(
         "viewing-drag-handles",
-        "Drag handles",
+        "Drag Handles",
         "Change a tier by dragging its angle (A), depth (D) and index (I) handles on the stone.",
         GuideCategory::Viewing,
     )
@@ -247,7 +247,7 @@ fn drag_handles() -> Guide {
 fn slice() -> Guide {
     Guide::new(
         "viewing-slice",
-        "Slice: cut a facet with the mouse",
+        "Slice: Cut a Facet with the Mouse",
         "Draw a line across the stone, cut it in with the depth handle and keep it as a new tier.",
         GuideCategory::Viewing,
     )
@@ -364,7 +364,7 @@ fn slice() -> Guide {
 fn diagram() -> Guide {
     Guide::new(
         "viewing-diagram",
-        "The Diagram view",
+        "The Diagram View",
         "Read the crown, pavilion and profile panels, pick a facet and drag its handle on the flat diagram.",
         GuideCategory::Viewing,
     )
@@ -516,7 +516,7 @@ fn cut_slider() -> Guide {
         )
         .actions([
             "While it is short of Finished the drag handles are hidden.",
-            "Live Render follows the cut, with a small amber badge and a Show finished button.",
+            "Live Render follows the cut, with a small amber badge and a Show Finished button.",
             "Exports, the tilt video and the tilt curves always use the finished stone.",
         ])
         .why("Every control is unlocked again."),

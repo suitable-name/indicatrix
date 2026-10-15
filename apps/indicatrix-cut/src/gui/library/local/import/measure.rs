@@ -31,7 +31,7 @@ pub fn apply_measured_metadata(detail: &mut FacetingDiagramDetail) {
 /// Records a design file's concave tiers on `detail`: one tool-carrying row per tier
 /// appended to the angle table (facet line in the flat rows' own format, plus the
 /// formatted tool line), and the `concave_tiers` / `concave_facets` counts the
-/// library's `has_concave` filter and the sync stamp read. Read from the `.indicatrix`
+/// library's `has_concave` filter and the sync stamp read. Read from the `.isdd`
 /// attachment, the design of record, so every writer that attaches one (import, save
 /// write-back) records the same thing. A design without concave tiers is left exactly
 /// as it was (no rows, both counts `0`). Runs after the measurement, which must see
@@ -58,7 +58,7 @@ pub fn apply_concave_rows(detail: &mut FacetingDiagramDetail) {
     let first = detail.angle_settings_table.len();
     for (i, tier) in loaded.design.concave_tiers.iter().enumerate() {
         detail.angle_settings_table.push(AngleSetting {
-            order_index: (first + i) as u32,
+            order_index: u32::try_from(first + i).expect("tier row count fits u32"),
             facet: tier.name.clone(),
             angle: format!("{}\u{b0}", tier.angle_deg),
             index: tier
@@ -71,9 +71,11 @@ pub fn apply_concave_rows(detail: &mut FacetingDiagramDetail) {
             tool: Some(tier.tool.code().to_owned()),
             tool_line: Some(indicatrix_editor::view_model::rows::concave_tool_line(tier)),
         });
-        detail.concave_facets += tier.indices.len() as u32;
+        detail.concave_facets +=
+            u32::try_from(tier.indices.len()).expect("facet index count fits u32");
     }
-    detail.concave_tiers = loaded.design.concave_tiers.len() as u32;
+    detail.concave_tiers =
+        u32::try_from(loaded.design.concave_tiers.len()).expect("tier count fits u32");
 }
 
 /// The measurement half of [`apply_measured_metadata`], over the flat rows.

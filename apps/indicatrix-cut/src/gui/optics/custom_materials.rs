@@ -28,7 +28,7 @@ use indicatrix_cut_core::{
 use indicatrix_editor::guide::viewing_events as events;
 use indicatrix_vault::db::sqlite::Database;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 // The material editor's color helpers; `physics_ui` reaches them through this module.
 pub(super) use save::{
@@ -36,7 +36,7 @@ pub(super) use save::{
 };
 use save::{
     CustomMaterialForm, SavedCustomMaterial, apply_custom_material_delete,
-    apply_custom_material_save, built_in_name_collision,
+    apply_custom_material_save, built_in_name_collision, restore_trace,
 };
 
 /// Wires up the save/delete custom gemstone material callbacks. Split out of
@@ -98,9 +98,8 @@ fn push_selected_custom_material_fields(
     db: &Arc<Mutex<Database>>,
     selected_name: &str,
 ) {
-    // Zoning builds: the dialog's read-only "Zones..." list of the selected material (cleared for a
-    // plain or built-in one).
-    #[cfg(feature = "zoning")]
+    // The dialog's read-only "Zones..." list of the selected material (cleared for a
+    // plain material; a built-in with zones, Ametrine, lists its zones read-only).
     crate::gui::rough_colour::material_zones::push_zone_rows(ui, db, selected_name);
     let row = db
         .lock()
@@ -213,11 +212,15 @@ fn setup_selected_material_prefill_callback(ui: &MainWindow, db: &Arc<Mutex<Data
 }
 
 /// The success half of `on_save_custom_material`'s result handling: refreshing the
-/// material combo/crystal-axis availability, syncing the Render Material dropdown when
+/// material combo/crystal-axis availability, syncing the viewport material selection when
 /// the save also applied, and the resulting toast. Split out of
 /// [`setup_custom_material_callbacks`] purely to keep that function under clippy's
 /// function-length lint.
-fn handle_saved_custom_material(ui: &MainWindow, outcome: &SavedCustomMaterial) {
+fn handle_saved_custom_material(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    outcome: SavedCustomMaterial,
+) {
     refresh_material_options(ui, &outcome.custom_list);
     // A plain "Save" leaves the live render's material untouched, so the
     // crystal-axis control (which tracks that selection) is only refreshed when the
@@ -226,27 +229,26 @@ fn handle_saved_custom_material(ui: &MainWindow, outcome: &SavedCustomMaterial) 
         ui.global::<SettingsModel>()
             .set_c_axis_override_available(c_axis_available);
     }
-    if outcome.applied_to_live_render {
-        // Same two follow-ups `on_material_changed`
-        // (`gui::render::material_quality::setup_material_changed_callback`) does for
-        // a hand-picked material: unlink "linked to design" (an "apply" IS the
-        // independent choice that property exists to suppress -- left on, the next
-        // editor refresh would put the design's own material straight back), and keep
-        // the Render Material dropdown's own displayed selection in sync with what
-        // `apply_custom_material_save` just wrote into `RenderContext::material_name`
-        // -- without this the dropdown kept showing whatever was selected before
-        // "Save & Apply", even though the trace itself had already moved on.
-        let viewport = ui.global::<ViewportModel>();
-        if viewport.get_viewport_material_linked() {
-            viewport.set_viewport_material_linked(false);
+    let applied = outcome.applied_to_live_render && {
+        // "Save & Apply" is an explicit choice of the stone's material, so it is the DESIGN's
+        // material, set as ONE undoable design edit -- never a hidden preview (a preview is only
+        // started from the Stone tab's "Preview as..."). With a library design on the viewport
+        // there is no design to edit, so it becomes the library view selection. Either way the
+        // material list's displayed selection follows what `apply_custom_material_save` just
+        // wrote into `RenderContext::material_name`.
+        // Saved, but a busy design refuses the apply (toasted): do not claim "and applied".
+        // Called with the render context unlocked.
+        let busy =
+            crate::gui::render::material::apply_explicit_material(ui, &outcome.trimmed_name, None)
+                == crate::gui::render::material::ExplicitApply::Busy;
+        if busy && let Some(previous) = outcome.previous_trace {
+            // The save wrote the new material into the trace before asking the design; the
+            // design refused, so the picture must keep tracing what the design has.
+            let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
+            restore_trace(&mut ctx, previous);
         }
-        if let Some(index) = crate::gui::startup_settings::find_option_index(
-            &viewport.get_material_options(),
-            &outcome.trimmed_name,
-        ) {
-            viewport.set_selected_material_index(index);
-        }
-    }
+        !busy
+    };
     // This toast carries no biaxial-vs-GPU caveat: `gpu_supported()` is
     // unconditionally `true` since the `BiaxialIndicatrix` WGSL port (see its own doc
     // comment), so a biaxial custom material renders on the GPU like any other.
@@ -259,11 +261,7 @@ fn handle_saved_custom_material(ui: &MainWindow, outcome: &SavedCustomMaterial) 
     } else {
         "Saved"
     };
-    let suffix = if outcome.applied_to_live_render {
-        " and applied"
-    } else {
-        ""
-    };
+    let suffix = if applied { " and applied" } else { "" };
     // Confirms the SG the cutter typed actually made it all the way through to the
     // carat-weight estimate's own side channel -- see `outcome.specific_gravity`'s own
     // doc comment for why this is read back rather than echoed from the form.
@@ -271,6 +269,12 @@ fn handle_saved_custom_material(ui: &MainWindow, outcome: &SavedCustomMaterial) 
         .specific_gravity
         .map(|sg| format!(" (SG {sg:.2})"))
         .unwrap_or_default();
+    // A failed zone update replaces the success toast: the material is saved and listed, but the
+    // cutter must hear that its zones were not.
+    if let Some(warning) = &outcome.zones_warning {
+        show_toast(ui, warning, "warning");
+        return;
+    }
     show_toast(
         ui,
         &format!(
@@ -319,6 +323,11 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
                 .unwrap_or_default();
             // Blank text is the plain two-slider path; anything else is a typed model.
             let typed_coefficients = !dispersion_model_json.trim().is_empty();
+            // The zones the dialog showed and its "relative to stone" checkbox
+            // ride beside the arguments the same way (read by the save below).
+            if let Some(ui) = ui_weak_save.upgrade() {
+                crate::gui::rough_colour::material_zones::stash_dialog_choice(&ui);
+            }
             // The actual save (or its validation failure) always runs, whether or
             // not the window handle below still upgrades -- only the toast/UI
             // refresh afterward is conditional on that, matching every other
@@ -347,7 +356,7 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
             };
             match result {
                 Ok(outcome) => {
-                    handle_saved_custom_material(&ui, &outcome);
+                    handle_saved_custom_material(&ui, &render_ctx_save, outcome);
                     // A tutorial step may wait for a material to be saved, and one for a
                     // material saved from typed coefficients.
                     raise(&ui, events::CUSTOM_MATERIAL_SAVED);

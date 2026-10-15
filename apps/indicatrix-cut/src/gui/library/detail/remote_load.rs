@@ -2,7 +2,7 @@
 //! worker's library.
 
 use super::{
-    planes::{ReconstructedPlanesInput, apply_reconstructed_planes},
+    planes::{DesignFileMaterial, ReconstructedPlanesInput, apply_reconstructed_planes},
     shared::{
         catalogue_material_guess, format_optional_proportion, sides_from_rows, standard_codes,
     },
@@ -132,7 +132,7 @@ fn apply_design_record_to_ui(
 ) {
     let is_local = record.url.starts_with("local://");
     let detail_data = DiagramDetailData {
-        id: record.entry_id as i32,
+        id: i32::try_from(record.entry_id).unwrap_or(i32::MAX),
         title: record.title.clone().into(),
         url: record.url.clone().into(),
         designer: record.designer_info.clone().unwrap_or_default().into(),
@@ -198,7 +198,7 @@ fn apply_design_record_to_ui(
         .zip(sides)
         .zip(codes)
         .map(|((a, side), code)| AngleItem {
-            order_idx: a.order_index as i32,
+            order_idx: a.order_index.cast_signed(),
             side,
             code: code.into(),
             facet: a.facet.clone().into(),
@@ -226,7 +226,7 @@ fn apply_design_record_to_ui(
     ui.global::<LibraryModel>()
         .set_current_files(ModelRc::new(VecModel::from(file_items)));
     ui.global::<LibraryModel>()
-        .set_selected_entry_id(record.entry_id as i32);
+        .set_selected_entry_id(i32::try_from(record.entry_id).unwrap_or(i32::MAX));
 
     apply_reconstructed_planes(
         ui,
@@ -249,6 +249,10 @@ fn apply_design_record_to_ui(
             // (`indicatrix-net`/`indicatrix-worker`), out of scope for this crate
             // alone.
             real_design: None,
+            // No design file here either, so no material or girdle diameter of its own:
+            // the persisted material and the refractive-index rules apply, at the default
+            // width.
+            design_material: DesignFileMaterial::default(),
         },
     );
 

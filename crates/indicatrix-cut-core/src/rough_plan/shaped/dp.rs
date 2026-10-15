@@ -111,7 +111,7 @@ impl ShapedOrderDp {
                 break;
             }
             let a_prime = a - g_a;
-            let ra_idx = grid.range_index(ax, a_prime, a);
+            let slab_rng = grid.range_index(ax, a_prime, a);
 
             let mut bars = Vec::new();
             let mut b = self.gb;
@@ -119,14 +119,14 @@ impl ShapedOrderDp {
 
             while b > 0 && rem_b > 0 {
                 let slab_offset =
-                    ra_idx * (self.gb + 1) * (self.ks + 1) + b * (self.ks + 1) + rem_b;
+                    slab_rng * (self.gb + 1) * (self.ks + 1) + b * (self.ks + 1) + rem_b;
                 let g_b = self.slab_arg_g[slab_offset] as usize;
                 let m_b = self.slab_arg_m[slab_offset] as usize;
                 if g_b == 0 || m_b == 0 || g_b > b || m_b > rem_b {
                     break;
                 }
                 let b_prime = b - g_b;
-                let rb_idx = grid.range_index(bx, b_prime, b);
+                let bar_rng = grid.range_index(bx, b_prime, b);
 
                 let mut leaves = Vec::new();
                 let mut c = self.gc;
@@ -136,18 +136,18 @@ impl ShapedOrderDp {
                     let pb = grid.range_count(bx);
                     let bar_stride = (self.gc + 1) * (self.kb + 1);
                     let bar_offset =
-                        (ra_idx * pb + rb_idx) * bar_stride + c * (self.kb + 1) + rem_c;
+                        (slab_rng * pb + bar_rng) * bar_stride + c * (self.kb + 1) + rem_c;
                     let g_c = self.bar_arg[bar_offset] as usize;
                     if g_c == 0 || g_c > c {
                         break;
                     }
                     let c_prime = c - g_c;
-                    let rc_idx = grid.range_index(cx, c_prime, c);
+                    let leaf_rng = grid.range_index(cx, c_prime, c);
 
                     let mut r_canon = [0; 3];
-                    r_canon[ax] = ra_idx;
-                    r_canon[bx] = rb_idx;
-                    r_canon[cx] = rc_idx;
+                    r_canon[ax] = slab_rng;
+                    r_canon[bx] = bar_rng;
+                    r_canon[cx] = leaf_rng;
 
                     let t_idx = table.index(r_canon[0], r_canon[1], r_canon[2]);
                     leaves.push(Leaf {
@@ -215,6 +215,11 @@ impl ShapedOrderDp {
     }
 }
 
+/// A stored argmax (a run length or a piece count) as one byte.
+fn arg_byte(value: usize) -> u8 {
+    u8::try_from(value).expect("a run is at most 20 cells and a count at most 99 pieces")
+}
+
 struct DpDims {
     ord: [usize; 3],
     cells: [usize; 3],
@@ -249,11 +254,11 @@ fn fill_bar_table(
             return false;
         }
         for ra_end in (ra_start + 1)..=ga {
-            let ra_idx = grid.range_index(ax, ra_start, ra_end);
+            let slab_rng = grid.range_index(ax, ra_start, ra_end);
             for rb_start in 0..gb {
                 for rb_end in (rb_start + 1)..=gb {
-                    let rb_idx = grid.range_index(bx, rb_start, rb_end);
-                    let bar_pair_idx = ra_idx * pb + rb_idx;
+                    let bar_rng = grid.range_index(bx, rb_start, rb_end);
+                    let bar_pair_idx = slab_rng * pb + bar_rng;
 
                     t_buf.fill(NEG);
                     t_buf[0] = 0.0;
@@ -266,11 +271,11 @@ fn fill_bar_table(
                                 let c_prime = c - g;
                                 let prev = t_buf[c_prime * (dims.kb + 1) + n - 1];
                                 if prev > NEG {
-                                    let rc_idx = grid.range_index(cx, c_prime, c);
+                                    let leaf_rng = grid.range_index(cx, c_prime, c);
                                     let mut r_canon = [0; 3];
-                                    r_canon[ax] = ra_idx;
-                                    r_canon[bx] = rb_idx;
-                                    r_canon[cx] = rc_idx;
+                                    r_canon[ax] = slab_rng;
+                                    r_canon[bx] = bar_rng;
+                                    r_canon[cx] = leaf_rng;
                                     let v = table.value(r_canon[0], r_canon[1], r_canon[2]);
                                     if v > NEG {
                                         let cand = prev + v;
@@ -283,7 +288,7 @@ fn fill_bar_table(
                             }
                             let offset = c * (dims.kb + 1) + n;
                             t_buf[offset] = best;
-                            bar_arg[bar_pair_idx * bar_stride + offset] = best_g as u8;
+                            bar_arg[bar_pair_idx * bar_stride + offset] = arg_byte(best_g);
                         }
                     }
 
@@ -318,7 +323,7 @@ fn fill_slab_table(
             return false;
         }
         for ra_end in (ra_start + 1)..=ga {
-            let ra_idx = grid.range_index(ax, ra_start, ra_end);
+            let slab_rng = grid.range_index(ax, ra_start, ra_end);
 
             s_buf.fill(NEG);
             s_buf[0] = 0.0;
@@ -331,8 +336,8 @@ fn fill_slab_table(
 
                     for g in 1..=b {
                         let b_prime = b - g;
-                        let rb_idx = grid.range_index(bx, b_prime, b);
-                        let bar_pair_idx = ra_idx * pb + rb_idx;
+                        let bar_rng = grid.range_index(bx, b_prime, b);
+                        let bar_pair_idx = slab_rng * pb + bar_rng;
 
                         for m in 1..=n.min(dims.kb) {
                             let prev = s_buf[b_prime * (dims.ks + 1) + n - m];
@@ -350,13 +355,13 @@ fn fill_slab_table(
 
                     let offset = b * (dims.ks + 1) + n;
                     s_buf[offset] = best;
-                    slab_arg_g[ra_idx * slab_stride + offset] = best_g as u8;
-                    slab_arg_m[ra_idx * slab_stride + offset] = best_m as u8;
+                    slab_arg_g[slab_rng * slab_stride + offset] = arg_byte(best_g);
+                    slab_arg_m[slab_rng * slab_stride + offset] = arg_byte(best_m);
                 }
             }
 
             for m in 1..=dims.ks {
-                slab_vals[ra_idx * (dims.ks + 1) + m] = s_buf[gb * (dims.ks + 1) + m];
+                slab_vals[slab_rng * (dims.ks + 1) + m] = s_buf[gb * (dims.ks + 1) + m];
             }
         }
     }
@@ -385,11 +390,11 @@ fn fill_root_table(
 
             for g in 1..=a {
                 let a_prime = a - g;
-                let ra_idx = grid.range_index(ax, a_prime, a);
+                let slab_rng = grid.range_index(ax, a_prime, a);
 
                 for m in 1..=n.min(dims.ks) {
                     let prev = bufs.table[a_prime * root_stride + n - m];
-                    let s_val = slab_vals[ra_idx * (dims.ks + 1) + m];
+                    let s_val = slab_vals[slab_rng * (dims.ks + 1) + m];
                     if prev > NEG && s_val > NEG {
                         let cand = prev + s_val;
                         if cand > best {
@@ -403,8 +408,8 @@ fn fill_root_table(
 
             let offset = a * root_stride + n;
             bufs.table[offset] = best;
-            bufs.arg_g[offset] = best_g as u8;
-            bufs.arg_m[offset] = best_m as u8;
+            bufs.arg_g[offset] = arg_byte(best_g);
+            bufs.arg_m[offset] = arg_byte(best_m);
         }
     }
     true

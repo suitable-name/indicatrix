@@ -62,6 +62,10 @@ pub(super) struct ChannelTransmissionInputs {
     pub(super) incident_stokes_k: StokesVector,
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "s/p polarisation pairs (t_s_k/t_p_k, r_s_k/r_p_k) are the established Fresnel names"
+)]
 pub(super) fn compute_channel_transmission(
     inputs: &ChannelTransmissionInputs,
 ) -> (StokesVector, f32) {

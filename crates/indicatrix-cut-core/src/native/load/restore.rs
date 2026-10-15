@@ -1,10 +1,9 @@
-//! The helpers that restore per-tier state from a native file's tier tables onto a
+//! The helpers that restore per-tier state from a design file's tier tables onto a
 //! freshly built [`Design`]: notes, cheater offsets, ids, targets, relations and concave
-//! tiers. Shared by [`load_paired`], [`load_native_only`] and the self-contained design
-//! file loader. Split from the parent module so the file stays readable; the functions
-//! are unchanged.
+//! tiers. Used by the design file loader ([`crate::native::design_from_file`]). Split
+//! from the parent module so the file stays readable.
 
-use super::{LoadPairedError, MaterialResolution};
+use super::MaterialResolution;
 use crate::{
     design::{ConstraintTier, Design, RelationError, TierId, TierRelation},
     native::convert::{
@@ -13,9 +12,6 @@ use crate::{
 };
 use indicatrix_formats::native::{ConcaveTierTable, NativeTierTarget, TierTable};
 use std::collections::{BTreeMap, BTreeSet};
-
-#[cfg(doc)]
-use super::{TierOverlay, load_native_only, load_paired};
 
 /// [`MaterialResolution`]'s own computation -- see that type's doc comment for the
 /// heuristic and its limits.
@@ -36,11 +32,9 @@ pub(in crate::native) fn material_resolution_of(name: Option<&str>) -> MaterialR
     }
 }
 
-/// Collects [`Design::tier_notes`] from a draft save's own `tiers` array, keyed by
-/// array position -- the draft counterpart to the non-draft branch's per-index
-/// `saved.note` read in [`load_paired`] itself. Takes a reference (not ownership)
-/// since the caller ([`load_paired`]) still needs to move `native_tiers` itself into
-/// [`draft_tiers_from_native`] afterward.
+/// Collects [`Design::tier_notes`] from a file's `tiers` array, keyed by array
+/// position. Takes a reference (not ownership) since the caller still needs to move
+/// the tier tables themselves into the tier list afterward.
 pub(in crate::native) fn tier_notes_from_native(
     native_tiers: &[TierTable],
 ) -> BTreeMap<usize, String> {
@@ -51,10 +45,8 @@ pub(in crate::native) fn tier_notes_from_native(
         .collect()
 }
 
-/// Collects [`Design::cheater_offsets_deg`] from a draft save's own `tiers` array,
-/// keyed by array position -- the draft counterpart to the non-draft branch's
-/// per-index `saved.cheater_offset_deg` read in [`load_paired`] itself. Exactly
-/// [`tier_notes_from_native`]'s own shape, one field over.
+/// Collects [`Design::cheater_offsets_deg`] from a file's `tiers` array, keyed by
+/// array position. Exactly [`tier_notes_from_native`]'s own shape, one field over.
 pub(in crate::native) fn cheater_offsets_from_native(
     native_tiers: &[TierTable],
 ) -> BTreeMap<usize, f64> {
@@ -106,17 +98,12 @@ pub(in crate::native) fn raw_tier_targets_from_native(
 /// already claims the very next time a tier is added.
 ///
 /// `design.tier_ids` is replaced wholesale (not patched position by position)
-/// since a draft/self-contained load's `design.tiers` was itself just rebuilt
-/// wholesale from this exact tier list and may not even be the length whatever
-/// constructor built `design` first assumed.
+/// since the load's `design.tiers` was itself just rebuilt wholesale from this exact
+/// tier list and may not even be the length whatever constructor built `design`
+/// first assumed.
 ///
-/// `design.tier_targets` is restored from `raw_targets` only when `apply_targets`
-/// is `true` -- a draft/self-contained load (no fingerprint concept at all) and a
-/// clean-fingerprint paired load always pass `true`; a paired load with a
-/// mismatched fingerprint (and no override) passes `false`, since a
-/// [`crate::design::TierTarget`] feeds the solver exactly like `constraint` does
-/// and is only meaningful paired with the exact `.asc` content it was saved
-/// against -- see [`load_paired`]'s own doc comment.
+/// `design.tier_targets` is restored from `raw_targets`, each keyed by the id its
+/// tier ended up with.
 ///
 /// `raw_ids`/`raw_targets`/`design.tiers` must all be the same length, in the
 /// same order -- the same "tier counts agree" precondition every other
@@ -125,7 +112,6 @@ pub(in crate::native) fn apply_tier_ids_and_targets(
     design: &mut Design,
     raw_ids: Vec<Option<u64>>,
     raw_targets: Vec<Option<NativeTierTarget>>,
-    apply_targets: bool,
 ) {
     debug_assert_eq!(design.tiers.len(), raw_ids.len());
     debug_assert_eq!(raw_ids.len(), raw_targets.len());
@@ -143,17 +129,11 @@ pub(in crate::native) fn apply_tier_ids_and_targets(
                 .map_or_else(|| design.allocate_tier_id(), TierId)
         })
         .collect();
-    design.tier_targets = if apply_targets {
-        raw_targets
-            .into_iter()
-            .zip(&ids)
-            .filter_map(|(maybe_target, &id)| {
-                maybe_target.map(|t| (id, tier_target_from_native(t)))
-            })
-            .collect()
-    } else {
-        BTreeMap::new()
-    };
+    design.tier_targets = raw_targets
+        .into_iter()
+        .zip(&ids)
+        .filter_map(|(maybe_target, &id)| maybe_target.map(|t| (id, tier_target_from_native(t))))
+        .collect();
     design.tier_ids = ids;
 }
 
@@ -302,34 +282,9 @@ pub(in crate::native) fn restore_concave_tiers(
     Ok(())
 }
 
-/// Rebuilds a draft save's full tier list purely from the native sidecar, ignoring
-/// whatever the paired `.asc` (placeholder masts and all) says -- see
-/// [`TierOverlay::AppliedFromDraft`] and [`load_paired`]'s own doc comment.
-///
-/// # Errors
-///
-/// [`LoadPairedError::DraftTierMissingGeometry`] for any tier missing `angle_deg`
-/// or `indices` -- this tier list is a draft's ONLY source of geometry, so there is
-/// no better number to fall back on -- defaulting to `0.0`/empty would silently
-/// invent geometry no cutter authored.
-pub(super) fn draft_tiers_from_native(
-    native_tiers: Vec<TierTable>,
-) -> Result<Vec<ConstraintTier>, LoadPairedError> {
-    native_tiers
-        .into_iter()
-        .enumerate()
-        .map(|(index, saved)| {
-            tier_from_table_with_full_geometry(saved)
-                .ok_or(LoadPairedError::DraftTierMissingGeometry { index })
-        })
-        .collect()
-}
-
-/// The one-tier body [`draft_tiers_from_native`] and [`load_native_only`] both need:
-/// `None` iff `saved` is missing `angle_deg`/`indices`, the two fields a draft (or a
-/// [`load_native_only`] self-contained save -- see that function's own doc comment)
-/// tier list is the SOLE source for. Factored out so the two callers can only ever
-/// differ in which error they wrap this in, never in what counts as "missing."
+/// The one-tier body of [`crate::native::design_from_file`]: `None` iff `saved` is
+/// missing `angle_deg`/`indices`, the two fields a design file's tier list is the SOLE
+/// source for.
 pub(in crate::native) fn tier_from_table_with_full_geometry(
     saved: TierTable,
 ) -> Option<ConstraintTier> {

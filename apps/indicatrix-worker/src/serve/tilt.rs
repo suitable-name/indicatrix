@@ -11,7 +11,8 @@
 //! `stream_emit::run_stream` splits tracing onto its own thread so a slow `write()`
 //! never stalls sample production across a multi-second stream. A `TiltCurvesRequest`
 //! writes exactly one ~8,688-byte reply at the end, so there is nothing to stall and the
-//! thread split buys nothing. Measured cost is ~1.36s total (four axes, ~340ms each).
+//! thread split buys nothing. Measured cost was ~1.36s total (four axes, ~340ms each) before
+//! the Fire-less fast path; the sweep runs single-threaded here (see the call site).
 //!
 //! # Cancellation: 4 checkpoints, ~340ms worst-case latency
 //!
@@ -129,9 +130,9 @@ pub fn poll_for_cancel<S: Read + TimeoutRead>(
             indicatrix_net::messages::discard_contribution_payload(stream, &header)?;
             CancelPoll::Pending
         }
-        // `zoning` builds: the zones of a request pipelined behind this computation; kept for
+        // The zones of a request pipelined behind this computation; kept for
         // it (the tilt sweep itself ignores zones).
-        #[cfg(feature = "zoning")]
+        #[cfg(feature = "worker")]
         indicatrix_net::messages::ClientMessage::ZoningPayload(payload) => {
             crate::serve::zoning::stash(*payload);
             CancelPoll::Pending
@@ -254,7 +255,12 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
         }
 
         let axis_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth_geom(
+            // `Some(1)`: this request holds no `render_core` thread permits, and the worker
+            // serves concurrent jobs under that process-wide pool, so an unpermitted
+            // fan-out here could oversubscribe a rendering worker. The sweep still gets
+            // the Fire-less fast path; threading it needs a permit-acquiring helper in
+            // `render_core`.
+            indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth_geom_threaded(
                 indicatrix::geometry::StoneGeometry {
                     planes: &scene.planes,
                     tools: &scene.tools,
@@ -262,6 +268,7 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
                 &scene.material,
                 azimuth_deg,
                 environment,
+                Some(1),
             )
         }));
 

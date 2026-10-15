@@ -361,9 +361,14 @@ pub(super) struct Exchange<'a> {
 
 /// Runs `request` on `conn` to its end (see the module doc comment). Never forwards the
 /// worker's `ErrorMsg`: it only becomes a coordinator-worded [`Reply::error`].
+///
+/// Takes the request by value so the wire message is built once from it (no second copy
+/// of the scene); `decoder` is the lane's long-lived one, so its plane buffer and zstd
+/// context are reused across chunks.
 pub(super) fn run_request(
     mut conn: &mut dyn WorkerConn,
-    request: &RenderRequest,
+    request: RenderRequest,
+    decoder: &mut PayloadDecoder,
     exchange: Exchange<'_>,
 ) -> Reply {
     let (width, height) = (request.scene.width, request.scene.height);
@@ -371,7 +376,11 @@ pub(super) fn run_request(
     if let Err(e) = conn.set_timeouts(Some(POLL), Some(WRITE_TIMEOUT)) {
         return reply.broke(format!("could not arm the socket deadlines: {e}"));
     }
-    let message = ClientMessage::RenderRequest(Box::new(request.clone()));
+    let message = ClientMessage::RenderRequest(Box::new(request));
+    let ClientMessage::RenderRequest(request) = &message else {
+        return reply.broke("internal error: the chunk message lost its request".to_string());
+    };
+    let request: &RenderRequest = request;
     let reply = if let Err(e) = indicatrix_net::messages::write_message(&mut conn, &message) {
         reply.broke(format!("sending the chunk failed: {e}"))
     } else {
@@ -379,7 +388,7 @@ pub(super) fn run_request(
         let mut reader = PatientReader::new(conn, request.request_id, exchange.timeouts, || {
             cancel.is_cancelled()
         });
-        read_reply(&mut reader, exchange, request, reply)
+        read_reply(&mut reader, exchange, request, decoder, reply)
     };
     if reply.broken.is_none() {
         let _ = conn.set_timeouts(None, None);
@@ -441,10 +450,10 @@ fn read_reply<F: FnMut() -> bool>(
     reader: &mut PatientReader<'_, F>,
     exchange: Exchange<'_>,
     request: &RenderRequest,
+    decoder: &mut PayloadDecoder,
     mut reply: Reply,
 ) -> Reply {
     let worker_id = exchange.worker_id;
-    let mut decoder = PayloadDecoder::new();
     let mut first_progress: Option<(Instant, u32)> = None;
     let mut last_progress: Option<(Instant, u32)> = None;
     loop {
@@ -460,7 +469,7 @@ fn read_reply<F: FnMut() -> bool>(
         }
         match event {
             StreamEvent::Frame(header) => {
-                if let Err(why) = fold_frame(&mut reply, &mut decoder, request, &header, payload) {
+                if let Err(why) = fold_frame(&mut reply, decoder, request, &header, payload) {
                     return reply.broke(format!("worker #{worker_id} {why}"));
                 }
             }

@@ -7,6 +7,10 @@ use indicatrix_cut_core::ConstraintTier;
 
 /// `(theta, phi)` in radians, op for op as `indicatrix_solid::facet_map` builds them:
 /// `theta = |angle|`, `phi = 2 pi index / gear`, both narrowed to f32 first.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "mirrors facet_map, which narrows the f64 angles to f32 first (the GPU precision)"
+)]
 fn theta_phi(angle_deg: f64, index_on_gear: f64, gear_teeth: u32) -> (f32, f32) {
     let gear = gear_teeth.max(1) as f32;
     let theta = (angle_deg.abs() as f32).to_radians();

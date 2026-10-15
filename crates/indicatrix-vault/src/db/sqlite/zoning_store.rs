@@ -1,28 +1,30 @@
-//! Storage for rough colour and colour zoning (`zoning` feature only).
+//! Storage for rough colour and colour zoning.
 //!
 //! Five side tables and the `Database` methods that read and write them.
 //!
 //! # Why side tables
 //!
 //! Same pattern as `diagram_planner_exclusions`: the saved-plan rows, the material rows and the
-//! render-job rows keep their exact columns and bytes, so a build without `zoning` opens the same
+//! render-job rows keep their exact columns and bytes, so an older build opens the same
 //! file, shows the same plans, materials and jobs, and never reads, writes or deletes anything
-//! here. The tables are created by `CREATE TABLE IF NOT EXISTS` in [`Database::new`], only under
-//! the feature, and no schema-version constant moves.
+//! here. The tables are created by `CREATE TABLE IF NOT EXISTS` in [`Database::new`], and no
+//! schema-version constant moves.
 //!
 //! # No foreign keys, on purpose
 //!
-//! A foreign key with `ON DELETE CASCADE` would let a default build (which does not know these
+//! A foreign key with `ON DELETE CASCADE` would let an older build (which does not know these
 //! tables) delete rows here as a side effect of deleting a plan, a material or a job, with
-//! `PRAGMA foreign_keys = ON`. The rows are therefore plain keyed rows, and a zoning build removes
+//! `PRAGMA foreign_keys = ON`. The rows are therefore plain keyed rows, and this build removes
 //! the ones whose owner is gone with [`Database::prune_zoning_orphans`]. Plan ids and job ids are
 //! `AUTOINCREMENT` and never reused, so an orphan cannot be mistaken for a new owner's row.
 //!
 //! # Read-only databases
 //!
 //! A database opened with [`Database::open_read_only`] runs no migration. Every reader here
-//! answers "nothing stored" when the tables do not exist (a file no zoning build has opened
-//! yet); every writer fails with SQLite's own read-only error, like any other write.
+//! answers "nothing stored" when the tables do not exist (a file this build has not opened
+//! yet); every writer fails with SQLite's own read-only error, like any other write. The deletes
+//! and the prune answer "nothing removed" (`Ok(0)`) when their table does not exist, instead of
+//! failing with "no such table".
 //!
 //! # Tables
 //!
@@ -32,7 +34,7 @@
 //! | `rough_colour_photo` | `(plan_id, view, kind)` | working-resolution image bytes (BLOB last) |
 //! | `stone_pose_choice` | `(plan_id, layout_index, stone_index)` | pose index |
 //! | `material_zoning` | `material_name` | zoned absorption JSON, relative-to-stone flag, version |
-//! | `render_job_zoning` | `job_id` | zoned absorption JSON of a queued render job |
+//! | `render_job_zoning` | `job_id` | zoned absorption JSON of a queued render job, format version |
 //!
 //! `material_zoning` is keyed by the custom material's NAME, the key the material table itself is
 //! unique on (`custom_gem_materials.name`), and `stone_pose_choice` carries a `layout_index`
@@ -88,9 +90,16 @@ pub(in crate::db::sqlite) const ZONING_TABLES_SQL: &str = "
 
     CREATE TABLE IF NOT EXISTS render_job_zoning (
         job_id INTEGER PRIMARY KEY,
+        version INTEGER NOT NULL DEFAULT 1,
         zoned_json TEXT NOT NULL
     );
 ";
+
+/// `ALTER TABLE` that adds the format `version` to a `render_job_zoning` table created before the
+/// column existed (the `CREATE TABLE IF NOT EXISTS` above does not touch an existing table).
+/// Rows written by those builds are version 1, the only version there was.
+const RENDER_JOB_VERSION_COLUMN_SQL: &str =
+    "ALTER TABLE render_job_zoning ADD COLUMN version INTEGER NOT NULL DEFAULT 1";
 
 /// Reads the `INTEGER` column `index` of `row` as a `u32`.
 fn u32_col(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u32> {
@@ -101,7 +110,7 @@ fn u32_col(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u32> {
 impl Database {
     /// Creates the zoning side tables when they are missing.
     ///
-    /// Naturally idempotent; called by [`Database::new`] under the `zoning` feature only.
+    /// Naturally idempotent; called by [`Database::new`].
     ///
     /// # Errors
     ///
@@ -110,12 +119,31 @@ impl Database {
         self.conn
             .execute_batch(ZONING_TABLES_SQL)
             .context("Failed to create the zoning side tables")?;
+        if !self.zoning_column_exists("render_job_zoning", "version")? {
+            self.conn
+                .execute(RENDER_JOB_VERSION_COLUMN_SQL, [])
+                .context("Failed to add the version column to render_job_zoning")?;
+        }
         Ok(())
+    }
+
+    /// Whether table `table` has a column named `column`.
+    fn zoning_column_exists(&self, table: &str, column: &str) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2",
+                params![table, column],
+                |row| row.get(0),
+            )
+            .optional()
+            .with_context(|| format!("Failed to look for column {column} of {table}"))?;
+        Ok(found.is_some())
     }
 
     /// Whether table `name` exists in this database.
     ///
-    /// A read-only database of a file no zoning build has opened may lack the zoning tables.
+    /// A read-only database of a file this build has not opened may lack the zoning tables.
     fn zoning_table_exists(&self, name: &str) -> Result<bool> {
         let found: Option<i64> = self
             .conn
@@ -137,25 +165,50 @@ impl Database {
     ///
     /// Returns an error if the upsert fails (a read-only database, or no zoning tables).
     pub fn save_rough_colour(&self, row: &RoughColourRow) -> Result<()> {
-        self.conn
+        upsert_rough_colour(&self.conn, row)
+    }
+
+    /// Replaces the rough colour of plan `row.plan_id` AND its cached photos in one transaction.
+    ///
+    /// The colour row is upserted, every photo row the plan had is deleted, and `photos` are
+    /// inserted. Either all of it happens or none of it: a failure midway (a damaged blob, a full
+    /// disk) leaves the previous colour with its previous photos, never a new colour with a mix
+    /// of old and new views. Views the plan had before and `photos` omits are gone afterwards.
+    /// Pose choices are not touched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a photo belongs to another plan than `row`, or if any statement fails
+    /// (the transaction is then rolled back).
+    pub fn replace_rough_colour(
+        &self,
+        row: &RoughColourRow,
+        photos: &[RoughColourPhotoRow],
+    ) -> Result<()> {
+        if let Some(stray) = photos.iter().find(|photo| photo.plan_id != row.plan_id) {
+            anyhow::bail!(
+                "A photo of plan {} cannot be stored with the colour of plan {}",
+                stray.plan_id,
+                row.plan_id
+            );
+        }
+        let transaction = self
+            .conn
+            .unchecked_transaction()
+            .context("Failed to start the rough colour replacement")?;
+        upsert_rough_colour(&transaction, row)?;
+        transaction
             .execute(
-                "INSERT INTO rough_colour (plan_id, version, created, zoned_json, fit_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(plan_id) DO UPDATE SET
-                    version = excluded.version,
-                    created = excluded.created,
-                    zoned_json = excluded.zoned_json,
-                    fit_json = excluded.fit_json",
-                params![
-                    row.plan_id,
-                    i64::from(row.version),
-                    row.created,
-                    row.zoned_json,
-                    row.fit_json
-                ],
+                "DELETE FROM rough_colour_photo WHERE plan_id = ?1",
+                params![row.plan_id],
             )
-            .with_context(|| format!("Failed to store the rough colour of plan {}", row.plan_id))?;
-        Ok(())
+            .with_context(|| format!("Failed to clear the old images of plan {}", row.plan_id))?;
+        for photo in photos {
+            upsert_photo(&transaction, photo)?;
+        }
+        transaction
+            .commit()
+            .context("Failed to commit the rough colour replacement")
     }
 
     /// The rough colour of plan `plan_id`, or `None` when it has none (or the tables do not
@@ -220,6 +273,9 @@ impl Database {
             .unchecked_transaction()
             .context("Failed to start the rough colour delete")?;
         for table in ["rough_colour", "rough_colour_photo", "stone_pose_choice"] {
+            if !self.zoning_table_exists(table)? {
+                continue;
+            }
             transaction
                 .execute(
                     &format!("DELETE FROM {table} WHERE plan_id = ?1"),
@@ -240,33 +296,7 @@ impl Database {
     ///
     /// Returns an error if the upsert fails.
     pub fn save_rough_colour_photo(&self, row: &RoughColourPhotoRow) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT INTO rough_colour_photo
-                    (plan_id, view, kind, width, height, encoding, data_blob)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(plan_id, view, kind) DO UPDATE SET
-                    width = excluded.width,
-                    height = excluded.height,
-                    encoding = excluded.encoding,
-                    data_blob = excluded.data_blob",
-                params![
-                    row.plan_id,
-                    i64::from(row.view),
-                    row.kind,
-                    i64::from(row.width),
-                    i64::from(row.height),
-                    row.encoding,
-                    row.data
-                ],
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to store the {} image of view {} of plan {}",
-                    row.kind, row.view, row.plan_id
-                )
-            })?;
-        Ok(())
+        upsert_photo(&self.conn, row)
     }
 
     /// One stored image, bytes included, or `None` when it is not stored.
@@ -344,6 +374,9 @@ impl Database {
     ///
     /// Returns an error if the `DELETE` fails.
     pub fn delete_rough_colour_photos(&self, plan_id: i64) -> Result<usize> {
+        if !self.zoning_table_exists("rough_colour_photo")? {
+            return Ok(0);
+        }
         self.conn
             .execute(
                 "DELETE FROM rough_colour_photo WHERE plan_id = ?1",
@@ -434,6 +467,9 @@ impl Database {
     ///
     /// Returns an error if the `DELETE` fails.
     pub fn clear_stone_pose_choices(&self, plan_id: i64) -> Result<usize> {
+        if !self.zoning_table_exists("stone_pose_choice")? {
+            return Ok(0);
+        }
         self.conn
             .execute(
                 "DELETE FROM stone_pose_choice WHERE plan_id = ?1",
@@ -467,6 +503,39 @@ impl Database {
             )
             .with_context(|| format!("Failed to store the zones of '{}'", row.material_name))?;
         Ok(())
+    }
+
+    /// Stores custom material `material` and its zones `zoning` in ONE transaction: either both
+    /// rows are written (replacing existing ones) or neither is, so a failing zoning write never
+    /// leaves a plain material row behind.
+    ///
+    /// `zoning.material_name` must equal `material.name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the names differ, or if either write or the commit fails; the
+    /// transaction is then rolled back and the vault is unchanged.
+    pub fn save_custom_material_with_zoning(
+        &self,
+        material: &super::CustomMaterialParams<'_>,
+        zoning: &MaterialZoningRow,
+    ) -> Result<()> {
+        if material.name != zoning.material_name {
+            anyhow::bail!(
+                "The zones of '{}' cannot be stored with the material '{}'",
+                zoning.material_name,
+                material.name
+            );
+        }
+        let transaction = self
+            .conn
+            .unchecked_transaction()
+            .context("Failed to start the material and zones write")?;
+        self.save_custom_material(material)?;
+        self.save_material_zoning(zoning)?;
+        transaction
+            .commit()
+            .context("Failed to commit the material and zones write")
     }
 
     /// The zones of custom material `material_name` (compared ASCII case-insensitively, like
@@ -534,37 +603,51 @@ impl Database {
 
     // ---- render_job_zoning --------------------------------------------------------------
 
-    /// Stores (inserts or replaces) the zones of queued render job `job_id`.
+    /// Stores (inserts or replaces) the zones of queued render job `job_id`, tagged with the
+    /// zoning format `version` they were written in.
     ///
     /// # Errors
     ///
     /// Returns an error if the upsert fails.
-    pub fn save_render_job_zoning(&self, job_id: i64, zoned_json: &str) -> Result<()> {
+    pub fn save_render_job_zoning(
+        &self,
+        job_id: i64,
+        version: u32,
+        zoned_json: &str,
+    ) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO render_job_zoning (job_id, zoned_json) VALUES (?1, ?2)
-                 ON CONFLICT(job_id) DO UPDATE SET zoned_json = excluded.zoned_json",
-                params![job_id, zoned_json],
+                "INSERT INTO render_job_zoning (job_id, version, zoned_json) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(job_id) DO UPDATE SET
+                    version = excluded.version,
+                    zoned_json = excluded.zoned_json",
+                params![job_id, i64::from(version), zoned_json],
             )
             .with_context(|| format!("Failed to store the zones of render job {job_id}"))?;
         Ok(())
     }
 
-    /// The zones of render job `job_id`, or `None`.
+    /// The `(format version, zones JSON)` of render job `job_id`, or `None`.
+    ///
+    /// A table created before the version column existed and opened read-only (no migration)
+    /// answers version 1, the only version those builds wrote.
     ///
     /// # Errors
     ///
-    /// Returns an error if the query fails.
-    pub fn load_render_job_zoning(&self, job_id: i64) -> Result<Option<String>> {
+    /// Returns an error if the query fails or the stored version is out of range.
+    pub fn load_render_job_zoning(&self, job_id: i64) -> Result<Option<(u32, String)>> {
         if !self.zoning_table_exists("render_job_zoning")? {
             return Ok(None);
         }
+        let sql = if self.zoning_column_exists("render_job_zoning", "version")? {
+            "SELECT version, zoned_json FROM render_job_zoning WHERE job_id = ?1"
+        } else {
+            "SELECT 1, zoned_json FROM render_job_zoning WHERE job_id = ?1"
+        };
         self.conn
-            .query_row(
-                "SELECT zoned_json FROM render_job_zoning WHERE job_id = ?1",
-                params![job_id],
-                |row| row.get(0),
-            )
+            .query_row(sql, params![job_id], |row| {
+                Ok((u32_col(row, 0)?, row.get::<_, String>(1)?))
+            })
             .optional()
             .with_context(|| format!("Failed to read the zones of render job {job_id}"))
     }
@@ -598,29 +681,107 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error if a `DELETE` fails.
+    /// Returns an error if a `DELETE` fails (nothing is then removed: the five deletes run in
+    /// one transaction). A table that does not exist (a file this build has not opened) is
+    /// skipped.
     pub fn prune_zoning_orphans(&self) -> Result<usize> {
         let statements = [
-            "DELETE FROM rough_colour
-             WHERE plan_id NOT IN (SELECT plan_id FROM saved_rough_plans)",
-            "DELETE FROM rough_colour_photo
-             WHERE plan_id NOT IN (SELECT plan_id FROM saved_rough_plans)",
-            "DELETE FROM stone_pose_choice
-             WHERE plan_id NOT IN (SELECT plan_id FROM saved_rough_plans)",
-            "DELETE FROM material_zoning
-             WHERE material_name NOT IN (SELECT name FROM custom_gem_materials)",
-            "DELETE FROM render_job_zoning
-             WHERE job_id NOT IN (SELECT job_id FROM render_jobs)",
+            (
+                "rough_colour",
+                "DELETE FROM rough_colour
+                 WHERE plan_id NOT IN (SELECT plan_id FROM saved_rough_plans)",
+            ),
+            (
+                "rough_colour_photo",
+                "DELETE FROM rough_colour_photo
+                 WHERE plan_id NOT IN (SELECT plan_id FROM saved_rough_plans)",
+            ),
+            (
+                "stone_pose_choice",
+                "DELETE FROM stone_pose_choice
+                 WHERE plan_id NOT IN (SELECT plan_id FROM saved_rough_plans)",
+            ),
+            (
+                "material_zoning",
+                "DELETE FROM material_zoning
+                 WHERE material_name NOT IN (SELECT name FROM custom_gem_materials)",
+            ),
+            (
+                "render_job_zoning",
+                "DELETE FROM render_job_zoning
+                 WHERE job_id NOT IN (SELECT job_id FROM render_jobs)",
+            ),
         ];
+        let transaction = self
+            .conn
+            .unchecked_transaction()
+            .context("Failed to start the zoning prune")?;
         let mut removed = 0;
-        for statement in statements {
-            removed += self
-                .conn
+        for (table, statement) in statements {
+            if !self.zoning_table_exists(table)? {
+                continue;
+            }
+            removed += transaction
                 .execute(statement, [])
-                .context("Failed to prune the zoning side tables")?;
+                .with_context(|| format!("Failed to prune {table}"))?;
         }
+        transaction
+            .commit()
+            .context("Failed to commit the zoning prune")?;
         Ok(removed)
     }
+}
+
+/// The upsert behind [`Database::save_rough_colour`] and [`Database::replace_rough_colour`].
+fn upsert_rough_colour(conn: &rusqlite::Connection, row: &RoughColourRow) -> Result<()> {
+    conn.execute(
+        "INSERT INTO rough_colour (plan_id, version, created, zoned_json, fit_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(plan_id) DO UPDATE SET
+            version = excluded.version,
+            created = excluded.created,
+            zoned_json = excluded.zoned_json,
+            fit_json = excluded.fit_json",
+        params![
+            row.plan_id,
+            i64::from(row.version),
+            row.created,
+            row.zoned_json,
+            row.fit_json
+        ],
+    )
+    .with_context(|| format!("Failed to store the rough colour of plan {}", row.plan_id))?;
+    Ok(())
+}
+
+/// The upsert behind [`Database::save_rough_colour_photo`] and [`Database::replace_rough_colour`].
+fn upsert_photo(conn: &rusqlite::Connection, row: &RoughColourPhotoRow) -> Result<()> {
+    conn.execute(
+        "INSERT INTO rough_colour_photo
+            (plan_id, view, kind, width, height, encoding, data_blob)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(plan_id, view, kind) DO UPDATE SET
+            width = excluded.width,
+            height = excluded.height,
+            encoding = excluded.encoding,
+            data_blob = excluded.data_blob",
+        params![
+            row.plan_id,
+            i64::from(row.view),
+            row.kind,
+            i64::from(row.width),
+            i64::from(row.height),
+            row.encoding,
+            row.data
+        ],
+    )
+    .with_context(|| {
+        format!(
+            "Failed to store the {} image of view {} of plan {}",
+            row.kind, row.view, row.plan_id
+        )
+    })?;
+    Ok(())
 }
 
 /// Reads `material_name, relative_to_stone, version, zoned_json`.

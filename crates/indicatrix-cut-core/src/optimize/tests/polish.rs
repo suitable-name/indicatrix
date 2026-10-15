@@ -17,6 +17,10 @@ use super::super::polish;
 /// where it stalls. `(0.0, 6.0)` below stands in for such a stalled point: clearly
 /// not optimal, and not on the ridge line either.
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the optimizer scores in f32; the synthetic objective is small and well inside f32 range"
+)]
 fn polish_stage_closes_most_of_the_gap_on_a_diagonal_ridge_from_a_stalled_point() {
     let c = 10.0;
     let f = |p: &[f64]| 0.01f64.mul_add((p[0] + p[1] - c).powi(2), (p[0] - p[1]).powi(2)) as f32;
@@ -50,6 +54,10 @@ fn polish_stage_closes_most_of_the_gap_on_a_diagonal_ridge_from_a_stalled_point(
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the optimizer scores in f32; the synthetic objective is small and well inside f32 range"
+)]
 fn polish_stage_is_deterministic_for_identical_inputs() {
     let c = 10.0;
     let f = |p: &[f64]| 0.01f64.mul_add((p[0] + p[1] - c).powi(2), (p[0] - p[1]).powi(2)) as f32;
@@ -67,6 +75,10 @@ fn polish_stage_is_deterministic_for_identical_inputs() {
 /// simplex is ever touched further -- only the one evaluation per dimension spent
 /// building that initial simplex should ever run.
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the optimizer scores in f32; the synthetic objective is small and well inside f32 range"
+)]
 fn polish_stage_stops_when_cancelled() {
     let f = |p: &[f64]| p[1].mul_add(p[1], p[0] * p[0]) as f32;
     let start = [10.0, 10.0];
@@ -81,6 +93,10 @@ fn polish_stage_stops_when_cancelled() {
 /// never clamping it back in) must never end up as `run_polish`'s own reported
 /// result, even when the unconstrained minimum lies outside that box.
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the optimizer scores in f32; the synthetic objective is small and well inside f32 range"
+)]
 fn polish_stage_never_returns_a_point_the_evaluator_rejected() {
     let f = |p: &[f64]| {
         if p[0].abs() > 5.0 || p[1].abs() > 5.0 {

@@ -1,9 +1,9 @@
 //! File-based import/export for the Edit tab: exporting the edited schedule as a
 //! plain `.asc` ([`export::setup_export_asc_callback`]), and the self-contained
-//! `.indicatrix` design file save/open ([`save::setup_save_native_callback`]/
-//! [`open_native::setup_open_native_callback`]). The older paired
-//! `.indicatrix.toml`/`.gemcut.toml` sidecars still open, and the next Save writes the
-//! new file beside them.
+//! `.isdd` design file save/open ([`save::setup_save_native_callback`]/
+//! [`open_native::setup_open_native_callback`]). Legacy `.indicatrix` design files
+//! still open exactly like `.isdd` ones; the next Save writes a new `.isdd` file beside
+//! them and leaves the old file alone.
 //!
 //! # Module split
 //!
@@ -14,7 +14,7 @@
 //! in-window write-confirm dialog, no blocking OS message dialogs), and [`picker`] (Group 3: file
 //! pickers off the UI thread). [`save_helpers`]/[`catalogue`] hold the save-side
 //! helpers (custom-material snapshot, degenerate-marker header, design-file text,
-//! catalogue write-back) and [`design_paths`] the `.indicatrix` file-name rules. Then
+//! catalogue write-back) and [`design_paths`] the `.isdd` file-name rules. Then
 //! one module per write path: [`export`] ("Export .asc"/"Export
 //! Cutting Sheet"/"Export Diagram"), [`save`]/[`save_finish`]/[`atomic_write`]
 //! ("Save"'s dialog wiring, its UI-thread success tail, and the
@@ -64,11 +64,13 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc};
 pub(in crate::gui) use crate::gui::editor::state::AfterSave;
 
 thread_local! {
-    /// The `.indicatrix` design file this `EditorState` was last loaded from or saved
-    /// to, if any: where a quick Save writes ([`save::setup_save_native_callback`]),
+    /// The `.isdd` (or legacy `.indicatrix`) design file this `EditorState` was last
+    /// loaded from or saved to, if any: where a quick Save writes
+    /// ([`save::setup_save_native_callback`]; never to a legacy file, see
+    /// `design_paths::path_belongs_to_schedule_name`),
     /// with [`atomic_write::write_file_atomically`]'s `.bak` backup covering the
     /// replaced copy. `None` for a design that came from anywhere else (a catalogue
-    /// row, a bare `.asc`, an older paired sidecar, a recovered autosave), whose first
+    /// row, a bare `.asc`, a recovered autosave), whose first
     /// Save therefore asks for a file name. A plain `RefCell`, not part of
     /// `EditorState` itself: it names a location on disk, not design data, so it must
     /// not be reset by [`crate::gui::editor::state::EditorState::replace_wholesale`]
@@ -79,8 +81,8 @@ thread_local! {
     static CURRENT_NATIVE_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 
     /// The folder the Save dialog opens in for a design that has no design file of
-    /// its own yet: the folder an older paired file was opened from, so the new
-    /// `.indicatrix` lands beside it. `None` falls back to the `./exports`
+    /// its own yet: the folder a legacy file was opened from, so the new
+    /// `.isdd` lands beside it. `None` falls back to the `./exports`
     /// convention. Cleared by every save and by the open paths that have no folder
     /// to offer.
     static SUGGESTED_SAVE_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
@@ -190,7 +192,44 @@ pub(super) fn notify_save_completed(ui: &MainWindow, state: &Rc<RefCell<EditorSt
     });
 }
 
-/// Records where a Save should go next: `design_path` is the `.indicatrix` file the
+/// Forgets what a previous main window left in this module's thread-locals: the save-completed
+/// listeners (each closes over the old window's handles and would resume a pending action with
+/// them) and the remembered design location. Called once at the start of every
+/// `setup_editor_callbacks`, before any listener of the new window is registered.
+pub(in crate::gui::editor) fn reset_for_new_window() {
+    SAVE_COMPLETED_LISTENERS.with(|cell| cell.borrow_mut().clear());
+    remember_design_location(None, None);
+}
+
+/// [`reset_for_new_window`], and the previous window's editor state is let go too. See
+/// `gui::window_release`.
+pub(in crate::gui::editor) fn release_window_state() {
+    reset_for_new_window();
+    autosave::release_window_state();
+    confirm::release_window_state();
+    open_picker::release_window_state();
+    save::release_window_state();
+    solve::release_window_state();
+    let old = LIVE_EDITOR_STATE.with(|cell| cell.borrow_mut().take());
+    drop(old);
+}
+
+/// Names the holders of this module group that are still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui::editor) fn note_holders(out: &mut Vec<&'static str>) {
+    autosave::note_holders(out);
+    save::note_holders(out);
+    solve::note_holders(out);
+    if LIVE_EDITOR_STATE.with(|cell| cell.borrow().is_some()) {
+        out.push("editor::native_io LIVE_EDITOR_STATE");
+    }
+    if SAVE_COMPLETED_LISTENERS.with(|cell| !cell.borrow().is_empty()) {
+        out.push("editor::native_io SAVE_COMPLETED_LISTENERS (vault)");
+    }
+}
+
+/// Records where a Save should go next: `design_path` is the design file the
 /// design now lives in (`None` when it has none), and `suggested_dir` the folder the
 /// Save dialog should open in when there is no such file yet.
 pub(super) fn remember_design_location(
@@ -201,7 +240,7 @@ pub(super) fn remember_design_location(
     SUGGESTED_SAVE_DIR.with(|cell| *cell.borrow_mut() = suggested_dir);
 }
 
-/// The `.indicatrix` design file this design was last loaded from or saved to, if any --
+/// The design file this design was last loaded from or saved to, if any --
 /// what "Edit as Text" compares the text with under "Saved file on disk". `None` for a design
 /// that has no design file of its own yet (see [`CURRENT_NATIVE_PATH`]).
 #[must_use]

@@ -26,6 +26,10 @@ use glam::Vec3;
 /// hero's, reducing to a plain unweighted result. Reflects the wave normal `k_hat` and
 /// returns the reflected wave normal `k'`; the caller derives `S'` via
 /// [`super::geometry::poynting_dir_for_mode`] and sets `current_ray.origin` itself.
+#[expect(
+    clippy::similar_names,
+    reason = "r_s_k/r_p_k are the established s/p polarisation Fresnel names"
+)]
 pub(super) fn apply_partial_reflect_bounce(
     geo: &BounceRefractionGeometry,
     r_unpol: f32,
@@ -351,6 +355,10 @@ struct ChannelTransmitMatchInputs {
 /// The `direction_matches` branch of [`apply_refract_channel`]'s per-channel work,
 /// split out purely to keep that function's own body under the workspace line-count
 /// lint -- see this crate's doc comments there for the full physical rationale.
+#[expect(
+    clippy::similar_names,
+    reason = "s/p polarisation pairs (t_s_k/t_p_k, r_s_k/r_p_k) are the established Fresnel names"
+)]
 fn apply_channel_transmission_match(
     inputs: &ChannelTransmitMatchInputs,
     stokes_k: &mut StokesVector,

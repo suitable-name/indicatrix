@@ -14,7 +14,7 @@ fn schedule_differs(current: &Design, variant: &Design) -> bool {
     // Everything that is not part of the schedule is copied over from the open design, so the
     // comparison can only be decided by the schedule.
     let mut probe = variant.clone();
-    probe.preform = current.preform;
+    probe.preform.clone_from(&current.preform);
     probe.preform_y_offset = current.preform_y_offset;
     probe.girdle_diameter_mm = current.girdle_diameter_mm;
     probe.material = current.material.clone();
@@ -44,7 +44,7 @@ fn edits_between(current: &Design, variant: &Design) -> Vec<Edit> {
     }
     if current.preform != variant.preform {
         edits.push(Edit::SetPreform {
-            preform: variant.preform,
+            preform: variant.preform.clone(),
         });
     }
     if !same_bits(current.preform_y_offset, variant.preform_y_offset) {

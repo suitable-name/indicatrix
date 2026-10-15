@@ -13,6 +13,12 @@
 //! | `train_solver`    | Meet-point solver, all three phases plus the verified repair search (`geometry::meet_solver::{solve_meet_points, solve_meet_points_verified}`), which in turn dispatch the SIMD candidate-vertex kernels (`simd::{classify_feasibility, solve_triple_batch, PlanesSoA64}`); external solid measurement and CAD-preview mesh extraction (`geometry::stone_metrics::{measure_solid, build_solid_mesh}`) on the solved geometry. Runs against three synthetic schedules AND five real, catalogue-sourced `.asc` designs (the crate's own CrackOtto-Step cost-probe fixture, 205 facet-plane instances, plus the four real designs `tests/optics_geometry_tests/asc_designs.rs` also exercises, via the same `include_str!`'d fixture files). |
 //! | `train_tilt`      | The tilt-performance sweep (`color::metrics::evaluate_full_axis_profile_at_azimuth`, all `PROFILE_AZIMUTHS_DEG` axes) that backs `indicatrix-worker`'s `TILT_CURVES` request and `indicatrix-cut`'s tilt-profile panel. |
 //! | `train_gpu`       | (only when built with `--features gpu`, and an adapter is present) the CPU-side chunked dispatch/readback orchestration in `renderer::gpu::hybrid` (`HybridSplit::calibrated` + `render_hybrid`) that `apps/indicatrix-cut`'s and `apps/indicatrix-worker`'s `gpu` features route progressive/export rendering through. Never trains the compute shader itself (WGSL is not covered by LLVM PGO) -- only the Rust-side dispatch/chunk-sizing/readback loop around it. |
+//! | `train_guide`     | (`stages_extra`) the guide prepass with the path signature on (`n_d = 1.76`) at 800x600 and 1080p. |
+//! | `train_denoise_signature` | (`stages_extra`) the A-Trous denoiser with `path_sig: Some(..)` at 800x600; `train_tracer` also denoises every second preset with a signature. |
+//! | `train_tilt_sweep` | (`stages_extra`) `evaluate_all_axes_profiles_geom` (parallel) and `_stepped_geom`, 724 evaluations each. |
+//!
+//! `train_lighting`'s HDR map is a procedural 1024x512 panorama (sun, softboxes, sky), not
+//! a toy 8x4 gradient. `--print-simd-tier` prints the dispatcher's tier and exits.
 //!
 //! What is deliberately NOT trained here: the database (`indicatrix-vault` is never
 //! opened), any file I/O, and the GPU compute shader's own WGSL source. `indicatrix-net`'s
@@ -23,7 +29,7 @@
 //! integration test under instrumentation as a second training binary.
 //!
 //! Deterministic and self-contained; measured around 25 s at the default scale
-//! (`PGO_SCALE=1`, `--profile probe`, `--features gpu` with a real adapter present) on
+//! (`PGO_SCALE=1`, `--profile probe`; the PGO scripts build `--release`,`--features gpu` with a real adapter present) on
 //! a 16-thread desktop, well under the ~5 minute budget this file targets -- the
 //! `[tracer]` and `[solver]` stages dominate, the latter mostly from real
 //! CrackOtto-Step's 205 facet-plane instances (well over a second per plain solve,
@@ -48,10 +54,12 @@
 //! ```
 
 mod stages;
+mod stages_extra;
 
 #[cfg(feature = "gpu")]
 use stages::train_gpu;
 use stages::{train_brep, train_lighting, train_solver, train_tilt, train_tracer};
+use stages_extra::{train_denoise_signature, train_guide, train_tilt_sweep};
 use std::time::Instant;
 
 /// `PGO_SCALE` environment variable (default `1.0`, clamped to a sane positive range),
@@ -65,7 +73,23 @@ fn pgo_scale() -> f32 {
         .clamp(0.01, 20.0)
 }
 
+/// The dispatcher's chosen tier as the `INDICATRIX_SIMD` spelling, for
+/// `--print-simd-tier`.
+const fn tier_name(level: indicatrix::simd::SimdLevel) -> &'static str {
+    match level {
+        indicatrix::simd::SimdLevel::Scalar => "scalar",
+        indicatrix::simd::SimdLevel::Avx2 => "avx2",
+        indicatrix::simd::SimdLevel::Avx512 => "avx512",
+    }
+}
+
 fn main() {
+    // `scripts/pgo-build.ps1` runs this with `INDICATRIX_SIMD` unset to learn the host's
+    // native tier, then trains the tier build a second time at that tier (BLD-1).
+    if std::env::args().any(|a| a == "--print-simd-tier") {
+        println!("{}", tier_name(indicatrix::simd::simd_level()));
+        return;
+    }
     let scale = pgo_scale();
     println!(
         "pgo_train: simd level {:?}, PGO_SCALE={scale}",
@@ -93,6 +117,21 @@ fn main() {
     let tilt_checksum = train_tilt(scale);
     println!("pgo_train: [tilt]   stage done in {:.2?}", t0.elapsed());
 
+    let t0 = Instant::now();
+    let guide_checksum = train_guide(scale);
+    println!("pgo_train: [guide]  stage done in {:.2?}", t0.elapsed());
+
+    let t0 = Instant::now();
+    let denoise_checksum = train_denoise_signature(scale);
+    println!(
+        "pgo_train: [denoise_sig] stage done in {:.2?}",
+        t0.elapsed()
+    );
+
+    let t0 = Instant::now();
+    let sweep_checksum = train_tilt_sweep();
+    println!("pgo_train: [tilt_sweep] stage done in {:.2?}", t0.elapsed());
+
     #[cfg(feature = "gpu")]
     let gpu_checksum = {
         let t0 = Instant::now();
@@ -105,7 +144,8 @@ fn main() {
 
     println!(
         "pgo_train done in {:.1?} (checksums tracer={tracer_checksum:.3} lighting={lighting_checksum:.3} \
-         brep={brep_checksum:.6} solver={solver_checksum:.6} tilt={tilt_checksum:.3} gpu={gpu_checksum:.3})",
+         brep={brep_checksum:.6} solver={solver_checksum:.6} tilt={tilt_checksum:.3} guide={guide_checksum:.3} \
+         denoise_sig={denoise_checksum:.3} tilt_sweep={sweep_checksum:.3} gpu={gpu_checksum:.3})",
         start.elapsed()
     );
 }

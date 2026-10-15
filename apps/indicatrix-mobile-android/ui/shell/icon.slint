@@ -1,0 +1,13 @@
+// A recolorable icon (the SVGs in `ui/icons` are drawn in black).
+import { Theme } from "../theme.slint";
+
+export component Icon inherits Image {
+    in property <color> tint: Theme.on-surface;
+    // Edge length of the square the icon is drawn in.
+    in property <length> glyph: 24px;
+
+    width: root.glyph;
+    height: root.glyph;
+    colorize: root.tint;
+    image-fit: contain;
+}

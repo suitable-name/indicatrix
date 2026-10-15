@@ -95,14 +95,14 @@ fn main() {
     println!("scored meet-derived tiers: {}", all_tiers.len());
 
     // E3b
-    let err0: Vec<f64> = all_tiers.iter().map(|t| t.err0).collect();
-    let errw: Vec<f64> = all_tiers.iter().map(|t| t.err_worst).collect();
-    print_dist("E3b err (instance 0)", &err0);
-    print_dist("E3b err (worst instance)", &errw);
+    let err_first: Vec<f64> = all_tiers.iter().map(|t| t.err0).collect();
+    let err_worst_all: Vec<f64> = all_tiers.iter().map(|t| t.err_worst).collect();
+    print_dist("E3b err (instance 0)", &err_first);
+    print_dist("E3b err (worst instance)", &err_worst_all);
     println!(
         "E3b frac < 0.5% (inst 0): {:.1}%   (worst inst): {:.1}%",
-        frac_below(&err0, MATCH_REL) * 100.0,
-        frac_below(&errw, MATCH_REL) * 100.0
+        frac_below(&err_first, MATCH_REL) * 100.0,
+        frac_below(&err_worst_all, MATCH_REL) * 100.0
     );
 
     // Tangency

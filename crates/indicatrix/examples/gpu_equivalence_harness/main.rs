@@ -118,9 +118,9 @@ use phase0_1_geometry_environment::run_phase0_and_phase1_checks;
 use phase2_transport::run_phase2_checks;
 use phase3_uniaxial::run_phase3_checks;
 use phase4_biaxial::run_phase4_checks;
-#[cfg(feature = "zoning")]
-use scattering_and_absorption::run_zoning_checks;
-use scattering_and_absorption::{run_p1_absorption_path_scale_checks, run_task1_scattering_checks};
+use scattering_and_absorption::{
+    run_p1_absorption_path_scale_checks, run_task1_scattering_checks, run_zoning_checks,
+};
 
 /// Runs every check group in order -- a failing group never stops the later ones -- records
 /// each group's verdict for the run summary, and returns whether all of them passed.
@@ -142,7 +142,6 @@ fn run_all_groups(ctx: &GpuContext) -> bool {
         ("wavefront_pipeline", run_wavefront_pipeline_checks()),
         ("kernel_specialisation", run_all_specialisation_checks(ctx)),
         ("hdr_nee", run_finding_g7_nee_checks(ctx)),
-        #[cfg(feature = "zoning")]
         ("zoned_absorption", run_zoning_checks(ctx)),
     ];
     for (name, passed) in results {

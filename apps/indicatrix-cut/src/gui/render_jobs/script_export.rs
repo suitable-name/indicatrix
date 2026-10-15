@@ -276,7 +276,7 @@ pub(super) fn export_script(ui: &MainWindow, deps: &Deps) {
         ui,
         PickerRequest {
             kind: PickerKind::PickFolder,
-            title: Some("Choose where to put the script folder".to_string()),
+            title: Some("Choose Where to Put the Script Folder".to_string()),
             filters: Vec::new(),
             default_file_name: None,
             starting_dir,

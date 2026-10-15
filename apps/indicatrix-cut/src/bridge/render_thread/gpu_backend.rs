@@ -2,7 +2,7 @@
 //! plus the guide buffers it cannot produce itself), the hybrid CPU+GPU pacing state,
 //! and the per-frame dispatch that picks between them.
 
-use super::scanline::render_frame_scanlines;
+use super::scanline::{render_frame_scanlines, render_frame_scanlines_with_threads};
 use crate::settings::model::LocalComputeTarget;
 use glam::Vec3;
 use indicatrix::{
@@ -90,6 +90,15 @@ pub(super) struct ViewportGpu {
     /// Key of the path signature currently held by the render loop's signature buffer
     /// (`None`: the buffer is zeroed or unset); see [`Self::sync_path_sig`].
     path_sig_key: Option<crate::bridge::frame_cache::guide_pass::GuideKey>,
+    /// Whether this frame's path signature will be consumed (denoiser on and camera at
+    /// rest); see [`Self::set_path_sig_wanted`]. When `false` the guide prepass runs with
+    /// `n_d = 0.0` (no signature walk), because [`Self::sync_path_sig`] would zero the
+    /// signature anyway.
+    path_sig_wanted: bool,
+    /// Whether the last GPU request was accepted. The guide prepass is only started
+    /// speculatively, beside the GPU turn, while this holds, so a backend that keeps
+    /// declining (lost device, oversized map) never pays a prepass for a CPU frame.
+    last_gpu_ok: bool,
     /// Set once a joined GPU-thread panic is observed (see [`hybrid_frame`])
     /// and never cleared -- `GpuBackend` itself only recovers from a cleanly-reported
     /// [`indicatrix::renderer::gpu::GpuFrameError::DeviceLost`], which
@@ -112,13 +121,44 @@ pub(super) struct ViewportGpu {
 
 impl ViewportGpu {
     pub(super) fn acquire() -> Self {
+        #[cfg(feature = "ui-harness")]
+        let gpu = if crate::harness_support::viewport_rendering_disabled() {
+            GpuBackend::disabled()
+        } else {
+            GpuBackend::acquire()
+        };
+        #[cfg(not(feature = "ui-harness"))]
+        let gpu = GpuBackend::acquire();
         Self {
-            gpu: GpuBackend::acquire(),
+            gpu,
             guides: crate::bridge::frame_cache::guide_pass::GuideCache::new(),
             applied_guide_key: None,
             path_sig_key: None,
+            path_sig_wanted: true,
+            last_gpu_ok: true,
             gpu_retired: false,
             status_message: None,
+        }
+    }
+
+    /// Declares whether the coming frame's path signature will be used (denoiser on and
+    /// camera at rest). The render loop calls it before every frame; with `false` the
+    /// guide prepass skips the signature walk (1-3 extra intersections per pixel while
+    /// the camera is moving, all of it discarded by [`Self::sync_path_sig`]). The guide
+    /// key carries the effective `n_d`, so the first frame after the camera stops sees a
+    /// different key and regenerates the guides with the signature.
+    pub(super) const fn set_path_sig_wanted(&mut self, wanted: bool) {
+        self.path_sig_wanted = wanted;
+    }
+
+    /// The `n_d` the guide prepass runs with: the material's, or `0.0` ("no signature")
+    /// while [`Self::path_sig_wanted`] is off. Depth, normal and facet id do not depend
+    /// on it.
+    fn guide_n_d(&self, frame: &BackendFrame<'_>) -> f32 {
+        if self.path_sig_wanted {
+            frame.material.dispersion.n_d()
+        } else {
+            0.0
         }
     }
 
@@ -195,10 +235,19 @@ impl ViewportGpu {
             max_bounces: frame.max_bounces,
             environment: frame.environment,
         };
-        if self
-            .gpu
-            .try_accumulate(&scene, frame.sample_offset, frame.spp, out.accum)
-        {
+        // The guides do not depend on the GPU's result, so for a changed pose the prepass
+        // runs beside the GPU turn instead of after it (UI-1 b); an unchanged pose has
+        // nothing to compute.
+        let key = Self::guide_key(frame, self.guide_n_d(frame));
+        let overlap = self.last_gpu_ok && self.applied_guide_key.as_ref() != Some(&key);
+        let accepted = if overlap {
+            self.accumulate_beside_prepass(&scene, frame, out.accum)
+        } else {
+            self.gpu
+                .try_accumulate(&scene, frame.sample_offset, frame.spp, out.accum)
+        };
+        self.last_gpu_ok = accepted;
+        if accepted {
             self.status_message = None;
             self.copy_guides(frame, out);
             return true;
@@ -231,7 +280,8 @@ impl ViewportGpu {
     /// already the ones last applied -- see [`Self::applied_guide_key`]'s own doc
     /// comment. Split out of [`Self::try_accumulate`] to keep it short.
     fn copy_guides(&mut self, frame: &BackendFrame<'_>, out: &mut FrameOutputs<'_>) {
-        let key = Self::guide_key(frame);
+        let n_d = self.guide_n_d(frame);
+        let key = Self::guide_key(frame, n_d);
         if self.applied_guide_key.as_ref() != Some(&key) {
             let guides = self.guides.ensure_geom(
                 frame.width,
@@ -240,7 +290,7 @@ impl ViewportGpu {
                 frame.pitch,
                 frame.distance,
                 frame.stone(),
-                frame.material.dispersion.n_d(),
+                n_d,
             );
             out.depth.copy_from_slice(&guides.depth);
             out.normal.copy_from_slice(&guides.normal);
@@ -249,8 +299,40 @@ impl ViewportGpu {
         }
     }
 
-    /// The guide-cache key for `frame`: pose, geometry and the material's `n_d`.
-    fn guide_key(frame: &BackendFrame<'_>) -> crate::bridge::frame_cache::guide_pass::GuideKey {
+    /// Runs the GPU turn on this thread while a scoped thread generates `frame`'s guide
+    /// buffers into the cache (same call, same inputs as [`Self::copy_guides`] would make
+    /// afterwards, so the buffers are bit-identical; only the time differs). The prepass
+    /// is joined when the scope ends, before anything reads the guides. A panic in either
+    /// half propagates out of the scope exactly as the sequential code's would.
+    fn accumulate_beside_prepass(
+        &mut self,
+        scene: &GpuSceneRef<'_>,
+        frame: &BackendFrame<'_>,
+        accum: &mut [Vec3],
+    ) -> bool {
+        let n_d = self.guide_n_d(frame);
+        let (gpu, guides) = (&mut self.gpu, &mut self.guides);
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                guides.ensure_geom(
+                    frame.width,
+                    frame.height,
+                    frame.yaw,
+                    frame.pitch,
+                    frame.distance,
+                    frame.stone(),
+                    n_d,
+                );
+            });
+            gpu.try_accumulate(scene, frame.sample_offset, frame.spp, accum)
+        })
+    }
+
+    /// The guide-cache key for `frame`: pose, geometry and `n_d` (`0.0` = no signature).
+    fn guide_key(
+        frame: &BackendFrame<'_>,
+        n_d: f32,
+    ) -> crate::bridge::frame_cache::guide_pass::GuideKey {
         crate::bridge::frame_cache::guide_pass::GuideCache::key_for_geom(
             frame.width,
             frame.height,
@@ -258,7 +340,7 @@ impl ViewportGpu {
             frame.pitch,
             frame.distance,
             frame.stone(),
-            frame.material.dispersion.n_d(),
+            n_d,
         )
     }
 
@@ -285,7 +367,8 @@ impl ViewportGpu {
             }
             return;
         }
-        let key = Self::guide_key(frame);
+        let n_d = frame.material.dispersion.n_d();
+        let key = Self::guide_key(frame, n_d);
         if self.path_sig_key.as_ref() == Some(&key) && sig.len() == pixels {
             return;
         }
@@ -296,7 +379,7 @@ impl ViewportGpu {
             frame.pitch,
             frame.distance,
             frame.stone(),
-            frame.material.dispersion.n_d(),
+            n_d,
         );
         sig.clear();
         sig.extend_from_slice(&guides.path_sig);
@@ -403,6 +486,11 @@ fn hybrid_frame(
     let cpu_share = frame.spp - gpu_share;
     let pixel_count = (frame.width as usize) * (frame.height as usize);
     hybrid.prepare_scratch(pixel_count);
+    // Reserve the GPU driver thread and the display thread (UI-3).
+    let cpu_threads = std::thread::available_parallelism()
+        .map_or(8, std::num::NonZero::get)
+        .saturating_sub(2)
+        .max(1);
     let (gpu_ok, gpu_time, cpu_time, gpu_panicked) = {
         let cpu_scratch = &mut hybrid.cpu_scratch;
         let cpu_depth = &mut hybrid.scratch_depth;
@@ -419,7 +507,7 @@ fn hybrid_frame(
                 (ok, start.elapsed())
             });
             let start = std::time::Instant::now();
-            render_frame_scanlines(
+            render_frame_scanlines_with_threads(
                 frame,
                 cpu_share,
                 frame.sample_offset + frame.spp,
@@ -429,6 +517,7 @@ fn hybrid_frame(
                     normal: cpu_normal,
                     facet_id: cpu_facet,
                 },
+                cpu_threads,
             );
             let cpu_time = start.elapsed();
             match gpu_task.join() {
@@ -464,6 +553,15 @@ fn hybrid_frame(
     // call is reached only on the path that did NOT.
     backend.invalidate_guide_cache();
 }
+
+/// Above this measured GPU throughput share a hybrid frame loses to GPU-only, so the
+/// viewport stops splitting. Mirrors `HYBRID_MAX_GPU_SHARE` in
+/// `apps/indicatrix-worker/src/render_core/hybrid.rs:69-80`, where splitting a GPU that
+/// was 10.3x faster than the CPU (79.5 vs 7.7 samples/s) measured 0.58x, a 42 % loss: the
+/// per-frame join waits for the slower half and the CPU tracer threads take cores from the
+/// thread that submits and polls the GPU. `0.7` admits hybrid only while the CPU is within
+/// about 2.3x of the GPU.
+const HYBRID_MAX_GPU_SHARE: f64 = 0.7;
 
 /// Adaptive pacing state for the viewport's hybrid CPU+GPU accumulation:
 /// exponentially-smoothed samples-per-second per engine, measured from actual work
@@ -507,12 +605,25 @@ impl HybridPacing {
 
     /// The GPU's sample share for an `spp`-sample frame, once both engines have rates;
     /// `None` keeps the single-engine path (also the initial per-engine measurement).
+    ///
+    /// Also `None` once a measured CPU rate shows the GPU would carry at least
+    /// [`HYBRID_MAX_GPU_SHARE`] of the work: the frame then stays GPU-only. A seeded
+    /// (unmeasured) CPU rate is exempt, because the seed is pessimistic by construction
+    /// and the next hybrid frame exists to replace it with a real one.
     fn gpu_share(&self, spp: u32) -> Option<u32> {
         if self.gpu_dead || spp < 2 {
             return None;
         }
         let (gpu, cpu) = (self.gpu_rate?, self.cpu_rate?);
         let frac = gpu / (gpu + cpu);
+        if !self.cpu_rate_seeded && frac >= HYBRID_MAX_GPU_SHARE {
+            return None;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "frac is a share in 0..=1 of a u32 sample count, so the rounded product fits u32"
+        )]
         let share = (f64::from(spp) * frac).round() as u32;
         // While the CPU rate is only a seed, force it a real slice to measure.
         let cap = if self.cpu_rate_seeded { spp - 1 } else { spp };

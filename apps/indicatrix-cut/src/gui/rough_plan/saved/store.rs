@@ -132,6 +132,47 @@ pub fn save_plan(db: &Mutex<Database>, name: &str, payload: &str) -> Result<i64,
     .map_err(|e| format!("Could not save the rough plan: {e}"))
 }
 
+/// The ids of the stored plans already called `name` (as [`clean_plan_name`] left it): the
+/// ones saving under `name` would replace. The list shows names verbatim, so the match is
+/// exact -- "Plan" and "plan" are two plans.
+///
+/// [`clean_plan_name`]: super::naming::clean_plan_name
+///
+/// # Errors
+///
+/// Returns a message if the query fails.
+pub fn plan_ids_named(db: &Mutex<Database>, name: &str) -> Result<Vec<i64>, String> {
+    with_db(db, |d| d.saved_rough_plan_ids_named(name))
+        .map_err(|e| format!("Could not look for a saved plan called \"{name}\": {e}"))
+}
+
+/// Stores a plan under `name` in place of every plan already called that (one transaction,
+/// see `Database::replace_saved_rough_plans_named`) and returns the new id. With nothing to
+/// replace it is [`save_plan`].
+///
+/// # Errors
+///
+/// Returns a message if the replacement fails; the old plans are untouched then.
+pub fn replace_plan(db: &Mutex<Database>, name: &str, payload: &str) -> Result<i64, String> {
+    let now = current_unix_time();
+    let version = payload_version_of(payload).unwrap_or(CURRENT_SCHEMA_VERSION);
+    let summary = plan_summary(payload);
+    let (id, replaced) = with_db(db, |d| {
+        d.replace_saved_rough_plans_named(name, version, payload, &summary, now)
+    })
+    .map_err(|e| format!("Could not replace the saved rough plan: {e}"))?;
+    // A replaced plan's colour, cached photos and pose choices go with it, as with a delete (the
+    // new plan has its own id).
+    for old in replaced {
+        if let Err(error) = with_db(db, |d| {
+            crate::gui::rough_colour::store::delete_rough_colour(d, old)
+        }) {
+            warn!("Rough planner: the colour of replaced plan #{old} was not removed: {error:#}");
+        }
+    }
+    Ok(id)
+}
+
 /// Loads a stored plan.
 ///
 /// # Errors
@@ -181,10 +222,17 @@ pub fn delete_saved(db: &Mutex<Database>, id: i64) -> Result<(), String> {
     let deleted = with_db(db, |d| d.delete_saved_rough_plan(id))
         .map_err(|e| format!("Could not delete rough plan #{id}: {e}"))?;
     if deleted == 0 {
-        Err(gone_message(id))
-    } else {
-        Ok(())
+        return Err(gone_message(id));
     }
+    // The plan's colour, cached photos and pose choices go with it (plan ids are never reused, so
+    // they could only linger until the next startup prune). A failure is logged and left to that
+    // prune; the plan itself is deleted.
+    if let Err(error) = with_db(db, |d| {
+        crate::gui::rough_colour::store::delete_rough_colour(d, id)
+    }) {
+        warn!("Rough planner: the colour of deleted plan #{id} was not removed: {error:#}");
+    }
+    Ok(())
 }
 
 /// This library's identity stamp (created on first use), or `None` when it cannot be read

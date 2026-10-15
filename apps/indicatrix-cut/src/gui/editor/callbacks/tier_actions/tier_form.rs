@@ -71,7 +71,7 @@ fn added_tier_label(st: &EditorState, dirty_index: usize) -> Option<String> {
 /// new row into view.
 fn select_and_announce_added_tier(ui: &MainWindow, dirty_index: usize, label: Option<String>) {
     ui.global::<EditorModel>()
-        .set_selected_tier_index(dirty_index as i32);
+        .set_selected_tier_index(i32::try_from(dirty_index).expect("tier index fits in i32"));
     if let Some(label) = label {
         show_toast(ui, &format!("Added {label}"), "info");
     }
@@ -427,6 +427,10 @@ fn save_tier_now(ui: &MainWindow, services: &SaveServices<'_>, form: &TierFormIn
 /// The UI's [`SliderSpec`] for the plain data `indicatrix_editor::slider_ranges` worked out:
 /// numbers become `f32`, a missing band becomes an empty one (`band_to <= band_from`).
 /// `pub(super)` since the Preform tab's sliders map their data the same way.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the Slint property precision; slider values are small angles and steps"
+)]
 pub(super) fn slider_spec_from(data: SliderSpecData) -> SliderSpec {
     let (band_from, band_to) = data.band.unwrap_or((0.0, 0.0));
     SliderSpec {
@@ -448,6 +452,10 @@ pub(super) fn slider_spec_from(data: SliderSpecData) -> SliderSpec {
 
 /// The "Typical" menu's rows for the UI.
 fn preset_rows(presets: Vec<AnglePreset>) -> ModelRc<SliderPreset> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the Slint property precision; preset values are small angles in degrees"
+    )]
     let rows: Vec<SliderPreset> = presets
         .into_iter()
         .map(|preset| SliderPreset {

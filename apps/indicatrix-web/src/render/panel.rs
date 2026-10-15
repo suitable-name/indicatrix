@@ -107,7 +107,7 @@ fn load_hdr(ctx: &Ctx) {
     let ctx = ctx.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let Some(handle) = rfd::AsyncFileDialog::new()
-            .add_filter("Radiance HDR environment map (.hdr)", &["hdr"])
+            .add_filter("Radiance HDR Environment Map (.hdr)", &["hdr"])
             .pick_file()
             .await
         else {

@@ -1,203 +1,103 @@
-use super::*;
+//! Round trips of the shared tables ([`PreformTable`], [`MaterialTable`], [`TierTable`],
+//! [`HistoryTable`], [`CustomMaterialSnapshot`]) through the text of a design file. The
+//! document itself ([`DesignFile`]) is tested in `design/tests.rs`; this crate has no
+//! editor `Design` type, so documents are built directly via the `new` constructors.
 
-/// A minimal, valid native document used by several tests below -- built directly via
-/// the `new` constructors since this crate has no editor `Design` type to build one
-/// through (that higher-level assembly is `indicatrix-cut-core`'s `native::
-/// to_native_file`, which this crate deliberately doesn't own -- see the module doc
-/// comment).
-fn sample_file() -> NativeDesignFile {
-    NativeDesignFile::new(
-        "design.asc",
-        sha256_hex(b"asc bytes"),
+use super::{
+    design::{DesignFile, ScheduleTable, parse, to_string},
+    *,
+};
+
+fn schedule() -> ScheduleTable {
+    ScheduleTable {
+        gemcad_version: String::new(),
+        gear_teeth: 96,
+        gear_reference_angle: 0.0,
+        symmetry_order: 4,
+        mirror: true,
+        refractive_index: 1.62,
+        headers: Vec::new(),
+        footnotes: Vec::new(),
+        unknown: toml::Table::new(),
+    }
+}
+
+/// A tier with the geometry a design file requires of every tier.
+fn tier(name: &str, constraint: NativeMeetConstraint) -> TierTable {
+    TierTable::new(name, constraint, Vec::new())
+        .with_angle_deg(Some(40.0))
+        .with_indices(Some(vec![0.0, 24.0]))
+}
+
+/// A minimal, valid design document used by several tests below.
+fn sample_file() -> DesignFile {
+    DesignFile::new(
         PreformTable::new(NativePreformShape::Block, 1.0, 1.0, 2.0),
-        Some(6.5),
         MaterialTable::new(Some("Diamond".to_string()), None, Some(1.62)),
-        vec![TierTable::new(
-            "T",
-            NativeMeetConstraint::MeetExisting,
-            vec![0.0, 2.0],
-        )],
+        schedule(),
+        Some(6.5),
+        vec![tier("T", NativeMeetConstraint::MeetExisting)],
     )
 }
 
-/// The core promise: serialize a document to TOML text, parse it back, and get an
-/// equal struct -- the basic round trip every other test here builds on.
-#[test]
-fn native_file_round_trips_through_toml_text() {
-    let native = sample_file();
-    let text = to_toml_string(&native).expect("must serialize");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
-    assert_eq!(native, parsed);
+fn write(file: &DesignFile) -> String {
+    to_string(file).expect("must serialize")
 }
 
-/// A tier without a relation writes no `angle_relation` key (so a relation-less sidecar's
-/// bytes are what they always were), one with a relation round-trips it, and a sidecar
-/// from before the field existed loads with none.
+fn read(text: &str) -> DesignFile {
+    parse(text).expect("must parse")
+}
+
+/// A hand-written design file of header `version` whose `[preform]` body is
+/// `preform_body`, with one tier carrying `tier_extra` extra lines.
+fn hand_written(version: u32, preform_body: &str, tier_extra: &str) -> String {
+    format!(
+        "format = \"indicatrix-design\"\nversion = {version}\n\n[preform]\n{preform_body}\n\n\
+         [material]\nname = \"Diamond\"\n\n[schedule]\ngear_teeth = 96\n\
+         gear_reference_angle = 0.0\nsymmetry_order = 4\nmirror = true\n\
+         refractive_index = 1.62\n\n[[tiers]]\nname = \"T\"\n\
+         constraint = {{ kind = \"meet_existing\" }}\nangle_deg = 40.0\n\
+         indices = [0.0, 24.0]\n{tier_extra}"
+    )
+}
+
+const BLOCK_PREFORM: &str =
+    "shape = { kind = \"block\" }\nhalf_width = 1.0\nlength_over_width = 1.0\ndepth = 2.0";
+
+/// A tier without a relation writes no `angle_relation` key (so a relation-less file's
+/// bytes are what they always were), and one with a relation round-trips it.
 #[test]
 fn a_tier_relation_is_written_only_when_present_and_round_trips() {
-    let plain = to_toml_string(&sample_file()).expect("must serialize");
+    let plain = write(&sample_file());
     assert!(!plain.contains("angle_relation"));
-    let parsed = from_toml_str(&plain).expect("must parse");
-    assert_eq!(parsed.tiers[0].angle_relation, None);
+    assert_eq!(read(&plain).tiers[0].angle_relation, None);
 
     let mut native = sample_file();
     native.tiers[0] = native.tiers[0]
         .clone()
         .with_angle_relation(Some("@4 - 2".to_string()));
-    let text = to_toml_string(&native).expect("must serialize");
+    native.version = native.needed_version();
+    let text = write(&native);
     assert_eq!(text.matches("angle_relation = \"@4 - 2\"").count(), 1);
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let parsed = read(&text);
     assert_eq!(parsed, native);
     assert_eq!(parsed.tiers[0].angle_relation.as_deref(), Some("@4 - 2"));
-    assert_eq!(to_toml_string(&parsed).expect("must serialize"), text);
+    assert_eq!(write(&parsed), text);
 }
 
-/// Determinism: serializing the same document twice must produce byte-identical text
-/// (the module doc comment's "Format: TOML" section).
-#[test]
-fn serializing_the_same_document_twice_is_byte_identical() {
-    let a = to_toml_string(&sample_file()).expect("must serialize");
-    let b = to_toml_string(&sample_file()).expect("must serialize");
-    assert_eq!(a, b);
-}
-
-/// A field this build's [`NativeDesignFile`] does not know about must survive a
-/// parse-then-reserialize round trip untouched, at every nesting level this module
-/// defines (top level, `preform`, `material`, a `[[tiers]]` entry).
-#[test]
-fn unknown_fields_survive_a_round_trip() {
-    let text = r#"
-format_version = 1
-asc_filename = "design.asc"
-asc_sha256 = "deadbeef"
-future_top_level_field = "kept"
-
-[preform]
-shape = { kind = "block" }
-half_width = 1.0
-length_over_width = 1.0
-depth = 2.0
-future_preform_field = 42
-
-[material]
-name = "Diamond"
-future_material_field = true
-
-[[tiers]]
-name = "T"
-constraint = { kind = "meet_existing" }
-future_tier_field = "kept too"
-"#;
-    let parsed = from_toml_str(text).expect("must parse a file with unknown fields");
-    assert_eq!(
-        parsed
-            .unknown
-            .get("future_top_level_field")
-            .and_then(|v| v.as_str()),
-        Some("kept")
-    );
-    assert_eq!(
-        parsed
-            .preform
-            .unknown
-            .get("future_preform_field")
-            .and_then(toml::Value::as_integer),
-        Some(42)
-    );
-    assert_eq!(
-        parsed
-            .material
-            .unknown
-            .get("future_material_field")
-            .and_then(toml::Value::as_bool),
-        Some(true)
-    );
-    assert_eq!(
-        parsed.tiers[0]
-            .unknown
-            .get("future_tier_field")
-            .and_then(|v| v.as_str()),
-        Some("kept too")
-    );
-
-    // Re-serializing must still carry every key forward.
-    let round_tripped = to_toml_string(&parsed).expect("must reserialize");
-    let reparsed = from_toml_str(&round_tripped).expect("must reparse");
-    assert_eq!(parsed, reparsed);
-    assert!(round_tripped.contains("future_top_level_field"));
-    assert!(round_tripped.contains("future_preform_field"));
-    assert!(round_tripped.contains("future_material_field"));
-    assert!(round_tripped.contains("future_tier_field"));
-}
-
-/// A native file with no override set must not even write the
-/// `refractive_index_override` key (`#[serde(skip_serializing_if =
-/// "Option::is_none")]`, same rule as `specific_gravity_override`), and that text
-/// must still parse with the field loading back as `None`.
+/// A material table with no override must not even write the
+/// `refractive_index_override` key, and that text must still parse with the field
+/// loading back as `None`.
 #[test]
 fn a_material_table_with_no_ri_override_omits_the_key_and_still_loads_as_none() {
     let mut native = sample_file();
     native.material.refractive_index_override = None; // the case under test
-    let text = to_toml_string(&native).expect("must serialize");
+    let text = write(&native);
     assert!(
         !text.contains("refractive_index_override"),
         "an unset override must not appear in the written TOML at all:\n{text}"
     );
-
-    let parsed = from_toml_str(&text).expect("must still parse without the key");
-    assert_eq!(parsed.material.refractive_index_override, None);
-}
-
-/// [`native_path_for_asc`]/[`asc_path_for_native`] must be inverses of each other
-/// for a well-formed pair, and the latter must recognize a path that doesn't end
-/// in either the current or legacy suffix as not one of this format's files.
-#[test]
-fn native_and_asc_paths_convert_both_ways() {
-    let asc = std::path::Path::new("C:/designs/RBC-445.asc");
-    let native = native_path_for_asc(asc);
-    assert_eq!(
-        native,
-        std::path::Path::new("C:/designs/RBC-445.indicatrix.toml")
-    );
-    assert_eq!(asc_path_for_native(&native).as_deref(), Some(asc));
-
-    assert_eq!(
-        asc_path_for_native(std::path::Path::new("not_native.txt")),
-        None
-    );
-}
-
-/// A legacy `.gemcut.toml` sidecar (this format's former name) must still resolve
-/// back to its paired `.asc`.
-#[test]
-fn legacy_gemcut_suffix_still_resolves() {
-    let legacy = std::path::Path::new("C:/designs/RBC-445.gemcut.toml");
-    assert_eq!(
-        asc_path_for_native(legacy).as_deref(),
-        Some(std::path::Path::new("C:/designs/RBC-445.asc"))
-    );
-}
-
-/// [`check_fingerprint`] must report a match against the exact bytes a document's
-/// `asc_sha256` was computed from, and a mismatch (carrying both hashes) against any
-/// other bytes.
-#[test]
-fn check_fingerprint_matches_identical_bytes_and_flags_a_change() {
-    let native = sample_file();
-    assert_eq!(
-        check_fingerprint(&native, b"asc bytes"),
-        FingerprintCheck::Match
-    );
-    match check_fingerprint(&native, b"different bytes") {
-        FingerprintCheck::Mismatch {
-            expected_sha256,
-            found_sha256,
-        } => {
-            assert_eq!(expected_sha256, native.asc_sha256);
-            assert_eq!(found_sha256, sha256_hex(b"different bytes"));
-        }
-        FingerprintCheck::Match => panic!("different bytes must not match"),
-    }
+    assert_eq!(read(&text).material.refractive_index_override, None);
 }
 
 // --- `PreformTable::y_offset` round-trips and defaults to `0.0` ---
@@ -212,60 +112,120 @@ fn preform_table_y_offset_defaults_to_zero_and_with_y_offset_sets_it() {
     assert_eq!(offset_table.y_offset, 0.35);
 }
 
-/// A non-zero `y_offset` must survive a TOML serialize/parse round trip.
+/// A non-zero `y_offset` must survive a serialize/parse round trip.
 #[test]
 fn preform_table_y_offset_round_trips_through_toml_text() {
     let mut native = sample_file();
     native.preform = native.preform.with_y_offset(0.35);
-    let text = to_toml_string(&native).expect("must serialize");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let parsed = read(&write(&native));
     assert_eq!(parsed.preform.y_offset, 0.35);
 }
 
-/// A sidecar written before `y_offset` existed (no such key in `[preform]` at all)
-/// must still parse, with `y_offset` defaulting to `0.0`.
+/// A file written before `y_offset` existed (no such key in `[preform]` at all) must
+/// still parse, with `y_offset` defaulting to `0.0`.
 #[test]
 fn a_preform_table_with_no_y_offset_key_parses_and_defaults_to_zero() {
-    let text = r#"
-format_version = 1
-asc_filename = "design.asc"
-asc_sha256 = "deadbeef"
-
-[preform]
-shape = { kind = "block" }
-half_width = 1.0
-length_over_width = 1.0
-depth = 2.0
-
-[material]
-name = "Diamond"
-
-[[tiers]]
-name = "T"
-constraint = { kind = "meet_existing" }
-"#;
-    let parsed = from_toml_str(text).expect("must parse a pre-item-208 sidecar");
+    let parsed = read(&hand_written(1, BLOCK_PREFORM, ""));
     assert_eq!(parsed.preform.y_offset, 0.0);
+}
+
+// --- `NativePreformShape::Planes` round-trips and keeps the Block form unchanged ---
+
+/// The six `[nx, ny, nz, m]` rows of a box, used by the plane-set tests below.
+fn box_rows() -> Vec<[f64; 4]> {
+    vec![
+        [1.0, 0.0, 0.0, 1.2],
+        [-1.0, 0.0, 0.0, 1.2],
+        [0.0, 1.0, 0.0, 0.9],
+        [0.0, -1.0, 0.0, 0.9],
+        [0.0, 0.0, 1.0, 1.5],
+        [0.0, 0.0, -1.0, 1.5],
+    ]
+}
+
+/// A plane-set preform must survive a serialize/parse round trip through the document
+/// text, written with the `kind = "planes"`, `planes` and `source` keys, and the
+/// size fields must come back untouched.
+#[test]
+fn a_plane_set_preform_round_trips_through_toml_text() {
+    let mut native = sample_file();
+    native.preform = PreformTable::new(
+        NativePreformShape::Planes {
+            planes: box_rows(),
+            source: "plan 'Aqua'".into(),
+        },
+        1.2,
+        1.25,
+        1.8,
+    );
+    native.version = native.needed_version();
+    let text = write(&native);
+    assert!(text.contains("kind = \"planes\""), "{text}");
+    assert!(text.contains("planes = "), "{text}");
+    assert!(text.contains("source = "), "{text}");
+    let parsed = read(&text);
+    assert_eq!(parsed, native);
+    match &parsed.preform.shape {
+        NativePreformShape::Planes { planes, source } => {
+            assert_eq!(planes, &box_rows());
+            assert_eq!(source, "plan 'Aqua'");
+        }
+        other => panic!("expected a plane set, got {other:?}"),
+    }
+    assert_eq!(parsed.preform.half_width, 1.2);
+    assert_eq!(parsed.preform.length_over_width, 1.25);
+    assert_eq!(parsed.preform.depth, 1.8);
+    assert_eq!(write(&parsed), text);
+}
+
+/// A plane set whose table has no `source` key loads with an empty source.
+#[test]
+fn a_plane_set_preform_without_a_source_key_loads_with_an_empty_source() {
+    let preform = "shape = { kind = \"planes\", planes = [[1.0, 0.0, 0.0, 1.2], \
+                   [-1.0, 0.0, 0.0, 1.2], [0.0, 1.0, 0.0, 0.9], [0.0, -1.0, 0.0, 0.9], \
+                   [0.0, 0.0, 1.0, 1.5], [0.0, 0.0, -1.0, 1.5]] }\n\
+                   half_width = 1.2\nlength_over_width = 1.25\ndepth = 1.8";
+    let parsed = read(&hand_written(4, preform, ""));
+    match &parsed.preform.shape {
+        NativePreformShape::Planes { planes, source } => {
+            assert_eq!(planes, &box_rows());
+            assert_eq!(source, "");
+        }
+        other => panic!("expected a plane set, got {other:?}"),
+    }
+}
+
+/// The Block form is unchanged by the new kind: same key, no `planes` or `source`.
+#[test]
+fn the_block_preform_text_is_unchanged_by_the_plane_set_kind() {
+    let text = write(&sample_file());
+    assert!(text.contains("kind = \"block\""), "{text}");
+    assert!(!text.contains("planes"), "{text}");
+    assert_eq!(read(&text).preform.shape, NativePreformShape::Block);
 }
 
 // --- `MaterialTable::custom` round-trips through TOML text ---
 
-/// A [`CustomMaterialSnapshot`] attached via [`MaterialTable::with_custom`] must
-/// survive a serialize/parse round trip untouched.
-#[test]
-fn material_table_custom_snapshot_round_trips_through_toml_text() {
-    let mut native = sample_file();
-    let snapshot = CustomMaterialSnapshot::new(
+/// The custom snapshot used by most of the tests below.
+fn trigonal_snapshot() -> CustomMaterialSnapshot {
+    CustomMaterialSnapshot::new(
         1.62,
         0.017,
         -0.021,
         Some(3.06),
         "Trigonal",
         "UniaxialNegative",
-    );
+    )
+}
+
+/// A [`CustomMaterialSnapshot`] attached via [`MaterialTable::with_custom`] must
+/// survive a serialize/parse round trip untouched.
+#[test]
+fn material_table_custom_snapshot_round_trips_through_toml_text() {
+    let mut native = sample_file();
+    let snapshot = trigonal_snapshot();
     native.material = native.material.with_custom(Some(snapshot.clone()));
-    let text = to_toml_string(&native).expect("must serialize");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let parsed = read(&write(&native));
     assert_eq!(parsed.material.custom, Some(snapshot));
 }
 
@@ -276,21 +236,15 @@ fn material_table_custom_snapshot_round_trips_through_toml_text() {
 fn custom_snapshot_body_color_round_trips_through_toml_text() {
     let mut native = sample_file();
     let color = [0.2_f32, 0.6, 1.8];
-    let snapshot = CustomMaterialSnapshot::new(
-        1.62,
-        0.017,
-        -0.021,
-        Some(3.06),
-        "Trigonal",
-        "UniaxialNegative",
-    )
-    .with_body_color(Some(color));
+    let snapshot = trigonal_snapshot().with_body_color(Some(color));
     native.material = native.material.with_custom(Some(snapshot.clone()));
-    let text = to_toml_string(&native).expect("must serialize");
+    let text = write(&native);
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(compact.contains("absorption_rgb=[0.2,0.6,1.8"), "{text}");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
-    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    let custom = read(&text)
+        .material
+        .custom
+        .expect("custom snapshot loads back");
     assert_eq!(custom, snapshot);
     let got = custom.body_color().expect("body color loads back");
     assert_eq!(got.map(f32::to_bits), color.map(f32::to_bits));
@@ -301,19 +255,13 @@ fn custom_snapshot_body_color_round_trips_through_toml_text() {
 #[test]
 fn custom_snapshot_without_body_color_writes_no_absorption_rgb_key() {
     let mut native = sample_file();
-    let snapshot = CustomMaterialSnapshot::new(
-        1.62,
-        0.017,
-        -0.021,
-        Some(3.06),
-        "Trigonal",
-        "UniaxialNegative",
-    );
-    native.material = native.material.with_custom(Some(snapshot));
-    let text = to_toml_string(&native).expect("must serialize");
+    native.material = native.material.with_custom(Some(trigonal_snapshot()));
+    let text = write(&native);
     assert!(!text.contains("absorption_rgb"), "{text}");
-    let parsed = from_toml_str(&text).expect("must parse");
-    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    let custom = read(&text)
+        .material
+        .custom
+        .expect("custom snapshot loads back");
     assert_eq!(custom.body_color(), None);
 }
 
@@ -350,14 +298,16 @@ fn custom_snapshot_dispersion_model_round_trips_through_toml_text() {
         let snapshot = CustomMaterialSnapshot::new(1.7, 0.02, 0.0, None, "Cubic", "Isotropic")
             .with_dispersion_model(Some(model.clone()));
         native.material = native.material.with_custom(Some(snapshot.clone()));
-        let text = to_toml_string(&native).expect("must serialize");
+        let text = write(&native);
         assert!(
             text.contains("[material.custom.dispersion_model]"),
             "{text}"
         );
         assert!(text.contains(&format!("kind = \"{kind}\"")), "{text}");
-        let parsed = from_toml_str(&text).expect("must parse its own output");
-        let custom = parsed.material.custom.expect("custom snapshot loads back");
+        let custom = read(&text)
+            .material
+            .custom
+            .expect("custom snapshot loads back");
         assert_eq!(custom.dispersion_model, Some(model), "{kind}");
         assert_eq!(custom, snapshot, "{kind}");
         assert!(
@@ -375,10 +325,12 @@ fn custom_snapshot_without_a_dispersion_model_writes_no_key() {
     let snapshot =
         CustomMaterialSnapshot::new(1.62, 0.017, -0.021, None, "Trigonal", "UniaxialNegative");
     native.material = native.material.with_custom(Some(snapshot));
-    let text = to_toml_string(&native).expect("must serialize");
+    let text = write(&native);
     assert!(!text.contains("dispersion_model"), "{text}");
-    let parsed = from_toml_str(&text).expect("must parse");
-    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    let custom = read(&text)
+        .material
+        .custom
+        .expect("custom snapshot loads back");
     assert_eq!(custom.dispersion_model, None);
 }
 
@@ -397,13 +349,12 @@ fn an_unreadable_dispersion_model_loads_as_none_and_a_hand_written_one_loads() {
             "Cubic",
             "Isotropic",
         )));
-    let base = to_toml_string(&native).expect("must serialize");
+    let base = write(&native);
 
     let by_hand = format!(
         "{base}\n[material.custom.dispersion_model]\nkind = \"sellmeier1\"\nb1 = 1\nc1 = 0.01\n"
     );
-    let custom = from_toml_str(&by_hand)
-        .expect("a whole number is a valid coefficient")
+    let custom = read(&by_hand)
         .material
         .custom
         .expect("custom snapshot loads back");
@@ -418,8 +369,7 @@ fn an_unreadable_dispersion_model_loads_as_none_and_a_hand_written_one_loads() {
         "kind = \"sellmeier3\"\nb = [1.0, 2.0]\nc = [0.1, 0.2, 0.3]\n",
     ] {
         let text = format!("{base}\n[material.custom.dispersion_model]\n{bad}");
-        let custom = from_toml_str(&text)
-            .expect("an unreadable table must not fail the whole file")
+        let custom = read(&text)
             .material
             .custom
             .expect("custom snapshot loads back");
@@ -432,11 +382,9 @@ fn an_unreadable_dispersion_model_loads_as_none_and_a_hand_written_one_loads() {
 /// table, and must still load back as `None`.
 #[test]
 fn material_table_with_no_custom_snapshot_omits_the_table() {
-    let native = sample_file();
-    let text = to_toml_string(&native).expect("must serialize");
+    let text = write(&sample_file());
     assert!(!text.contains("[material.custom]"));
-    let parsed = from_toml_str(&text).expect("must parse");
-    assert_eq!(parsed.material.custom, None);
+    assert_eq!(read(&text).material.custom, None);
 }
 
 // --- `MaterialTable::body_color_override` round-trips through TOML text ---
@@ -452,7 +400,7 @@ fn material_table_body_color_override_round_trips_through_toml_text() {
     // `native::convert::body_color_to_table`.
     let yellow = [0.2f64, 0.4, 2.8];
     native.material = native.material.with_body_color_override(Some(yellow));
-    let text = to_toml_string(&native).expect("must serialize");
+    let text = write(&native);
     // The TOML writer spreads the array over several lines with a trailing comma;
     // compare with all whitespace removed so only the digits matter.
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
@@ -460,7 +408,7 @@ fn material_table_body_color_override_round_trips_through_toml_text() {
         compact.contains("body_color_override=[0.2,0.4,2.8"),
         "{text}"
     );
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let parsed = read(&text);
     let got = parsed.material.body_color_override.expect("must load back");
     assert_eq!(got.map(f64::to_bits), yellow.map(f64::to_bits));
     assert_eq!(parsed, native);
@@ -470,13 +418,12 @@ fn material_table_body_color_override_round_trips_through_toml_text() {
 /// written before the field existed) loads back as `None`.
 #[test]
 fn material_table_without_a_body_color_override_omits_the_key_and_loads_as_none() {
-    let text = to_toml_string(&sample_file()).expect("must serialize");
+    let text = write(&sample_file());
     assert!(!text.contains("body_color_override"));
-    let parsed = from_toml_str(&text).expect("must parse");
-    assert_eq!(parsed.material.body_color_override, None);
+    assert_eq!(read(&text).material.body_color_override, None);
 }
 
-/// The N-band colour of a design (bands + path scale) is written next to the triple, round
+/// The N-band color of a design (bands + path scale) is written next to the triple, round
 /// trips bit for bit, and a file without the keys loads as `None` with no key written.
 #[test]
 fn material_table_body_color_bands_round_trip_next_to_the_triple() {
@@ -486,7 +433,7 @@ fn material_table_body_color_bands_round_trip_next_to_the_triple() {
         .material
         .with_body_color_override(Some([0.2, 0.4, 2.8]))
         .with_body_color_bands_override(Some(rows.clone()), Some(24.5));
-    let text = to_toml_string(&native).expect("must serialize");
+    let text = write(&native);
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
         compact.contains("body_color_override=[0.2,0.4,2.8"),
@@ -496,15 +443,15 @@ fn material_table_body_color_bands_round_trip_next_to_the_triple() {
         compact.contains("absorption_path_scale_override=24.5"),
         "{text}"
     );
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let parsed = read(&text);
     assert_eq!(parsed.material.body_color_bands_override, Some(rows));
     assert_eq!(parsed.material.absorption_path_scale_override, Some(24.5));
     assert_eq!(parsed, native);
 
-    let plain = to_toml_string(&sample_file()).expect("must serialize");
+    let plain = write(&sample_file());
     assert!(!plain.contains("body_color_bands_override"), "{plain}");
     assert!(!plain.contains("absorption_path_scale_override"), "{plain}");
-    let old = from_toml_str(&plain).expect("an old file loads");
+    let old = read(&plain);
     assert_eq!(old.material.body_color_bands_override, None);
     assert_eq!(old.material.absorption_path_scale_override, None);
 }
@@ -515,22 +462,17 @@ fn material_table_body_color_bands_round_trip_next_to_the_triple() {
 fn custom_snapshot_absorption_bands_round_trip_next_to_the_triple() {
     let mut native = sample_file();
     let rows = [[460.0_f32, 45.0, 0.2], [620.0, 45.0, 0.6]];
-    let snapshot = CustomMaterialSnapshot::new(
-        1.62,
-        0.017,
-        -0.021,
-        Some(3.06),
-        "Trigonal",
-        "UniaxialNegative",
-    )
-    .with_body_color(Some([0.2, 0.6, 1.8]))
-    .with_absorption_bands(&rows);
+    let snapshot = trigonal_snapshot()
+        .with_body_color(Some([0.2, 0.6, 1.8]))
+        .with_absorption_bands(&rows);
     native.material = native.material.with_custom(Some(snapshot.clone()));
-    let text = to_toml_string(&native).expect("must serialize");
+    let text = write(&native);
     assert!(text.contains("absorption_bands_per_mm"), "{text}");
     assert!(text.contains("absorption_rgb"), "{text}");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
-    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    let custom = read(&text)
+        .material
+        .custom
+        .expect("custom snapshot loads back");
     assert_eq!(custom, snapshot);
     let got = custom.absorption_bands().expect("bands load back");
     assert_eq!(got.len(), 2);
@@ -543,17 +485,57 @@ fn custom_snapshot_absorption_bands_round_trip_next_to_the_triple() {
         CustomMaterialSnapshot::new(1.62, 0.017, -0.021, None, "Trigonal", "UniaxialNegative")
             .with_body_color(Some([0.2, 0.6, 1.8]));
     native.material = native.material.with_custom(Some(old));
-    let text = to_toml_string(&native).expect("must serialize");
+    let text = write(&native);
     assert!(!text.contains("absorption_bands_per_mm"), "{text}");
-    let parsed = from_toml_str(&text).expect("must parse");
-    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    let custom = read(&text)
+        .material
+        .custom
+        .expect("custom snapshot loads back");
     assert_eq!(custom.absorption_bands(), None);
     assert!(custom.body_color().is_some());
 }
 
+/// A biaxial material's `biaxial_delta_beta_alpha` is written, round trips through the
+/// document, and a snapshot built without it (every older file) writes no such key.
+#[test]
+fn custom_snapshot_biaxial_delta_round_trips_and_is_omitted_when_unset() {
+    let mut native = sample_file();
+    let snapshot = CustomMaterialSnapshot::new(
+        1.70,
+        0.02,
+        0.009,
+        Some(3.35),
+        "Orthorhombic",
+        "BiaxialPositive",
+    )
+    .with_biaxial_delta(Some(0.004));
+    native.material = native.material.with_custom(Some(snapshot.clone()));
+    let text = write(&native);
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(compact.contains("biaxial_delta_beta_alpha=0.004"), "{text}");
+    let custom = read(&text)
+        .material
+        .custom
+        .expect("custom snapshot loads back");
+    assert_eq!(custom, snapshot);
+    assert_eq!(custom.biaxial_delta_beta_alpha, Some(0.004));
+
+    // Without the delta no key is written, and the file loads back with `None`.
+    let old =
+        CustomMaterialSnapshot::new(1.62, 0.017, -0.021, None, "Trigonal", "UniaxialNegative");
+    native.material = native.material.with_custom(Some(old));
+    let text = write(&native);
+    assert!(!text.contains("biaxial_delta_beta_alpha"), "{text}");
+    let custom = read(&text)
+        .material
+        .custom
+        .expect("custom snapshot loads back");
+    assert_eq!(custom.biaxial_delta_beta_alpha, None);
+}
+
 /// `sample_file()`'s text with `line` added as the first line of its `[material]` table.
 fn sample_text_with_material_line(line: &str) -> String {
-    let text = to_toml_string(&sample_file()).expect("must serialize");
+    let text = write(&sample_file());
     let marker = "[material]\n";
     assert!(text.contains(marker), "{text}");
     text.replacen(marker, &format!("{marker}{line}\n"), 1)
@@ -565,7 +547,7 @@ fn sample_text_with_material_line(line: &str) -> String {
 #[test]
 fn the_old_british_body_colour_key_loads_and_is_saved_under_the_new_spelling() {
     let old = sample_text_with_material_line("body_colour_override = [0.2, 0.4, 2.8]");
-    let parsed = from_toml_str(&old).expect("an old file must load");
+    let parsed = read(&old);
     let got = parsed.material.body_color_override.expect("override loads");
     assert_eq!(got.map(f64::to_bits), [0.2f64, 0.4, 2.8].map(f64::to_bits));
     assert!(
@@ -574,7 +556,7 @@ fn the_old_british_body_colour_key_loads_and_is_saved_under_the_new_spelling() {
         parsed.material.unknown
     );
 
-    let saved = to_toml_string(&parsed).expect("must serialize");
+    let saved = write(&parsed);
     assert_eq!(saved.matches("body_color_override").count(), 1, "{saved}");
     assert!(!saved.contains("body_colour"), "{saved}");
     // The re-saved text is exactly what a build writes for the same value.
@@ -582,7 +564,7 @@ fn the_old_british_body_colour_key_loads_and_is_saved_under_the_new_spelling() {
     fresh.material = fresh
         .material
         .with_body_color_override(Some([0.2, 0.4, 2.8]));
-    assert_eq!(saved, to_toml_string(&fresh).expect("must serialize"));
+    assert_eq!(saved, write(&fresh));
 }
 
 /// A file a campaign build re-saved after the respelling can hold both keys. It must
@@ -593,20 +575,20 @@ fn a_file_with_both_body_colour_spellings_loads_with_the_new_one_winning() {
     let both = sample_text_with_material_line(
         "body_colour_override = [9.0, 9.0, 9.0]\nbody_color_override = [0.2, 0.4, 2.8]",
     );
-    let parsed = from_toml_str(&both).expect("a file with both keys must load");
+    let parsed = read(&both);
     assert_eq!(parsed.material.body_color_override, Some([0.2, 0.4, 2.8]));
     assert!(parsed.material.unknown.is_empty());
-    let saved = to_toml_string(&parsed).expect("must serialize");
+    let saved = write(&parsed);
     assert_eq!(saved.matches("body_color_override").count(), 1, "{saved}");
     assert!(!saved.contains("body_colour"), "{saved}");
 }
 
-/// An old-spelling key that is not a colour triple is not applied and not lost: it is
+/// An old-spelling key that is not a color triple is not applied and not lost: it is
 /// carried over untouched like any other key this build cannot read.
 #[test]
 fn a_malformed_old_body_colour_key_is_carried_over_untouched() {
     let odd = sample_text_with_material_line("body_colour_override = \"amber\"");
-    let parsed = from_toml_str(&odd).expect("the file must still load");
+    let parsed = read(&odd);
     assert_eq!(parsed.material.body_color_override, None);
     assert_eq!(
         parsed
@@ -616,16 +598,16 @@ fn a_malformed_old_body_colour_key_is_carried_over_untouched() {
             .and_then(toml::Value::as_str),
         Some("amber")
     );
-    let saved = to_toml_string(&parsed).expect("must serialize");
+    let saved = write(&parsed);
     assert!(
         saved.contains("body_colour_override = \"amber\""),
         "{saved}"
     );
 }
 
-// --- `NativeDesignFile::history` round-trips through TOML text ---
+// --- `DesignFile::history` round-trips through TOML text ---
 
-/// A [`HistoryTable`] attached via [`NativeDesignFile::with_history`] must survive a
+/// A [`HistoryTable`] attached via [`DesignFile::with_history`] must survive a
 /// serialize/parse round trip untouched.
 #[test]
 fn history_table_round_trips_through_toml_text() {
@@ -633,8 +615,7 @@ fn history_table_round_trips_through_toml_text() {
         "Set material to Diamond".to_string(),
         "Remove tier C1".to_string(),
     ]));
-    let text = to_toml_string(&native).expect("must serialize");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let parsed = read(&write(&native));
     assert_eq!(
         parsed.history.map(|h| h.entries),
         Some(vec![
@@ -644,8 +625,7 @@ fn history_table_round_trips_through_toml_text() {
     );
 }
 
-/// An empty history must not grow a `[history]` table at all -- see
-/// [`NativeDesignFile::with_history`]'s own doc comment.
+/// An empty history must not grow a `[history]` table at all.
 #[test]
 fn an_empty_history_table_is_not_attached_at_all() {
     let native = sample_file().with_history(HistoryTable::new(Vec::new()));
@@ -665,30 +645,23 @@ fn an_empty_history_table_is_not_attached_at_all() {
 #[test]
 fn every_native_meet_constraint_variant_round_trips_through_toml_text_exactly() {
     let mast = 0.123_456_789_012_345;
-    let native = NativeDesignFile::new(
-        "design.asc",
-        sha256_hex(b"asc bytes"),
+    let native = DesignFile::new(
         PreformTable::new(NativePreformShape::Block, 1.0, 1.0, 2.0),
-        Some(6.5),
         MaterialTable::new(Some("Diamond".to_string()), None, Some(1.62)),
+        schedule(),
+        Some(6.5),
         vec![
-            TierTable::new("Existing", NativeMeetConstraint::MeetExisting, vec![]),
-            TierTable::new(
+            tier("Existing", NativeMeetConstraint::MeetExisting),
+            tier(
                 "Named",
                 NativeMeetConstraint::MeetNamed {
                     names: vec!["Crown Main".to_string(), "Star".to_string()],
                 },
-                vec![],
             ),
-            TierTable::new(
-                "Scaled",
-                NativeMeetConstraint::ScaleReference { mast },
-                vec![],
-            ),
+            tier("Scaled", NativeMeetConstraint::ScaleReference { mast }),
         ],
     );
-    let text = to_toml_string(&native).expect("must serialize");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let parsed = read(&write(&native));
 
     assert_eq!(
         parsed.tiers[0].constraint,
@@ -715,26 +688,18 @@ fn every_native_meet_constraint_variant_round_trips_through_toml_text_exactly() 
     assert_eq!(native, parsed);
 }
 
-// --- Stable tier ids, authoring-level tier targets, and the authored
-// refractive index ---
+// --- Stable tier ids and authoring-level tier targets ---
 
 /// A [`TierTable::tier_id`] attached via [`TierTable::with_tier_id`] must survive
 /// a serialize/parse round trip untouched.
 #[test]
 fn tier_id_round_trips_through_toml_text() {
-    let native = NativeDesignFile::new(
-        "design.asc",
-        sha256_hex(b"asc bytes"),
-        PreformTable::new(NativePreformShape::Block, 1.0, 1.0, 2.0),
-        Some(6.5),
-        MaterialTable::new(Some("Diamond".to_string()), None, Some(1.62)),
-        vec![
-            TierTable::new("A", NativeMeetConstraint::MeetExisting, vec![]).with_tier_id(Some(0)),
-            TierTable::new("B", NativeMeetConstraint::MeetExisting, vec![]).with_tier_id(Some(1)),
-        ],
-    );
-    let text = to_toml_string(&native).expect("must serialize");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let mut native = sample_file();
+    native.tiers = vec![
+        tier("A", NativeMeetConstraint::MeetExisting).with_tier_id(Some(0)),
+        tier("B", NativeMeetConstraint::MeetExisting).with_tier_id(Some(1)),
+    ];
+    let parsed = read(&write(&native));
     assert_eq!(parsed.tiers[0].tier_id, Some(0));
     assert_eq!(parsed.tiers[1].tier_id, Some(1));
 }
@@ -747,35 +712,15 @@ fn tier_id_round_trips_through_toml_text() {
 /// fabricated id.
 #[test]
 fn a_fixture_without_tier_ids_still_parses_with_no_ids() {
-    let text = r#"
-format_version = 1
-asc_filename = "design.asc"
-asc_sha256 = "deadbeef"
-
-[preform]
-shape = { kind = "block" }
-half_width = 1.0
-length_over_width = 1.0
-depth = 2.0
-
-[material]
-name = "Diamond"
-
-[[tiers]]
-name = "T1"
-constraint = { kind = "meet_existing" }
-
-[[tiers]]
-name = "T2"
-constraint = { kind = "scale_reference", mast = 0.5 }
-"#;
-    let parsed = from_toml_str(text).expect("an old fixture with no tier ids must still parse");
+    let extra = "\n[[tiers]]\nname = \"T2\"\n\
+                 constraint = { kind = \"scale_reference\", mast = 0.5 }\n\
+                 angle_deg = 0.0\nindices = []\n";
+    let parsed = read(&hand_written(1, BLOCK_PREFORM, extra));
     assert_eq!(parsed.tiers.len(), 2);
     assert_eq!(parsed.tiers[0].tier_id, None);
     assert_eq!(parsed.tiers[1].tier_id, None);
     // The round trip must not silently invent one either.
-    let reserialized = to_toml_string(&parsed).expect("must reserialize");
-    let reparsed = from_toml_str(&reserialized).expect("must reparse");
+    let reparsed = read(&write(&parsed));
     assert_eq!(reparsed.tiers[0].tier_id, None);
 }
 
@@ -783,23 +728,16 @@ constraint = { kind = "scale_reference", mast = 0.5 }
 /// serialize/parse round trip untouched, for all three variants.
 #[test]
 fn tier_target_round_trips_through_toml_text() {
-    let native = NativeDesignFile::new(
-        "design.asc",
-        sha256_hex(b"asc bytes"),
-        PreformTable::new(NativePreformShape::Block, 1.0, 1.0, 2.0),
-        Some(6.5),
-        MaterialTable::new(Some("Diamond".to_string()), None, Some(1.62)),
-        vec![
-            TierTable::new("Pavilion Main", NativeMeetConstraint::MeetExisting, vec![])
-                .with_target(Some(NativeTierTarget::DepthMm { mm: 3.20 })),
-            TierTable::new("Girdle", NativeMeetConstraint::MeetExisting, vec![])
-                .with_target(Some(NativeTierTarget::GirdleThicknessMm { mm: 0.25 })),
-            TierTable::new("Table", NativeMeetConstraint::MeetExisting, vec![])
-                .with_target(Some(NativeTierTarget::TableWidthMm { mm: 4.10 })),
-        ],
-    );
-    let text = to_toml_string(&native).expect("must serialize");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let mut native = sample_file();
+    native.tiers = vec![
+        tier("Pavilion Main", NativeMeetConstraint::MeetExisting)
+            .with_target(Some(NativeTierTarget::DepthMm { mm: 3.20 })),
+        tier("Girdle", NativeMeetConstraint::MeetExisting)
+            .with_target(Some(NativeTierTarget::GirdleThicknessMm { mm: 0.25 })),
+        tier("Table", NativeMeetConstraint::MeetExisting)
+            .with_target(Some(NativeTierTarget::TableWidthMm { mm: 4.10 })),
+    ];
+    let parsed = read(&write(&native));
     assert_eq!(
         parsed.tiers[0].target,
         Some(NativeTierTarget::DepthMm { mm: 3.20 })
@@ -814,31 +752,16 @@ fn tier_target_round_trips_through_toml_text() {
     );
 }
 
-/// [`NativeDesignFile::authored_refractive_index`], attached via
-/// [`NativeDesignFile::with_authored_refractive_index`], must survive a
-/// serialize/parse round trip untouched and independently of
-/// [`MaterialTable::refractive_index_override`] -- the whole point being that
-/// the two can differ (an authored legacy RI the design's material selection
-/// currently overrides for scoring, but which should come back unchanged if
-/// the material selection is later cleared).
+/// The SHA-256 helper the attachments use gives the known digest of the empty input
+/// and of `abc` (lowercase hex).
 #[test]
-fn authored_refractive_index_round_trips_independently_of_the_material_override() {
-    let native = sample_file().with_authored_refractive_index(Some(1.54));
-    let text = to_toml_string(&native).expect("must serialize");
-    let parsed = from_toml_str(&text).expect("must parse its own output");
-    assert_eq!(parsed.authored_refractive_index, Some(1.54));
-    // `sample_file` itself sets a DIFFERENT effective override (1.62) -- the two
-    // fields are independent, not aliases of each other.
-    assert_eq!(parsed.material.refractive_index_override, Some(1.62));
-}
-
-/// An old file with no `authored_refractive_index` at all must still parse, as
-/// `None` -- a loader then falls back to the paired `.asc`'s own `I` line,
-/// exactly today's behavior for such a file.
-#[test]
-fn a_fixture_without_an_authored_refractive_index_still_parses() {
-    let text = to_toml_string(&sample_file()).expect("must serialize");
-    assert!(!text.contains("authored_refractive_index"));
-    let parsed = from_toml_str(&text).expect("must parse");
-    assert_eq!(parsed.authored_refractive_index, None);
+fn sha256_hex_matches_the_known_digests() {
+    assert_eq!(
+        sha256_hex(b""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
 }

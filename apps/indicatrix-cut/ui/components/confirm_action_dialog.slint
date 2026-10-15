@@ -7,9 +7,8 @@ import { TipBox } from "tip_box.slint";
 // A generic modal Save/Discard/Cancel-shaped confirmation, reused by every
 // destructive-action guard this app needs a blocking choice for -- the
 // unsaved-changes guard in front of New/Load Selected/Open
-// (`EditorModel.unsaved_dialog_*`) and Close (`MainWindow.close_confirm_*`), and the
-// native-load fingerprint-mismatch choice (`EditorModel.mismatch_dialog_*`). Deliberately
-// bound to NOTHING but its own properties/callbacks -- not `EditorModel` or any other
+// (`EditorModel.unsaved_dialog_*`) and Close (`MainWindow.close_confirm_*`).
+// Deliberately bound to NOTHING but its own properties/callbacks -- not `EditorModel` or any other
 // global -- so every call site can drive it from whichever model actually owns that
 // particular decision, without this component needing to know which one that is.
 //
@@ -18,10 +17,7 @@ import { TipBox } from "tip_box.slint";
 // the backdrop counts as Cancel -- these are all "stop and ask" dialogs a stray click
 // outside them should never silently escalate into the destructive option.
 //
-// `primary_label`/`secondary_label` empty ("") hides that button entirely -- the
-// fingerprint-mismatch dialog uses this to withhold "Apply Anyway" when the native
-// file's own tier count no longer agrees with the freshly imported `.asc` (see
-// `EditorModel.mismatch_dialog_can_apply`'s own doc comment).
+// `primary_label`/`secondary_label` empty ("") hides that button entirely.
 export component ConfirmActionDialog inherits Rectangle {
     in property <string> heading: "Unsaved Changes";
     in property <string> message: "";
@@ -139,7 +135,7 @@ export component ConfirmActionDialog inherits Rectangle {
                 if root.show_dont_ask: TipBox {
                     hint: "Tick to stop asking this question. Your answer is remembered.";
                     CheckBox {
-                        text: "Don't ask again";
+                        text: "Don't Ask Again";
                         checked <=> root.dont_ask;
                     }
                 }
@@ -148,7 +144,7 @@ export component ConfirmActionDialog inherits Rectangle {
                     spacing: 8px;
                     alignment: end;
 
-                    if root.tertiary_label != "": TipButton {
+                    if root.tertiary_label != "": tip-button-tertiary-label := TipButton {
                         text: root.tertiary_label;
                         hint: root.tertiary_hint != "" ? root.tertiary_hint : "Choose \"" + root.tertiary_label + "\".";
                         clicked => { root.tertiary(); }
@@ -158,12 +154,12 @@ export component ConfirmActionDialog inherits Rectangle {
                         hint: "Close this question and change nothing.";
                         clicked => { root.cancel(); }
                     }
-                    if root.secondary_label != "": TipButton {
+                    if root.secondary_label != "": tip-button-secondary-label := TipButton {
                         text: root.secondary_label;
                         hint: root.secondary_hint != "" ? root.secondary_hint : "Choose \"" + root.secondary_label + "\".";
                         clicked => { root.secondary(); }
                     }
-                    if root.primary_label != "": TipButton {
+                    if root.primary_label != "": tip-button-primary-label := TipButton {
                         text: root.primary_label;
                         hint: root.primary_hint != "" ? root.primary_hint : "Choose \"" + root.primary_label + "\". Enter does the same.";
                         primary: true;

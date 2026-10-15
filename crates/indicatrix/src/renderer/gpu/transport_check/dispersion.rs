@@ -85,6 +85,10 @@ fn build_dispersion_cases() -> Vec<(DispersionCase, DispersionModel)> {
 }
 
 /// Runs the dispersion check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_dispersion(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<DispersionCase> {
     let with_models = build_dispersion_cases();
@@ -114,7 +118,9 @@ pub fn run_dispersion(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         &pipeline,
         &[(12, &in_buf), (13, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

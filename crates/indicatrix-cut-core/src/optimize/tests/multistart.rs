@@ -119,6 +119,10 @@ fn the_cost_rule_gives_every_start_four_sweeps() {
 struct TwoBasins;
 
 impl TwoBasins {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the optimizer scores in f32; the synthetic objective is small and well inside f32 range"
+    )]
     fn value(angles: &[f64]) -> f32 {
         let (trap_x, trap_y) = (angles[0] + 6.0, angles[1] + 6.0);
         let (bowl_x, bowl_y) = (angles[0] - 6.0, angles[1] - 6.0);

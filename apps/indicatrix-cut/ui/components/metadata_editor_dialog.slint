@@ -1,5 +1,5 @@
 import { Theme } from "../theme.slint";
-import { LineEdit, ComboBox } from "std-widgets.slint";
+import { LineEdit, ComboBox, ScrollView } from "std-widgets.slint";
 import { LibraryModel } from "../models/library.slint";
 import { HelpTopics } from "../models/help.slint";
 import { ConfirmActionDialog } from "confirm_action_dialog.slint";
@@ -164,11 +164,11 @@ export component MetadataEditorDialog inherits Rectangle {
 
 
     Rectangle {
-        width: 460px;
+        width: min(460px, max(240px, root.width - 24px));
         // Content-driven height -- see `material_editor_dialog.slint`'s own doc
-        // comment on this exact line for why (`settings_dialog.slint`/
-        // `import_dialog.slint` share the same idiom).
-        height: content.preferred-height;
+        // comment on this exact line for why (`import_dialog.slint` shares the same idiom).
+        // Capped at the window less a 12px margin top and bottom: the body scrolls.
+        height: min(content.preferred-height, root.height - 24px);
         background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: 1px;
@@ -189,7 +189,12 @@ export component MetadataEditorDialog inherits Rectangle {
 
                 HorizontalLayout {
                     spacing: 8px;
-                    Image { source: @image-url("../icons/pencil.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                    // Centred by a layout of its own: a fixed-size Image in the row sits at the
+                    // top of its cell.
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("../icons/pencil.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; }
+                    }
                     Text {
                         text: "Edit Design Metadata";
                         font-size: 14px;
@@ -219,6 +224,17 @@ export component MetadataEditorDialog inherits Rectangle {
             }
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            // The fields scroll between the fixed header above and the fixed Cancel / Save
+            // footer below, so at the minimum window (480px tall) both buttons stay visible.
+            ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            preferred-height: body_col.preferred-height;
+
+            body_col := VerticalLayout {
+            spacing: 12px;
+            padding-right: 12px;
 
             // Title / Designer
             HorizontalLayout {
@@ -349,6 +365,8 @@ export component MetadataEditorDialog inherits Rectangle {
                 error: root.volume_valid ? "" : "Not a positive number, so it is ignored.";
                 value <=> root.volume_draft;
             }
+            } // end body_col
+            } // end body ScrollView
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
 

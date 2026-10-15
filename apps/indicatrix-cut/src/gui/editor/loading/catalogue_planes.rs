@@ -14,14 +14,21 @@
 //! pass through the origin.
 //!
 //! A design's concave tiers (curved-tool cuts) come with it: the design file keeps
-//! them (the native `.indicatrix` attachment stores them directly, and
-//! `load_paired` restores them from the sidecar's stash), and
+//! them (the native `.isdd` / legacy `.indicatrix` attachment stores them directly), and
 //! [`CataloguePlanes::tools`] holds them resolved. Tiers that fail to resolve set
 //! [`CataloguePlanes::concave_error`] instead of silently yielding a flat stone,
 //! and the angle table (which has no concave rows) is never used for such a design.
+//!
+//! The design file also decides what the stone is made of and how big it is:
+//! [`CataloguePlanes::material`] (its material selection, with the RI and body-color
+//! overrides), [`CataloguePlanes::custom_material`] (the file's own snapshot of a custom
+//! material the vault may lack) and [`CataloguePlanes::girdle_diameter_mm`]. The library's
+//! consumers draw and score a design in that material at that size, as the editor and the
+//! exports do (`gui::batch::catalogue_material`).
 
-use super::design::design_from_attachment;
+use super::design::{AttachedDesign, design_from_attachment};
 use indicatrix::geometry::{GpuFacetPlane, cuts::FacetSpec, tool::ToolPrimitive};
+use indicatrix_cut_core::{material::MaterialSelection, native::CustomMaterialSnapshot};
 use indicatrix_vault::model::entry::FullDiagramRecord;
 use tracing::{debug, warn};
 
@@ -63,6 +70,20 @@ pub struct CataloguePlanes {
     /// describes: a consumer that measures or plans must skip the design rather
     /// than treat it as flat. (Display-only consumers just draw the flat planes.)
     pub concave_error: Option<String>,
+    /// The design file's whole material selection (`Design::material`): the species name,
+    /// the refractive-index and body-color overrides, the absorption bands and the path
+    /// scale. `Some` for every design file, though the selection may name no material
+    /// (an imported schedule); `None` on the angle-table path, which carries none.
+    pub material: Option<MaterialSelection>,
+    /// The design file's girdle diameter in millimetres (`Design::girdle_diameter_mm`),
+    /// kept only when it is finite and positive. `None` when the file sets none ("not set":
+    /// the 7 mm calibration) and on the angle-table path.
+    pub girdle_diameter_mm: Option<f64>,
+    /// The file's own snapshot of the custom material it names, for a material no built-in
+    /// preset answers to (`LoadedDesign::restorable_custom_material` of the native file).
+    /// `None` when the material is a built-in,
+    /// when the file names none or carried no snapshot, and on the angle-table path.
+    pub custom_material: Option<CustomMaterialSnapshot>,
 }
 
 /// Resolves `full`'s facet planes: the design file first, the angle table only as
@@ -106,10 +127,13 @@ pub fn resolve_catalogue_planes(full: &FullDiagramRecord) -> CataloguePlanes {
 /// `Err` (a ready message) when it has one that does not read, convert, parse or
 /// solve, or panics doing so.
 fn design_file_planes(full: &FullDiagramRecord) -> Result<Option<CataloguePlanes>, String> {
-    let guarded =
-        crate::gui::library::local::catch_file_panic(std::panic::AssertUnwindSafe(|| {
-            let loaded = match design_from_attachment(full)? {
-                Ok(loaded) => loaded,
+    let guarded = crate::gui::library::local::catch_file_panic(std::panic::AssertUnwindSafe(
+        || {
+            let AttachedDesign {
+                loaded,
+                custom_material,
+            } = match design_from_attachment(full)? {
+                Ok(attached) => attached,
                 Err(e) => return Some(Err(e.message)),
             };
             let design = &loaded.design;
@@ -129,28 +153,44 @@ fn design_file_planes(full: &FullDiagramRecord) -> Result<Option<CataloguePlanes
                             Err(e) => (Vec::new(), Some(e.to_string())),
                         }
                     };
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "f32 is the stored angle precision; a gear reference angle in degrees is in the normal float range"
+                    )]
+                    let gear_reference_angle = loaded.design.meta.gear_reference_angle as f32;
                     CataloguePlanes {
                         // Same sign flip as `state::design_to_gpu_planes`: `planes()`
                         // is `n . x <= m`, the tracer's plane is `n . x + d <= 0`.
                         planes: halfspaces
                             .into_iter()
                             .map(|(normal, offset)| {
-                                GpuFacetPlane::new(normal.as_vec3(), -offset as f32)
+                                #[expect(
+                                    clippy::cast_possible_truncation,
+                                    reason = "f32 is the GPU plane precision; offsets are in the normal float range"
+                                )]
+                                let d = -offset as f32;
+                                GpuFacetPlane::new(normal.as_vec3(), d)
                             })
                             .collect(),
                         gear_teeth: loaded.design.meta.gear_teeth_abs(),
-                        gear_reference_angle: loaded.design.meta.gear_reference_angle as f32,
+                        gear_reference_angle,
                         source: CataloguePlanesSource::DesignFile,
                         // `planes_offset` (what `planes()` prepends) returns the same
                         // count as `planes()`; only the +Y/-Y offsets differ.
                         preform_plane_count: loaded.design.preform.planes().len(),
                         tools,
                         concave_error,
+                        material: Some(design.material.clone()),
+                        girdle_diameter_mm: design
+                            .girdle_diameter_mm
+                            .filter(|mm| mm.is_finite() && *mm > 0.0),
+                        custom_material,
                     }
                 })
                 .map_err(|e| format!("its cutting instructions do not solve: {e}"));
             Some(resolved)
-        }));
+        },
+    ));
     match guarded {
         Ok(result) => result.transpose(),
         Err(panic_msg) => Err(format!("internal error: {panic_msg}")),
@@ -193,5 +233,75 @@ fn angle_table_planes(full: &FullDiagramRecord) -> CataloguePlanes {
         preform_plane_count: 0,
         tools: Vec::new(),
         concave_error: None,
+        material: None,
+        girdle_diameter_mm: None,
+        custom_material: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gui::batch::test_records::{angle_table_record, design_file_text, record_with};
+
+    /// A design file hands back its whole material selection (the overrides included),
+    /// its girdle diameter and its custom-material snapshot beside the planes.
+    #[test]
+    fn a_design_file_hands_back_its_material_its_size_and_its_custom_snapshot() {
+        let snapshot = CustomMaterialSnapshot::new(1.74, 0.02, 0.0, None, "Cubic", "Isotropic");
+        let selection = MaterialSelection {
+            name: Some("My Garnet".to_string()),
+            refractive_index_override: Some(1.75),
+            ..MaterialSelection::none()
+        }
+        .with_body_color(Some([0.2, 0.4, 2.8]));
+        let text = design_file_text(selection, Some(9.0), Some(&snapshot));
+        let resolved = resolve_catalogue_planes(&record_with("garnet.isdd", text.into_bytes()));
+
+        assert_eq!(resolved.source, CataloguePlanesSource::DesignFile);
+        let material = resolved
+            .material
+            .expect("a design file has a material selection");
+        assert_eq!(material.name.as_deref(), Some("My Garnet"));
+        assert_eq!(material.refractive_index_override, Some(1.75));
+        assert!(material.body_color_override.is_some());
+        assert_eq!(resolved.girdle_diameter_mm, Some(9.0));
+        assert_eq!(
+            resolved.custom_material.map(|snapshot| snapshot.mean_ri),
+            Some(1.74)
+        );
+    }
+
+    /// A built-in material has no snapshot to restore, and a file with no girdle diameter
+    /// is "not set".
+    #[test]
+    fn a_built_in_material_and_no_girdle_diameter_leave_those_fields_empty() {
+        let selection = MaterialSelection {
+            name: Some("Sapphire".to_string()),
+            ..MaterialSelection::none()
+        };
+        let text = design_file_text(selection, None, None);
+        let resolved = resolve_catalogue_planes(&record_with("sapphire.isdd", text.into_bytes()));
+
+        assert_eq!(resolved.source, CataloguePlanesSource::DesignFile);
+        assert_eq!(
+            resolved
+                .material
+                .and_then(|material| material.name)
+                .as_deref(),
+            Some("Sapphire")
+        );
+        assert_eq!(resolved.girdle_diameter_mm, None);
+        assert!(resolved.custom_material.is_none());
+    }
+
+    /// The angle table carries no material, size or snapshot.
+    #[test]
+    fn the_angle_table_path_has_no_material_size_or_snapshot() {
+        let resolved = resolve_catalogue_planes(&angle_table_record());
+        assert_eq!(resolved.source, CataloguePlanesSource::AngleTable);
+        assert!(resolved.material.is_none());
+        assert_eq!(resolved.girdle_diameter_mm, None);
+        assert!(resolved.custom_material.is_none());
     }
 }

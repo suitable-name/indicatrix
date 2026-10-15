@@ -76,12 +76,15 @@
 //! of it), [`sweep`] (the four-axis tilt sweep) and [`cache`] (reuse of the results while
 //! their inputs, lighting included, do not change).
 
+mod accumulate;
 mod cache;
 mod camera;
 mod classify;
 mod evaluate;
 mod fan;
 mod lighting;
+mod pose_batch;
+mod prepared;
 mod profile;
 mod ray_trace;
 mod scintillation;
@@ -97,18 +100,24 @@ pub use cache::{
 pub use camera::camera_view_basis;
 pub use evaluate::{
     evaluate_gem_optical_metrics, evaluate_gem_optical_metrics_geom,
-    evaluate_gem_optical_metrics_with_tone, evaluate_gem_optical_metrics_with_tone_geom,
+    evaluate_gem_optical_metrics_geom_core, evaluate_gem_optical_metrics_with_tone,
+    evaluate_gem_optical_metrics_with_tone_geom, evaluate_gem_optical_metrics_with_tone_geom_core,
 };
 pub use profile::{
     EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG, TILT_ANGLES_DEG, evaluate_angular_profile,
     evaluate_angular_profile_at_azimuth, evaluate_angular_profile_at_azimuth_geom,
     evaluate_angular_profile_geom, evaluate_full_axis_profile_at_azimuth,
-    evaluate_full_axis_profile_at_azimuth_geom, evaluate_full_axis_profile_at_azimuth_stepped,
+    evaluate_full_axis_profile_at_azimuth_geom,
+    evaluate_full_axis_profile_at_azimuth_geom_threaded,
+    evaluate_full_axis_profile_at_azimuth_stepped,
     evaluate_full_axis_profile_at_azimuth_stepped_geom,
+    evaluate_full_axis_profile_at_azimuth_stepped_geom_threaded,
 };
 pub use sweep::{
     AxisProfile, SweepProgress, evaluate_all_axes_profiles, evaluate_all_axes_profiles_geom,
-    evaluate_all_axes_profiles_stepped, evaluate_all_axes_profiles_stepped_geom, total_evaluations,
+    evaluate_all_axes_profiles_geom_threaded, evaluate_all_axes_profiles_stepped,
+    evaluate_all_axes_profiles_stepped_geom, evaluate_all_axes_profiles_stepped_geom_threaded,
+    total_evaluations,
 };
 pub use tone::{FaceUpTone, ToneIlluminant};
 pub use types::{GemOpticalMetrics, PROFILE_ANGLES_DEG};

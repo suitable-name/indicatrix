@@ -141,6 +141,16 @@ fn cpu_accumulate_diamond_light_tent_pin() {
 /// change by one bit. See [`cpu_accumulate_diamond_light_tent_pin`] for the pin's
 /// purpose, for the 2026-10-01 re-pin to the optimised test profile's bits, and for why
 /// it is ignored off Windows; all of it applies here too.
+///
+/// Re-pinned on 2026-10-12: the 2026-10-08 absorption-unit change
+/// (`AbsorptionUnit::ModelUnit` path scale `(W / 7) / K`, with K re-measured to 2.52 by
+/// the calibration test) moved every output of a material with absorption bands. Zircon
+/// carries U4+ absorption bands (`optics/materials/zircon_through_topaz.rs`), Diamond
+/// carries none, which is why only this pin moved while the diamond pin stayed. The
+/// tracer edits of 2026-10-12 (studio-rig cache, `extraordinary_index_at` gating on the
+/// anisotropic path, `studio_spec_power`, and the `trace_spectral_ray_core` extraction
+/// into `transport/inner/bounce_body.rs`) were audited statement for statement against
+/// the originals and are bit-neutral on this fixture.
 #[test]
 #[cfg_attr(
     not(windows),
@@ -156,7 +166,7 @@ fn cpu_accumulate_zircon_frosted_daylight_pin() {
     assert_pinned(
         "zircon, frosted girdle, daylight",
         &scene,
-        [0x4271_13db_ce1c_850b, 0x7206_6f28_bfed_cef1],
+        [0x232a_34f3_590e_09ef, 0xeded_a667_de32_1145],
     );
 }
 

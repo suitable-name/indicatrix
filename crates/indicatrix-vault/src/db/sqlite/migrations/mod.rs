@@ -301,7 +301,7 @@ impl Database {
             .prepare("INSERT OR IGNORE INTO shape_vocabulary (name, sort_order) VALUES (?1, ?2)")
             .context("Failed to prepare shape_vocabulary seed insert")?;
         for (order, shape) in DEFAULT_SHAPES.iter().enumerate() {
-            stmt.execute(params![shape, order as i64])
+            stmt.execute(params![shape, i64::try_from(order).unwrap_or(i64::MAX)])
                 .with_context(|| format!("Failed to seed shape_vocabulary entry '{shape}'"))?;
         }
         Ok(())

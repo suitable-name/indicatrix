@@ -194,7 +194,10 @@ fn design_material_name_from_index_strips_the_collision_suffix() {
         .position(|o| o == "Diamond (custom)")
         .expect("labeled entry must exist");
     assert_eq!(
-        design_material_name_from_index(index as i32, &options),
+        design_material_name_from_index(
+            i32::try_from(index).expect("a test index fits i32"),
+            &options
+        ),
         Some("Diamond".to_string()),
         "the parsed name must be the real material name, not the display label, \
          so it still resolves through EditorMaterialLookup's custom-over-built-in \

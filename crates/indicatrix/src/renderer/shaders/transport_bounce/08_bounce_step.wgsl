@@ -307,15 +307,18 @@ fn transport_bounce_step(
         // of recomputing the dispersion evaluation.
         var n_e_raw_ch: array<f32, 8>;
         for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-            var n_e_k: f32;
-            if (material.has_extraordinary_dispersion != 0u) {
-                n_e_k = extraordinary_dispersion_evaluate(material.extraordinary_model_type, material.extraordinary_param_a, material.extraordinary_param_b, (*lambdas)[k]);
-            } else {
-                n_e_k = n_o_hoisted[k] + birefringence_delta;
-            }
-            n_e_raw_ch[k] = n_e_k;
             var n_eff_k = n_o_hoisted[k];
             if (is_anisotropic) {
+                // Gated on the anisotropy flag (PERF-9): every read of `n_e_raw_ch` below
+                // sits under `uniaxial_nondegenerate` (which implies `is_anisotropic`);
+                // the isotropic path keeps zero-initialised entries it never reads.
+                var n_e_k: f32;
+                if (material.has_extraordinary_dispersion != 0u) {
+                    n_e_k = extraordinary_dispersion_evaluate(material.extraordinary_model_type, material.extraordinary_param_a, material.extraordinary_param_b, (*lambdas)[k]);
+                } else {
+                    n_e_k = n_o_hoisted[k] + birefringence_delta;
+                }
+                n_e_raw_ch[k] = n_e_k;
                 n_eff_k = effective_extraordinary_index(n_o_hoisted[k], n_e_k, theta_c);
             }
             n_eff_ch[k] = n_eff_k;
@@ -332,12 +335,13 @@ fn transport_bounce_step(
         // Shared local frame + optic-axis direction cosines `uniaxial_fresnel`'s
         // closed-form solver needs (Lekner 1991), built once per bounce -- mirrors
         // `BounceRefractionGeometry::uniaxial_frame`'s "Some only when genuinely
-        // uniaxial" contract; harmless to build unconditionally since every use below
-        // is gated on `is_anisotropic && !is_biaxial`. `entry_incidence_frame`
-        // (`n1 == 1.0` fixed for air->crystal entry) is likewise built once here even
-        // though only the entry arm below consumes it.
-        let uframe = uniaxial_frame_build(wave_dir_at_bounce, normal, c_axis, cos_i, sin_i);
-        let uinc_frame = entry_incidence_frame(1.0, uframe);
+        // uniaxial" contract. PERF-11: built only under `uniaxial_nondegenerate` (below),
+        // because every read of `uframe`/`uinc_frame` sits inside that guard; the
+        // zero-initialised values are never read otherwise. `entry_incidence_frame`
+        // (`n1 == 1.0` fixed for air->crystal entry) is built with it though only the
+        // entry arm consumes it.
+        var uframe: UniaxialFrameW;
+        var uinc_frame: EntryIncidenceFrameW;
         // Mirrors `BounceRefractionGeometry::uniaxial_frame`'s `Some` condition
         // exactly -- the plain uniaxial-vs-biaxial-vs-isotropic material classification,
         // with no degenerate-axis check of its own (see `uniaxial_nondegenerate` below
@@ -351,6 +355,10 @@ fn transport_bounce_step(
         // arm below, including the forced-TIR one.
         let uniaxial_nondegenerate = uniaxial_active
             && dot(cross(wave_dir_at_bounce, c_axis), cross(wave_dir_at_bounce, c_axis)) > 1e-6;
+        if (uniaxial_nondegenerate) {
+            uframe = uniaxial_frame_build(wave_dir_at_bounce, normal, c_axis, cos_i, sin_i);
+            uinc_frame = entry_incidence_frame(1.0, uframe);
+        }
 
         // optics::raytracer::{hero_biaxial_wave_dirs, per_channel_biaxial_indices}.
         // "mode A" is the faster (lower-index) root, "mode B" the slower -- see this
@@ -637,7 +645,13 @@ fn transport_bounce_step(
 
                 if (entry_rng_bounce < entry_r_branch) {
                     for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                        let pair_k = entry_solve_pair_with_incidence(uinc_frame, 1.0, n_o_hoisted[k], n_e_raw_ch[k], c_axis, uframe);
+                        // Channel 0 is the hero: `pair_hero` was solved with the identical
+                        // arguments (`n_o_hero == n_o_hoisted[0]`, `n_e_hero_solve ==
+                        // n_e_raw_ch[0]`), so it is reused (PERF-11).
+                        var pair_k = pair_hero;
+                        if (k != 0u) {
+                            pair_k = entry_solve_pair_with_incidence(uinc_frame, 1.0, n_o_hoisted[k], n_e_raw_ch[k], c_axis, uframe);
+                        }
                         let mueller_k = jones_to_mueller(pair_k.s_sol.r_s, pair_k.p_sol.r_s, pair_k.s_sol.r_p, pair_k.p_sol.r_p);
                         let r_unpol_k = clamp(mueller_k[0][0], 1e-4, 1.0 - 1e-4);
                         (*stokes)[k] = (mueller_k * (*stokes)[k]) * (1.0 / entry_r_branch);
@@ -686,13 +700,19 @@ fn transport_bounce_step(
                             // channel's MIS family -- keep its own entry-transmit
                             // density accumulating (the SAME t_unpol_k the matching
                             // branch below folds in); only its radiance ends here.
-                            let pair_k_mm = entry_solve_pair_with_incidence(uinc_frame, 1.0, n_o_k, n_e_raw_ch[k], c_axis, uframe);
+                            var pair_k_mm = pair_hero;
+                            if (k != 0u) {
+                                pair_k_mm = entry_solve_pair_with_incidence(uinc_frame, 1.0, n_o_k, n_e_raw_ch[k], c_axis, uframe);
+                            }
                             let mueller_k_mm = jones_to_mueller(pair_k_mm.s_sol.r_s, pair_k_mm.p_sol.r_s, pair_k_mm.s_sol.r_p, pair_k_mm.p_sol.r_p);
                             let t_unpol_k_mm = clamp(1.0 - mueller_k_mm[0][0], 1e-4, 1.0 - 1e-4);
                             (*path_pdf)[k] = (*path_pdf)[k] * t_unpol_k_mm;
                             continue;
                         }
-                        let pair_k = entry_solve_pair_with_incidence(uinc_frame, 1.0, n_o_k, n_e_raw_ch[k], c_axis, uframe);
+                        var pair_k = pair_hero;
+                        if (k != 0u) {
+                            pair_k = entry_solve_pair_with_incidence(uinc_frame, 1.0, n_o_k, n_e_raw_ch[k], c_axis, uframe);
+                        }
                         var t_s_row = pair_k.s_sol.t_o;
                         var t_p_row = pair_k.p_sol.t_o;
                         var flux_k = pair_k.s_sol.flux_o;
@@ -875,9 +895,11 @@ fn transport_bounce_step(
                     p_o = sel.p_o;
                 }
             }
-            let mode_split_rand = f32(hash_u32(seed0 ^ hash_u32(bounce ^ BIREFRINGENT_SPLIT_STREAM))) / 4294967295.0;
             var use_extraordinary = (*is_extraordinary);
             if (entering_anisotropic) {
+                // PERF-11: the draw's only reader is the comparison below, so the two
+                // hashes are paid only on an anisotropic entry (same expression).
+                let mode_split_rand = f32(hash_u32(seed0 ^ hash_u32(bounce ^ BIREFRINGENT_SPLIT_STREAM))) / 4294967295.0;
                 // Must match `apply_partial_fresnel_bounce`'s `mode_split_rand < (1.0 -
                 // p_o)` EXACTLY (same operator, same sense), not just the same marginal
                 // probability: `rand < 1-p_o` and `rand >= p_o` integrate to the same

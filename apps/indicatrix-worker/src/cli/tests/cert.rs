@@ -109,10 +109,10 @@ fn cert_issue_client_and_issue_token_accept_a_role() {
         "worker",
     ]
     .map(String::from);
-    let Command::CertIssueClient(args) = parse(&argv).unwrap() else {
+    let Command::CertIssueClient(parsed) = parse(&argv).unwrap() else {
         panic!("expected CertIssueClient")
     };
-    assert_eq!(args.role, PeerRole::Worker);
+    assert_eq!(parsed.role, PeerRole::Worker);
 
     let argv = [
         "cert",
@@ -127,10 +127,10 @@ fn cert_issue_client_and_issue_token_accept_a_role() {
         "worker",
     ]
     .map(String::from);
-    let Command::CertIssueToken(args) = parse(&argv).unwrap() else {
+    let Command::CertIssueToken(parsed) = parse(&argv).unwrap() else {
         panic!("expected CertIssueToken")
     };
-    assert_eq!(args.role, PeerRole::Worker);
+    assert_eq!(parsed.role, PeerRole::Worker);
 
     let argv = ["cert", "issue-token", "--role", "admin"].map(String::from);
     assert!(parse(&argv).unwrap_err().contains("--role"));

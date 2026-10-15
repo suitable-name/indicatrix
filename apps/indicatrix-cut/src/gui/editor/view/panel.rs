@@ -25,6 +25,7 @@ use crate::{
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{Design, DesignSolveError, PreformShape};
+use indicatrix_editor::loading::preform_source_note;
 pub(in crate::gui::editor) use indicatrix_editor::view_model::yield_report::{
     girdle_and_ratio_texts_from_solved, preform_mm_texts_from_solved, proportions_texts_from_solved,
 };
@@ -47,8 +48,12 @@ use std::sync::{Arc, Mutex, PoisonError, atomic::Ordering as AtomicOrdering};
 /// `preform_mm_texts`, and a final explicit `state.design.solve()` for
 /// `cutting_rows` would cost for one "Solve" click.
 ///
-/// Only used by [`super::viewport::refresh_all`] (New/Load/the explicit "Solve"
-/// action). Every other edit callback uses
+/// The only caller is the one-time startup paint (`gui::editor::mod`), which shows the
+/// fresh template -- a handful of planes, so the un-gated solve here is cheap by
+/// construction. [`super::viewport::refresh_all`] (New/Load/the explicit "Solve" action)
+/// does NOT come through here: it gates its own solve through `solves_inline` and hands
+/// the result to [`refresh_editor_panel_from_solve`]. Any new caller with a user design
+/// must do the same. Every other edit callback uses
 /// [`super::panel_stale::refresh_editor_panel_stale`] instead, which updates the
 /// same fields except the ones that require a solve.
 ///
@@ -212,11 +217,15 @@ fn push_manufacturability_and_preform_scratch(
 
     if delta.preform {
         let preform = &state.design.preform;
+        // A planned piece shows its bounding box in the Block form; the note under the shape
+        // says where it came from (empty for a block or cylinder).
         ui.global::<EditorModel>()
             .set_preform_shape_index(match preform.shape {
-                PreformShape::Block => 0,
+                PreformShape::Block | PreformShape::Planes(_) => 0,
                 PreformShape::Cylinder { .. } => 1,
             });
+        ui.global::<EditorModel>()
+            .set_preform_source_note(preform_source_note(preform).into());
         ui.global::<EditorModel>()
             .set_preform_half_width(format!("{:.4}", preform.half_width).into());
         ui.global::<EditorModel>()
@@ -526,14 +535,17 @@ pub(super) fn push_yield_material_scratch(
     state: &EditorState,
     delta: &ScratchDelta,
 ) {
+    let girdle_text = state
+        .design
+        .girdle_diameter_mm
+        .map_or_else(String::new, |mm| format!("{mm:.4}"));
+    // The design's own value is pushed on every refresh (not gated on the scratch delta): the
+    // Stone tab's "Saved in the design" note reads it, never the scratch.
+    ui.global::<EditorModel>()
+        .set_design_girdle_diameter_text(girdle_text.as_str().into());
     if delta.girdle {
-        ui.global::<EditorModel>().set_girdle_diameter_mm(
-            state
-                .design
-                .girdle_diameter_mm
-                .map_or_else(String::new, |mm| format!("{mm:.4}"))
-                .into(),
-        );
+        ui.global::<EditorModel>()
+            .set_girdle_diameter_mm(girdle_text.into());
     }
     if delta.material {
         // no longer pushes `EditorModel.material_index` -- the Preform

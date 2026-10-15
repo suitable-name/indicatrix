@@ -1,4 +1,4 @@
-//! Turning a design into what a variant keeps -- its `.indicatrix` text and a small solid
+//! Turning a design into what a variant keeps -- its `.isdd` text and a small solid
 //! picture -- and a stored variant back into a design.
 //!
 //! The text is the design file without lighting, history or attached files (none of those are
@@ -49,7 +49,7 @@ pub(super) fn design_at_step(
     }
 }
 
-/// The `.indicatrix` text a variant of `design` keeps.
+/// The `.isdd` text a variant of `design` keeps.
 ///
 /// # Errors
 ///

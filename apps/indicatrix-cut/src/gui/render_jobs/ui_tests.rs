@@ -100,7 +100,7 @@ fn a_waiting_still_row() {
     assert_eq!(row.id, 7);
     assert_eq!(row.number_text, "1");
     assert_eq!(row.label, "Job 7");
-    assert_eq!(row.kind_text, "Still image");
+    assert_eq!(row.kind_text, "Still Image");
     assert_eq!(row.state_word, "queued");
     assert_eq!(row.state_text, "Queued");
     assert_eq!(row.summary, "A summary");
@@ -191,7 +191,7 @@ fn a_cancelled_row_can_only_be_restarted_or_deleted() {
 fn tilt_video_rows_speak_in_frames() {
     let live = progress(36, 181, 0.2, Some(720.0));
     let running = single(&video(1, "running", 36), Some(&live));
-    assert_eq!(running.kind_text, "Tilt video");
+    assert_eq!(running.kind_text, "Tilt Video");
     assert_eq!(
         running.progress_text,
         "Frame 37 of 181 \u{b7} about 12 min left"
@@ -779,7 +779,7 @@ fn still_outputs_are_reserved_against_the_disk_the_queue_and_each_other() {
 fn still_labels_and_summaries_use_the_plain_wording() {
     assert_eq!(
         still_label("Barion Oval", "", 1920, 1080),
-        "Barion Oval \u{b7} Current view \u{b7} 1920\u{d7}1080"
+        "Barion Oval \u{b7} Current View \u{b7} 1920\u{d7}1080"
     );
     assert_eq!(
         still_label("Barion Oval", "Studio", 3840, 2160),

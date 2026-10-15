@@ -1,8 +1,10 @@
 //! Saved plans: the rough model, the settings and the ticked layouts of the planner,
-//! stored in the library database and exchanged as `.indicatrix-rough.toml` files.
+//! stored in the library database and exchanged as `.isrd` files (older `.indicatrix-rough.toml` files still import).
 //!
 //! - [`dto`], [`convert`], [`checks`] and [`format`] are the file format: documents,
-//!   validation, cross-checks and the header-first loader;
+//!   validation, cross-checks and the header-first loader; `sections` is the part of it
+//!   that travels with a plan but lives in the library's side tables (its rough color and
+//!   stone orientations, schema version 4);
 //! - [`store`] is the database table;
 //! - [`staleness`] compares the stored designs with the library;
 //! - [`list`], [`save`], [`open`] and [`transfer`] are the window's flows: the saved
@@ -20,6 +22,7 @@ mod list;
 pub mod naming;
 mod open;
 mod save;
+mod sections;
 pub mod staleness;
 pub mod store;
 #[cfg(test)]
@@ -32,6 +35,8 @@ mod tests_db;
 mod tests_mesh;
 #[cfg(test)]
 mod tests_save;
+#[cfg(test)]
+mod tests_sections;
 #[cfg(test)]
 mod tests_shape;
 mod transfer;
@@ -84,6 +89,8 @@ pub(super) struct SavedState {
     loaded: Option<LoadedFingerprints>,
     /// The banner to show when the opened plan's rows arrive.
     pending_banner: Option<PendingBanner>,
+    /// The save that waits for the answer to "Replace Saved Plan?", if that is asked.
+    pending_save: Option<save::PendingSave>,
 }
 
 /// Registers the save, open, rename, delete, export and import callbacks on the planner
@@ -92,6 +99,7 @@ pub(super) fn setup_saved_callbacks(host: &Rc<Host>) {
     let model = host.window.global::<RoughPlanModel>();
     model.on_begin_save(|selected_only| on_host(|host| save::begin_save(host, selected_only)));
     model.on_confirm_save(|| on_host(save::confirm_save));
+    model.on_confirm_overwrite(|replace| on_host(|host| save::confirm_overwrite(host, replace)));
     model.on_open_saved(|id| on_host(|host| open::open_saved(host, i64::from(id))));
     model.on_rename_saved(|id, name| {
         on_host(|host| list::rename_saved(host, i64::from(id), &name));

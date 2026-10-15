@@ -43,7 +43,7 @@ export component MaterialTemplateSelector inherits HorizontalLayout {
             ComboBox {
                 model: root.base_templates;
                 current-index <=> root.selected_template_idx;
-                accessible-label: "Preset template";
+                accessible-label: "Preset Template";
                 selected(val) => {
                     // Crystal system indices: 0 Cubic, 1 Tetragonal,
                     // 2 Hexagonal, 3 Trigonal, 4 Orthorhombic,
@@ -185,7 +185,7 @@ export component MaterialTemplateSelector inherits HorizontalLayout {
             LineEdit {
                 text <=> root.mat_name;
                 placeholder-text: "Enter gem name...";
-                accessible-label: "Material name";
+                accessible-label: "Material Name";
             }
         }
     }

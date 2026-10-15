@@ -64,7 +64,7 @@ pub(super) fn write_display_rgba<S: Write>(
             width,
             height,
             encoding,
-            payload_len: payload.len() as u32,
+            payload_len: u32::try_from(payload.len()).expect("a display frame payload fits u32"),
         };
         indicatrix_net::messages::write_stream_event(
             stream,
@@ -111,7 +111,7 @@ pub(super) fn write_final_image<S: Write>(
                 height,
                 samples_done: samples,
                 encoding,
-                payload_len: payload.len() as u32,
+                payload_len: u32::try_from(payload.len()).expect("a final image payload fits u32"),
             };
             indicatrix_net::messages::write_stream_event(
                 stream,

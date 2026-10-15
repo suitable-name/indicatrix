@@ -100,6 +100,10 @@ pub(crate) struct EntryIncidenceFrame {
 }
 
 #[must_use]
+#[expect(
+    clippy::similar_names,
+    reason = "k_fwd/k_bwd and ep_fwd/ep_bwd are the established forward/backward mode names"
+)]
 pub(crate) fn entry_incidence_frame(n1: f32, frame: &UniaxialFrame) -> EntryIncidenceFrame {
     let k_tan = n1 * frame.sin_i;
     // Isotropic incidence-side modes (forward = incident, backward = reflected),
@@ -187,8 +191,8 @@ pub(crate) fn entry_solve_pair_with_incidence(
         roots.qe_plus,
     );
 
-    let eo_c = tangential_components(&fo, frame.that, frame.s_axis);
-    let ee_c = tangential_components(&fe, frame.that, frame.s_axis);
+    let ord_c = tangential_components(&fo, frame.that, frame.s_axis);
+    let ext_c = tangential_components(&fe, frame.that, frame.s_axis);
 
     let mut a = [[Cplx::ZERO; 4]; 4];
     let mut b_s = [Cplx::ZERO; 4];
@@ -197,8 +201,8 @@ pub(crate) fn entry_solve_pair_with_incidence(
         a[i] = [
             inc.reflected_s[i],
             inc.reflected_p[i],
-            Cplx::ZERO.sub(eo_c[i]),
-            Cplx::ZERO.sub(ee_c[i]),
+            Cplx::ZERO.sub(ord_c[i]),
+            Cplx::ZERO.sub(ext_c[i]),
         ];
         b_s[i] = Cplx::ZERO.sub(inc.incident_s[i]);
         b_p[i] = Cplx::ZERO.sub(inc.incident_p[i]);

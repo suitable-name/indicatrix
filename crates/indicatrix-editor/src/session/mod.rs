@@ -275,6 +275,26 @@ impl EditorSession {
         self.saved_generation = self.current_generation();
     }
 
+    /// Marks this session as a design the USER just created and has not saved yet:
+    /// [`Self::is_dirty`] reads `true` until [`Self::mark_saved`], so closing,
+    /// replacing or quitting asks first and the autosave timer snapshots it.
+    ///
+    /// Bumps the generation once, so the saved mark stays strictly behind it
+    /// whatever edits follow. Call it AFTER a [`Self::replace_with`] /
+    /// [`Self::continue_generation_from`] (those mark the result clean). Never for
+    /// a design that was loaded or opened, or an app's own startup placeholder.
+    pub fn mark_unsaved(&mut self) {
+        self.saved_generation = self.current_generation();
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// [`Self::mark_unsaved`] as a builder step, for a freshly built session.
+    #[must_use]
+    pub fn created_by_user(mut self) -> Self {
+        self.mark_unsaved();
+        self
+    }
+
     /// Applies `edit` through [`History::apply`], keeping tier relations true (see the
     /// `relations` module: [`Self::try_apply`] is the same call with a typed error).
     ///
@@ -453,7 +473,12 @@ impl EditorSession {
                 self.design.tiers.get(index).map(|tier| {
                     let wanted = tier.angle_deg + delta_for(tier);
                     let nudged = clamp_nudge_to_side(tier.angle_deg, wanted);
-                    if nudged != wanted {
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "the clamp returns `wanted` untouched when no clamping applies, so any difference is a real clamp"
+                    )]
+                    let was_clamped = nudged != wanted;
+                    if was_clamped {
                         clamped_labels.push(tier_nudge_label(tier, index));
                     }
                     (index, tier.angle_deg, nudged)

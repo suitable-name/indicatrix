@@ -134,7 +134,7 @@ fn build_absorption_cases() -> Vec<(
         for &lambda_nm in &lambdas_with_centers {
             out.push((
                 AbsorptionCase {
-                    band_count: bands.len() as u32,
+                    band_count: u32::try_from(bands.len()).expect("a band count fits in u32"),
                     _pad0: 0,
                     _pad1: 0,
                     _pad2: 0,
@@ -152,6 +152,10 @@ fn build_absorption_cases() -> Vec<(
 }
 
 /// Runs the absorption check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_absorption(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<AbsorptionCase> {
     let with_bands = build_absorption_cases();
@@ -181,7 +185,9 @@ pub fn run_absorption(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         &pipeline,
         &[(14, &in_buf), (15, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -302,7 +308,9 @@ fn dispatch_pleochroic(
         &pipeline,
         &[(16, &in_buf), (17, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -464,6 +472,10 @@ fn build_assigned_mode_alpha_uniaxial_cases() -> Vec<AssignedModeAlphaUniaxialCa
 }
 
 /// Runs the assigned mode alpha uniaxial check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_assigned_mode_alpha_uniaxial(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -494,7 +506,9 @@ pub fn run_assigned_mode_alpha_uniaxial(
         &pipeline,
         &[(56, &in_buf), (57, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

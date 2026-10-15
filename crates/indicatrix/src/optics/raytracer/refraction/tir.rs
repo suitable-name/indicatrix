@@ -49,6 +49,10 @@ pub(crate) fn tir_phase_delta(n1k: f32, cos_i: f32, sin_i: f32) -> f32 {
 /// probability. The reflection law acts on the wave normal `k_hat`, not `S` -- returns
 /// the reflected wave normal `k'`; the caller derives the reflected Poynting direction
 /// `S'` via [`poynting_dir_for_mode`] and sets `current_ray.origin` itself.
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names; ro_pow/re_pow are the established ordinary/extraordinary reflected-power names; r_s_k/r_p_k are the established s/p polarisation Fresnel names"
+)]
 pub(in crate::optics::raytracer) fn apply_tir_bounce(
     ctx: &RayMaterialContext,
     geo: &BounceRefractionGeometry,

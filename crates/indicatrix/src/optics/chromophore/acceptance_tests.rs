@@ -32,6 +32,12 @@ use super::primary_data_tests::{PPMA_CM3, hue_deg as gia_hue_deg, sigma_lab, tab
 const COLORLESS: [f64; 3] = [100.0, 0.0, 0.0];
 /// The 5 mm reference path of the plan's "blue recipe".
 const REF_MM: f64 = 5.0;
+/// [`REF_MM`] as the `f32` path length the solver API takes.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "5.0 is exactly representable in f32"
+)]
+const REF_MM_F32: f32 = REF_MM as f32;
 
 fn cat() -> &'static ChromophoreCatalogue {
     ChromophoreCatalogue::global()
@@ -76,7 +82,7 @@ impl Rng {
     }
 
     fn below(&mut self, n: usize) -> usize {
-        (self.next_u64() % n as u64) as usize
+        usize::try_from(self.next_u64() % n as u64).expect("a remainder below n fits usize")
     }
 }
 
@@ -392,7 +398,7 @@ fn criterion_3_round_trip_of_200_seeded_recipes() {
         for _ in 0..50 {
             let recipe = random_recipe(host, &mut rng, 3, 0.5).expect("host has items");
             let target = colors_of(&recipe, REF_MM, Illuminant::D65).unpolarised.lab;
-            let res = solve_physics(cat(), host, target, None, REF_MM as f32, &[]);
+            let res = solve_physics(cat(), host, target, None, REF_MM_F32, &[]);
             total += 1;
             within_1 += usize::from(res.delta_e <= 1.0);
             assert_eq!(
@@ -440,7 +446,7 @@ fn criterion_3_ruby_pick_is_cr_dominated() {
         (-5.0, -5.0),
     ] {
         let target = [40.0, 55.0 + da, 30.0 + db];
-        let res = solve_physics(cat(), "corundum", target, None, REF_MM as f32, &[]);
+        let res = solve_physics(cat(), "corundum", target, None, REF_MM_F32, &[]);
         let share = alpha_share(&res.recipe, "Cr");
         assert!(
             share >= 0.7,
@@ -453,7 +459,7 @@ fn criterion_3_ruby_pick_is_cr_dominated() {
     for a in g.appendix2().iter().filter(|a| {
         a.spec == "both" && matches!(a.illuminant, Illuminant::D65) && a.ppma_cm <= 375.0
     }) {
-        let res = solve_physics(cat(), "corundum", a.lab, None, REF_MM as f32, &[]);
+        let res = solve_physics(cat(), "corundum", a.lab, None, REF_MM_F32, &[]);
         let share = alpha_share(&res.recipe, "Cr");
         assert!(
             share >= 0.7 && res.delta_e <= 3.0,
@@ -470,7 +476,7 @@ fn criterion_3_ruby_pick_is_cr_dominated() {
 #[test]
 fn criterion_3_unreachable_green_and_locks() {
     let green = [95.0, -90.0, 90.0];
-    let res = solve_physics(cat(), "corundum", green, None, REF_MM as f32, &[]);
+    let res = solve_physics(cat(), "corundum", green, None, REF_MM_F32, &[]);
     assert!(!res.reachable);
     assert!(
         res.delta_e > 1.0,
@@ -491,7 +497,7 @@ fn criterion_3_unreachable_green_and_locks() {
             "corundum",
             target,
             None,
-            REF_MM as f32,
+            REF_MM_F32,
             std::slice::from_ref(&locked),
         );
         assert!(
@@ -516,7 +522,7 @@ fn criterion_3_color_change_dual_target() {
         .lab;
     let req = SolveRequest {
         target_a_lab: Some(a),
-        ..SolveRequest::new("chrysoberyl", d65, REF_MM as f32)
+        ..SolveRequest::new("chrysoberyl", d65, REF_MM_F32)
     };
     let never = std::sync::atomic::AtomicBool::new(false);
     let res = solve_physics_with(cat(), &req, &never).expect("not cancelled");
@@ -555,7 +561,7 @@ fn criterion_4_budget_time_stage_exit_and_determinism() {
     // Worst case: an unreachable target forces every stage over all subsets.
     let hard = [60.0, -70.0, 70.0];
     let start = Instant::now();
-    let worst = solve_physics(cat(), host, hard, None, REF_MM as f32, &[]);
+    let worst = solve_physics(cat(), host, hard, None, REF_MM_F32, &[]);
     let elapsed = start.elapsed();
     assert!(
         worst.evals <= MAX_EVALS,
@@ -590,7 +596,7 @@ fn criterion_4_budget_time_stage_exit_and_determinism() {
         )
         .unpolarised
         .lab;
-        let res = solve_physics(cat(), host, target, None, REF_MM as f32, &[]);
+        let res = solve_physics(cat(), host, target, None, REF_MM_F32, &[]);
         assert!(res.delta_e <= 1.0, "{host}/{entry}: dE {:.3}", res.delta_e);
         assert!(
             res.evals <= 400,
@@ -613,7 +619,7 @@ fn criterion_4_budget_time_stage_exit_and_determinism() {
     )
     .unpolarised
     .lab;
-    let res = solve_physics(cat(), "corundum", target, None, REF_MM as f32, &[]);
+    let res = solve_physics(cat(), "corundum", target, None, REF_MM_F32, &[]);
     let solved: Vec<&str> = res.recipe.entries.iter().map(|e| e.id.as_str()).collect();
     assert_eq!(
         solved,
@@ -622,7 +628,7 @@ fn criterion_4_budget_time_stage_exit_and_determinism() {
     );
 
     // Determinism: identical input, identical bits.
-    let again = solve_physics(cat(), "corundum", target, None, REF_MM as f32, &[]);
+    let again = solve_physics(cat(), "corundum", target, None, REF_MM_F32, &[]);
     assert_eq!(res.delta_e.to_bits(), again.delta_e.to_bits());
     assert_eq!(res.recipe, again.recipe);
     for (a, b) in res.recipe.entries.iter().zip(&again.recipe.entries) {
@@ -671,7 +677,7 @@ fn criterion_5_wysiwyg_for_50_random_recipes_per_host() {
                 &host.id,
                 swatch.unpolarised.lab,
                 None,
-                REF_MM as f32,
+                REF_MM_F32,
                 &[],
             );
             let solved = colors_of(&res.recipe, REF_MM, Illuminant::D65).unpolarised;
@@ -696,19 +702,32 @@ fn criterion_5_wysiwyg_for_50_random_recipes_per_host() {
     }
 }
 
-/// Hosts allowed to drop or merge bands at `conc_typical` (explicit allow-list, §3.3): the pinned
-/// `BandsDropped`/`BandsMerged` dE00 of each is asserted to stay below 1. The last four host
-/// ids overlap 8-20 chromophores at `conc_typical`; their merges (cheapest color error first,
-/// see `resolve::budget_bands`) measure dE00 0.09-0.46 after the research §5 pruning.
-const BAND_DROP_ALLOW_LIST: &[&str] = &[
-    "beryl",
-    "corundum",
-    "yag",
-    "cubic_zirconia",
-    "garnet_pyralspite",
-    "glass_silicate",
-    "spinel",
+/// Hosts allowed to drop or merge bands at `conc_typical` (explicit allow-list, §3.3) with the
+/// dE00 their pinned `BandsDropped`/`BandsMerged` must stay below. The last four host ids
+/// overlap 8-20 chromophores at `conc_typical`; their merges (cheapest color error first, see
+/// `resolve::budget_bands`) measure dE00 0.09-0.46 after the research §5 pruning. Beryl's
+/// all-elements recipe gained the two Mn chromophores when they got a `conc_typical` on
+/// 2026-10-12 (red beryl 0.1-0.35 wt% MnO is a strong absorber at 560 nm): its rays then carry
+/// 14 (ordinary) and 13 (extraordinary) bands, and the merges (six and five) measure up to
+/// dE00 1.74 for that kitchen-sink stone (Cr + V + Fe + Mn at once, nearly opaque at 5 mm), so
+/// its bound is 2.
+const BAND_DROP_ALLOW_LIST: &[(&str, f64)] = &[
+    ("beryl", 2.0),
+    ("corundum", 1.0),
+    ("yag", 1.0),
+    ("cubic_zirconia", 1.0),
+    ("garnet_pyralspite", 1.0),
+    ("glass_silicate", 1.0),
+    ("spinel", 1.0),
 ];
+
+/// The allow-listed dE00 bound of `host_id`, `None` when the host may not budget at all.
+fn band_drop_allowance(host_id: &str) -> Option<f64> {
+    BAND_DROP_ALLOW_LIST
+        .iter()
+        .find(|(id, _)| *id == host_id)
+        .map(|(_, limit)| *limit)
+}
 
 /// All elements of `host` at the middle of their `conc_typical` range, resolved: the band
 /// budget warnings and the tensor.
@@ -742,8 +761,8 @@ fn conc_typical_resolve(host: &HostData) -> (AbsorptionTensor, Vec<ResolveWarnin
     resolve(&recipe, cat()).expect("resolves cleanly")
 }
 
-/// The over-budget findings of `hosts`: bands per mode above 8, or dropped bands with dE00 >= 1
-/// (or on no allow-list).
+/// The over-budget findings of `hosts`: bands per mode above 8, or dropped or merged bands
+/// whose dE00 reaches the host's allowance (or a host on no allow-list).
 fn band_budget_violations<'a>(hosts: impl Iterator<Item = &'a HostData>) -> Vec<String> {
     let mut violations = Vec::new();
     for host in hosts {
@@ -771,9 +790,9 @@ fn band_budget_violations<'a>(hosts: impl Iterator<Item = &'a HostData>) -> Vec<
                 } => ("merges", mode, count, delta_e),
                 _ => continue,
             };
-            if !(BAND_DROP_ALLOW_LIST.contains(&host.id.as_str()) && *delta_e < 1.0) {
+            if !band_drop_allowance(&host.id).is_some_and(|limit| *delta_e < limit) {
                 violations.push(format!(
-                    "{}: {what} {count} {mode} band(s) (dE00 {delta_e:.2}), not allow-listed with dE < 1",
+                    "{}: {what} {count} {mode} band(s) (dE00 {delta_e:.2}), not allow-listed with that dE",
                     host.id
                 ));
             }
@@ -783,13 +802,14 @@ fn band_budget_violations<'a>(hosts: impl Iterator<Item = &'a HostData>) -> Vec<
 }
 
 /// Criterion 5: <= 8 bands per mode for `conc_typical` recipes (allow-list with a pinned
-/// dE00 < 1) for every host that needs no budgeting beyond the data (no warning at all).
+/// per-host dE00 bound) for every host that needs no budgeting beyond the data (no warning at
+/// all).
 #[test]
 fn criterion_5_conc_typical_fits_the_band_budget() {
     let within: Vec<&HostData> = cat()
         .hosts
         .iter()
-        .filter(|h| !BAND_DROP_ALLOW_LIST.contains(&h.id.as_str()))
+        .filter(|h| band_drop_allowance(&h.id).is_none())
         .collect();
     let v = band_budget_violations(within.iter().copied());
     assert!(v.is_empty(), "{v:#?}");
@@ -863,6 +883,10 @@ fn builtin_vs_recipe() -> Vec<(&'static str, [f64; 3], SolveResult)> {
     let model_width = measure_model_width(&StandardGemCuts::standard_round_brilliant())
         .expect("round brilliant measures");
     let per_mm = model_width / f64::from(effective_stone_width_mm(0.0));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "band peaks are stored as f32; the scaled wavelength is in the normal float range"
+    )]
     let scaled = |bands: &[AbsorptionBand]| -> Vec<AbsorptionBand> {
         bands
             .iter()
@@ -906,7 +930,7 @@ fn builtin_vs_recipe() -> Vec<(&'static str, [f64; 3], SolveResult)> {
             let all: Vec<String> = host.treatments.iter().map(|t| t.id.clone()).collect();
             let req = SolveRequest {
                 treatments: TreatmentPolicy::Allow(&all),
-                ..SolveRequest::new(&host.id, target, REF_MM as f32)
+                ..SolveRequest::new(&host.id, target, REF_MM_F32)
             };
             let res = solve_physics_with(cat(), &req, &std::sync::atomic::AtomicBool::new(false))
                 .expect("not cancelled");
@@ -923,13 +947,15 @@ fn builtin_vs_recipe() -> Vec<(&'static str, [f64; 3], SolveResult)> {
 /// bit for bit) against the best physics recipe of `data_version` 4, pinned per built-in.
 ///
 /// Agreement (dE00 <= 3.5): Ruby 0.14 (the built-in ruby, L* 46.9 a* 36.2 b* -10.8, IS the
-/// GIA purplish red: a Cr recipe of 0.21 wt%), Citrine 2.69, Emerald 3.06, Sapphire 3.49. The
-/// remaining four really differ from the primary-data recipes: Aquamarine 5.81 (the built-in's
-/// L* 96.7 a* -6.9 b* -5.3 against the best beryl recipe, V3+ only, b* +1.3), Amethyst 11.18 (built-in C* 82,
-/// h 321 against the Caltech-shaped [FeO4]0 recipe C* 44 at conc_max), Tanzanite 21.31 (built-in
-/// L* 31.9 a* 69.7 b* -68.3 against the V3+ recipe at conc_max, L* 39 a* 13 b* -41) and Peridot
-/// 23.79 (built-in a* +15.3 b* +82.4, orange-yellow, against the Fe2+ recipe a* -17.6 b* +41,
-/// yellow-green like the Caltech GRR 418 spectra).
+/// GIA purplish red: a Cr recipe of 0.21 wt%), Aquamarine 2.52 (Fe 1.56 wt% FeO + Mn 0.013
+/// wt% MnO; it was 5.81 with V3+ alone until the beryl Mn chromophores got a sane `conc_max`
+/// on 2026-10-12, which let the solver's log grid reach the trace amount), Citrine 2.41 (2.69
+/// until `data_version` 5 removed the fixed 10 % Fe2+ share that tinted every iron quartz),
+/// Emerald 3.06, Sapphire 3.49. The remaining three really differ from the primary-data
+/// recipes: Amethyst 11.25 (built-in C* 82, h 321 against the Caltech-shaped [FeO4]0 recipe
+/// C* 44 at conc_max), Tanzanite 21.31 (built-in L* 31.9 a* 69.7 b* -68.3 against the V3+ recipe
+/// at conc_max, L* 39 a* 13 b* -41) and Peridot 23.79 (built-in a* +15.3 b* +82.4, orange-yellow,
+/// against the Fe2+ recipe a* -17.6 b* +41, yellow-green like the Caltech GRR 418 spectra).
 #[test]
 fn criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned() {
     let pinned = [
@@ -938,9 +964,9 @@ fn criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned() {
         ("Emerald", 3.06),
         ("Tanzanite", 21.31),
         ("Peridot", 23.79),
-        ("Amethyst", 11.18),
-        ("Aquamarine", 5.81),
-        ("Citrine", 2.69),
+        ("Amethyst", 11.25),
+        ("Aquamarine", 2.52),
+        ("Citrine", 2.41),
     ];
     let results = builtin_vs_recipe();
     for ((name, _, res), (pin_name, pin)) in results.iter().zip(pinned) {
@@ -952,7 +978,10 @@ fn criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned() {
         );
     }
     let agree = results.iter().filter(|(_, _, r)| r.delta_e <= 3.5).count();
-    assert_eq!(agree, 4, "Ruby, Citrine, Emerald and Sapphire agree to 3.5");
+    assert_eq!(
+        agree, 5,
+        "Ruby, Aquamarine, Citrine, Emerald and Sapphire agree to 3.5"
+    );
     let ruby = &results[0].2;
     assert!(ruby.delta_e <= 1.0 && ruby.recipe.entries.iter().any(|e| e.id == "Cr"));
 }
@@ -961,14 +990,14 @@ fn criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned() {
 /// from model units to mm with W = 7 mm and the measured model width) within dE00 <= 3 for at
 /// least 6 of the 8 built-ins.
 #[test]
-#[ignore = "built-ins really differ from the primary-data recipes: only 2/8 are reproduced within \
-            dE00 3 (Ruby 0.14, Citrine 2.69; Emerald 3.06 and Sapphire 3.49 just miss; Aquamarine \
-            5.81, Amethyst 11.18, Tanzanite 21.31, Peridot 23.79 differ: the built-in Tanzanite is \
+#[ignore = "built-ins really differ from the primary-data recipes: only 3/8 are reproduced within \
+            dE00 3 (Ruby 0.14, Aquamarine 2.52, Citrine 2.41; Emerald 3.06 and Sapphire 3.49 just \
+            miss; Amethyst 11.25, Tanzanite 21.31, Peridot 23.79 differ: the built-in Tanzanite is \
             far more saturated than the V3+ recipe at conc_max, the built-in Peridot is \
             orange-yellow where the Fe2+ spectra (Caltech GRR 418) are yellow-green, the built-in \
-            Amethyst has C* 82 against the Caltech-shaped recipe's 44, the built-in Aquamarine is \
-            bluer than any beryl recipe); the built-ins stay bit-identical, the per-built-in \
-            pins are in criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned"]
+            Amethyst has C* 82 against the Caltech-shaped recipe's 44); the built-ins stay \
+            bit-identical, the per-built-in pins are in \
+            criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned"]
 fn criterion_6_built_in_sanity_at_least_6_of_8() {
     let results = builtin_vs_recipe();
     let passed = results.iter().filter(|(_, _, r)| r.delta_e <= 3.0).count();
@@ -986,9 +1015,10 @@ fn criterion_6_built_in_sanity_at_least_6_of_8() {
 // Criterion 10
 // ---------------------------------------------------------------------------------------------
 
-/// Pinned band fixture of corundum + 0.20 wt% Cr2O3 at 5 mm, `data_version` 4:
+/// Pinned band fixture of corundum + 0.20 wt% Cr2O3 at 5 mm, `data_version` 5 (the corundum
+/// bands are those of version 4; version 5 changed the glass and quartz valence states only):
 /// `(centre nm, fwhm cm^-1, peak mm^-1)` per mode, sorted by centre.
-const PINNED_DATA_VERSION: u32 = 4;
+const PINNED_DATA_VERSION: u32 = 5;
 const PINNED_O: [(f32, f32, f32); 5] = [
     (345.0, 3687.4, 0.032_346),
     (404.36, 3286.7002, 1.02598),
@@ -1212,8 +1242,18 @@ fn criterion_13_narrow_lines_ruby_r1() {
 
     let step = 0.1;
     let (mut xyz, mut white) = ([0.0; 3], [0.0; 3]);
-    for i in 0..=((780.0_f64 - 380.0) / step).round() as usize {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the rounded step count (4000) is a small positive number"
+    )]
+    let steps = ((780.0_f64 - 380.0) / step).round() as usize;
+    for i in 0..=steps {
         let lambda = 380.0 + i as f64 * step;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the CMF takes f32 nanometres; lambda is 380..=780"
+        )]
         let cmf = cie_1931_cmf(lambda as f32);
         let s = Illuminant::D65.spectral_power(lambda);
         let t = (-alpha(lambda) * REF_MM).exp();

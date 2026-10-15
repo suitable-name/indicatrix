@@ -283,7 +283,7 @@ pub fn run(ctx: &crate::renderer::gpu::GpuContext) -> PolyhedronCheckResult {
         &[(0, &planes_buf), (1, &rays_buf), (2, &out_buf)],
     );
 
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total).expect("a few cases").div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -343,7 +343,13 @@ fn classify_case(
     cpu_hit: Option<crate::optics::raytracer::HitRecord>,
     gpu_hit: &GpuHitRecord,
 ) -> (CaseOutcome, HitSummary, HitSummary) {
-    let cpu_summary = cpu_hit.map(|h| (h.t, h.facet_idx as i64, h.normal));
+    let cpu_summary = cpu_hit.map(|h| {
+        (
+            h.t,
+            i64::try_from(h.facet_idx).expect("a facet index fits i64"),
+            h.normal,
+        )
+    });
     let gpu_summary = (gpu_hit.hit != 0).then(|| {
         (
             gpu_hit.t,
@@ -356,7 +362,9 @@ fn classify_case(
         (None, false) => CaseOutcome::Agree,
         (None, true) | (Some(_), false) => CaseOutcome::Mismatch,
         (Some(cpu), true) => {
-            if cpu.facet_idx as i64 == i64::from(gpu_hit.facet_idx) {
+            if i64::try_from(cpu.facet_idx).expect("a facet index fits i64")
+                == i64::from(gpu_hit.facet_idx)
+            {
                 let t_ulp = ulp_distance(cpu.t, gpu_hit.t);
                 let n_ulp = ulp_distance(cpu.normal.x, gpu_hit.normal[0])
                     .max(ulp_distance(cpu.normal.y, gpu_hit.normal[1]))

@@ -385,7 +385,7 @@ pub fn run(ctx: &crate::renderer::gpu::GpuContext) -> CameraRayCheckResult {
         &[(0, &cases_buf), (1, &out_buf)],
     );
 
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total).expect("a few cases").div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

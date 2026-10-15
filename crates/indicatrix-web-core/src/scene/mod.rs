@@ -53,11 +53,17 @@ use indicatrix_formats::native::{ColorRecipeDto, CustomMaterialSnapshot};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
+mod physics_flag_tests;
+#[cfg(test)]
 mod tests;
 
 /// The largest frame, in pixels, a scene may ask for: a 4096 x 4096 export (the PNG
 /// export caps the long edge at 4096 px).
 pub const MAX_FRAME_PIXELS: u64 = 4096 * 4096;
+
+/// The unscaled surface glare (the desktop's `DEFAULT_SURFACE_GLARE`): the render as it was
+/// before the control existed.
+pub const DEFAULT_SURFACE_GLARE: f32 = 1.0;
 
 /// One facet plane as plain data: exactly `GpuFacetPlane`'s two fields (`n . x + d <= 0`
 /// is inside the stone).
@@ -134,6 +140,17 @@ pub struct CustomMaterialSpec {
     /// colours the material. Wire version 12.
     #[serde(default)]
     pub absorption_bands: Vec<[f64; 3]>,
+    /// The snapshot's `crystal_system` name (`"Orthorhombic"`, ...); empty means "infer it from
+    /// the birefringence", as before the field existed. Wire version 16.
+    #[serde(default)]
+    pub crystal_system: String,
+    /// The snapshot's `optical_character` name (`"BiaxialPositive"`, ...); empty as above. Wire
+    /// version 16.
+    #[serde(default)]
+    pub optical_character: String,
+    /// The snapshot's `biaxial_delta_beta_alpha`. Wire version 16.
+    #[serde(default)]
+    pub biaxial_delta_beta_alpha: Option<f64>,
 }
 
 impl CustomMaterialSpec {
@@ -148,10 +165,17 @@ impl CustomMaterialSpec {
             absorption_rgb: snapshot.absorption_rgb,
             color_recipe: snapshot.color_recipe.clone(),
             absorption_bands: snapshot.absorption_bands_per_mm.clone().unwrap_or_default(),
+            crystal_system: snapshot.crystal_system.clone(),
+            optical_character: snapshot.optical_character.clone(),
+            biaxial_delta_beta_alpha: snapshot.biaxial_delta_beta_alpha,
         }
     }
 
     fn to_snapshot(&self) -> CustomMaterialSnapshot {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the snapshot's absorption precision; band values are in the normal float range"
+        )]
         let rows: Vec<[f32; 3]> = self
             .absorption_bands
             .iter()
@@ -162,9 +186,10 @@ impl CustomMaterialSpec {
             self.dispersion_delta,
             self.birefringence_delta,
             None,
-            "",
-            "",
+            self.crystal_system.as_str(),
+            self.optical_character.as_str(),
         )
+        .with_biaxial_delta(self.biaxial_delta_beta_alpha)
         .with_absorption_rgb(self.absorption_rgb)
         .with_color_recipe(self.color_recipe.clone())
         .with_absorption_bands(&rows)
@@ -338,10 +363,16 @@ pub struct LightingSpec {
     /// Head-shadow radius in degrees of the lit presets (`0.0` off, default `16.0`,
     /// `EnvironmentSource::Studio::head_shadow_deg`); appended in protocol v11.
     pub head_shadow_deg: f32,
+    /// The cross-polarised scale of the first surface reflection (`1.0` unscaled, `0.0` only
+    /// light that entered the stone; `EnvironmentSource::Studio::surface_glare`, clamped to
+    /// `0.0..=1.0` by `with_surface_glare`). Ignored for an HDR environment; appended in
+    /// protocol v17.
+    pub surface_glare: f32,
 }
 
 impl LightingSpec {
-    /// Builds a spec from typed values.
+    /// Builds a spec from typed values, with the surface glare unscaled (`1.0`, the render
+    /// before the control existed); see [`Self::with_surface_glare`].
     #[must_use]
     pub const fn new(
         preset: LightingPreset,
@@ -358,7 +389,16 @@ impl LightingSpec {
             light_pitch,
             backdrop_index: backdrop.index(),
             head_shadow_deg,
+            surface_glare: DEFAULT_SURFACE_GLARE,
         }
+    }
+
+    /// This spec with `surface_glare` as its glare scale (clamped to `0.0..=1.0` when the
+    /// environment is built, so a spec never carries a value the tracer would reject).
+    #[must_use]
+    pub const fn with_surface_glare(mut self, surface_glare: f32) -> Self {
+        self.surface_glare = surface_glare;
+        self
     }
 
     /// The preset (out-of-range indices fall back like `LightingPreset::from_index`).
@@ -373,12 +413,14 @@ impl LightingSpec {
         Backdrop::from_index(self.backdrop_index)
     }
 
-    /// The analytic studio environment the desktop builds for these settings.
+    /// The analytic studio environment the desktop builds for these settings (the
+    /// render thread's order: backdrop, surface glare, head shadow).
     #[must_use]
     pub const fn studio_environment(&self) -> EnvironmentSource<'static> {
         self.preset()
             .studio(self.exposure, self.light_yaw, self.light_pitch)
             .with_backdrop(self.backdrop().level())
+            .with_surface_glare(self.surface_glare)
             .with_head_shadow(self.head_shadow_deg)
     }
 }
@@ -722,142 +764,5 @@ impl OwnedScene {
     #[must_use]
     pub const fn max_bounces(&self) -> u32 {
         self.max_bounces
-    }
-}
-
-#[cfg(test)]
-mod physics_flag_tests {
-    use super::*;
-    use indicatrix::{
-        geometry::cuts::StandardGemCuts,
-        optics::chromophore::{ChromophoreCatalogue, ColorRecipe, ResolvedBands, resolve},
-    };
-    use indicatrix_cut_core::{material::ColorMode, native::color_recipe_dto};
-
-    fn spec_with(mode: Option<&ColorMode>, rgb: [f32; 3]) -> CustomMaterialSpec {
-        CustomMaterialSpec {
-            name: "Ruby X".to_string(),
-            mean_ri: 1.77,
-            dispersion_delta: 0.018,
-            birefringence_delta: -0.008,
-            absorption_rgb: Some(rgb.map(f64::from)),
-            color_recipe: mode.map(color_recipe_dto),
-            absorption_bands: Vec::new(),
-        }
-    }
-
-    fn pure_host_mode() -> ColorMode {
-        let cat = ChromophoreCatalogue::global();
-        let mut recipe = ColorRecipe::new("corundum", cat.data_version);
-        let (tensor, _) = resolve(&recipe, cat).expect("pure host resolves");
-        recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
-        ColorMode::physics(recipe, [0.0; 3])
-    }
-
-    /// The flag follows the recipe the spec carries, not the shape of the built bands: a
-    /// pure-host recipe (no bands at all) is still physics.
-    #[test]
-    fn the_flag_follows_the_recipe_presence() {
-        let mode = pure_host_mode();
-        let fallback = mode.fallback_rgb();
-        assert!(spec_with(Some(&mode), fallback).is_physics_color());
-        assert!(!spec_with(None, [0.0; 3]).is_physics_color());
-        // A fantasy-active material parks its recipe but renders as fantasy.
-        let mut parked = mode.clone();
-        parked.switch_to_fantasy();
-        assert!(!spec_with(Some(&parked), parked.fallback_rgb()).is_physics_color());
-        // An older build edited the top-level color: not physics until the user chooses.
-        assert!(!spec_with(Some(&mode), [0.1, 0.2, 2.5]).is_physics_color());
-    }
-
-    /// A zero-band physics recipe is per-millimetre and still gets the 7 mm default width; a
-    /// fantasy-colour custom (per model unit) gets the face-up calibration scale `1 / K` while no
-    /// size is set.
-    #[test]
-    fn a_pure_host_physics_material_takes_the_default_stone_width() {
-        let planes = StandardGemCuts::standard_round_brilliant();
-        let mode = pure_host_mode();
-        let spec = spec_with(Some(&mode), mode.fallback_rgb());
-        assert!(spec.is_physics_color());
-        let material_spec = MaterialSpec {
-            custom_materials: vec![spec.to_gem_material()],
-            ..MaterialSpec::catalogue("Ruby X")
-        };
-        let physics = resolve_scene_material(&material_spec, &planes).expect("resolves");
-        assert!(
-            (physics.absorption_path_scale
-                - 1.0 / indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH)
-                .abs()
-                > 1e-3,
-            "7 mm / model width must rescale the path, got {}",
-            physics.absorption_path_scale
-        );
-        let fantasy = MaterialSpec {
-            custom_materials: vec![spec_with(None, [0.2, 0.6, 0.3]).to_gem_material()],
-            ..MaterialSpec::catalogue("Ruby X")
-        };
-        let plain = resolve_scene_material(&fantasy, &planes).expect("resolves");
-        assert!(
-            (plain.absorption_path_scale - 1.0 / indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH)
-                .abs()
-                < f32::EPSILON
-        );
-    }
-
-    /// A physics ruby recipe fills the scene's fluorescence (`build_with_customs`), a catalogue
-    /// material or a fantasy color leaves it empty, and the scene then traces through
-    /// `handle_trace_chunk` with the emitters beside it.
-    #[test]
-    fn a_physics_recipe_fills_the_scenes_fluorescence() {
-        let cat = ChromophoreCatalogue::global();
-        let mut recipe = ColorRecipe::new("corundum", cat.data_version);
-        recipe.set_amount("Cr", 0.5);
-        let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
-        recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
-        let mode = ColorMode::physics(recipe, [0.0; 3]);
-        let custom = spec_with(Some(&mode), mode.fallback_rgb());
-        assert_eq!(custom.fluorescence().emitters().len(), 1);
-        assert!(spec_with(None, [0.0; 3]).fluorescence().is_empty());
-
-        let scene_spec = |material: MaterialSpec| SceneSpec {
-            planes: planes_to_data(&StandardGemCuts::standard_round_brilliant()),
-            finishes: FinishSpec::AllPolished,
-            material,
-            camera: CameraSpec {
-                yaw: 0.6,
-                pitch: 0.35,
-                distance: 4.2,
-            },
-            lighting: LightingSpec::new(
-                LightingPreset::UvLamp365,
-                1.0,
-                0.4,
-                0.35,
-                Backdrop::Grey,
-                16.0,
-            ),
-            max_bounces: 4,
-            width: 4,
-            height: 4,
-            hdr_id: None,
-        };
-        let ruby = scene_spec(MaterialSpec {
-            custom_materials: vec![custom.to_gem_material()],
-            ..MaterialSpec::catalogue("Ruby X")
-        });
-        let customs = [custom];
-        let glowing = OwnedScene::build_with_customs(&ruby, None, &customs).expect("builds");
-        assert!(!glowing.fluorescence().is_empty());
-        let plain = OwnedScene::build(&ruby, None).expect("builds");
-        assert!(plain.fluorescence().is_empty());
-        let diamond = OwnedScene::build_with_customs(
-            &scene_spec(MaterialSpec::catalogue("Diamond")),
-            None,
-            &customs,
-        )
-        .expect("builds");
-        assert!(diamond.fluorescence().is_empty());
-        let chunk = crate::render::handle_trace_chunk(&glowing, glowing.plane_soa(), 0, 1, 0, 1);
-        assert_eq!(chunk.len(), 16);
     }
 }

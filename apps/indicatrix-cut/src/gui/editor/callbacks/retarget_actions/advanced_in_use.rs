@@ -25,6 +25,10 @@ const CROWN_FRACTION_EPSILON: f32 = 1e-4;
 
 /// What the controls Simple mode hides hold, as the dialog sends them.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the retarget dialog's hidden controls; fields are independent switches"
+)]
 pub(super) struct HiddenRetargetSettings {
     /// Fraction (0.0 to 1.0) of the pavilion's shift the crown follows.
     pub crown_fraction: f32,

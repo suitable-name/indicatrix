@@ -4,6 +4,7 @@
 use indicatrix::optics::LightingPreset;
 use indicatrix_cut_core::ObjectivePreset;
 use indicatrix_editor::retarget::CrownShift;
+use indicatrix_formats::native::design::{DESIGN_EXTENSION, LEGACY_DESIGN_EXTENSION};
 use indicatrix_render_jobs::{ComputeChoice, LocalEngines, TransferChoice};
 use std::path::PathBuf;
 
@@ -161,8 +162,8 @@ pub enum ExportFormat {
     /// `GemCAD` cutting instructions, the file the editor's Export writes: CRLF line ends
     /// (the library-entry footnote the desktop adds is left out).
     Asc,
-    /// A self-contained `.indicatrix` design file.
-    Indicatrix,
+    /// A self-contained `.isdd` design file.
+    Isdd,
     /// A Gem Cut Studio file (experimental).
     Gcs,
     /// The cutting sheet as a web page.
@@ -177,7 +178,8 @@ impl ExportFormat {
         let extension = lower.rsplit_once('.').map(|(_, extension)| extension)?;
         match extension {
             "asc" => Some(Self::Asc),
-            "indicatrix" => Some(Self::Indicatrix),
+            // A legacy `.indicatrix` name still names the design file.
+            DESIGN_EXTENSION | LEGACY_DESIGN_EXTENSION => Some(Self::Isdd),
             "gcs" => Some(Self::Gcs),
             "html" | "htm" => Some(Self::Html),
             _ => None,
@@ -205,7 +207,7 @@ pub struct SolveArgs {
     pub design: PathBuf,
     /// Print JSON instead of text.
     pub json: bool,
-    /// Save the design here as a `.indicatrix` file.
+    /// Save the design here as a `.isdd` file.
     pub out: Option<PathBuf>,
     /// A design library, for its custom materials.
     pub db: Option<PathBuf>,
@@ -268,7 +270,7 @@ pub struct OptimizeArgs {
     pub lighting: LightingPreset,
     /// Print JSON instead of text.
     pub json: bool,
-    /// Save the best candidate here as a `.indicatrix` file.
+    /// Save the best candidate here as a `.isdd` file.
     pub out: Option<PathBuf>,
     /// A design library, for its custom materials.
     pub db: Option<PathBuf>,
@@ -300,7 +302,7 @@ pub struct RetargetArgs {
     pub lighting: LightingPreset,
     /// Print JSON instead of text.
     pub json: bool,
-    /// Save the retargeted design here as a `.indicatrix` file.
+    /// Save the retargeted design here as a `.isdd` file.
     pub out: Option<PathBuf>,
     /// A design library, for its custom materials.
     pub db: Option<PathBuf>,

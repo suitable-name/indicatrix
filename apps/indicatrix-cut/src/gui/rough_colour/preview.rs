@@ -1,5 +1,4 @@
-//! What the Rough Planner needs to colour its previews and to turn stones (`zoning` feature
-//! only).
+//! What the Rough Planner needs to colour its previews and to turn stones.
 //!
 //! The plan's stored colour and the cutter's pose choice as plain data, the colour of a
 //! planned stone, and the "Stone orientation" option on the results.
@@ -151,8 +150,13 @@ pub fn stone_colour(
         let Some(zone) = zoning.zone_absorption(index) else {
             continue;
         };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the absorption-band precision; the zone share is a fraction in 0..=1"
+        )]
+        let share = *share as f32;
         bands.extend(zone.tensor.o_ray.iter().map(|band| AbsorptionBand {
-            peak: band.peak * *share as f32,
+            peak: band.peak * share,
             ..*band
         }));
     }
@@ -189,8 +193,10 @@ pub fn stone_colours(
 /// The stone a "Use colour" click adopts.
 #[derive(Debug, Clone, Copy)]
 pub struct AdoptTarget<'a> {
-    /// The plan's name: the stem of the new material's name.
+    /// The plan's name: the first stem of the new material's name.
     pub rough_name: &'a str,
+    /// The stone's design's title: the second stem of the new material's name.
+    pub design_title: &'a str,
     /// The result the stone is in.
     pub layout: &'a RoughLayout,
     /// The result's number (its place in the plan's results, from 0).
@@ -199,16 +205,18 @@ pub struct AdoptTarget<'a> {
     pub stone_index: usize,
     /// How the stone's design sits in the planner's caliper frame.
     pub design: DesignPlacement,
-    /// The design's caliper width in model units (the width of its mesh along x).
-    pub design_width_units: f64,
+    /// The design's axis-aligned width in its own frame, in model units
+    /// (`DesignInfo::width_axis_units`): what the editor's girdle diameter measures, so the
+    /// editor's millimetres per unit equal the pose's.
+    pub design_width_axis_units: f64,
 }
 
 /// Adopts one planned stone: the stone in the pose the cutter chose, its colour as the custom
-/// material "<rough> colour" (`store::adopt_stone`).
+/// material "<plan> - <design> color" (`store::adopt_stone`).
 ///
 /// The returned stone width is the design's real
-/// width (`design_width_units` times the pose's millimetres per unit); the caller sets the editor's
-/// stone width to it.
+/// width (`design_width_axis_units` times the pose's millimetres per unit); the caller sets the
+/// editor's stone width (girdle diameter) to it.
 ///
 /// # Errors
 ///
@@ -229,12 +237,13 @@ pub fn adopt(
         db,
         &AdoptRequest {
             rough_name: target.rough_name,
+            design_title: target.design_title,
             rough_zoned: &inputs.rough_zoned,
             placement: StonePlacement {
                 pose,
                 design: target.design,
             },
-            stone_width_mm: target.design_width_units * pose.mm_per_unit,
+            stone_width_mm: target.design_width_axis_units * pose.mm_per_unit,
             host: host.as_host(),
         },
     )
@@ -523,14 +532,16 @@ mod tests {
         let layout = layout(vec![stone(0.0)], false);
         let target = AdoptTarget {
             rough_name: "Melon",
+            design_title: "Round",
             layout: &layout,
             layout_index: 4,
             stone_index: 0,
             design: DesignPlacement::IDENTITY,
-            design_width_units: 3.0,
+            design_width_axis_units: 3.0,
         };
 
-        // The planner's pose: the width is the design's width in the stone's scale (2 mm/unit).
+        // The planner's pose: the width is the design's axis-aligned width (what the editor's
+        // girdle diameter measures) in the stone's scale (2 mm/unit).
         let mut plain = inputs(PoseChoices::new());
         plain.rough_zoned = zoned.clone();
         let mut scaled_layout = layout.clone();
@@ -540,7 +551,7 @@ mod tests {
             ..target
         };
         let kept = adopt(&db, &host, &plain, &scaled).unwrap();
-        assert_eq!(kept.material_name, "Melon colour");
+        assert_eq!(kept.material_name, "Melon - Round color");
         assert!((kept.stone_width_mm - 6.0).abs() < 1e-9, "3 units x 2 mm");
 
         // With the stone turned over by the stored choice, the zones land in the stone differently.

@@ -1,0 +1,248 @@
+// The window of the Indicatrix mobile app: the navigation shell.
+//
+//   compact  (width < 600 dp)   pages above a bottom navigation bar
+//   medium   (600 to 840 dp)    navigation rail on the leading edge, pages beside it
+//   expanded (>= 840 dp)        same as medium (the Design page splits its own area)
+//
+// The class is computed in Rust from the width reported through `Shell.width-changed`
+// and comes back as `Shell.window-class`. Everything here is edge to edge: the window
+// background (the surface color) extends under the system bars, and the bars and pages
+// are inset by the window's safe-area insets.
+//
+// Only the globals named in the `export` below are visible to Rust.
+import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Shell, Prefs, About } from "models.slint";
+import { NavBar, NavRail } from "shell/nav.slint";
+import { Toast } from "shell/toast.slint";
+import { DialogHost } from "shell/dialog_host.slint";
+import { InfoSheetHost } from "shell/info.slint";
+import { LibraryPage } from "pages/library.slint";
+import { DesignPage } from "pages/design.slint";
+import { CutPage } from "pages/cut.slint";
+import { MorePage } from "pages/more.slint";
+import { DocumentModel, TemplateCardData } from "design/document_model.slint";
+import { NewDesignPage } from "design/new_design_page.slint";
+import { ViewportModel } from "design/viewport/viewport_model.slint";
+import { TiersModel, TierRowData, TierChipData, AnglePresetData } from "design/tiers/tiers_model.slint";
+import { PropsModel, MaterialItem, LightingItem, WarningItem, ProportionItem } from "design/props/props_model.slint";
+import { CutModel, CutRowData } from "cut/cut_model.slint";
+import { CuttingModeScreen } from "cut/cutting_mode.slint";
+import { RenderModel } from "design/render/render_model.slint";
+import { LibraryModel, LibraryCardData, TagChipData } from "library/library_model.slint";
+
+export { Shell, Prefs, About }
+export { RenderModel, LibraryModel, LibraryCardData, TagChipData }
+export { DocumentModel, TemplateCardData, ViewportModel }
+export { TiersModel, TierRowData, TierChipData, AnglePresetData }
+export { PropsModel, MaterialItem, LightingItem, WarningItem, ProportionItem }
+export { CutModel, CutRowData }
+
+export component AppWindow inherits Window {
+    // Used by the desktop preview only; Android gives the window the screen's size.
+    preferred-width: 390px;
+    preferred-height: 800px;
+    title: "Indicatrix";
+    background: Theme.surface;
+
+    property <bool> compact: Shell.window-class == 0;
+    property <length> bar-height: Theme.nav-size + Shell.inset-bottom;
+    property <length> rail-width: Theme.nav-size + Shell.inset-left;
+
+    // The window's safe-area insets, mirrored into `Shell` for every component.
+    property <length> inset-top: root.safe-area-insets.top;
+    property <length> inset-bottom: root.safe-area-insets.bottom;
+    property <length> inset-left: root.safe-area-insets.left;
+    property <length> inset-right: root.safe-area-insets.right;
+
+    // Theme override. The Material widget style (AboutSlint, text selection) reads
+    // `Palette.color-scheme`; forcing dark or light writes it, and going back to
+    // "System" restores the value seen before the first override. (After that the
+    // palette no longer follows later system changes until restart.)
+    property <int> theme-choice: Shell.theme-choice;
+    property <bool> palette-overridden: false;
+    property <ColorScheme> system-scheme: ColorScheme.unknown;
+
+    function mirror-insets() {
+        Shell.inset-top = root.inset-top;
+        Shell.inset-bottom = root.inset-bottom;
+        Shell.inset-left = root.inset-left;
+        Shell.inset-right = root.inset-right;
+    }
+
+    // The platform's default font size (0 when the platform sets none), copied into the
+    // theme's type scale; see `Theme.base-font`.
+    function mirror-font-size() {
+        if root.default-font-size > 0px {
+            Theme.base-font = root.default-font-size;
+        }
+    }
+
+    init => {
+        root.mirror-insets();
+        root.mirror-font-size();
+        Shell.width-changed(root.width);
+    }
+
+    changed default-font-size => {
+        root.mirror-font-size();
+    }
+
+    changed width => {
+        Shell.width-changed(root.width);
+    }
+
+    changed inset-top => {
+        root.mirror-insets();
+    }
+
+    changed inset-bottom => {
+        root.mirror-insets();
+    }
+
+    changed inset-left => {
+        root.mirror-insets();
+    }
+
+    changed inset-right => {
+        root.mirror-insets();
+    }
+
+    changed theme-choice => {
+        if (root.theme-choice == 0) {
+            if (root.palette-overridden) {
+                Palette.color-scheme = root.system-scheme;
+                root.palette-overridden = false;
+            }
+        } else {
+            if (!root.palette-overridden) {
+                root.system-scheme = Palette.color-scheme;
+                root.palette-overridden = true;
+            }
+            Palette.color-scheme = root.theme-choice == 1 ? ColorScheme.dark : ColorScheme.light;
+        }
+    }
+
+    // The Back key (and Escape in the desktop preview). Rejecting it hands it to the
+    // system: the Android backend reports a rejected Back as unhandled, so the
+    // activity's default action runs (the app goes to the background).
+    FocusScope {
+        init => {
+            self.focus();
+        }
+
+        key-pressed(event) => {
+            if (event.text == Key.Back || event.text == Key.Escape) {
+                // Order: a dialog or info sheet on top of everything, then the New
+                // Design page, then the Tiers tab's overlays, then the shell's steps.
+                if (Shell.dialog-visible || Shell.info-visible) {
+                    return Shell.handle-back() ? accept : reject;
+                }
+                if (CutModel.mode-open) {
+                    CutModel.mode-close();
+                    return accept;
+                }
+                if (DocumentModel.handle-back()) {
+                    return accept;
+                }
+                if (RenderModel.handle-back()) {
+                    return accept;
+                }
+                if (TiersModel.overlay-open) {
+                    TiersModel.dismiss-overlays();
+                    return accept;
+                }
+                if (Shell.destination == 0 && LibraryModel.handle-back()) {
+                    return accept;
+                }
+                if (Shell.handle-back()) {
+                    return accept;
+                }
+            }
+            return reject;
+        }
+
+        pages := Rectangle {
+            x: root.compact ? Shell.inset-left : root.rail-width;
+            y: Shell.inset-top;
+            width: root.width - self.x - Shell.inset-right;
+            height: root.height - Shell.inset-top - (root.compact ? root.bar-height : Shell.inset-bottom);
+            clip: true;
+
+            // All four pages stay alive so their state survives a destination switch.
+            LibraryPage {
+                visible: Shell.destination == 0;
+            }
+
+            DesignPage {
+                visible: Shell.destination == 1;
+            }
+
+            CutPage {
+                visible: Shell.destination == 2;
+            }
+
+            MorePage {
+                visible: Shell.destination == 3;
+            }
+        }
+
+        if root.compact: NavBar {
+            x: 0px;
+            y: root.height - self.height;
+            width: root.width;
+            current: Shell.destination;
+            bottom-inset: Shell.inset-bottom;
+            left-inset: Shell.inset-left;
+            right-inset: Shell.inset-right;
+            selected(index) => {
+                Shell.select-destination(index);
+            }
+        }
+
+        if !root.compact: NavRail {
+            x: 0px;
+            y: 0px;
+            height: root.height;
+            current: Shell.destination;
+            top-inset: Shell.inset-top;
+            left-inset: Shell.inset-left;
+            selected(index) => {
+                Shell.select-destination(index);
+            }
+        }
+
+        // The New Design page covers everything but the toast and the dialogs.
+        if DocumentModel.gallery-open: NewDesignPage {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+        }
+
+        // Cutting Mode covers everything, the navigation included, but the toast and the
+        // dialogs.
+        if CutModel.mode-open: CuttingModeScreen {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+        }
+
+        Toast {
+            text: Shell.toast-text;
+            shown: Shell.toast-visible;
+            width: min(pages.width - 2 * Theme.space-lg, 560px);
+            x: pages.x + (pages.width - self.width) / 2;
+            y: root.compact ? root.height - root.bar-height - self.height - Theme.space-md : root.height - Shell.inset-bottom - self.height - Theme.space-lg;
+            dismissed => {
+                Shell.toast-visible = false;
+                Shell.toast-dismissed();
+            }
+        }
+
+        InfoSheetHost { }
+
+        DialogHost { }
+    }
+}

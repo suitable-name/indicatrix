@@ -1,16 +1,16 @@
 # 11. Saving and File Formats
 
-## What you will do
+## What You Will Do
 
 This chapter explains the two file formats the editor writes — the
-`.indicatrix` design file, which is this app's own native format, and the
-plain `.asc` schedule — when to use each, and how the app handles a catalogue
-design's original file versus a locally edited one. It also covers opening a
-file by double-clicking it or giving it on the command line, the older
-`.indicatrix.toml` files that still open, the experimental Gem Cut Studio
-`.gcs` export, and opening `.gem`/`.gcs` files directly in the editor.
+`.isdd` design file (Indicatrix design file), which is this app's own native
+format, and the plain `.asc` schedule — when to use each, and how the app
+handles a catalogue design's original file versus a locally edited one. It
+also covers opening a file by double-clicking it or giving it on the command
+line, the old `.indicatrix` files that still open, the experimental Gem Cut
+Studio `.gcs` export, and opening `.gem`/`.gcs` files directly in the editor.
 
-## `.asc` — the plain cutting-instructions file
+## `.asc` — The Plain Cutting-Instructions File
 
 `.asc` is the long-standing GemCAD-style schedule format: a plain text
 file listing every facet's angle, index, and meet instruction. Two
@@ -18,7 +18,7 @@ different places in the app can produce one, and they behave slightly
 differently — the buttons have distinct labels to make their difference
 clear.
 
-### Export Edited .asc, from the editor
+### Export Edited .asc, from the Editor
 
 While a design is open in the cutting-design editor (Chapter 3), click
 **Export Edited .asc**. This re-solves every tier's mast fresh from the
@@ -27,7 +27,7 @@ you choose to save it. If some tier can't currently be solved, you'll see
 "Cannot export: &lt;reason&gt;." — fix that first (Chapter 5). On success,
 you'll see "Exported edited schedule to &lt;path&gt;."
 
-### Export .asc, from the catalogue detail view
+### Export .asc, from the Catalogue Detail View
 
 Selecting a design in the catalogue and clicking **Export .asc** there
 works differently — hovering the button spells this out ("the original
@@ -44,7 +44,7 @@ file stored in the catalogue, not your edits"):
   see the file's RECONSTRUCTED header)." Do not treat a reconstructed
   file's masts as real cutting depths — solve it properly first.
 
-## Editing the instructions as text
+## Editing the Instructions as Text
 
 Choose **Edit > Edit as Text...** (in the command palette:
 **Edit Instructions as Text...**) to see the open design's cutting
@@ -104,8 +104,8 @@ same facets.
 **Revert** writes the text again from the design and drops your edits. Closing
 the dialog with edits that were not applied asks first.
 
-**Compare with...** lays the text in the box against another text, line by
-line: **Saved file on disk** (the `.indicatrix` file the design was last
+**Compare With...** lays the text in the box against another text, line by
+line: **Saved File on Disk** (the `.isdd` file, or old `.indicatrix` file, the design was last
 opened from or saved to, shown as the text it gives; for a design that came
 from a plain `.asc`, that file's text; a design never saved has nothing to
 compare with and says so) or **Snapshot** (the design kept by Snapshot Design,
@@ -114,10 +114,10 @@ available once you have taken one). A line only in the box is marked
 marked **removed** and shows only an old line number, so the two can be told
 apart without the green and red tint. Long runs of unchanged lines fold into
 "N unchanged lines", and a count of added, removed and unchanged lines sits
-above the list. Choose **Back to the text** to return to editing; the text is
+above the list. Choose **Back to the Text** to return to editing; the text is
 exactly as you left it.
 
-## `.gcs` — Gem Cut Studio export (experimental)
+## `.gcs` — Gem Cut Studio Export (Experimental)
 
 **Export as Gem Cut Studio (.gcs)...** writes the same cutting instructions
 **Export Edited .asc** would write, as a Gem Cut Studio `.gcs` file. In the
@@ -135,13 +135,13 @@ been checked in Gem Cut Studio itself, and chiral designs (crown and pavilion
 twisted against each other) are untested. Open the file in Gem Cut Studio and
 compare it with the faceting diagram before cutting from it.
 
-## Opening `.gem` and `.gcs` files in the editor
+## Opening `.gem` and `.gcs` Files in the Editor
 
 **Open** also accepts a GemCAD `.gem` file or a Gem Cut Studio `.gcs`
 file. The design is converted to `.asc` cutting instructions exactly as Import
-converts it (Chapter 1) and opens like a plain `.asc` with no `.indicatrix` design file. The
+converts it (Chapter 1) and opens like a plain `.asc` with no `.isdd` design file. The
 window title names the file you opened, but the design is recorded under
-`<name>.asc`: **Save** asks where to write a new `<name>.indicatrix` and never
+`<name>.asc`: **Save** asks where to write a new `<name>.isdd` and never
 overwrites the `.gem` or `.gcs`. Anything the
 converter noted (a preform that is not converted, a hidden tier, a missing
 refractive index) is listed in the toast.
@@ -154,7 +154,7 @@ placeholder angle-table reconstruction, and the catalogue's **Export .asc**
 writes the converted cutting instructions. A file that cannot be read falls
 back to the angle table exactly as an unreadable `.asc` does.
 
-## `.indicatrix` — this app's own native format
+## `.isdd` — This App's Own Native Format
 
 `.asc` has no place to record everything this editor tracks: the rough's
 shape and size, exactly how each tier's meet is stated (not just a
@@ -162,7 +162,7 @@ free-text instruction), which tiers are deliberately detached from their
 symmetric family, the real-world girdle diameter in millimetres, and your
 chosen material/specific-gravity settings.
 
-The **`.indicatrix` design file** keeps all of that, and it is **one
+The **`.isdd` design file** keeps all of that, and it is **one
 self-contained file**: every tier in full (angle, indices, meet
 constraint, name, notes, cheater offset, target), the rough, the material
 (including a custom material's own numbers), the schedule's header, gear,
@@ -174,11 +174,14 @@ name the format and its version, which is how the app tells it apart from
 every other file.
 
 Click **Save** (or press Ctrl+S) to write it. The first time, a Save As
-dialog offers `<name>.indicatrix` (the extension is added if you leave it
+dialog offers `<name>.isdd` (the extension is added if you leave it
 off); after that, Save writes straight to the same file. **Save As**
-always asks, and from then on the design belongs to the new file.
+always asks, and from then on the design belongs to the new file. Every save
+writes `.isdd`, even when the design was opened from an old `.indicatrix`
+file: the Save dialog then proposes `<name>.isdd` beside it and leaves the old
+file untouched.
 
-- Saving keeps the file's previous version as `<name>.indicatrix.bak`
+- Saving keeps the file's previous version as `<name>.isdd.bak`
   alongside it — one generation back, so a second save overwrites the
   previous `.bak` in turn. The new file is written to a temporary name
   first and swapped into place, so a failed or interrupted save never
@@ -187,15 +190,15 @@ always asks, and from then on the design belongs to the new file.
   cutter or program, use **Export Edited .asc** (above). Such an export
   re-solves the design and writes the tier names with every run of
   whitespace turned into a single `_` (so "Crown Main" reads "Crown_Main"
-  in the `.asc`); the `.indicatrix` file keeps the name you typed.
+  in the `.asc`); the `.isdd` file keeps the name you typed.
 - `.asc` has no field of its own for a cheater/azimuth offset (Chapter 4),
   so an exported `.asc` carries a tier you have offset with its index-wheel
   position(s) shifted by a fraction of a tooth instead — `offset_deg / 360 *
   gear teeth`, added to each of that tier's indices and rounded to three
-  decimal places. The `.indicatrix` file stores the offset itself.
+  decimal places. The `.isdd` file stores the offset itself.
 - `.asc` also has no way to say that one tier's angle *follows* another's
   (a relation — Chapter 4). An exported `.asc` writes every such tier's
-  current angle as a plain number; the relation stays in the `.indicatrix`
+  current angle as a plain number; the relation stays in the `.isdd`
   file only.
 
 A design with no anchor tiers, or no tiers at all, can still be saved --
@@ -210,60 +213,40 @@ than 400 total planes) is saved the same way, as a draft, rather than being
 rejected outright. Solve down to 400 planes or fewer (or split the design)
 to get real cutting instructions out of it.
 
-### Opening a design
+### Opening a Design
 
-Click **Open** and choose a `.indicatrix` file (the first filter in the
-dialog), or pick it from the File menu's **Open Recent** submenu. The app
+Click **Open** and choose an `.isdd` file (the first filter in the
+dialog also lists the old `.indicatrix` files, which open exactly the same
+way), or pick it from the File menu's **Open Recent** submenu. The app
 looks at what the file holds, not at its name, so a design file opens as one
 whatever it is called. A file saved by a **newer version** of the app is
 refused with a message saying so ("saved by a newer version of
 Indicatrix ... Update Indicatrix to open it"), rather than opened wrongly.
 
 You can also open a design straight from the operating system. Starting the
-program with a file as its argument — `indicatrix-cut "C:\designs\round.indicatrix"`
+program with a file as its argument — `indicatrix-cut "C:\designs\round.isdd"`
 — opens that file once the window is up; a `.asc` (or `.gem`/`.gcs`) given
 the same way opens like **Open** on that file. This is what a double-click on a
-`.indicatrix` file does once the file type is registered with the system
+`.isdd` file does once the file type is registered with the system
 (`docs/file-association.md` in the app folder gives the registry and desktop
-entries). A design named this way is opened instead of the "Recover unsaved
-work?" or "Reopen last design?" offer; a leftover autosave stays where it is
+entries). A design named this way is opened instead of the "Recover Unsaved
+Work?" or "Reopen Last Design?" offer; a leftover autosave stays where it is
 and is offered at the next normal start. Each launch opens its own window: a
 second double-click does not hand its file to a window that is already open.
 
-### Older `.indicatrix.toml` and `.gemcut.toml` files
+### Files from Older Versions
 
-Before the `.indicatrix` design file existed, **Save Native** wrote a plain
-`.asc` plus a small `.indicatrix.toml` sidecar that held only what `.asc`
-cannot (the rough, the meet constraints, the material). Those pairs — and the
-still older `.gemcut.toml` sidecars, from before this app was renamed from
-GemCut — **still open**: choose the sidecar (or its `.asc`) in **Open**, or
-import the `.asc` into the catalogue, exactly as before. Opening one does not
-change or delete any of its files. The next **Save** writes a new
-`<name>.indicatrix` — the dialog opens in the same folder and suggests the
-same name — and leaves the old `.asc` and sidecar alone. Open Recent keeps old
-entries working, and drops an old entry once you have saved that design in
-the new format.
+Design files that earlier versions saved as `.indicatrix` open like any
+other design; opening one changes nothing on disk, and the next **Save**
+writes a new `<name>.isdd` beside it. Files from very old versions that were
+saved as a plain `.asc` plus a `.indicatrix.toml` open as a plain `.asc`
+(the extra data in the `.toml` is not read).
 
 The File menu's **Open Recent** submenu lists the design files you have saved
 or opened, newest first, so you do not have to hunt for a file picker to get
 back to one.
 
-## What happens if an older sidecar and its `.asc` disagree
-
-This applies to the older paired files only: a `.indicatrix` design file
-has no `.asc` to disagree with. An older `.indicatrix.toml` sidecar remembers a
-fingerprint of its paired `.asc` from the moment it was saved. If you open a
-sidecar whose `.asc` has since been changed by some other means (hand-edited,
-or touched in another program), the app notices the mismatch and asks you what
-to do, rather than silently picking one file over the other: a dialog headed
-"Older Sidecar Out of Sync" explains that the per-tier meet constraints and
-detached facets in the sidecar can no longer be trusted to line up by
-position with the changed `.asc`, and offers **Apply Sidecar Anyway**
-(hidden if the two files no longer even agree on how many tiers there
-are), **Use .asc Only** (load the geometry with none of the sidecar's
-extra information), or Cancel.
-
-## What Save does to your catalogue
+## What Save Does to Your Catalogue
 
 **Export Edited .asc** genuinely never touches the catalogue at all — file
 only, no database write of any kind. But **Save itself does register the
@@ -271,8 +254,9 @@ design in your catalogue**, every time it succeeds (the button's hover hint
 says so too). The row is given the
 design's cutting instructions as an `.asc` — preserved byte-for-byte when
 the schedule has not changed since it was loaded, regenerated when it has — and
-the `.indicatrix` file beside it; the editor opens the `.indicatrix` file
-whenever a row has one:
+the `.isdd` file beside it; the editor opens the `.isdd` file
+whenever a row has one (a row saved by an earlier version may hold the file as
+`.indicatrix`, which opens the same way):
 
 - If this design already has a catalogue row (you loaded it from there, or
   a previous Save already created one), that row's schedule,
@@ -285,7 +269,7 @@ whenever a row has one:
   design loaded from a **remote** library — see below), a brand-new local
   row is inserted, and every later Save updates that same row.
 
-The catalogue write happens only *after* the `.indicatrix` file is
+The catalogue write happens only *after* the `.isdd` file is
 safely written to disk, and only ever adds to your success — a
 failure to update the catalogue is reported as its own toast ("Catalogue
 not updated: ...") without undoing or invalidating the file save you just
@@ -298,7 +282,7 @@ again to retry the catalogue update." The ordinary success toast itself
 only mentions the file ("Saved '...'."), not the catalogue
 update, since the update is the normal case.
 
-### What a Save update deletes
+### What a Save Update Deletes
 
 When Save updates an **existing** catalogue row (not when it
 inserts a brand-new one), it also deletes that row's cached preview
@@ -310,7 +294,7 @@ again, and any Tilt Performance filter (Chapter 2) recomputes on demand —
 right-click the card and choose Generate Previews / Compute Tilt Curves
 when you want them back.
 
-## What a `.indicatrix` file carries besides the design
+## What an `.isdd` File Carries Besides the Design
 
 A design file is meant to be handed to someone else and still make sense, so
 besides the tiers it keeps the facts about the design that cannot be worked out
@@ -322,6 +306,15 @@ again from them:
   names of its PDF and `.gem` file, your notes, tags, licence and copyright
   text, the creation and last-save times, and the *ignored* and *excluded from
   the Rough Planner* marks.
+- **Stone render effects** (the optional `[render_effects]` table): the Stone tab's
+  inclusion haze (`inclusion_sigma_s`), crystal-axis orientation
+  (`c_axis_override_enabled`, `c_axis_tilt_deg`, `c_axis_azimuth_deg`), frosted girdle
+  (`girdle_frosted`) and edge rounding (`edge_rounding_radius`), together with the
+  stone width the design already keeps as `girdle_diameter_mm` (Chapter 2). The table
+  is written only when at least one effect is on, so a design without effects is
+  byte-for-byte what an older build wrote, and a file without the table opens with all
+  effects off. An older build ignores the table. The `.asc` format does not
+  carry it: a re-imported `.asc` starts with the defaults.
 - **Attached files** (the `[[attachments]]` array): the design's PDF, the
   original `.gem` and `.asc`, the diagram image and any other file, stored
   byte for byte (up to 64 MiB in total, so a design file stays one self-contained
@@ -351,7 +344,7 @@ itself stays attached too, so the fields the library has no column for travel wi
 the row. Re-importing a file with the same name replaces the earlier row, exactly
 as for any other import.
 
-## What the library keeps about a design besides the file
+## What the Library Keeps About a Design Besides the File
 
 The design file holds the design and nothing else. Some things you make *around*
 a design are kept in the library database on this computer instead, so they never
@@ -364,17 +357,18 @@ change the design file:
 The library knows which design these belong to by the design's **id**: the `id` line
 in the file's `[meta]` table. Every design has an id from the moment it opens:
 
-- A `.indicatrix` file that has an id keeps it. Opening and saving never changes it.
-- A `.indicatrix` file without one, a `.asc`, `.gem` or `.gcs` file opened from disk and
-  an older `.indicatrix.toml` pair are given an id worked out from where the file is. Open
+- An `.isdd` file (or old `.indicatrix` file) that has an id keeps it. Opening and saving
+  never changes it.
+- A design file without one, and a `.asc`, `.gem` or `.gcs` file opened from disk,
+  are given an id worked out from where the file is. Open
   the same file again and you get the same id, so its variants, progress and lighting are
   still there even if you never saved it. The next **Save** (or autosave) writes the id
-  into the `.indicatrix` file, and from then on the file keeps it wherever you move it.
+  into the `.isdd` file, and from then on the file keeps it wherever you move it.
   If you move or rename a file that has no id yet, it counts as a different design until
   you save it.
 - A design from a remote library, a new design and a design recovered from an autosave
   snapshot get a new id each time they open. The next **Save** (or autosave) writes it
-  into the `.indicatrix` file. If you never save such a design, the id is gone when you
+  into the `.isdd` file. If you never save such a design, the id is gone when you
   close it and anything kept under it can no longer be found.
 - A design you load from your catalogue whose attached file has no id is given one worked
   out from its catalogue entry, so loading the same entry again finds the same variants,
@@ -382,16 +376,16 @@ in the file's `[meta]` table. Every design has an id from the moment it opens:
 - **Save As** keeps the id. The copy is the same design, so it shows the same variants,
   progress and lighting as the original.
 
-All of this stays on this computer. Copying a `.indicatrix` file to another computer
+All of this stays on this computer. Copying an `.isdd` file to another computer
 takes the design, but not its variants, progress or lighting. Deleting a design from the
 catalogue does not delete them either, because the design may still exist as a file.
 
-## Confirming a save when the design is not a closed solid
+## Confirming a Save When the Design Is Not a Closed Solid
 
 If you click Export Edited .asc or Save (or Save As) while
 the design does not currently solve to a closed solid, the app does not
-silently write a broken file. A dialog headed **"This design is
-not a closed solid"** appears, showing the same problem text the status
+silently write a broken file. A dialog headed **"This Design Is
+Not a Closed Solid"** appears, showing the same problem text the status
 strip already shows (Chapter 5) followed by "Save anyway? The written file
 will note this in its own header." (or "Export anyway?" from the export
 path).
@@ -405,38 +399,38 @@ path).
   a catalogue export without an original file gets (above) — the two
   never both apply to the same export.
 
-## Autosave and recovery
+## Autosave and Recovery
 
 An **autosave** runs automatically every two minutes while there are
 unsaved changes, to its own recovery file — `<design-name-or-"untitled">
-.autosave.indicatrix`, stored next to this app's own settings file
+.autosave.isdd`, stored next to this app's own settings file
 (Chapter 1), never beside your real design files. It is a complete
-`.indicatrix` file. It never overwrites the design you last deliberately
+`.isdd` file. It never overwrites the design you last deliberately
 saved, and it does nothing at all while the design has no unsaved changes,
 or while a background solve is in flight. The moment you do Save for real,
-that autosave file is deleted. Recovery files left by older versions
-(`<name>.indicatrix.autosave.toml`) are still found and still open.
+that autosave file is deleted. Recovery files left by earlier versions
+(`<name>.autosave.indicatrix`) are still found and still open.
 
 If the app finds a leftover autosave file the next time it starts (a sign
 the previous session did not shut down cleanly), it offers to recover it
 **before** offering to reopen your last design — a dialog headed
-**"Recover unsaved work?"** with the message "The previous session ended
+**"Recover Unsaved Work?"** with the message "The previous session ended
 without saving. A recovery file is still on disk: `<path>`", and buttons
-**Recover** / **Not now** / **Delete**. Declining ("Not now") leaves the
+**Recover** / **Not Now** / **Delete**. Declining ("Not Now") leaves the
 file exactly where it is; it is only ever cleared by a later successful
 save, not by declining the offer. Choosing **Delete** instead removes
 exactly that one offered autosave file immediately, without opening it.
 (With no leftover autosave, the same dialog instead offers to reopen your
-most recently used design file, headed **"Reopen last design?"** with only
-**Reopen** / **Not now** — no Delete, since that file is your own real
+most recently used design file, headed **"Reopen Last Design?"** with only
+**Reopen** / **Not Now** — no Delete, since that file is your own real
 save, not a recovery snapshot.)
 
 A recovered autosave is never a place Save writes back to: the first Save
 asks for a file name and suggests the design's own. An autosave is
 self-contained: it carries the full tier list, material, offsets and
-notes, so recovery never asks for a paired `.asc`.
+notes, so recovery never asks for an `.asc`.
 
-## What a design loaded from a remote worker does on first save
+## What a Design Loaded from a Remote Worker Does on First Save
 
 Loading a design from a remote worker's library (Chapter 10) never
 attaches it to any catalogue row — a remote entry's own ID and a local
@@ -447,7 +441,9 @@ local** catalogue row, tagged as belonging to your local library, exactly
 like saving a brand-new design. Every Save after that updates that
 same new local row — the original remote entry is never touched.
 
-## Other exports: Cutting Sheet and Diagram
+## Other Exports: Cutting Sheet and Diagram
+
+![The cutting instructions of a design as the app shows and exports them.](../../../../assets/cutting_instructions.png)
 
 Two further exports live in the **File** menu rather than the command
 bar:
@@ -473,7 +469,7 @@ the file's path otherwise. Neither is affected by the not-closed-solid
 confirmation above — a design that does not solve at all has nothing to
 draw, rather than something to stamp a warning header onto.
 
-### How the cutting sheet is laid out
+### How the Cutting Sheet Is Laid Out
 
 The sheet follows the layout of a printed fantasy-cut page. From top to
 bottom it has these blocks. A line or block with nothing to print is left out
@@ -483,7 +479,7 @@ rather than filled with a guess.
   the heading reads "Cutting instructions". Under it come a subtitle (when
   one is given), "by" and the designer, and the date. The title comes from
   the design's file details, the title, designer, shape and notes stored in
-  its `.indicatrix` file (as they were when the design was opened or last
+  its `.isdd` file (as they were when the design was opened or last
   saved, so save after you change them in the library). When a file
   detail is empty, the sheet falls back to the `.asc` header lines of the
   design: the first line that does not start with "by" is the title, and a
@@ -529,11 +525,11 @@ rather than filled with a guess.
 The plain-text version of the sheet has the same blocks in the same order
 under plain headings, without the four drawings.
 
-### How the cutting sheet is ordered and labelled
+### How the Cutting Sheet Is Ordered and Labelled
 
 The sheet lists the tiers in the order they are cut, and that one order is
 the same everywhere in the app: the cutting sheet, Cutting mode (Chapter 20),
-the Cut slider (Chapter 13) and a Build this design lesson (Chapter 22) all
+the Cut slider (Chapter 13) and a Build This Design lesson (Chapter 22) all
 follow it. The plain-text version of the sheet follows the same rules.
 
 - **Order.** The pavilion tiers and the girdle tiers come first, then the
@@ -573,36 +569,26 @@ asks first, rather than discarding them outright.
 
 Separately, an autosave runs every two minutes while there are unsaved
 changes and offers to recover itself on the next launch if the app did
-not shut down cleanly — see "Autosave and recovery" above for the file
+not shut down cleanly — see "Autosave and Recovery" above for the file
 location and the recovery dialog's exact wording.
 
-## A note on catalogue re-sync
-
-The catalogue's own reconstruction mechanism (used when exporting a
-design with no original file attached, described above) is separate from
-the older-sidecar fingerprint check — they are two independent ways the app
-flags "this file is not guaranteed to be the verified original," one for
-catalogue designs with no attached file, and one for an older sidecar whose
-paired `.asc` has drifted. Neither one silently pretends a reconstructed
-or drifted file is the trusted original.
-
-## Which format to use
+## Which Format to Use
 
 | You want to... | Use |
 |---|---|
 | Hand a plain schedule to another cutter or another program | **Export Edited .asc** (editor) |
-| Keep working on this design later in this app, with everything preserved | **Save** (a `.indicatrix` file) |
+| Keep working on this design later in this app, with everything preserved | **Save** (an `.isdd` file) |
 | Get the design's original file back out unchanged | **Export .asc** from the catalogue (when an original is attached) |
 | Hand the design to a Gem Cut Studio user | **Export as Gem Cut Studio (.gcs)...** (experimental) |
 
 Save is the safer everyday choice while you are actively working on a
-design: the `.indicatrix` file holds the whole design, including everything
+design: the `.isdd` file holds the whole design, including everything
 a plain `.asc` has no field for, and you can produce a fresh `.asc` from it
 at any time with **Export Edited .asc**. Keep an `.asc` export if another
-program or cutter needs the schedule — a `.indicatrix` file is only for this
+program or cutter needs the schedule — an `.isdd` file is only for this
 app.
 
-## Where exported and saved files go
+## Where Exported and Saved Files Go
 
 Export Edited .asc and Export .asc open a normal Save As dialog every time
 you click them, and so does the first Save of a design (and every Save As) —
@@ -616,14 +602,13 @@ relative to wherever you started the program (Chapter 1) — this only comes
 up the first time you export something and only as a starting point for the
 dialog, never as a silent write destination.
 
-## Design file schema additions (tier ids, targets, authored RI)
+## Design File Schema Additions (Tier Ids, Targets, Authored RI)
 
-The `.indicatrix` file's `[[tiers]]` array holds a stable per-tier id
+The `.isdd` file's `[[tiers]]` array holds a stable per-tier id
 (`tier_id`) and an authoring-level target (`target` — see Chapter 4), and
 the document as a whole holds the authored refractive index kept
-apart from the effective one (see Chapter 6). An older `.indicatrix.toml`
-sidecar with none of them still opens exactly as before, reading each as
-absent.
+apart from the effective one (see Chapter 6). A design file without any of
+them still opens, reading each as absent.
 
 All three survive a real Save / reopen round trip: `Design::tier_id_at`/
 `Design::tier_target` populate `tier_id`/`target` on save, and `Design::tiers`/
@@ -633,7 +618,7 @@ the row identity note in Chapter 4) and any target you authored on it persist
 the next time you open the file, rather than being reconstructed fresh from
 an `.asc`.
 
-### Relations and the file version
+### Relations and the File Version
 
 A tier whose angle follows a relation (`P2 = P1 - 2`, Chapter 4) is stored
 with its relation, written against the tiers' stable ids rather than their
@@ -649,10 +634,18 @@ direction: an **older build of the app cannot open a version 3 file**. It
 refuses it with a message saying the file was saved by a newer version,
 rather than opening it and quietly dropping the relations the next time it
 saves. If you need to hand such a design to someone with an older build,
-remove the relations first (**Remove relation** on each tier, Chapter 4) or
+remove the relations first (**Remove Relation** on each tier, Chapter 4) or
 export an `.asc`, which carries plain angles.
 
-## Next steps
+A planned piece of rough from the Rough Planner (**Open in Editor**, Chapter
+15) moves the version to **4** in the same way. The `[preform]` table then says
+`kind = "planes"` and lists the piece's planes, which a build from before
+October 2026 does not know, so it refuses the file as saved by a newer version.
+The version falls back to what the relations and tiers need as soon as the
+design has a block or cylinder again (**Apply Preform** on the Preform tab,
+Chapter 4), and an older build can open it again.
+
+## Next Steps
 
 Continue to Chapter 12 for a consolidated troubleshooting list and a
 summary of the app's current limitations.

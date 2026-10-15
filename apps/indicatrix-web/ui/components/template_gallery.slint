@@ -3,18 +3,27 @@ import { Theme } from "theme.slint";
 import { GalleryModel } from "../models/app_model.slint";
 
 // The New Design dialog's template gallery (the desktop's `components/template_gallery.slint`):
-// a list of cards, one per `GalleryModel.templates` entry ("Empty" first), each showing its
-// name, shape and one-line description. There are no rendered thumbnails, as on the
-// desktop: a card shows a plain shape glyph. Selecting a card sets `selected-index` and
+// the cards in three sections -- Shapes, Round Variants and Teaching Designs, and the Blank
+// design -- each showing its name, shape, one-line description and the material its angles
+// were designed for. There are no rendered thumbnails: a card shows a plain shape glyph.
+//
+// `GalleryModel.templates` holds the cards in section order; the three parallel lists the
+// caller passes in (`NewDesignModel.card-*`) say, per card, which template it creates
+// (`indices`; 0 is Empty), which section it is in (`groups`: 0 Blank, 1 Shapes, 2 Round
+// Variants and Teaching Designs) and its "Designed for ..." line. `selected-index` is the
+// chosen card's TEMPLATE index, not its position. Selecting a card sets `selected-index` and
 // calls `selected()`; a double click also calls `chosen()`.
 export component TemplateGallery inherits Rectangle {
     in-out property <int> selected-index: 1;
+    in property <[int]> indices: [];
+    in property <[int]> groups: [];
+    in property <[string]> designed-for: [];
     callback selected();
     callback chosen();
 
     // A fixed viewport of about four cards (a `ScrollView`'s own preferred height is
     // zero, so sizing the gallery from it collapsed the list); the cards scroll inside.
-    height: 184px;
+    height: 224px;
 
     content := ScrollView {
         width: 100%;
@@ -23,60 +32,78 @@ export component TemplateGallery inherits Rectangle {
             width: parent.width - 14px;
             spacing: 4px;
             padding-right: 8px;
-            for card[idx] in GalleryModel.templates: Rectangle {
-                height: 44px;
-                background: idx == root.selected-index
-                    ? Theme.primary-glow
-                    : (card-touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
-                border-radius: Theme.radius-sm;
-                border-width: idx == root.selected-index ? 1px : 0px;
-                border-color: Theme.accent-cyan;
-
-                card-touch := TouchArea {
-                    clicked => {
-                        root.selected-index = idx;
-                        root.selected();
-                    }
-                    double-clicked => {
-                        root.selected-index = idx;
-                        root.selected();
-                        root.chosen();
-                    }
+            for card[idx] in GalleryModel.templates: VerticalLayout {
+                spacing: 4px;
+                // The section heading, above the first card of each section.
+                if idx == 0 || root.groups[idx] != root.groups[max(idx - 1, 0)]: Text {
+                    text: root.groups[idx] == 1 ? "Shapes" : (root.groups[idx] == 2 ? "Round Variants and Teaching Designs" : "Blank");
+                    font-size: 9px;
+                    font-weight: 700;
+                    color: Theme.text-muted;
+                    overflow: elide;
                 }
+                Rectangle {
+                    height: 54px;
+                    background: root.indices[idx] == root.selected-index
+                        ? Theme.primary-glow
+                        : (card-touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
+                    border-radius: Theme.radius-sm;
+                    border-width: root.indices[idx] == root.selected-index ? 1px : 0px;
+                    border-color: Theme.accent-cyan;
 
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    Rectangle {
-                        width: 28px;
-                        height: 28px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.bg-darkest;
-                        Text {
-                            text: "\u{25BC}";
-                            font-size: 14px;
-                            color: Theme.accent-cyan;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                    card-touch := TouchArea {
+                        clicked => {
+                            root.selected-index = root.indices[idx];
+                            root.selected();
+                        }
+                        double-clicked => {
+                            root.selected-index = root.indices[idx];
+                            root.selected();
+                            root.chosen();
                         }
                     }
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        alignment: center;
-                        Text {
-                            text: card.name;
-                            font-size: 11px;
-                            font-weight: 700;
-                            color: Theme.text-primary;
-                            overflow: elide;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.bg-darkest;
+                            Text {
+                                text: "\u{25BC}";
+                                font-size: 14px;
+                                color: Theme.accent-cyan;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
-                        Text {
-                            text: card.shape + " -- " + card.description;
-                            font-size: 9px;
-                            color: Theme.text-muted;
-                            overflow: elide;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            alignment: center;
+                            Text {
+                                text: card.name;
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Theme.text-primary;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: card.shape + " -- " + card.description;
+                                font-size: 9px;
+                                color: Theme.text-muted;
+                                overflow: elide;
+                            }
+                            if root.designed-for[idx] != "": Text {
+                                text: root.designed-for[idx];
+                                font-size: 9px;
+                                color: Theme.accent-cyan;
+                                overflow: elide;
+                            }
                         }
                     }
                 }

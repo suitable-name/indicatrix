@@ -27,7 +27,7 @@ use super::{MAX_PENDING, TOKEN_TTL_SECS};
 pub enum EnrollIssueError {
     /// Minting the client-certificate bundle failed -- see
     /// [`pki::issue_client_in_memory`] and [`pki::PkiError`].
-    Pki(pki::PkiError),
+    Pki(Box<pki::PkiError>),
     /// The system CSPRNG ([`random_bytes`]) failed to produce randomness -- extremely
     /// rare.
     Csprng,
@@ -52,7 +52,7 @@ impl fmt::Display for EnrollIssueError {
 impl std::error::Error for EnrollIssueError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Pki(e) => Some(e),
+            Self::Pki(e) => Some(e.as_ref()),
             Self::Csprng | Self::TooManyPending => None,
         }
     }
@@ -60,7 +60,7 @@ impl std::error::Error for EnrollIssueError {
 
 impl From<pki::PkiError> for EnrollIssueError {
     fn from(e: pki::PkiError) -> Self {
-        Self::Pki(e)
+        Self::Pki(Box::new(e))
     }
 }
 

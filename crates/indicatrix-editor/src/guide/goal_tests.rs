@@ -132,9 +132,9 @@ fn the_builders_leave_other_goals_alone() {
 
 #[test]
 fn the_tier_form_words_name_the_three_meet_kinds() {
-    assert_eq!(MeetKind::Unspecified.label(), "Unspecified vertex");
-    assert_eq!(MeetKind::Named.label(), "Named facet(s)");
-    assert_eq!(MeetKind::ExactScale.label(), "Exact scale value");
+    assert_eq!(MeetKind::Unspecified.label(), "Unspecified Vertex");
+    assert_eq!(MeetKind::Named.label(), "Named Facet(s)");
+    assert_eq!(MeetKind::ExactScale.label(), "Exact Scale Value");
     assert_eq!(
         MeetKind::of(&MeetConstraint::MeetExisting),
         MeetKind::Unspecified

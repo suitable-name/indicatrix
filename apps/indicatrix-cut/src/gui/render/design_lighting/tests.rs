@@ -19,7 +19,11 @@ fn tent() -> LightingValues {
         exposure: 1.5,
         surface_glare: 0.5,
         backdrop: Backdrop::White,
+        head_shadow_deg: 12.0,
         env_map_path: Some("C:/hdr/studio.hdr".to_string()),
+        camera_yaw: None,
+        camera_pitch: None,
+        camera_distance: None,
     }
 }
 
@@ -616,7 +620,7 @@ fn a_map_chosen_by_hand_while_the_lookup_waits_is_not_replaced_by_the_saved_map(
         "nothing chosen yet: the saved lighting's map may be used"
     );
 
-    // The cutter loads small.hdr through the settings dialog meanwhile.
+    // The cutter loads small.hdr through the Parameters panel meanwhile.
     env_map_chosen();
     assert!(map_chosen_since_open());
     assert!(

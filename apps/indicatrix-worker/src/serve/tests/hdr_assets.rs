@@ -219,7 +219,7 @@ fn bytes_that_do_not_match_the_hash_are_refused_and_the_connection_stays_usable(
         &mut input,
         &ClientMessage::Asset(AssetHeader {
             content_hash: content_hash(&bytes),
-            len: wrong.len() as u32,
+            len: u32::try_from(wrong.len()).expect("a test HDR fits u32"),
         }),
     );
     framing::write_frame(&mut input, &wrong).unwrap();

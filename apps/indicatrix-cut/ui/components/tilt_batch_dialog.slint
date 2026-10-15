@@ -96,6 +96,12 @@ export component TiltBatchDialog inherits Rectangle {
     // main button, Escape declines the offer (or closes the finished summary), and every
     // other key is swallowed so a shortcut cannot fire on the design behind. A batch that is
     // running ignores Escape: stopping it is the Cancel button's job.
+    // A full-window backdrop: clicks beside the card must not reach the design behind it.
+    TouchArea {
+        width: 100%;
+        height: 100%;
+    }
+
     FocusScope {
         width: 100%;
         height: 100%;
@@ -170,7 +176,7 @@ export component TiltBatchDialog inherits Rectangle {
                             spacing: 8px;
                             Text {
                                 horizontal-stretch: 1;
-                                text: "Compute tilt-performance curves?";
+                                text: "Compute Tilt-Performance Curves?";
                                 font-size: 14px;
                                 font-weight: 700;
                                 color: Theme.text-primary;
@@ -240,7 +246,7 @@ export component TiltBatchDialog inherits Rectangle {
                             alignment: end;
 
                             TipButton {
-                                text: "Not now";
+                                text: "Not Now";
                                 hint: "Do not compute any curves now.";
                                 clicked => { root.dismiss_offer(); }
                             }
@@ -330,7 +336,7 @@ export component TiltBatchDialog inherits Rectangle {
                                     border-color: Theme.border-dialog;
                                     clip: true;
                                     accessible-role: AccessibleRole.progress-indicator;
-                                    accessible-label: "Tilt curves completed";
+                                    accessible-label: "Tilt Curves Completed";
                                     accessible-value: Math.round(root.design_fraction * 100) + " percent";
                                     Rectangle {
                                         x: 0;

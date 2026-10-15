@@ -25,7 +25,10 @@ use slint::{Color, ComponentHandle, ModelRc, VecModel};
 use std::{
     cell::RefCell,
     rc::Rc,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
 };
 
 thread_local! {
@@ -36,6 +39,25 @@ thread_local! {
     /// rather than a new `EditorState` field, and Slint's single-threaded event
     /// loop makes this sound.
     static DESIGN_SNAPSHOT: RefCell<Option<DesignSnapshot>> = const { RefCell::new(None) };
+}
+
+/// Bumped every time [`DESIGN_SNAPSHOT`] is replaced, so a background solve that finishes
+/// after a newer snapshot was taken can tell its result no longer belongs to the held one.
+static SNAPSHOT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Drops the held snapshot when its main window goes, so a later window never compares against
+/// a design it did not snapshot. The epoch is bumped too: a background snapshot solve still in
+/// flight then finds its result stale. See `gui::window_release`.
+pub(in crate::gui::editor) fn release_window_state() {
+    SNAPSHOT_EPOCH.fetch_add(1, AtomicOrdering::Relaxed);
+    DESIGN_SNAPSHOT.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Replaces the held snapshot and returns its epoch (see [`SNAPSHOT_EPOCH`]).
+fn install_snapshot(snapshot: DesignSnapshot) -> u64 {
+    let epoch = SNAPSHOT_EPOCH.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+    DESIGN_SNAPSHOT.with(|cell| *cell.borrow_mut() = Some(snapshot));
+    epoch
 }
 
 /// The held snapshot's design and label, for the visual compare window's
@@ -61,13 +83,11 @@ pub(in crate::gui::editor) fn hold_reference_snapshot(
     solved: Vec<SolvedTier>,
     label: &str,
 ) {
-    DESIGN_SNAPSHOT.with(|cell| {
-        *cell.borrow_mut() = Some(DesignSnapshot {
-            design,
-            solved: Some(solved),
-            label: label.to_string(),
-            from_retarget_apply: false,
-        });
+    install_snapshot(DesignSnapshot {
+        design,
+        solved: Some(solved),
+        label: label.to_string(),
+        from_retarget_apply: false,
     });
     ui.global::<EditorModel>().set_has_snapshot(true);
 }
@@ -93,22 +113,59 @@ pub(in crate::gui::editor) fn original_for_compare() -> Option<(Design, String)>
 
 /// Holds the design as it was before a Retarget Apply as the reference snapshot, replacing any
 /// earlier one (no database write). `solved` is the cached solve of that design when one is
-/// at hand; without it the snapshot's mast diff simply has no old masts.
+/// at hand; without it the snapshot's mast diff simply has no old masts until
+/// [`solve_original_masts_in_background`] fills them. Returns the snapshot's epoch for that call.
 pub(in crate::gui::editor) fn hold_original_before_retarget(
     ui: &MainWindow,
     design: Design,
     solved: Option<Vec<SolvedTier>>,
     label: &str,
-) {
-    DESIGN_SNAPSHOT.with(|cell| {
-        *cell.borrow_mut() = Some(DesignSnapshot {
-            design,
-            solved,
-            label: label.to_string(),
-            from_retarget_apply: true,
-        });
+) -> u64 {
+    let epoch = install_snapshot(DesignSnapshot {
+        design,
+        solved,
+        label: label.to_string(),
+        from_retarget_apply: true,
     });
     ui.global::<EditorModel>().set_has_snapshot(true);
+    epoch
+}
+
+/// Solves `design` (the original held by [`hold_original_before_retarget`] as snapshot
+/// `epoch`) on a worker and stores the masts into that snapshot on the UI thread. Used when
+/// the check run's cache missed and the design is too costly for an inline solve (the
+/// corpus' worst case is 5.9 s); the result is dropped when a newer snapshot replaced the
+/// held one meanwhile.
+pub(in crate::gui::editor) fn solve_original_masts_in_background(
+    ui: &MainWindow,
+    design: Design,
+    epoch: u64,
+) {
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let solved = design.solve().ok();
+        // reason: a closed window simply has no snapshot left to fill.
+        let _ = weak.upgrade_in_event_loop(move |_ui| fill_original_masts(epoch, solved));
+    });
+}
+
+/// Stores `solved` into the held snapshot when it is still snapshot `epoch`, still the
+/// retarget original, still without masts, and the mast count fits its design.
+fn fill_original_masts(epoch: u64, solved: Option<Vec<SolvedTier>>) {
+    if SNAPSHOT_EPOCH.load(AtomicOrdering::Relaxed) != epoch {
+        return;
+    }
+    DESIGN_SNAPSHOT.with(|cell| {
+        if let Some(snapshot) = cell.borrow_mut().as_mut()
+            && snapshot.from_retarget_apply
+            && snapshot.solved.is_none()
+            && solved
+                .as_ref()
+                .is_some_and(|s| s.len() == snapshot.design.tiers.len())
+        {
+            snapshot.solved = solved;
+        }
+    });
 }
 
 // The pure diff-row view (the status badge, the signed mast delta, the angle texts) moved
@@ -155,13 +212,11 @@ fn store_design_snapshot(
     solved: Option<Vec<SolvedTier>>,
     label: &str,
 ) {
-    DESIGN_SNAPSHOT.with(|cell| {
-        *cell.borrow_mut() = Some(DesignSnapshot {
-            design: design.clone(),
-            solved,
-            label: label.to_string(),
-            from_retarget_apply: false,
-        });
+    install_snapshot(DesignSnapshot {
+        design: design.clone(),
+        solved,
+        label: label.to_string(),
+        from_retarget_apply: false,
     });
     // "Compare to Snapshot" is
     // gated on this in `editor_command_bar.slint`; a snapshot is never cleared

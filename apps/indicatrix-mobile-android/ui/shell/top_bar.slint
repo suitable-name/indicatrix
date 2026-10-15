@@ -1,0 +1,72 @@
+// The top bar of a page: optional back arrow, the title, up to three action icons and
+// an optional overflow button. Safe-area padding is applied once by `AppWindow`, so
+// the bar never sits under the status bar.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { IconButton } from "icon_button.slint";
+
+export struct TopBarAction {
+    icon: image,
+    label: string,
+    enabled: bool,
+}
+
+export component TopBar inherits Rectangle {
+    in property <string> title;
+    in property <bool> show-back: false;
+    // Only the first three entries are shown; anything more belongs in the overflow.
+    in property <[TopBarAction]> actions;
+    in property <bool> show-overflow: false;
+    callback back-clicked();
+    callback action-clicked(int);
+    callback overflow-clicked();
+
+    height: Theme.top-bar-height;
+    background: Theme.surface;
+
+    HorizontalLayout {
+        padding-left: root.show-back ? Theme.space-xs : Theme.space-lg;
+        padding-right: Theme.space-xs;
+        spacing: 0px;
+        cross-axis-alignment: center;
+
+        if root.show-back: IconButton {
+            icon: Icons.back;
+            label: "Back";
+            tint: Theme.on-surface;
+            clicked => {
+                root.back-clicked();
+            }
+        }
+
+        Text {
+            text: root.title;
+            color: Theme.on-surface;
+            font-size: Theme.text-title-large;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        for action[index] in root.actions: IconButton {
+            // Entries past the third collapse to nothing instead of crowding the title.
+            visible: index < 3;
+            width: index < 3 ? Theme.touch : 0px;
+            icon: action.icon;
+            label: action.label;
+            enabled: action.enabled;
+            clicked => {
+                root.action-clicked(index);
+            }
+        }
+
+        if root.show-overflow: IconButton {
+            icon: Icons.overflow;
+            label: "More Options";
+            clicked => {
+                root.overflow-clicked();
+            }
+        }
+    }
+}

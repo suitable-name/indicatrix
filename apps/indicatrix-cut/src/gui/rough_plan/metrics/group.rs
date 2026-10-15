@@ -198,6 +198,10 @@ const fn each_suffix(count: usize, alike: bool) -> &'static str {
 /// of the layout's total.
 fn weight_value(stones: &[&PlacedStone], layout: &RoughLayout) -> String {
     let group_carat: f64 = stones.iter().map(|s| s.carat).sum();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a share of the layout total in percent, rounded; 0..=100 in practice"
+    )]
     let share = if layout.total_carat > 0.0 {
         ((group_carat / layout.total_carat) * 100.0).round() as i32
     } else {
@@ -306,6 +310,10 @@ fn orientation_phrase(table_normal: [f64; 3]) -> String {
             best = face;
         }
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "angle in degrees, clamped by acos to 0..=180 and rounded"
+    )]
     let angle_deg = best_dot.clamp(-1.0, 1.0).acos().to_degrees().round() as i32;
     if angle_deg == 0 {
         format!("faces {} ({})", best.0, best.1)
@@ -442,6 +450,10 @@ fn format_optics(curves: Option<&TiltPerformanceCurves>, preview_material: Optio
     let Some(curves) = curves else {
         return "not generated yet".to_string();
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "mean of percentages in 0..=100, rounded; far inside i32"
+    )]
     let mean = |pick: fn(&AxisTiltCurves) -> f32| -> Option<i32> {
         let samples: Vec<f64> = curves
             .axes

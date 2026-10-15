@@ -1,5 +1,4 @@
-//! Unpolarised Fresnel reflectance of a dielectric interface in `f64`
-//! (the `zoning` feature).
+//! Unpolarised Fresnel reflectance of a dielectric interface in `f64`.
 //!
 //! The spectral tracer has no reusable public Fresnel function: its reflectance is an
 //! inline `f32` expression inside the bounce geometry (`raytracer::refraction::dispatch::

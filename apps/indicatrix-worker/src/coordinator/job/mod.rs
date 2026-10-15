@@ -609,9 +609,15 @@ const FINAL_IMAGE_PREVIEW_MAX_LONG_EDGE: u32 = 360;
 fn final_image_preview_config(width: u32, height: u32) -> PreviewConfig {
     let long_edge = width.max(height).max(1);
     let scale = (f64::from(FINAL_IMAGE_PREVIEW_MAX_LONG_EDGE) / f64::from(long_edge)).min(1.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scale is in 0..=1 so each rounded product is within 0..=its u32 edge"
+    )]
+    let scaled = |edge: u32| ((f64::from(edge) * scale).round() as u32).max(1);
     PreviewConfig {
-        width: ((f64::from(width) * scale).round() as u32).max(1),
-        height: ((f64::from(height) * scale).round() as u32).max(1),
+        width: scaled(width),
+        height: scaled(height),
     }
 }
 

@@ -1,0 +1,121 @@
+// The four-destination navigation: `NavBar` along the bottom of a compact window and
+// `NavRail` on the leading edge of a medium or expanded one. Both are 80 px thick (plus
+// the safe-area inset on their outer edge) and every item is a touch target of at
+// least 48 px.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "icon.slint";
+import { StateLayer } from "state_layer.slint";
+
+export struct NavEntry {
+    label: string,
+    icon: image,
+}
+
+// Same order as `indicatrix_mobile_core::layout::Destination::ALL`.
+export global NavModel {
+    out property <[NavEntry]> entries: [
+        { label: "Library", icon: Icons.library },
+        { label: "Design", icon: Icons.design },
+        { label: "Cut", icon: Icons.cut },
+        { label: "More", icon: Icons.more }
+    ];
+}
+
+component NavItem inherits Rectangle {
+    in property <NavEntry> entry;
+    in property <bool> selected: false;
+    callback clicked();
+
+    accessible-role: AccessibleRole.tab;
+    accessible-label: root.entry.label;
+
+    pill := Rectangle {
+        y: 12px;
+        width: 64px;
+        height: 32px;
+        border-radius: 16px;
+        background: root.selected ? Theme.secondary-container : transparent;
+
+        StateLayer {
+            pressed: touch.pressed;
+            hovered: touch.has-hover;
+            border-radius: parent.border-radius;
+        }
+
+        Icon {
+            source: root.entry.icon;
+            tint: root.selected ? Theme.on-secondary-container : Theme.on-surface-variant;
+        }
+    }
+
+    Text {
+        y: 48px;
+        width: parent.width;
+        text: root.entry.label;
+        color: root.selected ? Theme.on-surface : Theme.on-surface-variant;
+        font-size: Theme.text-label;
+        font-weight: root.selected ? 700 : 500;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component NavBar inherits Rectangle {
+    in property <int> current: 1;
+    // Added below the items so the bar's surface extends under the gesture area.
+    in property <length> bottom-inset: 0px;
+    in property <length> left-inset: 0px;
+    in property <length> right-inset: 0px;
+    callback selected(int);
+
+    height: Theme.nav-size + root.bottom-inset;
+    background: Theme.surface-container;
+
+    HorizontalLayout {
+        padding-bottom: root.bottom-inset;
+        padding-left: root.left-inset;
+        padding-right: root.right-inset;
+        spacing: 0px;
+
+        for item[index] in NavModel.entries: NavItem {
+            entry: item;
+            selected: index == root.current;
+            clicked => {
+                root.selected(index);
+            }
+        }
+    }
+}
+
+export component NavRail inherits Rectangle {
+    in property <int> current: 1;
+    in property <length> top-inset: 0px;
+    in property <length> left-inset: 0px;
+    callback selected(int);
+
+    width: Theme.nav-size + root.left-inset;
+    background: Theme.surface-container;
+
+    VerticalLayout {
+        padding-top: root.top-inset + Theme.space-sm;
+        padding-left: root.left-inset;
+        spacing: Theme.space-sm;
+        alignment: start;
+
+        for item[index] in NavModel.entries: NavItem {
+            height: Theme.nav-size - 8px;
+            entry: item;
+            selected: index == root.current;
+            clicked => {
+                root.selected(index);
+            }
+        }
+    }
+}

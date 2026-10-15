@@ -131,7 +131,7 @@ src/
     library/          browse/search/filter, detail loading, import / rename / delete /
                       export-.asc, remote library switch and mirror
     editor/           the Edit sub-tab: tier list, solve, Deep Solve/Optimize/Retarget,
-                      the worked-example guide, templates, `.indicatrix` design files
+                      the worked-example guide, templates, `.isdd` design files
     render/           camera/lighting, materials/quality, the high-resolution export's
                       UI side (render_export/)
     remote/           the Remote Coordinator form, Test connection, enrollment, and

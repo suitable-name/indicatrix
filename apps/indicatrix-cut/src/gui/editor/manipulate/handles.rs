@@ -225,6 +225,10 @@ pub(super) fn target_for(
     // The facet map places a facet at `2 pi (index + reference) / teeth`: the frame needs the
     // design's gear reference angle too, or the handles sit on a different azimuth than the
     // facet (the Diagram view's `diagram2d::facet_frame` follows the same rule).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the reference angle (radians) is stored as f32 in FacetFrame; the value is in the normal float range"
+    )]
     let frame = FacetFrame::from_tier_with_reference(
         tier_data,
         f64::from(map.index_on_gear(facet_id as usize)),
@@ -235,6 +239,10 @@ pub(super) fn target_for(
     let pose = geometry.camera;
     let camera = Camera::new(pose.yaw, pose.pitch, pose.distance, CAMERA_FOV_DEG);
     let size = ScreenSize::new(geometry.size.0 as f32, geometry.size.1 as f32);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "handle length is a small world-space distance held as f32 by the camera math"
+    )]
     let length = (HANDLE_LENGTH_FRACTION * geometry.bounding_radius) as f32;
     let layout = handle_layout(&frame, &camera, size, length)?;
     Some(Target {
@@ -585,7 +593,7 @@ mod tests {
 
         let free = |large, previous| selection_hint_text("P1", None, large, previous, (0, false));
         assert_eq!(free(true, None), Some(text::handle_select_hint("P1")));
-        assert_eq!(free(false, None), None, "only with Larger handles");
+        assert_eq!(free(false, None), None, "only with Larger Handles");
         assert_eq!(free(true, Some((0, false))), None);
     }
 }

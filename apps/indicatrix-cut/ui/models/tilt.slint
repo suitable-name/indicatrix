@@ -106,13 +106,16 @@ export global TiltVideoExportModel {
     // changes the still-image export dialog's own remembered settings, or vice versa.
     in-out property <float> sample_exponent_raw: 6.0; // 64 spp default -- multiplied by frame count, so lower than the image export's own default
     in-out property <int> selected_color_space_index: 0; // 0: sRGB, 1: Display P3, 2: Rec.2020
-    in-out property <int> selected_bounce_index: 2; // 4/8/12/24/64/128 ladder, matching export_dialog.slint
+    // An index into `SettingsModel.bounce_ladder` (the one ladder Rust publishes). Rust seeds
+    // it from the last-used value (`AppSettings::output.tilt_video`) at start-up and writes it
+    // back when a video starts.
+    in-out property <int> selected_bounce_index: 2;
     // "Transfer": 0 = Full data, 1 = Final picture only (one PNG per
-    // frame from the remote; the local lanes stay idle). Rust seeds it from the remote
-    // endpoint's own default at startup and whenever the remote is saved; the row is
-    // only shown while a remote is configured (`remote_configured`).
+    // frame from the remote; the local lanes stay idle). Rust seeds it from the last-used
+    // choice at start-up, or from the remote endpoint's own default while none was made
+    // yet (also whenever the remote is saved); the row is only shown while a remote is
+    // configured (`RemoteWorkerModel.availability.configured`).
     in-out property <int> transfer_index: 0;
-    in property <bool> remote_configured: false;
     // "Compute": 0 = Local only, 1 = Remote only, 2 = Local + Remote (the still-image export's
     // own pill order). Only offered while a remote is configured; without one the video renders
     // locally whatever this holds. Remote only traces nothing on this computer.

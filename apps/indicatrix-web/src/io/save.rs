@@ -4,8 +4,8 @@
 //! | Action | Built with | File name |
 //! |---|---|---|
 //! | Save `.asc` | `Design::to_asc_schedule_from_solved_with` + `indicatrix_formats::asc::to_asc_string` (CRLF, `GemCAD`'s convention) | the design's `.asc` name |
-//! | Save design | `indicatrix_cut_core::native::design_to_file` + `indicatrix_formats::native::design::to_string`; writes the opened file's `[meta]` table (stamped) and attachments back | `<name>.indicatrix` |
-//! | Save `.asc` + older sidecar | `indicatrix_cut_core::native::save_paired_extended(_from_solved)`; the older sidecar format has no metadata or attachments | `<name>.asc` + `<name>.indicatrix.toml` |
+//! | Export `.gcs` (experimental) | the `.asc` schedule through `indicatrix_formats::gcs::to_gcs_string`; concave tiers ride along as footnotes | the design's name with `.gcs` |
+//! | Save design | `indicatrix_cut_core::native::design_to_file` + `indicatrix_formats::native::design::to_string`; writes the opened file's `[meta]` table (stamped) and attachments back | `<name>.isdd` |
 //! | Cutting sheet | `indicatrix_editor::cut_sheet::cutting_sheet_document` | `<name>_cutting_sheet.html` |
 //! | Diagram | `indicatrix_editor::cut_sheet::diagram_export_png` | `<name>_diagram.png` |
 //!
@@ -15,7 +15,7 @@
 //! is saved as a draft design file (the desktop's "Save Anyway") and refused for plain
 //! `.asc`, cutting sheet and diagram, exactly as the desktop refuses them.
 
-use super::download::{MIME_ASC, MIME_DESIGN, MIME_HTML, MIME_PNG, MIME_TOML, download_bytes};
+use super::download::{MIME_ASC, MIME_DESIGN, MIME_HTML, MIME_PNG, download_bytes};
 use crate::app::{
     Ctx,
     persist::schedule_save,
@@ -26,17 +26,11 @@ use crate::app::{
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{
     Design,
-    native::{
-        DesignExtras, SaveExtras, design_to_file, save_paired_extended,
-        save_paired_extended_from_solved,
-    },
+    native::{DesignExtras, design_to_file},
 };
 use indicatrix_editor::{
     cut_sheet::{cutting_sheet_document, diagram_export_png},
-    files::{
-        cutting_sheet_file_name, degenerate_marker_header, diagram_file_name,
-        native_file_name_for_asc,
-    },
+    files::{cutting_sheet_file_name, degenerate_marker_header, diagram_file_name},
     view_model::solid_status::status_text_and_is_problem_from_solved,
 };
 use indicatrix_formats::native::design as design_file;
@@ -61,15 +55,12 @@ fn closure_problem(design: &Design, solved: &[SolvedTier]) -> Option<String> {
 }
 
 /// Marks the design saved under `asc_name` after a save.
-fn mark_saved(ctx: &Ctx, asc_name: String, asc_text: Option<String>) {
+fn mark_saved(ctx: &Ctx, asc_name: String) {
     {
         let mut app = ctx.state.borrow_mut();
         if let Some(design) = app.design.as_mut() {
             design.session.mark_saved();
             design.asc_filename = Some(asc_name);
-            if asc_text.is_some() {
-                design.original_asc_text = asc_text;
-            }
         }
     }
     if let Some(ui) = ctx.ui.upgrade() {
@@ -132,97 +123,81 @@ pub fn save_asc(ctx: &Ctx) {
     });
 }
 
-/// File > Save `.asc` + older sidecar: the `.asc` and its older `.indicatrix.toml`
-/// overlay, for use with a tool that still reads that pair (the `.asc` half
-/// byte-identical to the opened file when the schedule did not change). The desktop
-/// no longer writes this pair.
-pub fn save_native_pair(ctx: &Ctx) {
+/// `asc_name` with its extension replaced by `.gcs` (`round.asc` becomes `round.gcs`), or
+/// `.gcs` appended when it has none -- the desktop's `file_name_for_format`.
+fn gcs_file_name(asc_name: &str) -> String {
+    std::path::Path::new(asc_name)
+        .with_extension("gcs")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// File > Export `.gcs` (Experimental): the edited schedule as a Gem Cut Studio `.gcs` file.
+///
+/// The desktop's "Export as Gem Cut Studio (.gcs)": the SAME `AscSchedule` the `.asc` save
+/// builds (from the solve already in hand), through the experimental
+/// `indicatrix_formats::gcs::to_gcs_string`. `.gcs`, like `.asc`, has no concave record, so
+/// the concave tiers ride along as footnotes (`Design::append_concave_footnotes`) and the
+/// success message says so. A design that does not close cannot be written (the writer needs
+/// a bounded stone) and the refusal is the writer's own sentence. Exporting is not saving: the
+/// design is not marked saved.
+pub fn save_gcs(ctx: &Ctx) {
     with_solved(ctx, |ctx, solved| {
+        let solved = match solved {
+            Ok(solved) => solved,
+            Err(missing) => {
+                show_message(
+                    ctx,
+                    MessageKind::Error,
+                    &format!("Cannot export: {missing}."),
+                );
+                return;
+            }
+        };
         let built = {
             let app = ctx.state.borrow();
             let Some(state) = &app.design else {
                 return;
             };
-            let mut design = state.session.design.clone();
-            let problem = match &solved {
-                Ok(solved) => closure_problem(&design, solved),
-                Err(missing) => Some(missing.clone()),
-            };
-            if let Some(message) = &problem
-                && let Some(header) = degenerate_marker_header(&design.meta.headers, message)
-            {
-                design.meta.headers.insert(0, header);
-            }
-            let asc_name = state.save_asc_name();
-            let history = state.session.history.description_log().to_vec();
-            let extras = SaveExtras {
-                custom_material: state.custom_snapshot(),
-                history_entries: &history,
-                custom_catalogue: &app.custom_materials,
-            };
-            let original = state.original_asc_text.as_deref();
-            let printed = state.printed_proportions.as_ref();
-            let paired = match &solved {
-                Ok(solved) if !design.tiers.is_empty() => save_paired_extended_from_solved(
-                    &design,
-                    solved,
-                    asc_name.clone(),
-                    original,
-                    None,
-                    printed,
-                    &extras,
-                ),
-                _ => save_paired_extended(
-                    &design,
-                    asc_name.clone(),
-                    original,
-                    None,
-                    printed,
-                    &extras,
-                ),
-            };
-            paired.map(|paired| (paired, asc_name, problem))
+            let design = &state.session.design;
+            let mut schedule =
+                design.to_asc_schedule_from_solved_with(&solved, &app.custom_materials);
+            design.append_concave_footnotes(&mut schedule);
+            indicatrix_formats::gcs::to_gcs_string(&schedule)
+                .map(|text| {
+                    (
+                        text,
+                        gcs_file_name(&state.save_asc_name()),
+                        design.concave_tiers.len(),
+                    )
+                })
+                .map_err(|e| format!("Cannot write this schedule as .gcs: {e}"))
         };
-        let (paired, asc_name, problem) = match built {
-            Ok(built) => built,
-            Err(e) => {
-                show_message(ctx, MessageKind::Error, &format!("Cannot save: {e}"));
-                return;
+        match built {
+            Ok((text, name, concave)) => {
+                if !deliver(ctx, &name, MIME_ASC, text.as_bytes()) {
+                    return;
+                }
+                if concave == 0 {
+                    show_message(ctx, MessageKind::Success, &format!("Downloaded {name}."));
+                } else {
+                    show_message(
+                        ctx,
+                        MessageKind::Warning,
+                        &format!(
+                            "Downloaded {name}. It has no concave tools: the {concave} concave \
+                             tier(s) are written as footnotes only."
+                        ),
+                    );
+                }
             }
-        };
-        let native_name = native_file_name_for_asc(&asc_name);
-        if !deliver(ctx, &asc_name, MIME_ASC, paired.asc_text.as_bytes())
-            || !deliver(ctx, &native_name, MIME_TOML, paired.native_toml.as_bytes())
-        {
-            return;
+            Err(message) => show_message(ctx, MessageKind::Error, &message),
         }
-        let mut notes = Vec::new();
-        if let Some(reason) = &paired.draft_reason {
-            notes.push(format!("saved as a draft ({reason})"));
-        } else if let Some(message) = &problem {
-            notes.push(format!("marked NOT A CLOSED SOLID: {message}"));
-        }
-        if paired.asc_preserved {
-            notes.push("the .asc is unchanged from the opened file".to_string());
-        }
-        let text = format!("Downloaded {asc_name} and {native_name}");
-        if notes.is_empty() {
-            show_message(ctx, MessageKind::Success, &format!("{text}."));
-        } else {
-            let kind = if paired.draft_reason.is_some() || problem.is_some() {
-                MessageKind::Warning
-            } else {
-                MessageKind::Success
-            };
-            show_message(ctx, kind, &format!("{text}; {}.", notes.join("; ")));
-        }
-        mark_saved(ctx, asc_name, Some(paired.asc_text));
     });
 }
 
-/// File > Save design: one self-contained `.indicatrix` file (no `.asc`), the format
-/// "Open" reads on its own. A design that does not solve is saved as a draft, as the
-/// older pair save does.
+/// File > Save design: one self-contained `.isdd` file (no `.asc`), the format
+/// "Open" reads on its own. A design that does not solve is saved as a draft.
 pub fn save_design(ctx: &Ctx) {
     with_solved(ctx, |ctx, solved| {
         let built = {
@@ -290,7 +265,7 @@ pub fn save_design(ctx: &Ctx) {
                 &format!("Downloaded {file_name}."),
             ),
         }
-        mark_saved(ctx, asc_name, None);
+        mark_saved(ctx, asc_name);
     });
 }
 

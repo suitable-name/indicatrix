@@ -5,24 +5,16 @@
 use super::{NativeMeetConstraint, NativeTierTarget};
 
 #[cfg(doc)]
-use super::{NativeDesignFile, PreformTable};
+use super::PreformTable;
 
-/// One `[[tiers]]` entry: this native file's per-tier overlay -- or, for a
-/// [`NativeDesignFile::draft`] save, the sole record of that tier at all.
+/// One `[[tiers]]` entry of a design file: a tier in full, in cutting order.
 ///
-/// Ordinarily NOT a full mirror of the editor's own tier type -- `angle_deg`/
-/// `indices` stay canonical in the paired `.asc`; this otherwise only carries what
-/// `.asc` cannot express (the authored [`NativeMeetConstraint`], which orbit members
-/// are detached, and -- since the "gap this closes" module docs -- the meet
-/// instruction and raw notes text a real `.asc` file's `G` field stated at import
-/// time). `name` is purely a human-readable label for raw-TOML readers (e.g. `git
-/// diff`); loading a paired (non-draft) file never reads it back into a design.
-/// Tiers correlate to the paired `.asc`'s tier list by ARRAY POSITION alone -- see
-/// the parent module's "The fingerprint" section for why a fingerprint mismatch
-/// disables re-applying this overlay, and [`NativeDesignFile::draft`]'s own doc
-/// comment for the one case where `angle_deg`/`indices` here ARE read back (a design
-/// that does not currently solve has no reliable paired `.asc` to read them from at
-/// all).
+/// `angle_deg`/`indices` are optional in the type only so a record written without
+/// them parses; the design file's validation refuses a tier that lacks them. `name` is
+/// a human-readable label for raw-TOML readers (e.g. `git diff`); the other fields
+/// carry what a catalogue `.asc` cannot express (the authored [`NativeMeetConstraint`],
+/// which orbit members are detached, and the meet instruction and raw notes text a real
+/// `.asc` file's `G` field stated at import time).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TierTable {
     /// Display name.
@@ -33,14 +25,12 @@ pub struct TierTable {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detached: Vec<f64>,
     /// Mirrors `indicatrix_cut_core::design::ConstraintTier::angle_deg`. `#[serde(default)]`
-    /// so an ordinary (non-draft) file saved before this field existed, or one whose
-    /// tiers are only ever an overlay on a solvable paired `.asc`, still loads --
-    /// `None` there is never read back into a design; see this type's own doc
-    /// comment for the one caller (a draft reload) that does read it.
+    /// so a record without it still parses; the design file's validation then refuses
+    /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle_deg: Option<f64>,
     /// Mirrors `indicatrix_cut_core::design::ConstraintTier::indices`. See
-    /// [`Self::angle_deg`]'s own doc comment -- same rule, same one reader.
+    /// [`Self::angle_deg`]'s own doc comment -- same rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indices: Option<Vec<f64>>,
     /// Mirrors `indicatrix_cut_core::design::ConstraintTier::imported_meet`: the meet

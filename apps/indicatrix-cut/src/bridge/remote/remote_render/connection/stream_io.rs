@@ -170,7 +170,7 @@ pub(super) fn try_read_stream_event(
             // The header already declared the payload's length: never accept more.
             let bytes = framing::read_frame_bounded(stream, expected.min(MAX_FRAME_LEN))
                 .map_err(NetError::Framing)?;
-            if bytes.len() as u32 != expected {
+            if u32::try_from(bytes.len()) != Ok(expected) {
                 return Err(NetError::FramePayloadLenMismatch {
                     declared: expected,
                     actual: bytes.len(),

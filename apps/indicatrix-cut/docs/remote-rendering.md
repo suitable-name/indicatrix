@@ -1,11 +1,11 @@
-# indicatrix-cut — remote rendering: preview-then-handoff
+# indicatrix-cut — Remote Rendering: Preview-Then-Handoff
 
 How the viewer decides between local CPU rendering and handing a render off to its
 configured remote, and how denoising and the TLS connection are handled across that
 handoff. For everything else see [the README](../README.md); for the
 `RemoteEndpoint` configuration itself see [settings.md](settings.md).
 
-## One remote endpoint
+## One Remote Endpoint
 
 The viewer talks to exactly **one** remote, `AppSettings::remote`: a coordinator
 (`indicatrix-worker serve`, which spreads work over the workers that `join` it and
@@ -22,11 +22,11 @@ capability. A coordinator that loses every lane ends a stream with the
 `ALL_WORKERS_LOST` error ("All remote workers were lost"), handled exactly like any
 other remote failure below.
 
-## Transfer: full data or final picture
+## Transfer: Full Data or Final Picture
 
-- **Full data** (default): float radiance, merged with local samples -- everything
+- **Full Data** (default): float radiance, merged with local samples -- everything
   below.
-- **Final picture only**, still export and tilt video (export dialog / video section
+- **Final Picture Only**, still export and tilt video (export dialog / video section
   "Transfer", default from the endpoint): one `FinalImageRequest` per image or frame.
   The remote renders the whole sample budget, tone-maps it with the SAME
   `indicatrix::renderer::tonemap::tonemap_accumulation` the viewer uses, and returns a
@@ -42,12 +42,12 @@ other remote failure below.
   arrive within the coordinator's wait (or is invalid), the coordinator silently
   renders that tail itself and reports how many samples it had to take back in
   `Stats.reclaimed_samples` — a slow or interrupted local machine never stalls or
-  corrupts the export. Every current coordinator implements Final picture only (with
+  corrupts the export. Every current coordinator implements Final Picture Only (with
   or without joined workers). `UNSUPPORTED_REQUEST` (a remote that does not) falls back
   to full data with one note and is remembered for that remote until it is re-saved;
   any other failure falls back to full data under Local + Remote and fails the image
-  under Remote only.
-- **Final picture**, live view ("Live Transfer" in the settings dialog): the settled
+  under Remote Only.
+- **Final Picture**, live view (the remote's "Live Transfer", shown in the Render & Output tab and set in the Remote dialog): the settled
   epoch sends one `RenderRequest` with `TransferMode::DisplayOnly` over the whole
   budget; the remote streams finished, denoised 8-bit `DISPLAY_FRAME`s, which the viewer
   decodes and shows as they are (no local denoise or tonemap). The coordinator makes
@@ -55,12 +55,12 @@ other remote failure below.
   merged sum's average, guide buffers from its own `indicatrix::renderer::guide_pass`
   prepass — so they match what the viewer would have shown for the same samples. 8-bit frames cannot be
   merged with local samples, so the epoch is remote-only: local tracing pauses after
-  the handoff exactly like Remote only (`RenderContext::live_display_only` makes a
+  the handoff exactly like Remote Only (`RenderContext::live_display_only` makes a
   `Both` epoch act as `RemoteOnly`). Drag, cancel and epoch rules are unchanged.
   `UNSUPPORTED_REQUEST` releases the epoch, shows one note, and the view re-dispatches
   with full data; the refusal is remembered until the connection is replaced.
 
-## Full-data handoff
+## Full-Data Handoff
 
 While the camera or light is moving, rendering is ordinary local CPU progressive
 accumulation — nothing remote-specific happens. A repeating 100ms timer polls
@@ -80,13 +80,13 @@ window *and* a remote is configured, the app hands off:
    displayed image is `(local sum + remote sum + in-flight chunk) / (their
    counts)`, denoised once. The epoch is complete once the combined count
    reaches **Target Samples** -- the single global target; there is no separate
-   remote sample budget. **Remote only** pauses local tracing and lets the
+   remote sample budget. **Remote Only** pauses local tracing and lets the
    remote lane trace the whole epoch.
 3. **Failure keeps what arrived.** A chunk that fails (worker error, dropped
    connection, liveness timeout) keeps its valid prefix; the untraced remainder
-   goes back to the local tracer (or, in Remote only, is retried remotely).
+   goes back to the local tracer (or, in Remote Only, is retried remotely).
    After two failures in a row the lane stops for that epoch with one status
-   note -- Local + Remote finishes the image locally; Remote only falls back to
+   note -- Local + Remote finishes the image locally; Remote Only falls back to
    local rendering as before. The next settle tries the worker again.
 4. If the user resumes dragging the camera mid-epoch, the symmetric thing
    happens: a `CANCEL` is sent for the in-flight chunk, the epoch (remote sums
@@ -123,8 +123,8 @@ radiance, never the depth/normal/facet-id guide buffers the denoiser also
 needs, so those are regenerated locally with a cheap primary-ray-only prepass —
 `indicatrix::renderer::guide_pass`, cached by `bridge::frame_cache::guide_pass` —
 before denoising a remote frame). The denoise + tone-map step itself is
-`indicatrix::renderer::frame_denoise`, shared with the coordinator's "final
-picture" display frames.
+`indicatrix::renderer::frame_denoise`, shared with the coordinator's "Final
+Picture" display frames.
 
 **One non-finite rule on every backend.** A traced sample with any NaN or ±Inf
 component is dropped but still counted (`indicatrix::optics::raytracer::add_finite_sample`,
@@ -145,7 +145,7 @@ timeout-bounded read attempt and a non-blocking check of an inbound command
 channel — mirroring `indicatrix-worker`'s own emitter design — so a `CANCEL` can be
 written promptly without a second thread ever touching the same connection.
 
-### Timeouts and liveness
+### Timeouts and Liveness
 
 Every blocking step has a deadline, so a worker that stops responding — a
 crash mid-render, a NAT entry expiring, a laptop sleeping — is reported as a

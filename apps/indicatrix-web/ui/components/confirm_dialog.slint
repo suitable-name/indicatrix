@@ -6,7 +6,7 @@ import { Theme } from "theme.slint";
 // pressed. Named in `app.slint`'s export block, which is what makes it a Rust type.
 export global ConfirmModel {
     in-out property <bool> open: false;
-    in property <string> heading: "Unsaved changes";
+    in property <string> heading: "Unsaved Changes";
     in property <string> message: "";
     // Empty hides the button.
     in property <string> primary-label: "Save";
@@ -25,7 +25,7 @@ export global ConfirmModel {
 //
 // Bound to nothing but its own properties, so any call site can drive it.
 export component ConfirmDialog inherits Rectangle {
-    in property <string> heading: "Unsaved changes";
+    in property <string> heading: "Unsaved Changes";
     in property <string> message: "";
     in property <string> primary-label: "Save";
     in property <string> secondary-label: "Discard";

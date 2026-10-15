@@ -1,4 +1,4 @@
-//! "Save"/"Save As": writes the design's self-contained `.indicatrix` file. The file
+//! "Save"/"Save As": writes the design's self-contained `.isdd` file. The file
 //! carries the whole design, so nothing is written beside it; the catalogue row the
 //! design belongs to still gets its cutting instructions (`.asc`) and the design file
 //! attached ([`write_back_to_catalogue`]). See this group's own `mod.rs` doc comment.
@@ -19,8 +19,8 @@ use super::{
     picker::{PickKind, pick_file, suggested_design_file_name},
     save_finish::{WriteNativeOutcome, finish_save_native_success},
     save_helpers::{
-        custom_material_snapshot_for_save, degenerate_marker_header, design_file_text,
-        save_paired_reusing_solve, snapshot_custom_materials, stamp_source_entry_footnote,
+        catalogue_asc_reusing_solve, custom_material_snapshot_for_save, degenerate_marker_header,
+        design_file_text, snapshot_custom_materials, stamp_source_entry_footnote,
     },
     solve::{SolveFailure, resolve_solve_at},
 };
@@ -32,10 +32,13 @@ use crate::{
         show_toast,
     },
 };
-use indicatrix::geometry::{meet_solver::SolvedTier, stone_metrics::ExternalProportions};
+use indicatrix::{
+    geometry::{meet_solver::SolvedTier, stone_metrics::ExternalProportions},
+    optics::materials::GemMaterial,
+};
 use indicatrix_cut_core::{
     Design,
-    native::{DesignExtras, PairedSave, SaveExtras},
+    native::{CatalogueAsc, DesignExtras, SaveExtras},
 };
 use indicatrix_vault::db::sqlite::Database;
 use slint::ComponentHandle;
@@ -47,7 +50,7 @@ use std::{
     time::Instant,
 };
 
-/// This design's own already-known save location: the remembered `.indicatrix` file
+/// This design's own already-known save location: the remembered `.isdd` file
 /// ([`CURRENT_NATIVE_PATH`]), provided it belongs to this design -- its stem is the
 /// design's recorded name (`asc_filename`). Without a known location Ctrl+S would
 /// always reopen the Save-As dialog, even seconds after the cutter had just chosen
@@ -55,8 +58,9 @@ use std::{
 /// Selected") would overwrite the previous design's file.
 ///
 /// `None` falls through to [`save_native_via_dialog`]'s ordinary Save-As behaviour:
-/// a brand-new design, a catalogue design, a bare `.asc`, an older paired file (its
-/// first Save writes the new format beside it) or a recovered autosave.
+/// a brand-new design, a catalogue design, a bare `.asc`, a design opened from a legacy
+/// `.indicatrix` file (its first Save proposes the `.isdd` name beside it and leaves
+/// the old file alone) or a recovered autosave.
 fn known_save_target(st: &EditorState) -> Option<PathBuf> {
     let path = CURRENT_NATIVE_PATH.with(|cell| cell.borrow().clone())?;
     let name = st.asc_filename.as_deref()?;
@@ -64,7 +68,7 @@ fn known_save_target(st: &EditorState) -> Option<PathBuf> {
 }
 
 /// Every write/export/autosave path in this module that ends up calling
-/// [`save_paired_reusing_solve`] needs this same bundle of `state` snapshot data
+/// [`catalogue_asc_reusing_solve`] needs this same bundle of `state` snapshot data
 /// plus the destination paths and shared handles -- grouped into one `Clone`
 /// struct (rather than nine-plus parameters threaded through several async
 /// continuations) so [`finish_native_save`]/[`write_native_save`] can move a single
@@ -73,7 +77,7 @@ fn known_save_target(st: &EditorState) -> Option<PathBuf> {
 #[derive(Clone)]
 struct NativeSaveContext {
     state: Rc<RefCell<EditorState>>,
-    /// The `.indicatrix` file being written.
+    /// The `.isdd` file being written.
     native_path: PathBuf,
     db: Arc<Mutex<Database>>,
     source: Arc<Mutex<LibrarySource>>,
@@ -110,12 +114,49 @@ thread_local! {
     static PENDING_NATIVE_SAVE_STATE: RefCell<std::collections::HashMap<u64, Rc<RefCell<EditorState>>>> =
         RefCell::new(std::collections::HashMap::new());
     static NEXT_NATIVE_SAVE_KEY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Saves whose worker-side preparation ([`prepare_native_save`]) is still running, by
+    /// sequence number: the `Rc`-holding context stays here on the UI thread and only the
+    /// number crosses the thread boundary, the same trick as [`PENDING_NATIVE_SAVE_STATE`].
+    static PENDING_NATIVE_PREPARE: RefCell<std::collections::HashMap<u64, NativeSaveContext>> =
+        RefCell::new(std::collections::HashMap::new());
+    /// The sequence number of the newest Save started; numbers begin at 1.
+    static PREPARE_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The sequence number of the newest prepared Save that reached the writer gate, so an
+    /// older preparation finishing late is dropped instead of overwriting a newer file.
+    static LAST_LANDED_PREPARE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The single-writer gate in front of [`start_native_write_thread`]: a Save that
     /// reaches the disk write while an earlier one is still writing is parked here
     /// (the newest wins) and started when the earlier one reports in, instead of
     /// racing it on the same files.
-    static NATIVE_WRITE_GATE: RefCell<WriteGate<(NativeSaveContext, PairedSave, String)>> =
+    static NATIVE_WRITE_GATE: RefCell<WriteGate<(NativeSaveContext, CatalogueAsc, String)>> =
         const { RefCell::new(WriteGate::new()) };
+}
+
+/// Forgets the saves a previous main window left in flight: the editor states parked for a
+/// running write, the prepared-save contexts (each holds the design library handle) and the
+/// write gate's parked request. A write thread still running only finds nothing to report to.
+/// See `gui::window_release`.
+pub(super) fn release_window_state() {
+    let states = PENDING_NATIVE_SAVE_STATE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let prepared = PENDING_NATIVE_PREPARE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let gate =
+        NATIVE_WRITE_GATE.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), WriteGate::new()));
+    // Dropped with every cell released.
+    drop(states);
+    drop(prepared);
+    drop(gate);
+}
+
+/// Names this module's holders in `out` while they are still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(super) fn note_holders(out: &mut Vec<&'static str>) {
+    if PENDING_NATIVE_PREPARE.with(|cell| !cell.borrow().is_empty()) {
+        out.push("editor::native_io::save PENDING_NATIVE_PREPARE (vault)");
+    }
+    if PENDING_NATIVE_SAVE_STATE.with(|cell| !cell.borrow().is_empty()) {
+        out.push("editor::native_io::save PENDING_NATIVE_SAVE_STATE");
+    }
 }
 
 /// Group 1+2's shared tail for both [`quick_save_native`] and
@@ -170,7 +211,7 @@ fn finish_native_save(ui: &MainWindow, design: Design, ctx: NativeSaveContext) {
                         );
                         ask_write_confirm(
                             ui,
-                            "This design is not a closed solid",
+                            "This Design Is Not a Closed Solid",
                             heading_message,
                             "Save Anyway",
                             Some(confirm_keys::NOT_CLOSED_SOLID),
@@ -209,15 +250,104 @@ fn stash_native_save_state(state: &Rc<RefCell<EditorState>>) -> u64 {
     state_key
 }
 
-/// [`finish_native_save`]'s write half: builds the design file's text and the
-/// catalogue's `.asc` (cheap -- no I/O, `save_paired_reusing_solve` never touches
-/// disk) on the UI thread, then hands the actual disk write ([`write_file_atomically`])
-/// and catalogue write-back ([`write_back_to_catalogue`]) to a background thread --
-/// Group 4: "files first then catalogue, results back via the event loop."
-/// `header_message` is `Some` only when the cutter just confirmed a "not a closed
-/// solid" write; stamped into `design.meta.headers` before anything is serialized, so
-/// the file always describes the bytes actually written, never mutated after the
-/// fact. The file's `draft` flag is set when the design did not solve.
+/// Everything [`prepare_native_save`] needs, as plain `Send` data: the UI-thread part of a
+/// Save is only this snapshot, because the library-row read (every attachment BLOB), the
+/// custom-material row read and the text serialisation together are tens of milliseconds to
+/// seconds on a design with multi-MB attachments, under the DB mutex other workers wait on.
+struct SavePrepInput {
+    design: Design,
+    solved: Option<Vec<SolvedTier>>,
+    placeholder_note: Option<&'static str>,
+    db: Arc<Mutex<Database>>,
+    source_entry_id: Option<i64>,
+    file_extras: DesignFileExtras,
+    original_asc_text: Option<String>,
+    printed_proportions: Option<ExternalProportions>,
+    history_entries: Vec<String>,
+    custom_materials: Arc<Vec<GemMaterial>>,
+}
+
+/// What [`prepare_native_save`] hands back to the UI thread.
+struct PreparedNativeSave {
+    /// The catalogue row's cutting instructions and the draft verdict.
+    asc: CatalogueAsc,
+    design_text: String,
+    /// Remembered on the editor state so the next Save starts from what this one wrote --
+    /// above all the generated `id`, which must not change from one Save to the next.
+    file_extras: DesignFileExtras,
+}
+
+/// The worker half of a Save: reads the custom-material row and the library row (locking the
+/// DB mutex here, never on the UI thread), builds the `.asc` and the design file's text. No
+/// disk write happens here. The same calls on the same inputs in the same order as the
+/// UI-thread version this replaced.
+///
+/// # Errors
+///
+/// A ready-to-toast message: the row could not be read, the attachments exceed the file's
+/// limit, or the serialiser refused a value.
+fn prepare_native_save(input: SavePrepInput) -> Result<PreparedNativeSave, String> {
+    let SavePrepInput {
+        design,
+        solved,
+        placeholder_note,
+        db,
+        source_entry_id,
+        file_extras,
+        original_asc_text,
+        printed_proportions,
+        history_entries,
+        custom_materials,
+    } = input;
+    // See `custom_material_snapshot_for_save`'s own doc comment.
+    let custom_material = custom_material_snapshot_for_save(&design, &db);
+    let extras = SaveExtras {
+        custom_material: custom_material.as_ref(),
+        history_entries: &history_entries,
+        custom_catalogue: &custom_materials,
+    };
+    // The `[meta]` table and attachments: the design's loaded ones overlaid with its
+    // library row. Oversize attachments end the save here with a message.
+    let prepared_extras = prepare_design_extras(&db, source_entry_id, &file_extras)?;
+    let design_extras = DesignExtras {
+        metadata: Some(&prepared_extras.metadata),
+        attachments: &prepared_extras.attachments,
+        ..DesignExtras::from(&extras)
+    };
+    let asc = catalogue_asc_reusing_solve(
+        &design,
+        solved.as_deref(),
+        original_asc_text.as_deref(),
+        placeholder_note,
+        &extras,
+    )
+    .map_err(|e| e.to_string())?;
+    let design_text = design_file_text(
+        &design,
+        printed_proportions.as_ref(),
+        &design_extras,
+        asc.draft_reason.is_some(),
+    )?;
+    Ok(PreparedNativeSave {
+        asc,
+        design_text,
+        file_extras: DesignFileExtras::new(prepared_extras.metadata, prepared_extras.attachments),
+    })
+}
+
+/// [`finish_native_save`]'s write half: snapshots the state the save needs on the UI thread,
+/// builds the catalogue's `.asc` and the design file's text on a worker
+/// ([`prepare_native_save`]), and then -- back on the UI thread -- hands the actual disk
+/// write ([`write_file_atomically`]) and catalogue write-back ([`write_back_to_catalogue`]) to
+/// a second background thread (Group 4: "files first then catalogue, results back via the
+/// event loop"). `header_message` is `Some` only when the cutter just confirmed a "not a
+/// closed solid" write; stamped into `design.meta.headers` before anything is serialized, so
+/// the file always describes the bytes actually written, never mutated after the fact. The
+/// file's `draft` flag is set when the design did not solve.
+///
+/// Preparation results can land out of order when two Saves are issued back to back; a
+/// result older than one that already landed is dropped (see [`land_prepared_native_save`]),
+/// the same "newest wins" rule the writer gate applies to parked writes.
 fn write_native_save(
     ui: &MainWindow,
     design: &Design,
@@ -231,65 +361,60 @@ fn write_native_save(
     {
         design.meta.headers.insert(0, header);
     }
-    // A design reconstructed from a catalogue's bare angle table has every
-    // mast fabricated as `0.0`. `save_paired` stamps
-    // `indicatrix_formats::asc::mark_reconstructed` when told so, which is what stops
-    // the catalogue's `.asc` from passing for a real cut instruction.
-    let placeholder_note = ctx
-        .used_placeholder
-        .then_some("angle-table reconstruction, no attached .asc");
-    // See `custom_material_snapshot_for_save`'s own doc comment.
-    let custom_material = custom_material_snapshot_for_save(&design, &ctx.db);
-    // Custom-catalogue-aware -- see
-    // `snapshot_custom_materials`'s own doc comment.
-    let custom_materials = snapshot_custom_materials(&ctx.render_ctx);
-    let extras = SaveExtras {
-        custom_material: custom_material.as_ref(),
-        history_entries: &ctx.history_entries,
-        custom_catalogue: &custom_materials,
+    let input = SavePrepInput {
+        design,
+        solved: solved.map(<[SolvedTier]>::to_vec),
+        // A design reconstructed from a catalogue's bare angle table has every mast
+        // fabricated as `0.0`. `catalogue_asc` stamps
+        // `indicatrix_formats::asc::mark_reconstructed` when told so, which is what stops
+        // the catalogue's `.asc` from passing for a real cut instruction.
+        placeholder_note: ctx
+            .used_placeholder
+            .then_some("angle-table reconstruction, no attached .asc"),
+        db: Arc::clone(&ctx.db),
+        source_entry_id: ctx.state.borrow().source_entry_id,
+        file_extras: ctx.file_extras.clone(),
+        original_asc_text: ctx.original_asc_text.clone(),
+        printed_proportions: ctx.printed_proportions,
+        history_entries: ctx.history_entries.clone(),
+        // Custom-catalogue-aware -- see `snapshot_custom_materials`'s own doc comment.
+        custom_materials: snapshot_custom_materials(&ctx.render_ctx),
     };
-    // The `[meta]` table and attachments: the design's loaded ones overlaid with its
-    // library row. Oversize attachments end the save here with a message.
-    let source_entry_id = ctx.state.borrow().source_entry_id;
-    let file_extras = match prepare_design_extras(&ctx.db, source_entry_id, &ctx.file_extras) {
-        Ok(prepared) => prepared,
-        Err(e) => {
-            ctx.state.borrow_mut().after_save = None;
-            show_toast(ui, &format!("Cannot save: {e}"), "error");
-            return;
-        }
-    };
-    let design_extras = DesignExtras {
-        metadata: Some(&file_extras.metadata),
-        attachments: &file_extras.attachments,
-        ..DesignExtras::from(&extras)
-    };
-    let prepared = save_paired_reusing_solve(
-        &design,
-        solved,
-        ctx.asc_filename.clone(),
-        ctx.original_asc_text.as_deref(),
-        placeholder_note,
-        ctx.printed_proportions.as_ref(),
-        &extras,
-    )
-    .map_err(|e| e.to_string())
-    .and_then(|paired| {
-        design_file_text(
-            &design,
-            ctx.printed_proportions.as_ref(),
-            &design_extras,
-            paired.draft_reason.is_some(),
-        )
-        .map(|text| (paired, text))
+    let seq = PREPARE_SEQ.with(|c| {
+        let seq = c.get() + 1;
+        c.set(seq);
+        seq
     });
-    match prepared {
-        Ok((paired, design_text)) => {
-            // Remembered so the next Save starts from what this one wrote -- above all
-            // the generated `id`, which must not change from one Save to the next.
-            ctx.state.borrow_mut().file_extras =
-                DesignFileExtras::new(file_extras.metadata, file_extras.attachments);
-            spawn_native_save_write(ui, ctx, paired, design_text);
+    PENDING_NATIVE_PREPARE.with(|cell| {
+        cell.borrow_mut().insert(seq, ctx.clone());
+    });
+    let ui_weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let result = prepare_native_save(input);
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            land_prepared_native_save(&ui, seq, result);
+        });
+    });
+}
+
+/// [`write_native_save`]'s UI-thread tail: starts the disk write for a prepared save, or
+/// toasts why none can be written. A result older than one that already landed is dropped.
+fn land_prepared_native_save(
+    ui: &MainWindow,
+    seq: u64,
+    result: Result<PreparedNativeSave, String>,
+) {
+    let Some(ctx) = PENDING_NATIVE_PREPARE.with(|cell| cell.borrow_mut().remove(&seq)) else {
+        return;
+    };
+    if LAST_LANDED_PREPARE.with(std::cell::Cell::get) > seq {
+        return;
+    }
+    LAST_LANDED_PREPARE.with(|c| c.set(seq));
+    match result {
+        Ok(prepared) => {
+            ctx.state.borrow_mut().file_extras = prepared.file_extras;
+            spawn_native_save_write(ui, &ctx, prepared.asc, prepared.design_text);
         }
         Err(e) => {
             // This save is not landing -- an `after_save` continuation stashed
@@ -311,15 +436,15 @@ fn write_native_save(
 fn spawn_native_save_write(
     ui: &MainWindow,
     ctx: &NativeSaveContext,
-    paired: PairedSave,
+    asc: CatalogueAsc,
     design_text: String,
 ) {
     let admitted = NATIVE_WRITE_GATE.with(|gate| {
         gate.borrow_mut()
-            .admit((ctx.clone(), paired, design_text), Instant::now())
+            .admit((ctx.clone(), asc, design_text), Instant::now())
     });
-    if let Some((ctx, paired, design_text)) = admitted {
-        start_native_write_thread(ui, &ctx, paired, design_text);
+    if let Some((ctx, asc, design_text)) = admitted {
+        start_native_write_thread(ui, &ctx, asc, design_text);
     }
 }
 
@@ -327,8 +452,8 @@ fn spawn_native_save_write(
 /// the save parked behind it, if any.
 fn release_native_write_gate(ui: &MainWindow) {
     let next = NATIVE_WRITE_GATE.with(|gate| gate.borrow_mut().release(Instant::now()));
-    if let Some((ctx, paired, design_text)) = next {
-        start_native_write_thread(ui, &ctx, paired, design_text);
+    if let Some((ctx, asc, design_text)) = next {
+        start_native_write_thread(ui, &ctx, asc, design_text);
     }
 }
 
@@ -339,7 +464,7 @@ fn release_native_write_gate(ui: &MainWindow) {
 fn start_native_write_thread(
     ui: &MainWindow,
     ctx: &NativeSaveContext,
-    paired: PairedSave,
+    asc: CatalogueAsc,
     design_text: String,
 ) {
     let native_path = ctx.native_path.clone();
@@ -369,14 +494,14 @@ fn start_native_write_thread(
                 &db,
                 source_entry_id,
                 &asc_filename,
-                &paired.asc_text,
+                &asc.asc_text,
                 &design_filename,
                 &design_text,
             );
             WriteNativeOutcome {
                 native_path: native_path.clone(),
                 asc_filename: asc_filename.clone(),
-                paired,
+                asc,
                 catalogue,
                 // See `NativeSaveContext::snapshot_generation`'s own doc
                 // comment -- carried straight through, unread by anything on

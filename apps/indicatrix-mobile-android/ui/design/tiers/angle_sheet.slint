@@ -1,0 +1,321 @@
+// The angle sheet: edits one tier's angle three ways -- step buttons, a slider over the
+// shared ranges, and the app's own keypad -- plus "Typical" presets. Hosted inside the
+// Tiers tab as a full-height overlay.
+//
+// The steppers, the slider and the presets change the design at once (consecutive
+// changes within the history's window are one undo step). The keypad builds a draft that
+// "OK" applies.
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { PageScroll } from "../../shell/page_scroll.slint";
+import { Chip } from "../../shell/chips.slint";
+import { TextButton } from "../../shell/buttons.slint";
+import { IconButton } from "../../shell/icon_button.slint";
+import { StateLayer } from "../../shell/state_layer.slint";
+import { Keypad } from "../../shell/keypad.slint";
+import { TiersModel } from "tiers_model.slint";
+
+// A 48 px slider that never keeps its own value: the handle follows `value`, and
+// `dragged` reports where the finger asks it to be.
+component AngleSlider inherits Rectangle {
+    in property <float> value;
+    in property <float> minimum: 0;
+    in property <float> maximum: 90;
+    // The marked band; equal values mean none.
+    in property <float> band-from: 0;
+    in property <float> band-to: 0;
+    callback dragged(float);
+    callback released();
+
+    property <length> pad: 20px;
+    property <length> track-width: max(1px, root.width - 2 * root.pad);
+    property <float> span: max(0.001, root.maximum - root.minimum);
+    property <float> fraction: clamp((root.value - root.minimum) / root.span, 0, 1);
+    property <float> band-start: clamp((root.band-from - root.minimum) / root.span, 0, 1);
+    property <float> band-end: clamp((root.band-to - root.minimum) / root.span, 0, 1);
+
+    height: Theme.touch;
+    accessible-role: AccessibleRole.slider;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+
+    function value-at(x: length) -> float {
+        return root.minimum + root.span * clamp((x - root.pad) / root.track-width, 0, 1);
+    }
+
+    Rectangle {
+        x: root.pad;
+        y: (parent.height - 4px) / 2;
+        width: root.track-width;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.outline-variant;
+    }
+
+    if root.band-end > root.band-start: Rectangle {
+        x: root.pad + root.track-width * root.band-start;
+        y: (parent.height - 10px) / 2;
+        width: root.track-width * (root.band-end - root.band-start);
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.success.with-alpha(0.4);
+    }
+
+    Rectangle {
+        x: root.pad;
+        y: (parent.height - 4px) / 2;
+        width: root.track-width * root.fraction;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.primary;
+    }
+
+    Rectangle {
+        x: root.pad + root.track-width * root.fraction - 12px;
+        y: (parent.height - 24px) / 2;
+        width: 24px;
+        height: 24px;
+        border-radius: 12px;
+        background: Theme.primary;
+        drop-shadow-color: Theme.shadow;
+        drop-shadow-blur: Theme.shadow-blur-1;
+        drop-shadow-offset-y: Theme.shadow-offset-1;
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left) {
+                if (event.kind == PointerEventKind.down) {
+                    root.dragged(root.value-at(self.pressed-x));
+                } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                    root.released();
+                }
+            }
+        }
+
+        moved => {
+            root.dragged(root.value-at(self.mouse-x));
+        }
+    }
+}
+
+// One of the six stepper buttons.
+component StepButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+
+    height: Theme.touch;
+    min-width: 44px;
+    border-radius: Theme.radius-md;
+    background: Theme.secondary-container;
+    accessible-role: AccessibleRole.button;
+    accessible-label: "Change angle by " + root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    StateLayer {
+        pressed: touch.pressed;
+        hovered: touch.has-hover;
+        tint: Theme.on-secondary-container;
+        border-radius: root.border-radius;
+    }
+
+    Text {
+        text: root.text;
+        color: Theme.on-secondary-container;
+        font-size: Theme.text-label-large;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component AngleSheet inherits Rectangle {
+    property <[{label: string, delta: float}]> steps: [
+        { label: "\u{2212}1", delta: -1.0 },
+        { label: "\u{2212}0.1", delta: -0.1 },
+        { label: "\u{2212}0.01", delta: -0.01 },
+        { label: "+0.01", delta: 0.01 },
+        { label: "+0.1", delta: 0.1 },
+        { label: "+1", delta: 1.0 }
+    ];
+
+    background: Theme.surface-container;
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: TiersModel.angle-title;
+
+    // Swallows taps so they do not reach the list below.
+    TouchArea { }
+
+    VerticalLayout {
+        Rectangle {
+            height: 56px;
+
+            HorizontalLayout {
+                padding-left: Theme.space-xs;
+                padding-right: Theme.space-sm;
+                spacing: Theme.space-xs;
+
+                IconButton {
+                    icon: Icons.back;
+                    label: "Back";
+                    tint: Theme.on-surface;
+                    clicked => {
+                        TiersModel.close-angle();
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: TiersModel.angle-title;
+                        color: Theme.on-surface;
+                        font-size: Theme.text-title;
+                        font-weight: 500;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: TiersModel.angle-block;
+                        color: Theme.on-surface-variant;
+                        font-size: Theme.text-label;
+                        overflow: elide;
+                    }
+                }
+
+                TextButton {
+                    text: "Done";
+                    clicked => {
+                        TiersModel.close-angle();
+                    }
+                }
+            }
+        }
+
+        PageScroll {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                padding-bottom: Theme.space-xl;
+                spacing: Theme.space-md;
+
+                // A refusal ("This angle follows a relation", "Angle exceeds 90").
+                if TiersModel.angle-error != "": Text {
+                    text: TiersModel.angle-error;
+                    color: Theme.error;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    for step in root.steps: StepButton {
+                        text: step.label;
+                        clicked => {
+                            TiersModel.angle-step(step.delta);
+                        }
+                    }
+                }
+
+                if TiersModel.angle-slider-visible: VerticalLayout {
+                    spacing: 0px;
+
+                    AngleSlider {
+                        value: TiersModel.angle-slider-value;
+                        minimum: TiersModel.angle-slider-min;
+                        maximum: TiersModel.angle-slider-max;
+                        band-from: TiersModel.angle-band-from;
+                        band-to: TiersModel.angle-band-to;
+                        dragged(v) => {
+                            TiersModel.angle-slider-moved(v);
+                        }
+                        released => {
+                            TiersModel.angle-slider-released();
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+
+                        Text {
+                            text: "\{TiersModel.angle-slider-min}\u{b0}";
+                            color: Theme.on-surface-variant;
+                            font-size: Theme.text-label;
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+
+                        Text {
+                            text: "\{TiersModel.angle-slider-max}\u{b0}";
+                            color: Theme.on-surface-variant;
+                            font-size: Theme.text-label;
+                        }
+                    }
+                }
+
+                if TiersModel.angle-note != "": Text {
+                    text: TiersModel.angle-note;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-label;
+                    wrap: word-wrap;
+                }
+
+                if TiersModel.angle-presets.length > 0: Rectangle {
+                    height: Theme.touch;
+
+                    Flickable {
+                        content-width: presets-row.preferred-width;
+
+                        presets-row := HorizontalLayout {
+                            x: 0px;
+                            width: max(self.preferred-width, parent.width);
+                            spacing: Theme.space-sm;
+
+                            for preset[index] in TiersModel.angle-presets: Chip {
+                                text: preset.label + "  " + preset.value;
+                                clicked => {
+                                    TiersModel.angle-preset(index);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+
+                    Keypad {
+                        max-width: 400px;
+                        horizontal-stretch: 1;
+                        caption: "Angle";
+                        readout: TiersModel.angle-readout;
+                        unit: TiersModel.angle-typing ? "" : "\u{b0}";
+                        typing: TiersModel.angle-typing;
+                        key(id) => {
+                            TiersModel.keypad-key(id);
+                        }
+                        ok => {
+                            TiersModel.keypad-ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

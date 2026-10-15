@@ -187,7 +187,41 @@ fn export_sizes_keep_the_view_aspect_and_the_cap() {
     assert_eq!(export_size(960, 540, 9000), (4096, 2304));
     assert_eq!(export_size(0, 0, 0), (1, 1));
     assert_eq!(export_color_space(1), ColorSpace::DisplayP3);
+    assert_eq!(export_color_space(2), ColorSpace::Rec2020);
     assert_eq!(export_color_space(7), ColorSpace::Srgb);
+    assert_eq!(export_color_space(-1), ColorSpace::Srgb);
+}
+
+/// The settings clamp's top index is the last offered color space.
+#[test]
+fn the_last_export_color_space_index_matches_the_list() {
+    assert_eq!(
+        MAX_EXPORT_COLOR_SPACE_INDEX as usize,
+        EXPORT_COLOR_SPACES.len() - 1
+    );
+    assert_eq!(color_space_label(export_color_space(2)), "Rec.2020");
+}
+
+/// A Rec.2020 export is a PNG of the asked-for size that carries an embedded ICC profile
+/// (an `iCCP` chunk; the encoder writes no `cICP` chunk) different from Display P3's, and
+/// its pixels differ from the sRGB export of the same sum.
+#[test]
+fn a_rec2020_export_embeds_its_own_icc_profile() {
+    let (width, height, samples) = (13_u32, 7_u32, 5_u32);
+    let sum = fixed_sum((width * height) as usize);
+    let rec = export_png(width, height, samples, &sum, ColorSpace::Rec2020, None).expect("rec");
+    let p3 = export_png(width, height, samples, &sum, ColorSpace::DisplayP3, None).expect("p3");
+    let srgb = export_png(width, height, samples, &sum, ColorSpace::Srgb, None).expect("srgb");
+    assert_eq!(&rec[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(&rec[16..20], &width.to_be_bytes());
+    assert_eq!(&rec[20..24], &height.to_be_bytes());
+    assert!(rec.windows(4).any(|w| w == b"iCCP"), "Rec.2020 ICC chunk");
+    assert!(
+        !srgb.windows(4).any(|w| w == b"iCCP"),
+        "sRGB stays untagged"
+    );
+    assert_ne!(rec, p3);
+    assert_ne!(rec, srgb);
 }
 
 #[test]
@@ -231,7 +265,9 @@ fn denoise_timing_probe() {
                 let hit = intersect_polyhedron(ray, &planes);
                 depth.push(hit.map_or(1.0e6, |h| h.t));
                 normal.push(hit.map_or(Vec3::ZERO, |h| h.normal));
-                facet_id.push(hit.map_or(-1, |h| h.facet_idx as i32));
+                facet_id.push(hit.map_or(-1, |h| {
+                    i32::try_from(h.facet_idx).expect("a facet index fits i32")
+                }));
             }
         }
         let guide_ms = start.elapsed().as_secs_f64() * 1000.0;

@@ -23,6 +23,16 @@ const CIE_D65_SPD_300_380_10NM: [f32; 9] = [
     0.0341, 3.2945, 20.236, 37.0535, 39.9488, 44.9117, 46.6383, 52.0891, 49.9755,
 ];
 
+/// The table cell of `position` (a non-negative position in table steps), floored.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers clamp the wavelength into the table first, so position is a small non-negative value"
+)]
+const fn table_index(position: f32) -> usize {
+    position.floor() as usize
+}
+
 /// Linearly-interpolated CIE D65 relative spectral power at `lambda_nm`.
 ///
 /// Normalized so that 560nm (the table's own `100.000` entry) reads exactly `1.0`,
@@ -44,7 +54,7 @@ pub fn d65_relative_spectral_power(lambda_nm: f32) -> f32 {
     if lambda_nm < START_NM {
         let clamped = lambda_nm.max(300.0);
         let position = (clamped - 300.0) / 10.0;
-        let index0 = (position.floor() as usize).min(7);
+        let index0 = table_index(position).min(7);
         let frac = position - index0 as f32;
         let v0 = CIE_D65_SPD_300_380_10NM[index0];
         let v1 = CIE_D65_SPD_300_380_10NM[index0 + 1];
@@ -53,7 +63,7 @@ pub fn d65_relative_spectral_power(lambda_nm: f32) -> f32 {
 
     let clamped = lambda_nm.clamp(START_NM, STEP_NM.mul_add(LAST_INDEX as f32, START_NM));
     let position = (clamped - START_NM) / STEP_NM;
-    let index0 = (position.floor() as usize).min(LAST_INDEX - 1);
+    let index0 = table_index(position).min(LAST_INDEX - 1);
     let index1 = index0 + 1;
     let frac = position - index0 as f32;
 
@@ -146,7 +156,7 @@ mod tests {
         const LAST_INDEX: usize = CIE_D65_SPD_380_780_10NM.len() - 1;
         let clamped = lambda_nm.clamp(START_NM, STEP_NM.mul_add(LAST_INDEX as f32, START_NM));
         let position = (clamped - START_NM) / STEP_NM;
-        let index0 = (position.floor() as usize).min(LAST_INDEX - 1);
+        let index0 = table_index(position).min(LAST_INDEX - 1);
         let index1 = index0 + 1;
         let frac = position - index0 as f32;
         let v0 = CIE_D65_SPD_380_780_10NM[index0];

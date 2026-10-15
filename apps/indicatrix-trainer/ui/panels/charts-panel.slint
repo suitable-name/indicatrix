@@ -1,0 +1,35 @@
+import { ScrollView } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { Chart } from "../components/chart.slint";
+
+// The chart grid: two columns, three on wide windows. Each chart has a minimum height; the
+// panel scrolls when they do not fit.
+export component ChartsPanel inherits ScrollView {
+    horizontal-scrollbar-policy: always-off;
+    private property <int> cols: root.visible-width > 1100px ? 3 : 2;
+
+    VerticalLayout {
+        width: root.visible-width;
+        padding-right: 8px;
+
+        GridLayout {
+            spacing: 10px;
+            for c[i] in TrainingController.charts: Chart {
+                row: Math.floor(i / root.cols);
+                col: Math.mod(i, root.cols);
+                data: c;
+                min-height: 200px;
+                line: i == 3 ? TrainerTheme.sev-validation : i == 1 ? TrainerTheme.accent-purple : i == 4 ? TrainerTheme.accent-primary : i == 5 ? TrainerTheme.accent-amber : TrainerTheme.accent-cyan;
+            }
+        }
+        if TrainingController.charts.length == 0: Text {
+            text: "Charts appear once training has produced its first iteration.";
+            color: TrainerTheme.text-muted;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            height: 160px;
+        }
+    }
+}

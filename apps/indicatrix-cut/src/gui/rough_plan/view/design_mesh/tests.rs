@@ -62,7 +62,39 @@ fn the_caliper_width_is_the_extent_along_x() {
     let planes = turned_box(DVec3::new(1.0, 1.5, 3.0), 30.0, DVec3::ZERO);
     let mesh = design_mesh_from_planes(&planes, &[]).expect("a box closes");
     assert!((mesh.caliper_width() - 2.0).abs() < 1e-5);
-    assert!(DesignMesh { facets: Vec::new() }.caliper_width().abs() < f64::EPSILON);
+    assert!(
+        DesignMesh {
+            facets: Vec::new(),
+            width_axis_units: 0.0
+        }
+        .caliper_width()
+        .abs()
+            < f64::EPSILON
+    );
+}
+
+#[test]
+fn the_axis_width_is_measured_in_the_designs_own_frame_not_the_calipers() {
+    // 2 wide, 3 tall, 6 long, turned 30 degrees about y. In the design's own frame the
+    // axis-aligned extents are 2 cos30 + 6 sin30 and 2 sin30 + 6 cos30, and the smaller is the
+    // width the editor's girdle diameter measures; the caliper frame turns the box back, so
+    // its width is the box's own 2.
+    let planes = turned_box(DVec3::new(1.0, 1.5, 3.0), 30.0, DVec3::new(0.7, 0.2, -0.4));
+    let mesh = design_mesh_from_planes(&planes, &[]).expect("a box closes");
+    let (sin, cos) = 30.0_f64.to_radians().sin_cos();
+    let expected = 2.0_f64.mul_add(cos, 6.0 * sin);
+    assert!(
+        (mesh.width_axis_units - expected).abs() < 1e-9,
+        "{}",
+        mesh.width_axis_units
+    );
+    assert!(mesh.width_axis_units > mesh.caliper_width() + 1.0);
+
+    // A box that is not turned has one width in both frames.
+    let straight =
+        design_mesh_from_planes(&box_planes(DVec3::new(1.0, 1.5, 3.0)), &[]).expect("a box closes");
+    assert!((straight.width_axis_units - 2.0).abs() < 1e-9);
+    assert!((straight.caliper_width() - 2.0).abs() < 1e-5);
 }
 
 #[test]
@@ -86,6 +118,10 @@ fn the_caliper_frame_agrees_with_the_hull_pipeline_on_a_turned_box() {
     let SolidStatus::Closed(raw) = build_solid_mesh(&planes) else {
         panic!("a box closes");
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "deliberate round trip through f32 to get the value the f32 GPU mesh stores"
+    )]
     let corners: Vec<[f64; 3]> = raw
         .rings
         .iter()
@@ -132,6 +168,10 @@ fn a_tied_outline_is_turned_the_way_the_stored_f32_hull_is() {
     let SolidStatus::Closed(raw) = build_solid_mesh(&planes) else {
         panic!("a box closes");
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "deliberate round trip through f32 to get the value the f32 GPU mesh stores"
+    )]
     let stored: Vec<[f64; 3]> = raw
         .rings
         .iter()
@@ -173,6 +213,10 @@ fn a_concave_design_is_drawn_with_its_tool_cuts_in_the_flat_stones_frame() {
     let planes = turned_box(DVec3::new(1.0, 1.5, 3.0), 30.0, DVec3::new(0.7, 0.2, -0.4));
     let top = planes[2];
     let on_top = top.0 * top.1;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the tool primitive is uploaded as f32 GPU data; test coordinates are small"
+    )]
     let tool = ToolPrimitive {
         kind: 0,
         sweep_kind: 0,
@@ -233,7 +277,10 @@ fn a_cached_mesh_is_loaded_once_and_dropped_by_remove() {
     let loads = std::sync::atomic::AtomicUsize::new(0);
     let load = || -> Result<Option<DesignMesh>, ()> {
         loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(Some(DesignMesh { facets: Vec::new() }))
+        Ok(Some(DesignMesh {
+            facets: Vec::new(),
+            width_axis_units: 0.0,
+        }))
     };
     let first = cache.get_or_load(5, load).expect("loaded");
     let second = cache.get_or_load(5, load).expect("cached");
@@ -285,7 +332,12 @@ fn an_absent_design_is_remembered_as_gone_but_a_failed_read_is_not_and_reads_unr
         "the failed read was tried twice"
     );
     // A later successful read fills the slot.
-    let ok = || -> Result<Option<DesignMesh>, ()> { Ok(Some(DesignMesh { facets: Vec::new() })) };
+    let ok = || -> Result<Option<DesignMesh>, ()> {
+        Ok(Some(DesignMesh {
+            facets: Vec::new(),
+            width_axis_units: 0.0,
+        }))
+    };
     assert!(cache.get_or_load(2, ok).is_ok());
 }
 
@@ -301,7 +353,10 @@ fn two_threads_asking_for_one_design_load_it_once() {
                         .get_or_load(9, || -> Result<Option<DesignMesh>, ()> {
                             loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             std::thread::sleep(std::time::Duration::from_millis(20));
-                            Ok(Some(DesignMesh { facets: Vec::new() }))
+                            Ok(Some(DesignMesh {
+                                facets: Vec::new(),
+                                width_axis_units: 0.0,
+                            }))
                         })
                         .expect("loaded")
                 })
@@ -323,12 +378,18 @@ fn a_load_under_way_during_a_remove_cannot_refill_the_cache() {
         .get_or_load(3, || -> Result<Option<DesignMesh>, ()> {
             // The design is edited (and its slot dropped) while it loads.
             cache.remove(3);
-            Ok(Some(DesignMesh { facets: Vec::new() }))
+            Ok(Some(DesignMesh {
+                facets: Vec::new(),
+                width_axis_units: 0.0,
+            }))
         })
         .expect("the old asker still gets its mesh");
     let fresh = cache
         .get_or_load(3, || -> Result<Option<DesignMesh>, ()> {
-            Ok(Some(DesignMesh { facets: Vec::new() }))
+            Ok(Some(DesignMesh {
+                facets: Vec::new(),
+                width_axis_units: 0.0,
+            }))
         })
         .expect("reloaded");
     assert!(!Arc::ptr_eq(&stale, &fresh), "the stale mesh was not kept");

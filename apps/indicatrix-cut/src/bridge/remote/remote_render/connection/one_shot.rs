@@ -1,5 +1,6 @@
-//! The one-shot connection lifecycle: one connection, one request, then the thread
-//! ends -- [`spawn_remote_render`] (a `RenderRequest`) and [`spawn_final_image_request`]
+//! The one-shot connection lifecycle: one request per thread (on a fresh connection, or
+//! one parked by [`super::pool`] after a previous clean `DONE`), then the thread
+//! ends --[`spawn_remote_render`] (a `RenderRequest`) and [`spawn_final_image_request`]
 //! (a v14 `FinalImageRequest`), sharing the worker body [`run`].
 
 use super::{
@@ -13,7 +14,9 @@ use super::{
 use crate::settings::WorkerSettings;
 use indicatrix_net::{
     client::{Accumulator, ApplyOutcome},
-    messages::{FinalImageRequest, FinalOutput, RenderCapability, RenderRequest, StreamEvent},
+    messages::{
+        FinalImageRequest, FinalOutput, RenderCapability, RenderRequest, StreamEvent, Welcome,
+    },
 };
 use std::{
     sync::{
@@ -180,8 +183,32 @@ fn ensure_cancel_acknowledged(cancel_sent_at: Option<Instant>) -> Result<(), Rem
     Ok(())
 }
 
+/// A handshaken connection and the `WELCOME` it was opened with.
+struct Conn {
+    stream: RemoteStream,
+    welcome: Welcome,
+}
+
+/// What [`run_on`] had done by the time it failed -- whether the same request can still
+/// be retried unchanged on a fresh connection.
+#[derive(Default)]
+struct Attempt {
+    /// Any stream event arrived: the worker received and started the request.
+    events_seen: bool,
+    /// A `CANCEL` or contribution was taken off the command channel (and so is lost to a
+    /// retry).
+    command_taken: bool,
+}
+
 /// The one-shot body, with the liveness deadline threaded in as a parameter -- see
 /// [`super::LIVENESS_TIMEOUT`]'s own doc comment for why.
+///
+/// A `RenderRequest` first tries a connection parked by [`super::pool`] (the export's
+/// previous chunk left one: one connection per chunk cost a DNS lookup, TCP, TLS and
+/// `HELLO`/`WELCOME` each time). A pooled connection may have gone stale while idle; if
+/// it fails before the worker answered anything and before any command was consumed, the
+/// request is sent again, unchanged, on a fresh connection -- so pooling never turns an
+/// idle drop into a failed chunk.
 fn run(
     request: &OneShotRequest,
     accumulator: &Arc<Mutex<Accumulator>>,
@@ -189,8 +216,88 @@ fn run(
     on_update: &mut dyn FnMut(RemoteUpdate),
     liveness_timeout: Duration,
 ) -> Result<(), RemoteError> {
+    if matches!(request, OneShotRequest::Render(_))
+        && let Some((stream, welcome)) = super::pool::take(request.worker())
+    {
+        let mut attempt = Attempt::default();
+        let conn = Conn { stream, welcome };
+        match run_on(
+            request,
+            conn,
+            accumulator,
+            commands,
+            on_update,
+            liveness_timeout,
+            &mut attempt,
+        ) {
+            Err(e) if !attempt.events_seen && !attempt.command_taken => {
+                tracing::debug!("pooled connection failed before any reply ({e}); reconnecting");
+            }
+            other => return other,
+        }
+    }
+    let (stream, welcome) = connect_and_handshake(request.worker())?;
+    run_on(
+        request,
+        Conn { stream, welcome },
+        accumulator,
+        commands,
+        on_update,
+        liveness_timeout,
+        &mut Attempt::default(),
+    )
+}
+
+/// Uploads the viewer's reserved-tail `sum` as one `CONTRIBUTION` for a
+/// `FinalImageRequest` (a no-op for a plain `RenderRequest`), and restarts the liveness
+/// countdown through `last_event` afterwards.
+fn send_viewer_contribution(
+    stream: &mut RemoteStream,
+    request: &OneShotRequest,
+    sum: &[glam::Vec3],
+    last_event: &mut Instant,
+) -> Result<(), RemoteError> {
+    let OneShotRequest::FinalImage(final_request) = request else {
+        return Ok(());
+    };
+    let first = final_request.first_sample + final_request.samples - final_request.viewer_samples;
+    // One adaptive link per connection, keyed by the coordinator's address:
+    // the upload is encoded for the link speed measured last time and its
+    // own blocking write (straight on the TLS socket, no buffering in
+    // between) is timed for the next connection.
+    let link = super::payload_setting::open_link(&request.worker().address);
+    indicatrix_net::client::send_contribution_with_link(
+        stream,
+        request.request_id(),
+        (first, final_request.viewer_samples),
+        (final_request.scene.width, final_request.scene.height),
+        sum,
+        &link,
+    )?;
+    // Same reset as the `NEED_ASSET` upload: a large upload can
+    // legitimately take a while, and the server sends nothing back while
+    // it reads it.
+    *last_event = Instant::now();
+    Ok(())
+}
+
+/// [`run`]'s body on one already-handshaken connection. On a clean `DONE` of a
+/// `RenderRequest` that was never cancelled the connection is parked in [`super::pool`]
+/// for the next request; every other ending drops it.
+fn run_on(
+    request: &OneShotRequest,
+    conn: Conn,
+    accumulator: &Arc<Mutex<Accumulator>>,
+    commands: &mpsc::Receiver<RemoteCommand>,
+    on_update: &mut dyn FnMut(RemoteUpdate),
+    liveness_timeout: Duration,
+    attempt: &mut Attempt,
+) -> Result<(), RemoteError> {
     let request_id = request.request_id();
-    let (mut stream, welcome) = connect_and_handshake(request.worker())?;
+    let Conn {
+        mut stream,
+        welcome,
+    } = conn;
     on_update(RemoteUpdate::Connected {
         request_id,
         info: welcome.clone().into(),
@@ -214,8 +321,7 @@ fn run(
     if request.scene().hdr().is_some() && !capability.hdr {
         return Err(RemoteError::HdrUnsupported);
     }
-    // Zoning guard (`zoning` builds): see `persistent::dispatch_render`.
-    #[cfg(feature = "zoning")]
+    // Zoning guard: see `persistent::dispatch_render`.
     if crate::bridge::remote::zoned_scene_refusal(
         request.scene().material.zoning.is_some(),
         welcome.zoning,
@@ -242,6 +348,7 @@ fn run(
     loop {
         match commands.try_recv() {
             Ok(RemoteCommand::Cancel) => {
+                attempt.command_taken = true;
                 indicatrix_net::client::send_cancel(&mut stream, request_id)?;
                 cancel_sent_at.get_or_insert_with(Instant::now);
             }
@@ -251,27 +358,8 @@ fn run(
             // first place (nothing constructs one for it), so this is a defensive no-op
             // there rather than an error.
             Ok(RemoteCommand::Contribute(sum)) => {
-                if let OneShotRequest::FinalImage(final_request) = request {
-                    let first = final_request.first_sample + final_request.samples
-                        - final_request.viewer_samples;
-                    // One adaptive link per connection, keyed by the coordinator's address:
-                    // the upload is encoded for the link speed measured last time and its
-                    // own blocking write (straight on the TLS socket, no buffering in
-                    // between) is timed for the next connection.
-                    let link = super::payload_setting::open_link(&request.worker().address);
-                    indicatrix_net::client::send_contribution_with_link(
-                        &mut stream,
-                        request_id,
-                        (first, final_request.viewer_samples),
-                        (final_request.scene.width, final_request.scene.height),
-                        &sum,
-                        &link,
-                    )?;
-                    // Same reset as the `NEED_ASSET` upload above: a large upload can
-                    // legitimately take a while, and the server sends nothing back while
-                    // it reads it.
-                    last_event = Instant::now();
-                }
+                attempt.command_taken = true;
+                send_viewer_contribution(&mut stream, request, &sum, &mut last_event)?;
             }
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
                 // `Disconnected` means the handle was dropped -- nobody can ever
@@ -297,6 +385,7 @@ fn run(
         };
         last_event = Instant::now();
         seen_first_event = true;
+        attempt.events_seen = true;
 
         // The server needs the scene's HDR map before it can start. Answered
         // inline (this thread owns the stream); the upload's own writes are bounded by
@@ -314,14 +403,23 @@ fn run(
                 .map_err(|e| RemoteError::Client(e.into()))?
         };
 
-        let is_terminal = matches!(
-            outcome,
-            ApplyOutcome::Done { .. } | ApplyOutcome::WorkerError
-        );
+        let is_done = matches!(outcome, ApplyOutcome::Done { cancelled: false });
+        let is_terminal = is_done
+            || matches!(
+                outcome,
+                ApplyOutcome::Done { .. } | ApplyOutcome::WorkerError
+            );
         if let Some(update) = to_remote_update(request_id, &event, outcome) {
             on_update(update);
         }
         if is_terminal {
+            // A request that was never cancelled and ended in `DONE` leaves nothing
+            // unread on the socket, so the next request can reuse it. A cancelled one,
+            // a `FinalImageRequest` (it may still owe a contribution exchange) and an
+            // error are not trusted to be that clean.
+            if is_done && cancel_sent_at.is_none() && matches!(request, OneShotRequest::Render(_)) {
+                super::pool::give_back(request.worker(), stream, welcome);
+            }
             return Ok(());
         }
         ensure_cancel_acknowledged(cancel_sent_at)?;

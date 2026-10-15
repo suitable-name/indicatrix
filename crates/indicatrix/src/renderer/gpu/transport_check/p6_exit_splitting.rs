@@ -154,10 +154,10 @@ fn cpu_compute_channel_transmission(c: &ChannelTransmissionCase) -> [f32; 5] {
     let azimuth = (c.azimuth_valid != 0).then_some((c.cos_2psi_x, c.sin_2psi_x));
     let incident_stokes_k = StokesVector::new(c.stokes_i, c.stokes_q, c.stokes_u, c.stokes_v);
 
-    let t_s_k = (2.0 * n1k * cos_i) / f32::mul_add(n2k, cos_t_k, n1k * cos_i);
-    let t_p_k = (2.0 * n1k * cos_i) / f32::mul_add(n1k, cos_t_k, n2k * cos_i);
+    let t_perp_k = (2.0 * n1k * cos_i) / f32::mul_add(n2k, cos_t_k, n1k * cos_i);
+    let t_par_k = (2.0 * n1k * cos_i) / f32::mul_add(n1k, cos_t_k, n2k * cos_i);
     let trans_matrix_k =
-        MuellerMatrix::fresnel_transmission(n1k, n2k, cos_i, cos_t_k, t_s_k, t_p_k);
+        MuellerMatrix::fresnel_transmission(n1k, n2k, cos_i, cos_t_k, t_perp_k, t_par_k);
     let incident_k = if entering_anisotropic && let Some((cos_2psi_x, sin_2psi_x)) = azimuth {
         let i_k = incident_stokes_k.i;
         StokesVector::new(i_k, i_k * cos_2psi_x, i_k * sin_2psi_x, 0.0)
@@ -167,10 +167,12 @@ fn cpu_compute_channel_transmission(c: &ChannelTransmissionCase) -> [f32; 5] {
     let transmitted = incident_k
         .apply_matrix(&trans_matrix_k)
         .scale(1.0 / (1.0 - r_unpol));
-    let r_s_k = f32::mul_add(n2k, -cos_t_k, n1k * cos_i) / f32::mul_add(n2k, cos_t_k, n1k * cos_i);
-    let r_p_k = f32::mul_add(n1k, -cos_t_k, n2k * cos_i) / f32::mul_add(n1k, cos_t_k, n2k * cos_i);
-    let r_unpol_k =
-        (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
+    let r_perp_k =
+        f32::mul_add(n2k, -cos_t_k, n1k * cos_i) / f32::mul_add(n2k, cos_t_k, n1k * cos_i);
+    let r_par_k =
+        f32::mul_add(n1k, -cos_t_k, n2k * cos_i) / f32::mul_add(n1k, cos_t_k, n2k * cos_i);
+    let r_unpol_k = (0.5 * r_par_k.mul_add(r_par_k, r_perp_k * r_perp_k))
+        .clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
     [
         transmitted.i,
         transmitted.q,
@@ -189,6 +191,10 @@ const CHANNEL_TRANSMISSION_COMPONENT_NAMES: [&str; 5] = [
 ];
 
 /// Runs the channel transmission check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_channel_transmission(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -219,7 +225,9 @@ pub fn run_channel_transmission(
         &pipeline,
         &[(50, &in_buf), (51, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -323,11 +331,11 @@ fn cpu_compute_uniaxial_exit_transmission(c: &UniaxialExitTransmissionCase) -> [
         im: c.t_p_im,
     };
     let flux_inc = c.flux_inc.max(1e-12);
-    let ts_n = t_s.scale((c.flux_ts / flux_inc).sqrt());
-    let tp_n = t_p.scale((c.flux_tp / flux_inc).sqrt());
-    let i_unit = ts_n.norm_sqr() + tp_n.norm_sqr();
-    let q_unit = ts_n.norm_sqr() - tp_n.norm_sqr();
-    let cross = ts_n.mul(tp_n.conj());
+    let t_perp_n = t_s.scale((c.flux_ts / flux_inc).sqrt());
+    let t_par_n = t_p.scale((c.flux_tp / flux_inc).sqrt());
+    let i_unit = t_perp_n.norm_sqr() + t_par_n.norm_sqr();
+    let q_unit = t_perp_n.norm_sqr() - t_par_n.norm_sqr();
+    let cross = t_perp_n.mul(t_par_n.conj());
     let u_unit = 2.0 * cross.re;
     let v_unit = -2.0 * cross.im;
     let incident_i = c.incident_i;
@@ -356,6 +364,10 @@ const UNIAXIAL_EXIT_TRANSMISSION_COMPONENT_NAMES: [&str; 5] = [
 ];
 
 /// Runs the uniaxial exit transmission check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_uniaxial_exit_transmission(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -386,7 +398,9 @@ pub fn run_uniaxial_exit_transmission(
         &pipeline,
         &[(52, &in_buf), (53, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -548,6 +562,10 @@ fn cpu_narrow_compat(case: &NarrowCompatCase) -> [u32; 8] {
 }
 
 /// Runs the narrow compat check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_narrow_compat(ctx: &crate::renderer::gpu::GpuContext) -> NarrowCompatResult {
     let cases = build_narrow_compat_cases();
@@ -576,7 +594,9 @@ pub fn run_narrow_compat(ctx: &crate::renderer::gpu::GpuContext) -> NarrowCompat
         &pipeline,
         &[(54, &in_buf), (55, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

@@ -143,12 +143,44 @@ fn apply_saved_ui_scale() {
     }
 }
 
+/// The per-user cache folder of the platform: `%LOCALAPPDATA%`, `~/Library/Caches`,
+/// `$XDG_CACHE_HOME` or `~/.cache`. `None` when none of those variables is set.
+#[cfg(feature = "gpu")]
+fn platform_cache_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library").join("Caches"))
+    } else if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
+        Some(PathBuf::from(xdg))
+    } else {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache"))
+    }
+}
+
+/// Points the GPU renderer's driver pipeline cache at `<cache>/indicatrix/pipeline_cache`
+/// (review item GPU-1): without it every start recompiles the megakernel before the first
+/// pixel. Must run before the first renderer is created; a no-op without a cache folder.
+#[cfg(feature = "gpu")]
+fn enable_gpu_pipeline_cache() {
+    let Some(base) = platform_cache_dir() else {
+        return;
+    };
+    let dir = base.join("indicatrix").join("pipeline_cache");
+    if indicatrix::renderer::gpu::pipeline_cache::set_pipeline_cache_dir(dir.clone()) {
+        tracing::info!(dir = %dir.display(), "GPU pipeline cache directory set");
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Before ANY thread or Slint call: the environment is only safe to change while the
     // process is still single-threaded.
     apply_saved_ui_scale();
     install_tracing_subscriber();
     install_panic_logger();
+    #[cfg(feature = "gpu")]
+    enable_gpu_pipeline_cache();
     // `indicatrix-cut <file>` (what an OS "open with" or double-click association
     // runs) opens that file once the window is up; flags such as `--log` are skipped.
     if let Some(path) =

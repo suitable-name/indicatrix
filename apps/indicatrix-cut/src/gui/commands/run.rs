@@ -8,8 +8,8 @@
 //! Slint handler, and none of them holds a borrow of the editor state.
 
 use crate::{
-    EditorModel, ExportModel, LibraryModel, MainWindow, ManipulateModel, PreferencesModel,
-    SettingsModel, SolidPreviewModel, VariantsModel, ViewportModel,
+    EditorModel, ExportModel, LibraryModel, MainWindow, ManipulateModel, ParametersModel,
+    PreferencesModel, SolidPreviewModel, VariantsModel, ViewportModel,
 };
 use slint::ComponentHandle;
 
@@ -180,10 +180,35 @@ pub fn set_simple_interface(ui: &MainWindow, simple: bool) {
     preferences.invoke_simple_mode_changed(simple);
 }
 
-/// Opens the Live Render view's render settings panel.
-pub fn open_render_settings(ui: &MainWindow) {
-    show_live_render_view(ui);
-    ui.global::<SettingsModel>().set_is_open(true);
+/// `ParametersModel.active_tab` of the Stone tab.
+const PARAMETERS_STONE: i32 = 0;
+/// `ParametersModel.active_tab` of the Lighting & Environment tab.
+const PARAMETERS_LIGHTING: i32 = 1;
+/// `ParametersModel.active_tab` of the Render & Output tab.
+const PARAMETERS_RENDER: i32 = 2;
+
+/// Brings the 3D tab forward and shows tab `tab` of the Parameters dock, expanded, like the View
+/// menu items and the dock's toolbar buttons. The Live Render / Edit choice is left as it is:
+/// the dock is in both.
+fn show_parameters_tab(ui: &MainWindow, tab: i32) {
+    show_tab(ui, TAB_3D);
+    ui.global::<ParametersModel>().invoke_show_tab(tab);
+}
+
+/// Opens the Parameters dock on its Stone tab.
+pub fn open_stone_properties(ui: &MainWindow) {
+    show_parameters_tab(ui, PARAMETERS_STONE);
+}
+
+/// Opens the Parameters dock on its Lighting & Environment tab.
+pub fn open_lighting_and_environment(ui: &MainWindow) {
+    show_parameters_tab(ui, PARAMETERS_LIGHTING);
+}
+
+/// Opens the Parameters dock on its Render & Output tab. Also what the older "Render Settings..."
+/// command does: the Live Render view's settings card became this tab.
+pub fn open_render_and_output(ui: &MainWindow) {
+    show_parameters_tab(ui, PARAMETERS_RENDER);
 }
 
 /// Opens the Live Render view's high-resolution export dialog.

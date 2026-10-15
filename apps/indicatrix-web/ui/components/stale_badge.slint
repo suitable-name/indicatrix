@@ -1,7 +1,7 @@
 import { Theme } from "theme.slint";
 import { GuideModel } from "../models/guide_model.slint";
 
-// The amber "Stale: design changed" chip for an analysis panel whose last result was
+// The amber "Stale: Design Changed" chip for an analysis panel whose last result was
 // computed for an older design than the one on screen (the desktop's `stale_badge.slint`;
 // the Optimize tab uses it). It badges the EXISTING result rather than clearing it: a
 // result from two edits ago is still useful context, it just needs an honest "this may not
@@ -30,7 +30,7 @@ export component StaleBadge inherits Rectangle {
         spacing: 6px;
 
         Text {
-            text: "Stale: design changed";
+            text: "Stale: Design Changed";
             font-size: 10px;
             font-weight: 700;
             color: Theme.accent-amber;

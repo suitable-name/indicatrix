@@ -3,11 +3,13 @@
 //!
 //! # The model
 //!
-//! The rough is a [`RoughModel`]: a base shape (block, cylinder or pebble, see
-//! [`shape`]) with an ordered list of planar cuts (edge chamfers, corner cuts, flat
-//! faces), always a convex polytope. It is sawn by staged guillotine cuts
-//! (slabs across axis A, bars across axis B, pieces across axis C, in one of
-//! the six [`CutOrder`]s), every cut costing one kerf. Each piece holds one
+//! The rough is a [`RoughModel`]: a base shape (block, cylinder, pebble or an imported
+//! hull or mesh, see [`shape`]) with an ordered list of planar cuts (edge chamfers, corner
+//! cuts, flat faces). The planner works from the convex polytope of the rough's
+//! half-spaces; a mesh rough's true surface, which may be non-convex, is asked only to
+//! reject or shrink what reaches into air (`shape::RoughModel::mesh`). It is sawn by
+//! staged guillotine cuts (slabs across axis A, bars across axis B, pieces across axis
+//! C, in one of the six [`CutOrder`]s), every cut costing one kerf. Each piece holds one
 //! stone; the stone is the design scaled uniformly to the largest size that
 //! fits the piece minus the per-side allowance, in any of the six axis
 //! assignments (the table may face any rough face; the caliper footprint
@@ -55,6 +57,9 @@
 //! - [`refine`] / [`finish_plan`]: continuous optimisation of the cut
 //!   positions, then the final ranking ([`merge_and_rank`]).
 //! - [`plan_rough`]: all of the above, sequentially.
+//! - [`placement`] / [`stone_preform`]: where a planned stone sits in the rough and the piece it
+//!   comes from, as the editor's preform (the rigid map between the rough and the design's
+//!   frames, and the sawn piece box clipped by the rough's own planes, in model units).
 //!
 //! The piece table, the alternatives, the single-design pass and the refinement also exist as
 //! `_lanes` twins ([`build_piece_table_lanes`], [`plan_alternatives_lanes`],
@@ -70,23 +75,22 @@
 //! `wasm32-unknown-unknown`. The result never depends on the order of the
 //! candidate list (it is sorted by `entry_id` first).
 
-#[cfg(feature = "zoning")]
 pub mod camera_spectral;
-#[cfg(feature = "zoning")]
 pub mod colour_fit;
 mod dp;
 pub mod fit;
 pub mod locate;
 mod lp;
 mod pareto;
-#[cfg(feature = "zoning")]
 pub mod photometry;
 mod piece;
+pub mod placement;
 pub mod plan;
 mod rank;
 mod refine;
 pub mod shape;
 pub mod shaped;
+pub mod stone_preform;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -102,13 +106,15 @@ mod tests_lp;
 mod tree;
 mod types;
 mod uniform;
-#[cfg(feature = "zoning")]
 pub mod zoned_plan;
 
 pub use dp::{plan_alternatives, plan_alternatives_lanes, plan_rough_for_order};
 pub use fit::*;
 pub use pareto::pareto_front;
 pub use piece::{Grid, PieceTable, build_piece_table, build_piece_table_lanes, choose_grid};
+pub use placement::{
+    DesignPlacement, POSE_COUNT, RigidMap, candidate_poses, pose_variant, rough_to_stone_map,
+};
 pub use plan::*;
 pub use rank::{
     best_layout, flatten_groups, merge_and_rank, merge_and_rank_min, rank_indices, rank_indices_min,
@@ -119,6 +125,9 @@ pub use refine::{
 pub use shape::{
     BoxFace, HullError, MAX_HULL_PLANES, MAX_MESH_TRIANGLES, MeshError, RoughBase, RoughCut,
     RoughMeasure, RoughMesh, RoughModel, ShapeError, import_hull, import_mesh,
+};
+pub use stone_preform::{
+    StonePreform, halfspace_to_design_frame, piece_box_halfspaces, stone_preform_planes,
 };
 pub use types::{
     Axis, BarCut, CandidateDesign, CutOrder, CutPlan, LayoutGroup, PlacedStone, PlanInputError,

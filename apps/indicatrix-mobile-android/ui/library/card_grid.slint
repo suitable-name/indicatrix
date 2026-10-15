@@ -1,0 +1,90 @@
+// The scrolling body of the Library: cards in a grid, or 64 px rows in list mode.
+//
+// Cards are placed by hand (column and row from the index) so thousands of designs
+// cost one cheap rectangle each; Rust loads pages as the visible range nears the end
+// and fills thumbnails only near the visible range.
+import { Theme } from "../theme.slint";
+import { LibraryModel } from "library_model.slint";
+import { GridCard, ListCard, CardMetrics } from "card.slint";
+
+export component CardGrid inherits Flickable {
+    in property <bool> list: false;
+
+    property <length> pad: Theme.space-lg;
+    property <length> gap: Theme.space-md;
+    // Two columns on a phone; three, then four as the window widens.
+    property <int> cols: root.list ? 1 : (root.width < 600px ? 2 : (root.width < 840px ? 3 : 4));
+    property <length> cell-w: (root.width - 2 * root.pad - (root.cols - 1) * root.gap) / root.cols;
+    property <length> cell-h: root.list ? CardMetrics.row-height : root.cell-w * CardMetrics.thumb-ratio + CardMetrics.info-height;
+    property <length> step: root.list ? CardMetrics.row-height : root.cell-h + root.gap;
+    property <length> top-pad: root.list ? 0px : root.pad;
+    property <int> n: LibraryModel.cards.length;
+    property <int> rows: Math.floor((root.n + root.cols - 1) / root.cols);
+
+    // The scroll offset and the card indices it shows.
+    property <length> scroll-y: -root.content-y;
+    property <int> first-index: Math.max(0, Math.floor((root.scroll-y - root.top-pad) / root.step)) * root.cols;
+    property <int> last-index: (Math.max(0, Math.floor((root.scroll-y + root.height - root.top-pad) / root.step)) + 1) * root.cols - 1;
+    property <int> token: LibraryModel.scroll-token;
+
+    content-width: root.width;
+    content-height: root.top-pad + root.rows * root.step + (root.list ? 0px : root.pad);
+
+    function report() {
+        LibraryModel.visible-range(root.first-index, root.last-index);
+    }
+
+    init => {
+        root.report();
+    }
+
+    changed first-index => {
+        root.report();
+    }
+
+    changed last-index => {
+        root.report();
+    }
+
+    changed n => {
+        root.report();
+    }
+
+    changed list => {
+        root.content-y = 0px;
+        root.report();
+    }
+
+    changed token => {
+        root.content-y = 0px;
+    }
+
+    for card[index] in LibraryModel.cards: Rectangle {
+        x: root.list ? 0px : root.pad + Math.mod(index, root.cols) * (root.cell-w + root.gap);
+        y: root.top-pad + Math.floor(index / root.cols) * root.step;
+        width: root.list ? root.width : root.cell-w;
+        height: root.cell-h;
+
+        if root.list: ListCard {
+            data: card;
+            selecting: LibraryModel.selecting;
+            tapped => {
+                LibraryModel.card-tapped(index);
+            }
+            long-pressed => {
+                LibraryModel.card-long-pressed(index);
+            }
+        }
+
+        if !root.list: GridCard {
+            data: card;
+            selecting: LibraryModel.selecting;
+            tapped => {
+                LibraryModel.card-tapped(index);
+            }
+            long-pressed => {
+                LibraryModel.card-long-pressed(index);
+            }
+        }
+    }
+}

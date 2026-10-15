@@ -343,6 +343,10 @@ impl XorShift64 {
     }
 
     /// A pseudo-random `f32` in `[0.0, 100.0)`, matching `AxisTiltCurves`' `*_pct` scale.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is in [0, 100); the curves store f32"
+    )]
     fn next_pct(&mut self) -> f32 {
         let top_24_bits = (self.next_u64() >> 40) as u32;
         (f64::from(top_24_bits) / f64::from(1u32 << 24) * 100.0) as f32

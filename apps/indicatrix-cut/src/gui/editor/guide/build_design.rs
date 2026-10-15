@@ -121,21 +121,35 @@ fn start(
         });
         return;
     }
-    match local_target(db, entry_id) {
-        Ok(target) => {
-            model.set_busy(true);
-            generate(ui, target);
-        }
-        Err(message) => show_toast(ui, &message, "error"),
+    // The full-record read (every angle row and file BLOB) and its parse run on a worker, on
+    // a read-only connection that does not queue behind a writer holding the shared lock
+    // (perf review UI-5 / DB-1); `busy` stays set until the lesson is generated or fails.
+    model.set_busy(true);
+    let db = Arc::clone(db);
+    let ui_weak = ui.as_weak();
+    let spawned = std::thread::Builder::new()
+        .name("build-lesson-read".to_owned())
+        .spawn(move || {
+            let target = local_target(&db, entry_id);
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| match target {
+                Ok(target) => generate(&ui, target),
+                Err(message) => fail(&ui, &message),
+            });
+        });
+    if spawned.is_err() {
+        fail(
+            ui,
+            "The lesson could not be started: no thread was available.",
+        );
     }
 }
 
-/// The design of local library entry `entry_id`, read the way Load Selected reads it.
+/// The design of local library entry `entry_id`, read the way Load Selected reads it. Blocking
+/// (database read plus parse): call it off the UI thread.
 fn local_target(db: &Arc<Mutex<Database>>, entry_id: i32) -> Result<Target, String> {
-    let full = db
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get_diagram_full(i64::from(entry_id));
+    let full = Database::with_read_connection(crate::gui::DB_PATH, db, |database| {
+        database.get_diagram_full(i64::from(entry_id))
+    });
     let Ok(Some(full)) = full else {
         return Err("Diagram detail not found.".to_owned());
     };

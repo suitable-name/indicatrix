@@ -66,7 +66,7 @@ pub(super) fn save_view(step: Option<(usize, &str)>, name: String) -> FormView {
         }
     };
     FormView {
-        title: "Save as a variant".to_owned(),
+        title: "Save as a Variant".to_owned(),
         hint,
         ok: "Save",
         name,
@@ -77,7 +77,7 @@ pub(super) fn save_view(step: Option<(usize, &str)>, name: String) -> FormView {
 /// The rename form for `variant`.
 pub(super) fn rename_view(variant: &VariantSummary) -> FormView {
     FormView {
-        title: "Rename variant".to_owned(),
+        title: "Rename Variant".to_owned(),
         hint: String::new(),
         ok: "Rename",
         name: variant.name.clone(),
@@ -90,7 +90,7 @@ pub(super) fn note_view(variant: &VariantSummary) -> FormView {
     FormView {
         title: format!("Note for \"{}\"", variant.name),
         hint: String::new(),
-        ok: "Save note",
+        ok: "Save Note",
         name: String::new(),
         note: variant.note.clone().unwrap_or_default(),
     }
@@ -99,7 +99,7 @@ pub(super) fn note_view(variant: &VariantSummary) -> FormView {
 /// The question before deleting `variant`.
 pub(super) fn delete_view(variant: &VariantSummary) -> FormView {
     FormView {
-        title: "Delete this variant?".to_owned(),
+        title: "Delete This Variant?".to_owned(),
         hint: format!(
             "\"{}\" will be removed from your library. This cannot be undone. Your current design is not changed.",
             variant.name

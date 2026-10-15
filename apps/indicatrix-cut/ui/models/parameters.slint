@@ -1,0 +1,71 @@
+import { EditorModel } from "editor.slint";
+
+// The Parameters dock: one right-hand panel with three tabs -- Stone, Lighting & Environment
+// and Render & Output -- reachable from the Live Render view and from the Edit view (it
+// replaces the Live Render view's old "Rendering Settings" card).
+//
+// This global holds only the dock's own state. What the tabs edit lives where it always did
+// (`SettingsModel`, `ViewportModel`, `DesignLightingModel`, ...), so a tab's controls keep
+// working through the same properties and callbacks until the tab's own lane rewires them.
+//
+// `open` and `active_tab` persist: Rust (`gui::parameters_dock`) pushes the saved values at
+// start-up and writes them back through `layout_changed`, the same shape as
+// `EditorModel.layout_changed`.
+export global ParametersModel {
+    // Whether the panel is expanded. When it is not, a wide window keeps a thin rail with the
+    // three tab buttons, and a narrow one (where the dock floats over the viewport) shows
+    // nothing until a toolbar button, the View menu or the command palette opens it again.
+    in-out property <bool> open: false;
+    // The tab that shows: 0 Stone, 1 Lighting & Environment, 2 Render & Output.
+    in-out property <int> active_tab: 0;
+
+    // Fired after `open` or `active_tab` changed, so a listener always reads the new values.
+    callback layout_changed();
+    // Folding unmounts the panel's fields, and a destroyed field never runs its `changed
+    // has-focus`, so a focused one would leave `EditorModel.text_focus` stuck on `true` (and the
+    // undo / help / settings shortcuts dead). Clear it here.
+    changed open => {
+        if (!open) {
+            EditorModel.text_focus = false;
+        }
+        layout_changed();
+    }
+    changed active_tab => { layout_changed(); }
+
+    // The tab names, for the panel's title and the buttons' accessible labels.
+    public pure function tab_title(tab: int) -> string {
+        return tab == 1 ? "Lighting & Environment" : (tab == 2 ? "Render & Output" : "Stone");
+    }
+
+    // Shows tab `tab` and expands the panel: the View menu, the palette and the rail buttons.
+    public function show_tab(tab: int) {
+        active_tab = tab;
+        open = true;
+    }
+
+    // What a toolbar button for tab `tab` does: a second press on the tab that is showing
+    // collapses the panel, any other press shows that tab.
+    public function toggle_tab(tab: int) {
+        if (open && active_tab == tab) {
+            open = false;
+        } else {
+            active_tab = tab;
+            open = true;
+        }
+    }
+
+    // Collapses the panel to its rail (or hides it, when it floats).
+    public function collapse() {
+        open = false;
+    }
+
+    // "Reset this tab" (the panel's two-step footer, after "Confirm"): asks Rust to put tab
+    // `tab` back to its defaults. The defaults live in Rust (`settings::model::reset_tab` and the
+    // `Default` impls behind it), so the panel assigns no literals. Rust re-pushes the tab's
+    // controls afterwards (`gui::render::reset_tab`).
+    callback reset_tab(int);
+    // Fired by Rust's `reset_tab` handler for the Stone tab (tab 0): the Stone lane applies the
+    // default per-design render effects as ONE undoable edit (`Edit::SetRenderEffects`). The
+    // reset never touches the material or the geometry.
+    callback reset_stone_effects();
+}

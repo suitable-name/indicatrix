@@ -5,6 +5,8 @@ import { ViewportModel } from "../../models/viewport.slint";
 import { CompareModel } from "../../models/compare.slint";
 import { GuideModel } from "../../models/guide.slint";
 import { OptimizeModel, OptimizeCandidateRow } from "../../models/optimize.slint";
+import { ParametersModel } from "../../models/parameters.slint";
+import { TextLink } from "../parameters_panel/parts.slint";
 import { WarningLine } from "../warning_line.slint";
 import { FormRow } from "form_row.slint";
 import { TipButton } from "../compact_controls.slint";
@@ -96,7 +98,7 @@ component CandidateRowView inherits Rectangle {
     border-width: root.ringed ? 2px : 0px;
     border-color: Theme.accent-cyan-hover;
     accessible-role: AccessibleRole.list-item;
-    accessible-label: (root.item.rank == "Start" ? "Starting stone" : "Candidate " + root.item.rank) + ", score " + root.item.score;
+    accessible-label: (root.item.rank == "Start" ? "Starting Stone" : "Candidate " + root.item.rank) + ", score " + root.item.score;
     accessible-item-selectable: true;
     accessible-item-selected: root.selected;
     accessible-action-default => { root.clicked(); }
@@ -233,7 +235,7 @@ export component OptimizeTab inherits VerticalLayout {
             width: parent.width;
             height: parent.height;
             enabled: root.unlocked;
-            accessible-label: "Optimize objective";
+            accessible-label: "Optimize Objective";
             model: (root.advanced || root.custom_objective) ? OptimizeModel.preset_labels : OptimizeModel.simple_preset_labels;
             current-index <=> OptimizeModel.preset_index;
             selected => { OptimizeModel.preset_changed(self.current-index); }
@@ -259,15 +261,15 @@ export component OptimizeTab inherits VerticalLayout {
         Rectangle {
             height: weights_lbl.preferred-height;
             Tooltip { text: @markdown("Relative importance, any positive number. 1.0 is neutral. A calculation such as `1 + 0.5` works."); }
-            weights_lbl := Text { text: "Weights: windowing / extinction / tilt brilliance"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; accessible-role: AccessibleRole.text; }
+            weights_lbl := Text { text: "Weights: Windowing / Extinction / Tilt Brilliance"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; accessible-role: AccessibleRole.text; }
         }
         HorizontalLayout {
             spacing: 4px;
             // The caption above names the three fields in order; placeholder text repeats
             // which is which right where the cutter is typing.
-            LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_windowing; placeholder-text: "windowing"; accessible-label: "Windowing weight"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-            LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_extinction; placeholder-text: "extinction"; accessible-label: "Extinction weight"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-            LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_tilt_brilliance; placeholder-text: "tilt brilliance"; accessible-label: "Tilt brilliance weight"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_windowing; placeholder-text: "windowing"; accessible-label: "Windowing Weight"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_extinction; placeholder-text: "extinction"; accessible-label: "Extinction Weight"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_tilt_brilliance; placeholder-text: "tilt brilliance"; accessible-label: "Tilt Brilliance Weight"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
         }
         // Non-numeric/negative input is rejected Rust-side (surfaced as an error toast)
         // before it reaches the search.
@@ -281,10 +283,10 @@ export component OptimizeTab inherits VerticalLayout {
         Rectangle {
             height: yield_weight_lbl.preferred-height;
             Tooltip { text: @markdown("How much throwing away preform volume should cost, blended in alongside the three optical weights above. `0` ignores the weight of the finished stone. See the glossary."); }
-            yield_weight_lbl := Text { text: "Yield weight: " + Math.round(EditorModel.optimize_weight_yield * 10) / 10; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; accessible-role: AccessibleRole.text; }
+            yield_weight_lbl := Text { text: "Yield Weight: "+ Math.round(EditorModel.optimize_weight_yield * 10) / 10; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; accessible-role: AccessibleRole.text; }
         }
         Rectangle {
-            height: yield_slider.preferred-height;
+            height: max(yield_slider.min-height, 24px);
             Tooltip { text: @markdown("Yield weight, from 0 to 3. Drag, or click it and use the arrow keys."); }
             yield_slider := Slider {
                 width: parent.width;
@@ -292,16 +294,16 @@ export component OptimizeTab inherits VerticalLayout {
                 enabled: root.unlocked;
                 minimum: 0.0;
                 maximum: 3.0;
-                accessible-label: "Yield weight";
+                accessible-label: "Yield Weight";
                 value <=> EditorModel.optimize_weight_yield;
             }
         }
         Rectangle {
             height: tone_weight_lbl.preferred-height;
-            Tooltip { text: @markdown("Pull the face-up colour lighter (left) or deeper and stronger (right). `0` leaves the colour out of the score. Measured table-up, under the lighting preset the Live Render shows, from the body colour in Design settings; see the glossary."); }
+            Tooltip { text: @markdown("Pull the face-up color lighter (left) or deeper and stronger (right). `0` leaves the color out of the score. Measured table-up, under the lighting preset the Live Render shows, from the body color in Design settings; see the glossary."); }
             tone_weight_lbl := Text {
-                text: EditorModel.optimize_weight_tone < -0.05 ? "Tone: lighter (" + Math.round(-EditorModel.optimize_weight_tone * 10) / 10 + ")"
-                    : (EditorModel.optimize_weight_tone > 0.05 ? "Tone: deeper (" + Math.round(EditorModel.optimize_weight_tone * 10) / 10 + ")" : "Tone: off");
+                text: EditorModel.optimize_weight_tone < -0.05 ? "Tone: Lighter (" + Math.round(-EditorModel.optimize_weight_tone * 10) / 10 + ")"
+                    : (EditorModel.optimize_weight_tone > 0.05 ? "Tone: Deeper (" + Math.round(EditorModel.optimize_weight_tone * 10) / 10 + ")" : "Tone: Off");
                 font-size: 10px;
                 color: Theme.text-muted;
                 wrap: word-wrap;
@@ -309,7 +311,7 @@ export component OptimizeTab inherits VerticalLayout {
             }
         }
         Rectangle {
-            height: tone_slider.preferred-height;
+            height: max(tone_slider.min-height, 24px);
             Tooltip { text: @markdown("Tone weight, from -3 (lighter) to 3 (deeper and stronger). Drag, or click it and use the arrow keys."); }
             tone_slider := Slider {
                 width: parent.width;
@@ -317,38 +319,38 @@ export component OptimizeTab inherits VerticalLayout {
                 enabled: root.unlocked;
                 minimum: -3.0;
                 maximum: 3.0;
-                accessible-label: "Tone weight";
+                accessible-label: "Tone Weight";
                 value <=> EditorModel.optimize_weight_tone;
             }
         }
     }
 
     // --- What may change (Advanced) ---
-    if root.advanced: Text { text: "What may change"; font-size: 10px; font-weight: 700; color: Theme.text-secondary; accessible-role: AccessibleRole.text; }
+    if root.advanced: Text { text: "What May Change"; font-size: 10px; font-weight: 700; color: Theme.text-secondary; accessible-role: AccessibleRole.text; }
     if root.advanced: OptionRow {
         active: root.unlocked;
-        label: "Vary anchored tiers (keeps each facet's girdle edge)";
+        label: "Vary Anchored Tiers (Keeps Each Facet's Girdle Edge)";
         tip: "A tier pinned to a scale value normally stays put. With this on, the search turns it about the edge it keeps on the girdle, so the girdle outline stays the same while the angle changes. Needed for designs imported from the catalogue, where every tier is pinned. See the glossary.";
         checked <=> OptimizeModel.vary_anchored;
         toggled(on) => { OptimizeModel.vary_toggled(on); }
     }
     if root.advanced: OptionRow {
         active: root.unlocked;
-        label: "Keep the girdle (at least half its thickness)";
+        label: "Keep the Girdle (at Least Half Its Thickness)";
         tip: "Reject a candidate whose girdle is thinner than half of the starting girdle, or that loses the table facet. See the glossary.";
         checked <=> OptimizeModel.keep_girdle;
     }
     if root.advanced: OptionRow {
         active: root.unlocked;
-        label: "Only selected tiers";
+        label: "Only Selected Tiers";
         tip: "Limit the search to the tiers selected in the tier table.";
         checked <=> EditorModel.optimize_only_selected;
     }
 
     // --- Angle ranges (Advanced) ---
-    if root.advanced: TipButton {
+    if root.advanced: tip-button-ranges-open := TipButton {
         enabled: root.unlocked;
-        text: OptimizeModel.ranges_open ? "Hide angle ranges" : "Angle ranges...";
+        text: OptimizeModel.ranges_open ? "Hide Angle Ranges" : "Angle Ranges...";
         hint: "Each tier the search may move can change by 5 degrees either way. Open this to give a tier a narrower or wider range.";
         clicked => {
             OptimizeModel.ranges_open = !OptimizeModel.ranges_open;
@@ -386,7 +388,7 @@ export component OptimizeTab inherits VerticalLayout {
                     enabled: root.unlocked;
                     font-size: 10px;
                     text: range_row.min_text;
-                    accessible-label: "Lowest angle for tier " + range_row.tier_number;
+                    accessible-label: "Lowest Angle for Tier " + range_row.tier_number;
                     edited(typed) => { OptimizeModel.range_edited(range_row.tier_index, typed, max_edit.text); }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
                 }
@@ -395,7 +397,7 @@ export component OptimizeTab inherits VerticalLayout {
                     enabled: root.unlocked;
                     font-size: 10px;
                     text: range_row.max_text;
-                    accessible-label: "Highest angle for tier " + range_row.tier_number;
+                    accessible-label: "Highest Angle for Tier " + range_row.tier_number;
                     edited(typed) => { OptimizeModel.range_edited(range_row.tier_index, min_edit.text, typed); }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
                 }
@@ -404,7 +406,7 @@ export component OptimizeTab inherits VerticalLayout {
         HorizontalLayout {
             TipButton {
                 enabled: root.unlocked;
-                text: "Reset ranges";
+                text: "Reset Ranges";
                 hint: "Give every tier the default range again (5 degrees either way).";
                 clicked => { OptimizeModel.reset_ranges(); }
             }
@@ -421,7 +423,7 @@ export component OptimizeTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> EditorModel.optimize_budget_text;
             placeholder-text: "800";
-            accessible-label: "Search budget";
+            accessible-label: "Search Budget";
             edited(typed) => { OptimizeModel.settings_edited(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
         }
@@ -433,7 +435,7 @@ export component OptimizeTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> OptimizeModel.starts_text;
             placeholder-text: "8";
-            accessible-label: "Number of starting arrangements, 1 to 32";
+            accessible-label: "Number of Starting Arrangements, 1 to 32";
             edited(typed) => { OptimizeModel.settings_edited(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
         }
@@ -445,7 +447,7 @@ export component OptimizeTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> EditorModel.optimize_seed_text;
             placeholder-text: "0";
-            accessible-label: "Search seed";
+            accessible-label: "Search Seed";
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
         }
     }
@@ -457,7 +459,7 @@ export component OptimizeTab inherits VerticalLayout {
             minimum: 1;
             maximum: 5;
             value <=> OptimizeModel.candidates;
-            accessible-label: "Number of candidates to keep";
+            accessible-label: "Number of Candidates to Keep";
             edited(picked) => { OptimizeModel.settings_edited(); }
         }
     }
@@ -476,12 +478,25 @@ export component OptimizeTab inherits VerticalLayout {
         accessible-role: AccessibleRole.text;
     }
     if root.hidden_in_use: AdvancedNote { }
-    if ViewportModel.lighting_is_studio[ViewportModel.selected_lighting_index]: Text {
-        text: "Brilliance is measured against this rig's light sources; the Grading tray gives the standard light-return figure.";
-        font-size: 9px;
-        color: Theme.text-muted;
-        wrap: word-wrap;
-        accessible-role: AccessibleRole.text;
+    if ViewportModel.lighting_is_studio[ViewportModel.selected_lighting_index]: VerticalLayout {
+        spacing: 2px;
+        Text {
+            text: "Brilliance is measured against this rig's light sources; the Grading tray gives the standard light-return figure.";
+            font-size: 9px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+        }
+        // The rig is chosen in the Lighting & Environment tab of the Parameters panel, which
+        // opens beside the inspector in this view too.
+        HorizontalLayout {
+            alignment: start;
+            TextLink {
+                text: "Change the Lighting Rig...";
+                hint: "Open the Lighting & Environment tab, where the lighting rig is chosen.";
+                clicked => { ParametersModel.show_tab(1); }
+            }
+        }
     }
     HorizontalLayout {
         spacing: 6px;
@@ -495,7 +510,7 @@ export component OptimizeTab inherits VerticalLayout {
                 EditorModel.optimize(EditorModel.optimize_weight_windowing, EditorModel.optimize_weight_extinction, EditorModel.optimize_weight_tilt_brilliance, EditorModel.optimize_weight_yield, EditorModel.optimize_weight_tone);
             }
         }
-        if EditorModel.optimize_running: TipButton {
+        if EditorModel.optimize_running: tip-button-cancel-requested := TipButton {
             text: root.cancel_requested ? "Cancelling..." : "Cancel";
             hint: "Stop the search now.";
             enabled: !root.cancel_requested;
@@ -510,7 +525,7 @@ export component OptimizeTab inherits VerticalLayout {
         border-radius: 2px;
         background: Theme.bg-input;
         accessible-role: AccessibleRole.progress-indicator;
-        accessible-label: "Optimize progress";
+        accessible-label: "Optimize Progress";
         accessible-value: Math.round(Math.clamp(OptimizeModel.progress, 0.0, 1.0) * 100) + " percent";
         Rectangle {
             x: 0px;
@@ -559,14 +574,14 @@ export component OptimizeTab inherits VerticalLayout {
             ColumnHead { width: 40px; text: "Bril."; tip: "Tilt brilliance: the light the stone returns to the eye as it is tilted. Higher is better. See the glossary."; }
             ColumnHead { width: 38px; text: "Ext."; tip: "Extinction: the share of the stone that looks dead dark. Lower is better. See the glossary."; }
             ColumnHead { width: 38px; text: "Yield"; tip: "Yield loss: how much more of the rough this candidate throws away. Lower is better. See the glossary."; }
-            ColumnHead { width: 44px; text: "Tone"; tip: "Face-up lightness L* of the light the stone returns, with its predicted colour. 100 is colourless. Green follows the objective: lighter for Lighten dark rough, stronger colour for Intensify pale rough. See the glossary."; }
+            ColumnHead { width: 44px; text: "Tone"; tip: "Face-up lightness L* of the light the stone returns, with its predicted color. 100 is colorless. Green follows the objective: lighter for Lighten Dark Rough, stronger color for Intensify Pale Rough. See the glossary."; }
             ColumnHead { horizontal-stretch: 1; text: "Tiers"; tip: "How many tiers this candidate changes."; }
         }
         // The list is one Tab stop; Up and Down pick the row above or below, like a click.
         list_focus := FocusScope {
             enabled: root.unlocked;
             accessible-role: AccessibleRole.list;
-            accessible-label: "Optimize candidates";
+            accessible-label: "Optimize Candidates";
             accessible-description: "Up and Down pick the starting stone or a candidate. The picked candidate is previewed.";
             key-pressed(event) => {
                 if event.text == Key.DownArrow {
@@ -606,7 +621,7 @@ export component OptimizeTab inherits VerticalLayout {
             }
         }
         Text {
-            text: "Windowing (Wind.), tilt brilliance (Bril.), extinction (Ext.) and yield loss as percentages. Green beats the starting stone, red is worse. Tone is the face-up lightness L* with its predicted colour. Click a row to preview it.";
+            text: "Windowing (Wind.), tilt brilliance (Bril.), extinction (Ext.) and yield loss as percentages. Green beats the starting stone, red is worse. Tone is the face-up lightness L* with its predicted color. Click a row to preview it.";
             font-size: 9px;
             color: Theme.text-muted;
             wrap: word-wrap;
@@ -622,10 +637,10 @@ export component OptimizeTab inherits VerticalLayout {
             // The predicted face-up colour before and after, as the screen shows that light.
             if OptimizeModel.tone_swatches.has: Rectangle {
                 height: 16px;
-                Tooltip { text: @markdown("The predicted colour of the light the stone returns face-up, before and after, under the lighting preset the run used, shown as your screen shows that light (white-balanced like the Live Render)."); }
+                Tooltip { text: @markdown("The predicted color of the light the stone returns face-up, before and after, under the lighting preset the run used, shown as your screen shows that light (white-balanced like the Live Render)."); }
                 HorizontalLayout {
                     spacing: 4px;
-                    Text { text: "Face-up colour"; font-size: 10px; color: Theme.text-secondary; vertical-alignment: center; accessible-role: AccessibleRole.text; }
+                    Text { text: "Face-Up Color"; font-size: 10px; color: Theme.text-secondary; vertical-alignment: center; accessible-role: AccessibleRole.text; }
                     Rectangle { width: 14px; Rectangle { width: 14px; height: 14px; y: (parent.height - self.height) / 2; border-radius: 3px; background: OptimizeModel.tone_swatches.before; } }
                     Text { text: "->"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
                     Rectangle { width: 14px; Rectangle { width: 14px; height: 14px; y: (parent.height - self.height) / 2; border-radius: 3px; background: OptimizeModel.tone_swatches.after; } }
@@ -653,7 +668,7 @@ export component OptimizeTab inherits VerticalLayout {
             // Which tiers the picked candidate would change, and by how much.
             if EditorModel.optimize_change_rows.length > 0: VerticalLayout {
                 spacing: 2px;
-                Text { text: "Tiers this would change:"; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
+                Text { text: "Tiers This Would Change:"; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
                 HorizontalLayout {
                     spacing: 4px;
                     ColumnHead { width: 28px; text: "#"; align_left: true; }
@@ -701,7 +716,7 @@ export component OptimizeTab inherits VerticalLayout {
             // step like every other edit.
             TipButton {
                 enabled: root.unlocked && EditorModel.optimize_can_apply;
-                text: "Apply this candidate";
+                text: "Apply This Candidate";
                 hint: "Commit the picked candidate as one undoable edit. Tiers that follow a relation move with it.";
                 primary: true;
                 clicked => { EditorModel.optimize_apply(); }

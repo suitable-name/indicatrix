@@ -27,9 +27,18 @@ use super::{
     lm::{LmSettings, run_lm},
     models::{FitModel, PriorContext, SmoothBasisModel},
     output::{LovoEntry, LovoReport, ResidualMap},
-    par::par_map,
+    par::{inner_threads, par_map},
     problem::{GAIN_LOG_LIMIT, Problem, rgb_delta_e},
 };
+
+/// A whitened residual triple at the `f32` precision [`ResidualMap`] stores.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "whitened residuals are O(1) values; the residual map is stored as f32 for display"
+)]
+pub(super) const fn whitened_f32(u: [f64; 3]) -> [f32; 3] {
+    [u[0] as f32, u[1] as f32, u[2] as f32]
+}
 
 /// Moran's I above which the residual counts as structured.
 pub const SUGGEST_MORAN: f64 = 0.25;
@@ -54,7 +63,8 @@ pub(super) fn lovo(
     if slots.len() < 2 {
         return Ok(None);
     }
-    let settings = LmSettings::new(config.lovo_iterations, config.rel_cost_tol);
+    let settings = LmSettings::new(config.lovo_iterations, config.rel_cost_tol)
+        .with_inner_threads(inner_threads(config.threads, slots.len()));
     let work = |i: usize| -> Result<LovoEntry, FitError> {
         let slot = slots[i];
         let copy = model.duplicate();
@@ -64,6 +74,7 @@ pub(super) fn lovo(
             config,
             l1_weights: l1,
             pin_common_gain: false,
+            model_priors: true,
         };
         let outcome = run_lm(problem, &*copy, x, &active, &ctx, &settings, cancel)?;
         let stats = problem.view_stats(&*copy, &outcome.x[..np], slot)?;
@@ -247,7 +258,8 @@ pub struct ObjectiveAt {
 ///
 /// # Errors
 ///
-/// As [`Problem::new`](super::problem::Problem::new).
+/// As [`Problem::new`](super::problem::Problem::new), and [`FitError::BadConfig`] when
+/// `log_gains` does not hold exactly one entry per view of the records.
 pub fn objective_at(
     records: &crate::rough_plan::colour_fit::forward::ForwardRecords,
     observed: &[super::ObservedView],
@@ -257,6 +269,9 @@ pub fn objective_at(
 ) -> Result<ObjectiveAt, FitError> {
     config.validate()?;
     let problem = Problem::new(records, observed, config)?;
+    if log_gains.len() != problem.view_count() {
+        return Err(FitError::BadConfig("one log-gain per view"));
+    }
     let model = FixedAlpha { alpha };
     let all = problem.whitened_with(&model, log_gains)?;
     let mut chi2 = 0.0;
@@ -287,7 +302,7 @@ pub fn objective_at(
             height: view.height,
             whitened: pixels
                 .iter()
-                .map(|p| p.map_or([0.0; 3], |u| [u[0] as f32, u[1] as f32, u[2] as f32]))
+                .map(|p| p.map_or([0.0; 3], whitened_f32))
                 .collect(),
             valid: pixels.iter().map(Option::is_some).collect(),
             moran: 0.0,
@@ -303,6 +318,7 @@ pub fn objective_at(
         config,
         l1_weights: &ones,
         pin_common_gain: false,
+        model_priors: true,
     };
     let terms = problem.prior_terms_at(&basis_model, &theta, log_gains, &ctx);
     let prior_cost = terms.total();

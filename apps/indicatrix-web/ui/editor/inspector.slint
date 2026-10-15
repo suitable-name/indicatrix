@@ -8,6 +8,7 @@ import { TierFormTab } from "inspector_tier.slint";
 import { PreformTab } from "inspector_preform.slint";
 import { OptimizeTab } from "optimize_tab.slint";
 import { ScheduleTab } from "inspector_schedule.slint";
+import { HistoryTab } from "inspector_history.slint";
 
 component TabPill inherits Rectangle {
     in property <string> label;
@@ -102,6 +103,12 @@ export component Inspector inherits Rectangle {
                 active: InspectorModel.tab == 3;
                 clicked => { InspectorModel.tab = 3; }
             }
+            TabPill {
+                label: "History";
+                active: InspectorModel.tab == 4;
+                locked: !GuideModel.allows-history();
+                clicked => { InspectorModel.tab = 4; }
+            }
             Rectangle { horizontal-stretch: 1; }
         }
 
@@ -113,6 +120,7 @@ export component Inspector inherits Rectangle {
                 if InspectorModel.tab == 1: PreformTab {}
                 if InspectorModel.tab == 2: OptimizeTab {}
                 if InspectorModel.tab == 3: ScheduleTab {}
+                if InspectorModel.tab == 4: HistoryTab {}
             }
         }
 

@@ -86,7 +86,7 @@ export component DesignDock inherits Rectangle {
             if root.overlay: Rectangle {
                 width: 20px;
                 accessible-role: button;
-                accessible-label: "Close the Design panel";
+                accessible-label: "Close the Design Panel";
                 Tooltip { text: @markdown("Close the Design panel."); }
                 Text {
                     text: "\u{00D7}";
@@ -137,7 +137,7 @@ export component DesignDock inherits Rectangle {
                 // The schedule-wide settings (material, gear, symmetry, details, printed
                 // proportions) -- also Design > Design settings... in the menu bar.
                 ToolButton {
-                    text: "Design settings";
+                    text: "Design Settings";
                     locked: !GuideModel.allows-design-settings();
                     highlighted: GuideModel.highlight-target == "design_settings";
                     hint: "Open the design's settings: material, index gear, symmetry, details and printed proportions.";

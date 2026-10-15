@@ -3,7 +3,7 @@
 
 use super::{
     DiagramFrame, DiagramStyle, PanelKind,
-    fill::draw_edge,
+    fill::{draw_edge, to_px},
     labels::{draw_text, text_size},
     layout::{PanelLayout, wheel_direction},
     render::WheelConfig,
@@ -65,8 +65,8 @@ pub fn draw_index_wheel(
         // Tag a small hit region at this tick's midpoint so hover/click can
         // resolve "which tooth" from a generous target, not the 1px stroke.
         let mid_r = inner_r.midpoint(outer_r);
-        let mid_x = su.mul_add(mid_r, layout.center_x).round() as i32;
-        let mid_y = sv.mul_add(-mid_r, layout.center_y).round() as i32;
+        let mid_x = to_px(su.mul_add(mid_r, layout.center_x).round());
+        let mid_y = to_px(sv.mul_add(-mid_r, layout.center_y).round());
         tag_tooth_hit(frame, mid_x, mid_y, tooth, 4);
 
         if is_major {
@@ -175,11 +175,12 @@ pub fn draw_selected_index_radials(
 ) {
     let mirrored = matches!(layout.kind, PanelKind::Pavilion);
     for &(facet_id, _start, _count) in edge_ranges {
-        let color = if style.selected_facet == Some(facet_id as u32) {
+        let facet_key = u32::try_from(facet_id).expect("a facet id fits in u32");
+        let color = if style.selected_facet == Some(facet_key) {
             style.selected_facet_color
         } else if style.selected.get(facet_id).copied().unwrap_or(false) {
             style.selected_color
-        } else if style.multi_selected.contains(&(facet_id as u32)) {
+        } else if style.multi_selected.contains(&facet_key) {
             style.multi_selected_color
         } else {
             continue;

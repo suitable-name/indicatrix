@@ -237,7 +237,7 @@ fn frosted_girdle_nee_on_and_off_converge_to_the_same_mean_on_a_uniform_hdr_map(
         for ix in 0..GRID {
             let ray = camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
             for s in 0..SAMPLES_PER_PIXEL {
-                let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
+                let pixel_id = u32::try_from(iy * GRID + ix).expect("a small grid");
                 let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0x6667_8899));
                 let hero_rand = (hash_u32(seed) as f32) / 4_294_967_295.0;
                 sum_on += trace_spectral_ray_inner(

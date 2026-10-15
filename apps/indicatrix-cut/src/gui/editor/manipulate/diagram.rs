@@ -260,6 +260,10 @@ mod tests {
     fn diagram_geometry(design: &Design) -> (FrameGeometry, FacetMap) {
         let solved = design.solve().expect("every tier is pinned");
         let planes = design.planes_from_solved(&solved);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "plane offsets are small distances; f32 is the mesh-cache precision"
+        )]
         let halfspaces: Vec<(Vec3, f32)> = planes
             .iter()
             .map(|&(normal, offset)| (normal.as_vec3(), offset as f32))
@@ -268,6 +272,10 @@ mod tests {
         let cached = cache
             .get_or_build(&halfspaces)
             .expect("the pinned round brilliant closes");
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the gear reference angle (radians) is stored as f32 in DiagramConfig"
+        )]
         let config = DiagramConfig {
             width: 700,
             height: 360,

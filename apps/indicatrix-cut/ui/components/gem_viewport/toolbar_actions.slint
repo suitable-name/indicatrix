@@ -9,8 +9,9 @@ import { EditorModel } from "../../models/editor.slint";
 import { GuideModel } from "../../models/guide.slint";
 import { PhysicscolorModel } from "../../models/physics_color.slint";
 import { StaleBadge } from "../stale_badge.slint";
-import { IconButton } from "../icon_button.slint";
-import { RenderColorControl } from "render_color_picker.slint";
+import { ParametersButtons } from "../parameters_panel/toolbar_buttons.slint";
+import { SaveNameRow } from "../settings_dialog/lighting_presets_section.slint";
+import { MaterialChip, PreviewBadge } from "../material_chip.slint";
 // A running catalogue-wide batch (tilt sweep or preview render) sets
 // `ctx.export_active`, which suspends the live tracer exactly like an explicit
 // pause -- read here to fold the same suspended-display treatment into the
@@ -86,12 +87,16 @@ component ToolbarButton inherits Rectangle {
         padding-right: 8px;
         spacing: 5px;
         alignment: center;
-        if root.has_icon: Image {
-            source: root.icon;
-            colorize: root.ink;
-            width: root.icon_size;
-            height: root.icon_size;
-            vertical-alignment: center;
+        // Centred by a layout of its own: a fixed-size Image in the row sits at the top of
+        // its cell (`vertical-alignment` only places the picture inside the Image).
+        if root.has_icon: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: root.ink;
+                width: root.icon_size;
+                height: root.icon_size;
+            }
         }
         if root.has_text: Text {
             text: root.text;
@@ -109,320 +114,25 @@ component ToolbarButton inherits Rectangle {
     }
 }
 
-// "Linked to design": the whole chip is the switch (a wide target), with the label beside the
-// track unless the window is narrow. While on, the Render Material dropdown follows the Edit
-// tab's own material instead of an independent choice -- see `viewport_material_linked`'s own
-// doc comment in `models/viewport.slint`. Tab reaches it, Space or Enter flips it, a screen
-// reader reads it as a checkbox.
-component LinkedToggle inherits Rectangle {
-    // Drops the label; the track stays.
-    in property <bool> compact: false;
-
-    function flip() {
-        ViewportModel.viewport_material_linked = !ViewportModel.viewport_material_linked;
-        ViewportModel.viewport_material_linked_changed(ViewportModel.viewport_material_linked);
-    }
-
-    width: root.compact ? 44px : link_txt.preferred-width + 44px;
-    height: 32px;
-    background: link_touch.has-hover ? Theme.bg-elevated : Theme.hint-surface;
-    border-radius: Theme.radius-sm;
-    border-width: link_focus.has-focus ? 2px : 1px;
-    border-color: link_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-medium;
-
-    accessible-role: AccessibleRole.checkbox;
-    accessible-label: "Linked to design";
-    accessible-description: "While on, the render material follows the design open in the Edit tab.";
-    accessible-checked: ViewportModel.viewport_material_linked;
-    accessible-action-default => { root.flip(); }
-
-    Tooltip { text: @markdown("Linked to design: while on, the material follows the design open in the Edit tab instead of an independent choice."); }
-
-    link_focus := FocusScope {
-        key-pressed(event) => {
-            if event.text == Key.Space || event.text == Key.Return {
-                root.flip();
-                return accept;
-            }
-            return reject;
-        }
-    }
-
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 6px;
-        Rectangle {
-            width: 28px;
-            height: 16px;
-            border-radius: 8px;
-            background: ViewportModel.viewport_material_linked ? Theme.accent-cyan : Theme.border-dialog;
-            Rectangle {
-                width: 12px;
-                height: 12px;
-                border-radius: 6px;
-                background: Theme.toggle-knob;
-                x: ViewportModel.viewport_material_linked ? parent.width - self.width - 2px : 2px;
-                y: 2px;
-                animate x { duration: 120ms; }
-            }
-        }
-        link_txt := Text {
-            visible: !root.compact;
-            text: "Linked to design";
-            font-size: 10px;
-            color: Theme.text-secondary;
-            vertical-alignment: center;
-        }
-    }
-
-    link_touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.flip(); }
-    }
-}
-
-// The Live Render viewport's Material/Lighting selectors and action-button row
-// (Edit Material, Tilt Curve, Reset Camera, Front/Top, Save View Preset,
-// Pause/Resume, GPU status, Settings, Export) -- split out of
-// `gem_viewport.slint` to keep that file under its line budget. Every
-// property here (`saving_view_preset`/`new_view_preset_name`/
-// `batch_suspends_tracer`) is local to this row alone -- nothing outside it
-// in `gem_viewport.slint` ever reads them -- so none of it needs to be
-// threaded through as a property.
-//
-// Simple mode hides the Tilt Curve button and Save View Preset (`GuideModel.shows_advanced()`).
-// A hidden control keeps its state; the settings dialog says when advanced settings are in use.
-export component GemViewportToolbarActions inherits HorizontalLayout {
+// The right-hand end of the Live Render toolbar: the inline "name it" row of the save button,
+// the stale / pause / GPU pills, the Parameters buttons and Export. A component of its own so
+// `GemViewportToolbarActions` can put it at the end of the one row, or on a second row when the
+// viewport is too narrow for one (`wrap`) -- a single row clipped Export and the Parameters
+// buttons away.
+component ToolbarTail inherits HorizontalLayout {
     spacing: 8px;
+    // From `GemViewportToolbarActions`: the save button's state and the one save path.
+    in property <bool> saving_view_preset: false;
+    in-out property <string> new_view_preset_name: "";
+    callback save_view_preset();
 
-    // Set by `gem_viewport.slint` from the viewport width: drops the color readout,
-    // the "Tilt Curve" and "Linked to design" labels (their icons/toggle stay), so the
-    // row fits a narrower window.
-    in property <bool> compact: false;
-
-    property <bool> saving_view_preset: false;
-    property <string> new_view_preset_name: "";
     property <bool> batch_suspends_tracer: BatchModel.tilt_batch_running || BatchModel.preview_batch_running;
     // The tracer is held still by something other than the user's own pause.
     property <bool> pause_displayed: ViewportModel.render_paused || ExportModel.is_exporting || root.batch_suspends_tracer;
 
-    function save_view_preset() {
-        if (root.new_view_preset_name != "") {
-            ViewportModel.save_view_preset(root.new_view_preset_name);
-            root.saving_view_preset = false;
-            root.new_view_preset_name = "";
-        }
-    }
-
-    // Render Material Dropdown -- labelled "Render Material", not a
-    // bare "Material", so it cannot be confused with
-    // `editor_view.slint`'s unrelated Yield Material/SG-override
-    // control. This one picks what's simulated for
-    // color/dispersion/birefringence in the render; it never
-    // touches the cut itself.
-    // A stretch item (96px up to its share of the free width) rather than a fixed
-    // 140px: the fluent ComboBox has its own 160px minimum, so it is zeroed and
-    // filled to the box instead.
-    Rectangle {
-        min-width: 96px;
-        preferred-width: 140px;
-        max-width: 160px;
-        horizontal-stretch: 1;
-        height: 32px;
-        background: Theme.hint-surface;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-medium;
-
-        Tooltip { text: @markdown("Render Material: the material the picture shows -- its colour, its fire (dispersion) and its double refraction (birefringence). It does not change the cut. See the glossary."); }
-
-        ComboBox {
-            width: 100%;
-            height: 100%;
-            model: ViewportModel.material_options;
-            current-index <=> ViewportModel.selected_material_index;
-            selected(val) => { ViewportModel.material_changed(val); }
-        }
-    }
-
-    // Quick color change: the open design's own color while the view shows the linked
-    // design, a view-only color otherwise -- no custom material needed. See
-    // `render_color_picker.slint`.
-    RenderColorControl {
-        compact: root.compact;
-    }
-
-    // "color data updated": the selected custom material's physics recipe was built with
-    // older catalogue data than this build has. It still renders from its stored bands --
-    // nothing is recolored silently; the Material Editor offers "Update to current data".
-    // Only in a build with the physics color editor (`physical-color`): without it there is
-    // nowhere to update the recipe, so the badge would only be a dead end.
-    if PhysicscolorModel.ui_enabled && ViewportModel.selected_material_color_outdated && !root.compact: Rectangle {
-        height: 32px;
-        background: Theme.surface-info;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.accent-cyan;
-        accessible-role: AccessibleRole.text;
-        accessible-label: "Color data updated. This material's physics color recipe uses older color data.";
-        Tooltip { text: @markdown("This material's physics color recipe uses older color data. It still renders from its stored color; open the Material Editor to update it."); }
-        badge_layout := HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
-            Text {
-                text: "Color data updated";
-                font-size: 11px;
-                color: Theme.text-primary;
-                vertical-alignment: center;
-            }
-        }
-        width: badge_layout.preferred-width;
-    }
-
-    // The design's body-color variant, beside the dropdown that names only the
-    // species: while linked, a yellow-sapphire design traces as `Sapphire (Yellow)`
-    // even though the dropdown itself says `Sapphire`.
-    if ViewportModel.viewport_material_linked && EditorModel.body_color_readout != "" && !root.compact: Rectangle {
-        height: 32px;
-        background: Theme.hint-surface;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-medium;
-        accessible-role: AccessibleRole.text;
-        accessible-label: "Body color: " + EditorModel.body_color_readout;
-        Tooltip { text: @markdown("Rendered in this design's own body color -- set with color in the Edit tab's Design settings."); }
-        color_readout_layout := HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
-            Text {
-                text: EditorModel.body_color_readout;
-                font-size: 11px;
-                color: Theme.text-primary;
-                vertical-alignment: center;
-            }
-        }
-        width: color_readout_layout.preferred-width;
-    }
-
-    // "Linked to design" -- see `viewport_material_linked`'s own doc
-    // comment above. Only shown on an `editor` build; a build with no
-    // Edit tab has nothing for this dropdown to link to.
-    if EditorModel.enabled: LinkedToggle {
-        compact: root.compact;
-    }
-
-    // Edit / Custom Material Button (pencil)
-    ToolbarButton {
-        icon: @image-url("../../icons/pencil.svg");
-        icon_size: 15px;
-        name: "Custom material";
-        hint: "Define a custom material: refractive index (R.I.), dispersion, double refraction (birefringence) and color. See the glossary.";
-        lit: ViewportModel.material_editor_open;
-        lit_fill: Theme.accent-purple;
-        lit_ink: Theme.text-on-primary;
-        checkable: true;
-        clicked => { ViewportModel.material_editor_open = !ViewportModel.material_editor_open; }
-    }
-
-    // Lighting Dropdown
-    Rectangle {
-        min-width: 110px;
-        preferred-width: 190px;
-        max-width: 220px;
-        horizontal-stretch: 1;
-        height: 32px;
-        background: Theme.hint-surface;
-        border-radius: Theme.radius-sm;
-        // The open tutorial step may outline this drop-down (a cyan, 2px border).
-        border-width: GuideModel.highlight_target == "lighting_combo" ? 2px : 1px;
-        border-color: GuideModel.highlight_target == "lighting_combo" ? Theme.accent-cyan : Theme.border-medium;
-
-        // The UV lamps are part of the `physical-color` build only (`PhysicscolorModel.ui_enabled`).
-        Tooltip { text: PhysicscolorModel.ui_enabled
-            ? @markdown("Lighting: the four studio rigs, or the lit models -- the grading tray (D65 hemisphere + head shadow), light tent with black cards, daylight sky with sun -- the contrast view (ASET-style: red 45-75 deg, green 0-45 deg, blue 75-90 deg overhead, black below the horizon; not scored by the metrics) -- or a 365 nm or 395 nm UV lamp (CPU only, lights fluorescent materials).")
-            : @markdown("Lighting: the four studio rigs, or the lit models -- the grading tray (D65 hemisphere + head shadow), light tent with black cards, daylight sky with sun, and the ASET-style contrast view (red 45-75 deg, green 0-45 deg, blue 75-90 deg overhead; not scored by the metrics)."); }
-
-        ComboBox {
-            width: 100%;
-            height: 100%;
-            model: ViewportModel.lighting_options;
-            current-index <=> ViewportModel.selected_lighting_index;
-            // Emits the INDEX (already synced into
-            // `selected_lighting_index` via the two-way binding above by
-            // the time `selected` fires), not the display string `val`.
-            selected(val) => { ViewportModel.lighting_changed(ViewportModel.selected_lighting_index); }
-        }
-    }
-
-    // Performance Curve Graph Trigger Button (bar chart, Tilt Curve). An advanced tool:
-    // hidden in Simple mode, and locked with the other advanced actions while a guide runs.
-    // Icon only (32px) when compact.
-    if GuideModel.shows_advanced(): ToolbarButton {
-        text: "Tilt Curve";
-        icon: @image-url("../../icons/bar-chart.svg");
-        icon_size: 13px;
-        show_text: !root.compact;
-        name: "Tilt Curve";
-        // Lives on `TiltModel` itself (`ui/models/tilt.slint`) so `SolidViewportView`'s own
-        // Tilt Curve pill can share the exact same open/close + stale-cache-check sequence
-        // instead of a second copy.
-        hint: GuideModel.allows_advanced()
-            ? "Open the tilt-performance chart: brilliance, windowing and extinction as the stone tilts. See the glossary."
-            : GuideModel.locked_hint;
-        enabled: GuideModel.allows_advanced();
-        lit: TiltModel.dialog_open;
-        checkable: true;
-        clicked => { TiltModel.toggle_dialog(); }
-    }
-
-    // Reset Camera Button
-    ToolbarButton {
-        icon: @image-url("../../icons/reset.svg");
-        icon_size: 16px;
-        name: "Reset camera";
-        hint: "Return the camera to its default orbit and distance.";
-        clicked => { ViewportModel.reset_camera(); }
-    }
-
-    // Front / Top view buttons -- canonical poses for the shared camera.
-    ToolbarButton {
-        text: "Front";
-        width: 52px;
-        hint: "Look at the stone from the front: girdle edge-on, index 0 towards you.";
-        clicked => { ViewportModel.set_view(0); }
-    }
-    ToolbarButton {
-        text: "Top";
-        width: 44px;
-        hint: "Look straight down onto the table.";
-        clicked => { ViewportModel.set_view(1); }
-    }
-
-    // "Save as preset" button -- captures the FULL current view (lighting
-    // AND camera pose) as a new named preset, unlike the settings dialog's
-    // own lighting-only save button. See `app.slint`'s `save_view_preset`
-    // doc comment, and `settings::model::LightingPreset`'s for why the
-    // camera is captured here specifically. Advanced: hidden in Simple mode.
-    if GuideModel.shows_advanced(): ToolbarButton {
-        icon: @image-url("../../icons/save.svg");
-        icon_size: 14px;
-        name: "Save view as preset";
-        hint: "Save the current lighting and camera pose as a named preset.";
-        lit: root.saving_view_preset;
-        checkable: true;
-        clicked => {
-            root.saving_view_preset = !root.saving_view_preset;
-            root.new_view_preset_name = "";
-        }
-    }
-
-    // Inline "name this view" popup for the button above -- same
-    // click-to-open, type-and-confirm idiom `SettingsDialog`'s own
-    // "add lighting preset" row uses, just living in the viewport toolbar
-    // instead of the settings dialog.
+    // Inline "name it" row for the button above: the Lighting tab's own `SaveNameRow`.
     if root.saving_view_preset && GuideModel.shows_advanced(): Rectangle {
-        width: 160px;
+        width: 230px;
         height: 32px;
         background: Theme.hint-surface;
         border-radius: Theme.radius-sm;
@@ -430,24 +140,15 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         border-color: Theme.accent-cyan;
 
         HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 4px;
-            spacing: 4px;
-
-            LineEdit {
-                text <=> root.new_view_preset_name;
-                placeholder-text: "Name this view...";
-                accepted => { root.save_view_preset(); }
-            }
-
-            VerticalLayout {
-                alignment: center;
-                IconButton {
-                    icon: @image-url("../../icons/check.svg");
-                    glyph: 11px;
-                    hint: "Save the view under this name";
-                    lit: true;
-                    clicked => { root.save_view_preset(); }
+            padding: 3px;
+            SaveNameRow {
+                name <=> root.new_view_preset_name;
+                placeholder: "Name this lighting...";
+                field_label: "Name for the Saved Lighting";
+                confirm_hint: "Save the lighting and the camera pose under this name";
+                accepted(name) => {
+                    root.new_view_preset_name = name;
+                    root.save_view_preset();
                 }
             }
         }
@@ -485,7 +186,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
     if ViewportModel.live_view_mode == 1: ToolbarButton {
         icon: ViewportModel.render_paused ? @image-url("../../icons/play.svg") : @image-url("../../icons/pause.svg");
         icon_size: 13px;
-        text: ViewportModel.render_paused ? "Paused" : (ExportModel.is_exporting ? "Exporting" : (root.batch_suspends_tracer ? "Paused (batch)" : "Live"));
+        text: ViewportModel.render_paused ? "Paused" : (ExportModel.is_exporting ? "Exporting" : (root.batch_suspends_tracer ? "Paused (Batch)" : "Live"));
         hint: root.pause_displayed && !ViewportModel.render_paused
             ? "The live render is held still while an export or a catalogue batch runs."
             : "Pause or resume the live render. While paused the picture stops improving, which frees the processor.";
@@ -516,7 +217,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         border-radius: Theme.radius-sm;
         background: Theme.accent-amber;
         accessible-role: AccessibleRole.text;
-        accessible-label: "Graphics status: " + ViewportModel.gpu_status_text;
+        accessible-label: "Graphics Status: " + ViewportModel.gpu_status_text;
         Tooltip { text: @markdown("The graphics card renderer is not running normally; the status says what the program is doing about it."); }
         gpu_status_layout := HorizontalLayout {
             padding-left: 10px;
@@ -532,19 +233,13 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         width: gpu_status_layout.preferred-width;
     }
 
-    // Settings Dialog Trigger Button (gear)
-    ToolbarButton {
-        icon: @image-url("../../icons/gear.svg");
-        icon_size: 15px;
-        name: "Rendering settings";
-        hint: "Rendering quality, resolution, lighting and scene settings.";
-        lit: SettingsModel.is_open;
-        checkable: true;
-        clicked => { SettingsModel.is_open = !SettingsModel.is_open; }
-    }
+    // The Parameters dock's tab buttons (Stone, Lighting & Environment, Render & Output): they
+    // replaced the single gear that opened the Rendering Settings card, and open the same dock
+    // from the Edit view's toolbar.
+    ParametersButtons { }
 
     // High-Resolution Export Trigger Button
-    ToolbarButton {
+    toolbar-button-is-exporting := ToolbarButton {
         icon: @image-url("../../icons/save.svg");
         icon_size: 13px;
         text: ExportModel.is_exporting ? "Exporting..." : "Export";
@@ -560,5 +255,234 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         lit_fill: Theme.accent-emerald;
         checkable: true;
         clicked => { ExportModel.is_open = !ExportModel.is_open; }
+    }
+}
+
+// The camera and lighting-save buttons of the Live Render toolbar: Reset Camera, Front, Top
+// and Save Lighting. A component of its own so the toolbar can put them at the end of the one
+// row or, when the viewport is narrow (`wrap`), on a row of their own.
+component PoseButtons inherits HorizontalLayout {
+    spacing: 8px;
+    in-out property <bool> saving_view_preset: false;
+    in-out property <string> new_view_preset_name: "";
+
+    // Reset Camera Button
+    ToolbarButton {
+        icon: @image-url("../../icons/reset.svg");
+        icon_size: 16px;
+        name: "Reset Camera";
+        hint: "Return the camera angle, distance and light to their defaults.";
+        clicked => { ViewportModel.reset_camera(); }
+    }
+
+    // Front / Top view buttons -- canonical poses for the shared camera.
+    ToolbarButton {
+        text: "Front";
+        width: 52px;
+        hint: "Look at the stone from the front: girdle edge-on, index 0 towards you.";
+        clicked => { ViewportModel.set_view(0); }
+    }
+    ToolbarButton {
+        text: "Top";
+        width: 44px;
+        hint: "Look straight down onto the table.";
+        clicked => { ViewportModel.set_view(1); }
+    }
+
+    // "Save as preset" button -- captures the FULL current view (lighting
+    // AND camera pose) as a new named preset, unlike the Parameters panel's
+    // own lighting-only save button. See `app.slint`'s `save_view_preset`
+    // doc comment, and `settings::model::LightingPreset`'s for why the
+    // camera is captured here specifically. Advanced: hidden in Simple mode.
+    if GuideModel.shows_advanced(): ToolbarButton {
+        icon: @image-url("../../icons/save.svg");
+        icon_size: 14px;
+        name: "Save Lighting";
+        hint: "Save lighting...: keep the current lighting and camera pose under a name. It joins the list under Saved lighting in the Lighting tab.";
+        lit: root.saving_view_preset;
+        checkable: true;
+        clicked => {
+            root.saving_view_preset = !root.saving_view_preset;
+            // Same suggested name as the Lighting tab, already selected.
+            root.new_view_preset_name = root.saving_view_preset ? ViewportModel.suggest_lighting_name() : "";
+        }
+    }
+}
+
+// The Live Render viewport's Material/Lighting selectors and action-button row
+// (Edit Material, Tilt Curve, Reset Camera, Front/Top, Save View Preset,
+// Pause/Resume, GPU status, Settings, Export) -- split out of
+// `gem_viewport.slint` to keep that file under its line budget. The save button's state
+// (`saving_view_preset`/`new_view_preset_name`) is local to this row alone.
+//
+// One row while the viewport is wide enough (`wrap` off, from 860 px of viewport width, or 1090 px
+// while the Previewing badge shows, see `gem_viewport.slint`); narrower, the right-hand end (pause,
+// Parameters buttons, Export) and the badge drop to a second row so nothing is ever clipped.
+//
+// Simple mode hides the Tilt Curve button and Save View Preset (`GuideModel.shows_advanced()`).
+// A hidden control keeps its state; the Parameters panel says when advanced settings are in use.
+export component GemViewportToolbarActions inherits VerticalLayout {
+    spacing: 8px;
+
+    // Set by `gem_viewport.slint` from the viewport width: drops the color readout,
+    // the "Tilt Curve" label (its icon stays) and shortens the chip and the Previewing
+    // badge, so the row fits a narrower window.
+    in property <bool> compact: false;
+    // Set by `gem_viewport.slint` from the viewport width: the right-hand end goes on its own row.
+    in property <bool> wrap: false;
+
+    property <bool> saving_view_preset: false;
+    property <string> new_view_preset_name: "";
+
+    function save_view_preset() {
+        if (root.new_view_preset_name != "") {
+            ViewportModel.save_view_preset(root.new_view_preset_name);
+            root.saving_view_preset = false;
+            root.new_view_preset_name = "";
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+
+    // The stone's material and colour, read-only (the Stone tab edits them: press the chip).
+    // Another material is only ever tried through the Stone tab's "Preview as..."; the
+    // Previewing badge below ends it with "Back to design".
+    material-chip-l300 := MaterialChip {
+        compact: root.compact;
+    }
+
+    // Shown while the picture uses a preview material instead of the design's own.
+    // While the tail wraps to its own row the badge goes there with it (a 700px viewport's
+    // first row could not hold it), see the bottom of this component. There the name cap follows
+    // the row: 280px (the name reads in full up to ~218px, "Previewing " is ~62px of it) normally,
+    // 64px while the save-name row is open ("Previewing..." only, row ~693px at 700px).
+    if ViewportModel.previewing && !root.wrap: PreviewBadge {
+        compact: root.compact;
+    }
+
+    // "color data updated": the selected custom material's physics recipe was built with
+    // older catalogue data than this build has. It still renders from its stored bands --
+    // nothing is recolored silently; the Material Editor offers "Update to current data".
+    // Only in a build with the physics color editor (`physical-color`): without it there is
+    // nowhere to update the recipe, so the badge would only be a dead end.
+    if PhysicscolorModel.ui_enabled && ViewportModel.selected_material_color_outdated && !root.compact: Rectangle {
+        height: 32px;
+        background: Theme.surface-info;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-cyan;
+        accessible-role: AccessibleRole.text;
+        accessible-label: "Color data updated. This material's physics color recipe uses older color data.";
+        Tooltip { text: @markdown("This material's physics color recipe uses older color data. It still renders from its stored color; open the Material Editor to update it."); }
+        badge_layout := HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            Text {
+                text: "Color Data Updated";
+                font-size: 11px;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+        }
+        width: badge_layout.preferred-width;
+    }
+
+    // Edit / Custom Material Button (pencil)
+    toolbar-button-l341 := ToolbarButton {
+        icon: @image-url("../../icons/pencil.svg");
+        icon_size: 15px;
+        name: "Custom Material";
+        hint: "Define a custom material: refractive index (R.I.), dispersion, double refraction (birefringence) and color. See the glossary.";
+        lit: ViewportModel.material_editor_open;
+        lit_fill: Theme.accent-purple;
+        lit_ink: Theme.text-on-primary;
+        checkable: true;
+        clicked => { ViewportModel.material_editor_open = !ViewportModel.material_editor_open; }
+    }
+
+    // Lighting Dropdown
+    Rectangle {
+        min-width: 110px;
+        preferred-width: 190px;
+        max-width: 220px;
+        horizontal-stretch: 1;
+        height: 32px;
+        background: Theme.hint-surface;
+        border-radius: Theme.radius-sm;
+        // The open tutorial step may outline this drop-down (a cyan, 2px border).
+        border-width: GuideModel.highlight_target == "lighting_combo" ? 2px : 1px;
+        border-color: GuideModel.highlight_target == "lighting_combo" ? Theme.accent-cyan : Theme.border-medium;
+
+        // The UV lamps are part of the `physical-color` build only (`PhysicscolorModel.ui_enabled`).
+        Tooltip { text: PhysicscolorModel.ui_enabled
+            ? @markdown("Lighting: the four studio rigs, or the lit models -- the grading tray (D65 hemisphere + head shadow), light tent with black cards, daylight sky with sun -- the contrast view (ASET-style: red 45-75 deg, green 0-45 deg, blue 75-90 deg overhead, black below the horizon; not scored by the metrics) -- or a 365 nm or 395 nm UV lamp (CPU only, lights fluorescent materials).")
+            : @markdown("Lighting: the four studio rigs, or the lit models -- the grading tray (D65 hemisphere + head shadow), light tent with black cards, daylight sky with sun, and the ASET-style contrast view (red 45-75 deg, green 0-45 deg, blue 75-90 deg overhead; not scored by the metrics)."); }
+
+        combo-box-l371 := ComboBox {
+            width: 100%;
+            height: 100%;
+            accessible-label: "Lighting";
+            accessible-description: "How the stone is lit: a studio rig, a lit model, the contrast view or a UV lamp.";
+            model: ViewportModel.lighting_options;
+            current-index <=> ViewportModel.selected_lighting_index;
+            // Emits the INDEX (already synced into
+            // `selected_lighting_index` via the two-way binding above by
+            // the time `selected` fires), not the display string `val`.
+            selected(val) => { ViewportModel.lighting_changed(ViewportModel.selected_lighting_index); }
+        }
+    }
+
+    // Performance Curve Graph Trigger Button (bar chart, Tilt Curve). An advanced tool:
+    // hidden in Simple mode, and locked with the other advanced actions while a guide runs.
+    // Icon only (32px) when compact.
+    if GuideModel.shows_advanced(): ToolbarButton {
+        text: "Tilt Curve";
+        icon: @image-url("../../icons/bar-chart.svg");
+        icon_size: 13px;
+        show_text: !root.compact;
+        name: "Tilt Curve";
+        // Lives on `TiltModel` itself (`ui/models/tilt.slint`) so `SolidViewportView`'s own
+        // Tilt Curve pill can share the exact same open/close + stale-cache-check sequence
+        // instead of a second copy.
+        hint: GuideModel.allows_advanced()
+            ? "Open the tilt-performance chart: brilliance, windowing and extinction as the stone tilts. See the glossary."
+            : GuideModel.locked_hint;
+        enabled: GuideModel.allows_advanced();
+        lit: TiltModel.dialog_open;
+        checkable: true;
+        clicked => { TiltModel.toggle_dialog(); }
+    }
+
+    if !root.wrap: PoseButtons {
+        saving_view_preset <=> root.saving_view_preset;
+        new_view_preset_name <=> root.new_view_preset_name;
+    }
+
+        if !root.wrap: ToolbarTail {
+            saving_view_preset: root.saving_view_preset;
+            new_view_preset_name <=> root.new_view_preset_name;
+            save_view_preset => { root.save_view_preset(); }
+        }
+    }
+
+    // Wrapped: the camera buttons take a row of their own (the first row keeps the material
+    // chip, the lighting list and Tilt Curve), then the badge and the tail.
+    if root.wrap: PoseButtons {
+        saving_view_preset <=> root.saving_view_preset;
+        new_view_preset_name <=> root.new_view_preset_name;
+    }
+
+    if root.wrap: HorizontalLayout {
+        spacing: 8px;
+        if ViewportModel.previewing: PreviewBadge {
+            compact: true;
+            name_max_width: root.saving_view_preset ? 64px : 280px;
+        }
+        ToolbarTail {
+            saving_view_preset: root.saving_view_preset;
+            new_view_preset_name <=> root.new_view_preset_name;
+            save_view_preset => { root.save_view_preset(); }
+        }
     }
 }

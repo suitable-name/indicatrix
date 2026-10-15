@@ -11,6 +11,7 @@ pub mod clipboard;
 pub mod detail;
 pub mod diagram_list;
 pub mod local;
+mod read_access;
 pub mod remote;
 pub mod search;
 pub mod tutorial_state;

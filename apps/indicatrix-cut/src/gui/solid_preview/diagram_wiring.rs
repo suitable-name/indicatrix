@@ -115,8 +115,8 @@ pub fn setup_diagram_hover_and_click_callbacks(
                     return;
                 };
                 let scale = ui.window().scale_factor();
-                let px = (x * scale).max(0.0) as u32;
-                let py = (y * scale).max(0.0) as u32;
+                let px = pixel_coordinate(x * scale);
+                let py = pixel_coordinate(y * scale);
                 let Some(facet_id) = pick
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -210,8 +210,8 @@ pub fn setup_diagram_double_click_callback(ui: &MainWindow, panel_pick: &Diagram
                 return;
             };
             let scale = ui.window().scale_factor();
-            let px = (x * scale).max(0.0) as u32;
-            let py = (y * scale).max(0.0) as u32;
+            let px = pixel_coordinate(x * scale);
+            let py = pixel_coordinate(y * scale);
             let clicked = panel_pick
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -222,6 +222,18 @@ pub fn setup_diagram_double_click_callback(ui: &MainWindow, panel_pick: &Diagram
             let next = toggle_enlarged_panel(model.get_diagram_enlarged_panel(), clicked);
             model.set_diagram_enlarged_panel(next);
         });
+}
+
+/// A pixel position as an unsigned pixel index: a negative or NaN position saturates to
+/// `0`, which is what the pick-buffer lookups rely on (they bounds-check against the
+/// frame's size).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "saturating float-to-int cast is the intent: negative or NaN maps to 0, the pick buffer bounds-checks"
+)]
+const fn pixel_coordinate(position: f32) -> u32 {
+    position as u32
 }
 
 /// The Diagram view's shared pick-buffer/hover-text/facet-tier handles --
@@ -251,8 +263,8 @@ fn handle_diagram_facet_click(
         hover_text,
     } = buffers;
     let scale = ui.window().scale_factor();
-    let px = (x * scale).max(0.0) as u32;
-    let py = (y * scale).max(0.0) as u32;
+    let px = pixel_coordinate(x * scale);
+    let py = pixel_coordinate(y * scale);
     let Some(facet_id) = pick
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -268,7 +280,7 @@ fn handle_diagram_facet_click(
         // tier_actions`/`EditorState`.
         let tooth = tooth_at(tooth_pick, px, py);
         if let Some(tooth) = tooth {
-            let tooth = tooth as i32;
+            let tooth = tooth.cast_signed();
             ui.global::<SolidPreviewModel>()
                 .set_diagram_clicked_tooth(tooth);
             // Also invoked directly, not left to `editor_tier_table.slint`'s
@@ -332,7 +344,7 @@ fn handle_diagram_facet_click(
     select_clicked_facet(preview_state, facet_id);
     if let Some(tier_row) = tier_row {
         ui.global::<EditorModel>()
-            .set_selected_tier_index(tier_row as i32);
+            .set_selected_tier_index(i32::try_from(tier_row).expect("tier row index fits in i32"));
         // A tutorial step may wait for a facet of a tier to be picked.
         raise(ui, events::FACET_PICKED);
     }

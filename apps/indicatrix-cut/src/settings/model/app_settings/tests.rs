@@ -3,64 +3,60 @@ use super::*;
 #[test]
 fn record_recent_native_file_inserts_at_the_front() {
     let mut settings = AppSettings::default();
-    settings.record_recent_native_file("a.indicatrix.toml".to_string());
-    settings.record_recent_native_file("b.indicatrix.toml".to_string());
+    settings.record_recent_native_file("a.isdd".to_string());
+    settings.record_recent_native_file("b.isdd".to_string());
     assert_eq!(
         settings.recent_native_files,
-        vec![
-            "b.indicatrix.toml".to_string(),
-            "a.indicatrix.toml".to_string()
-        ]
+        vec!["b.isdd".to_string(), "a.isdd".to_string()]
     );
 }
 
 #[test]
 fn record_recent_native_file_moves_an_existing_entry_to_the_front_without_duplicating() {
     let mut settings = AppSettings::default();
-    settings.record_recent_native_file("a.indicatrix.toml".to_string());
-    settings.record_recent_native_file("b.indicatrix.toml".to_string());
-    settings.record_recent_native_file("a.indicatrix.toml".to_string());
+    settings.record_recent_native_file("a.isdd".to_string());
+    settings.record_recent_native_file("b.isdd".to_string());
+    settings.record_recent_native_file("a.isdd".to_string());
     assert_eq!(
         settings.recent_native_files,
-        vec![
-            "a.indicatrix.toml".to_string(),
-            "b.indicatrix.toml".to_string()
-        ]
+        vec!["a.isdd".to_string(), "b.isdd".to_string()]
     );
 }
 
 #[test]
-fn recording_a_design_file_replaces_the_older_sidecar_entry_of_the_same_design() {
+fn a_legacy_indicatrix_entry_and_its_isdd_successor_are_separate_entries() {
     let mut settings = AppSettings::default();
-    settings.record_recent_native_file("d/round.indicatrix.toml".to_string());
-    settings.record_recent_native_file("d/other.gemcut.toml".to_string());
     settings.record_recent_native_file("d/round.indicatrix".to_string());
+    settings.record_recent_native_file("d/round.isdd".to_string());
     assert_eq!(
         settings.recent_native_files,
-        vec![
-            "d/round.indicatrix".to_string(),
-            "d/other.gemcut.toml".to_string()
-        ],
-        "both kinds are accepted; the older entry of the saved design is gone"
+        vec!["d/round.isdd".to_string(), "d/round.indicatrix".to_string()]
     );
-    // Opening an older sidecar again afterwards is still recorded.
-    settings.record_recent_native_file("d/legacy.indicatrix.toml".to_string());
-    assert_eq!(settings.recent_native_files[0], "d/legacy.indicatrix.toml");
-    assert_eq!(settings.recent_native_files.len(), 3);
+}
+
+#[test]
+fn removed_sidecar_entries_are_pruned_when_the_settings_file_is_read() {
+    let text = "[settings]\nrecent_native_files = [\"d/a.indicatrix.toml\", \"d/b.isdd\", \
+                \"d/c.gemcut.toml\", \"d/d.indicatrix\"]\n";
+    let parsed: crate::settings::model::SettingsFile = toml::from_str(text).expect("deserialize");
+    assert_eq!(
+        parsed.settings.recent_native_files,
+        vec!["d/b.isdd".to_string(), "d/d.indicatrix".to_string()]
+    );
 }
 
 #[test]
 fn record_recent_native_file_caps_at_max_recent_native_files() {
     let mut settings = AppSettings::default();
     for i in 0..(MAX_RECENT_NATIVE_FILES + 3) {
-        settings.record_recent_native_file(format!("design-{i}.indicatrix.toml"));
+        settings.record_recent_native_file(format!("design-{i}.isdd"));
     }
     assert_eq!(settings.recent_native_files.len(), MAX_RECENT_NATIVE_FILES);
     // Most recent first: the last one recorded is still at the front, and the
     // oldest entries fell off the back rather than the front.
     assert_eq!(
         settings.recent_native_files[0],
-        format!("design-{}.indicatrix.toml", MAX_RECENT_NATIVE_FILES + 2)
+        format!("design-{}.isdd", MAX_RECENT_NATIVE_FILES + 2)
     );
 }
 
@@ -206,4 +202,25 @@ fn a_hand_edited_render_colour_is_limited_to_the_supported_range() {
         loaded.render_body_color_override,
         Some([MAX_RENDER_BODY_COLOR_CHANNEL, 0.0, 2.0])
     );
+}
+
+#[test]
+fn a_settings_file_without_the_update_table_is_not_asked_yet() {
+    let parsed: crate::settings::model::SettingsFile =
+        toml::from_str("[settings]\nexposure = 1.1\n").expect("deserialize");
+    assert!(parsed.settings.update_check.needs_consent());
+    assert_eq!(parsed.settings.update_check.last_check_unix, 0);
+}
+
+#[test]
+fn the_update_check_record_round_trips_through_toml() {
+    let mut file = crate::settings::model::SettingsFile::default();
+    file.settings.update_check = indicatrix_update::UpdatePreferences {
+        enabled: Some(true),
+        last_check_unix: 1_760_000_000,
+        skipped_version: Some("0.7.3".to_owned()),
+    };
+    let text = toml::to_string_pretty(&file).expect("serialize");
+    let parsed: crate::settings::model::SettingsFile = toml::from_str(&text).expect("deserialize");
+    assert_eq!(parsed.settings.update_check, file.settings.update_check);
 }

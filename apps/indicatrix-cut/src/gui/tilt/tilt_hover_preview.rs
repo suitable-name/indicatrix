@@ -95,6 +95,10 @@ const HOVER_DEBOUNCE: Duration = Duration::from_millis(90);
 /// call site, for the hover tooltip's coarser (mouse-pixel-snapped) needs.
 ///
 /// [`evaluate_full_axis_profile_at_azimuth`]: indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the camera/GPU precision; angles are small radians"
+)]
 pub(in crate::gui) fn camera_pose_for_axis_tilt(axis_index: usize, tilt_deg: f64) -> (f32, f32) {
     let base_azimuth_deg = f64::from(PROFILE_AZIMUTHS_DEG.get(axis_index).copied().unwrap_or(0.0));
     let azimuth_deg = if tilt_deg < 0.0 {
@@ -213,13 +217,13 @@ fn render_hover_preview(scene: &HoverPreviewScene<'_>) -> SharedPixelBuffer<Rgba
 
     let mut accum = vec![Vec3::ZERO; (width * height) as usize];
     for y in 0..height {
-        for (x, pixel) in accum
-            .iter_mut()
-            .skip((y * width) as usize)
-            .take(width as usize)
-            .enumerate()
-        {
-            let global_pixel_idx = y * width + x as u32;
+        for (x, pixel) in (0..width).zip(
+            accum
+                .iter_mut()
+                .skip((y * width) as usize)
+                .take(width as usize),
+        ) {
+            let global_pixel_idx = y * width + x;
             let rot = pixel_rotations(global_pixel_idx);
             let mut sample_sum = Vec3::ZERO;
             for sample_num in 0..PREVIEW_SPP {
@@ -294,7 +298,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
             let generation = generation.clone();
             let render_ctx = render_ctx.clone();
             let ui_weak_bg = ui.as_weak();
-            let axis_index = axis_index as usize;
+            let axis_index = axis_index.cast_unsigned() as usize;
             // The preview belongs to the tilt curves, which describe the FINISHED gem
             // whatever the Cut slider says (`gui::editor::finished_stone`). The job is
             // made here, on the UI thread, because it reads the editor's state (a design

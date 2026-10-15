@@ -81,7 +81,7 @@ export component TierFormTab inherits VerticalLayout {
         VerticalLayout {
             padding: 6px;
             InfoLine {
-                text: "This design has no anchor: somewhere in each block one tier must state an exact depth, or the solver has a shape but no size. Use the Girdle facet preset below, or set a tier's Meets to \"Exact scale value\".";
+                text: "This design has no anchor: somewhere in each block one tier must state an exact depth, or the solver has a shape but no size. Use the Girdle Facet Preset below, or set a tier's Meets to \"Exact Scale Value\".";
             }
         }
     }
@@ -166,7 +166,7 @@ export component TierFormTab inherits VerticalLayout {
     }
     // A girdle facet is a 90 degree tier pinned at the model's half-width of 1.
     Button {
-        text: "Girdle facet preset (90\u{b0}, scale = 1)";
+        text: "Girdle Facet Preset (90\u{b0}, Scale = 1)";
         enabled: root.unlocked;
         clicked => {
             InspectorModel.tier-angle = "90";
@@ -181,18 +181,18 @@ export component TierFormTab inherits VerticalLayout {
     FieldLabel { text: "Meets"; }
     ComboBox {
         model: [
-            "Unspecified vertex",
-            "Named facet(s)",
-            "Exact scale value",
-            "Cut to depth (mm)",
-            "Girdle thickness (mm)",
-            "Table width (mm)",
+            "Unspecified Vertex",
+            "Named Facet(s)",
+            "Exact Scale Value",
+            "Cut to Depth (mm)",
+            "Girdle Thickness (mm)",
+            "Table Width (mm)",
         ];
         enabled: root.unlocked;
         current-index <=> InspectorModel.tier-constraint-kind;
         selected => { root.clear-field-error("constraint"); }
     }
-    if InspectorModel.tier-constraint-kind == 1: FieldLabel { text: "Facet names (comma-separated)"; }
+    if InspectorModel.tier-constraint-kind == 1: FieldLabel { text: "Facet Names (comma-separated)"; }
     if InspectorModel.tier-constraint-kind == 2: InfoLine {
         text: "Scale value: a plane offset along this facet's normal, in model units (girdle half-width = 1) -- not a caliper dimension.";
     }
@@ -371,7 +371,7 @@ export component TierFormTab inherits VerticalLayout {
             Rectangle { horizontal-stretch: 1; }
         }
 
-        FieldLabel { text: "Cheater offset (deg) -- blank clears it"; }
+        FieldLabel { text: "Cheater Offset (deg) -- blank clears it"; }
         HorizontalLayout {
             spacing: 4px;
             LineEdit {
@@ -390,7 +390,7 @@ export component TierFormTab inherits VerticalLayout {
             Rectangle { horizontal-stretch: 1; }
         }
 
-        FieldLabel { text: "Note for this tier -- blank clears it"; }
+        FieldLabel { text: "Note for This Tier -- blank clears it"; }
         HorizontalLayout {
             spacing: 4px;
             LineEdit {
@@ -440,7 +440,7 @@ export component TierFormTab inherits VerticalLayout {
             wrap: word-wrap;
         }
         if InspectorModel.solved.margin-text != "": Text {
-            text: "Margin over critical angle: " + InspectorModel.solved.margin-text;
+            text: "Margin over Critical Angle: " + InspectorModel.solved.margin-text;
             font-size: 10px;
             font-weight: InspectorModel.solved.risk-level >= 1 ? 700 : 400;
             color: InspectorModel.solved.risk-level == 2 ? Theme.danger : (InspectorModel.solved.risk-level == 1 ? Theme.accent-amber : Theme.accent-emerald);

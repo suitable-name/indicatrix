@@ -75,7 +75,7 @@ export component CompareWindow inherits Window {
                     if CompareModel.reference_available: HorizontalLayout {
                         spacing: 6px;
                         Text {
-                            text: "Compare against:";
+                            text: "Compare Against:";
                             font-size: 12px;
                             color: Theme.text-secondary;
                             vertical-alignment: center;
@@ -84,7 +84,7 @@ export component CompareWindow inherits Window {
                             width: 230px;
                             model: CompareModel.reference_options;
                             current-index <=> CompareModel.reference_index;
-                            accessible-label: "Compare against";
+                            accessible-label: "Compare Against";
                             selected => { CompareModel.reference_changed(self.current-index); }
                         }
                     }
@@ -92,6 +92,9 @@ export component CompareWindow inherits Window {
                     Text {
                         horizontal-stretch: 1;
                         text: "After: " + CompareModel.after_label;
+                        // A floor, so a long "Before" name cannot squeeze this one away; a long
+                        // name here still elides past 240 px.
+                        min-width: min(self.preferred-width, 240px);
                         font-size: 13px;
                         font-weight: 700;
                         color: Theme.accent-cyan;
@@ -142,7 +145,7 @@ export component CompareWindow inherits Window {
 
                     if CompareModel.show_keep_discard: ActionButton {
                         width: 120px;
-                        text: "Keep after";
+                        text: "Keep After";
                         hint: CompareModel.can_keep ? "Apply the changed design exactly as the Apply button does, then close." : "Not available: the changed design does not solve, so there is nothing to keep.";
                         fill: Theme.accent-cyan;
                         hover_fill: Theme.accent-cyan-hover;

@@ -1,0 +1,93 @@
+// The open document as the UI sees it: its title, whether it has unsaved changes, the
+// file actions, and the data and form state of the New Design page.
+//
+// Direction rule: Rust -> Slint is `in` properties (`in-out` where the UI also writes
+// them, such as the form), Slint -> Rust is callbacks. The lead adds `DocumentModel` to
+// `app.slint`'s `export { ... }` block so Rust can reach it.
+//
+// This file must not import `theme.slint` or `models.slint` (they may import it).
+
+// One template card of the New Design page (the Empty card has its own tile).
+export struct TemplateCardData {
+    // The session template index (`EditorSession::from_template`): 1..=N.
+    index: int,
+    name: string,
+    // The one-line shape and fold description under the name.
+    description: string,
+    // The full sentence about the design, for the screen reader.
+    detail: string,
+    // Facets of the finished stone.
+    facets: int,
+}
+
+export global DocumentModel {
+    // The design's title line, else its file name, else "Untitled Design".
+    in property <string> title: "Untitled Design";
+    // The file name the design was opened from or saved to, "" for a design never saved.
+    in property <string> file-name: "";
+    // True while the design has changes that are not saved.
+    in property <bool> dirty: false;
+    // False while the session has no tiers and no file was opened or design created
+    // (the Design page then offers "Start a Design").
+    in property <bool> has-design: false;
+    // True while the full-screen New Design page is shown.
+    in-out property <bool> gallery-open: false;
+
+    // File actions. `new-design` opens the gallery; the others act at once (Rust asks
+    // about unsaved changes first where a design would be replaced).
+    callback new-design();
+    callback open();
+    callback save();
+    callback save-as();
+    callback share();
+    callback export-asc();
+    callback share-asc();
+    // Saves into the library (a new entry, or the entry the design came from).
+    callback save-to-library();
+
+    // True while the design is the working copy of a library entry (Save then writes the
+    // entry instead of asking for a file).
+    in property <bool> in-library: false;
+
+    // The recent designs, newest first (parallel lists, equal length): the title and one
+    // line saying where it is. Tapping row `i` fires `open-recent(i)`.
+    in property <[string]> recent-titles;
+    in property <[string]> recent-details;
+    callback open-recent(int);
+
+    // New Design page.
+    in property <[TemplateCardData]> cards;
+    // Built-in material names, "(none)" first; `form-material` indexes it.
+    in property <[string]> material-options;
+
+    // The Empty form. Rust reads these when `create-empty` fires.
+    in-out property <bool> form-open: false;
+    // 0 Round, 1 Oval, 2 Square, 3 Rectangle (`PreformShapeChoice::index`).
+    in-out property <int> form-shape: 0;
+    // Length over width, used by the Oval and Rectangle shapes.
+    in-out property <string> form-ratio: "1.35";
+    // Index gear teeth (96, 80, 72 or 64 on the chips).
+    in-out property <int> form-gear: 96;
+    // Rotational symmetry (1, 2, 4 or 8 on the chips); it must divide the gear.
+    in-out property <int> form-symmetry: 8;
+    in-out property <bool> form-mirror: true;
+    // Index into `material-options`.
+    in-out property <int> form-material: 0;
+    // The finished stone's width in mm, "" when unknown.
+    in-out property <string> form-width: "";
+
+    // A template card was tapped (the session template index).
+    callback create-template(int);
+    // "Create" on the Empty form.
+    callback create-empty();
+
+    // Closes the New Design page. Returns false when it was not open, so `Shell.handle-back`
+    // can go on to its next step.
+    public function handle-back() -> bool {
+        if (gallery-open) {
+            gallery-open = false;
+            return true;
+        }
+        return false;
+    }
+}

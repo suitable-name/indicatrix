@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "apps/indicatrix-cli",
     "apps/indicatrix-cut",
+    "apps/indicatrix-mobile-android",
     "apps/indicatrix-web",
     "apps/indicatrix-web-compute",
     "apps/indicatrix-worker",
@@ -11,9 +12,11 @@ members = [
     "crates/indicatrix-dispatch",
     "crates/indicatrix-editor",
     "crates/indicatrix-formats",
+    "crates/indicatrix-mobile-core",
     "crates/indicatrix-net",
     "crates/indicatrix-render-jobs",
     "crates/indicatrix-solid",
+    "crates/indicatrix-update",
     "crates/indicatrix-vault",
     "crates/indicatrix-web-core",
 ]
@@ -24,7 +27,7 @@ members = [
 # cutting instructions, undo/redo); `indicatrix-solid` is the pure-CPU solid
 # rasterizer and 2D faceting diagram, shared by the desktop and the wasm web app;
 # `indicatrix-editor` is the GUI-free editor session, forms and view models both
-# editors share;
+# editors share; `indicatrix-update` is the apps' new-version check against the GitHub releases;
 # `indicatrix-dispatch` is the coordinator's job-execution
 # core (lane pool, sample cursor, rate models, deterministic merge); `apps/indicatrix-cut`
 # is the desktop faceting-design editor and `apps/indicatrix-worker` the headless
@@ -32,10 +35,12 @@ members = [
 # `indicatrix-net`'s wire protocol. `apps/indicatrix-web` is the browser app;
 # `apps/indicatrix-web-core` is its DOM-free compute side (Worker protocol, scene,
 # CPU chunk tracing, solve, host-side Worker pool) and `apps/indicatrix-web-compute`
-# its Web Worker entry point.
+# its Web Worker entry point. `apps/indicatrix-mobile-android` is the Android phone and
+# tablet app (touch-first Slint UI, JNI platform services, a desktop preview binary) over
+# `crates/indicatrix-mobile-core`, its UI-free core (app state, compute threads, platform trait).
 
 [workspace.package]
-version = "0.7.2"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -46,6 +51,9 @@ publish = true
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+# Benchmark harness for the `benches/` directories (`harness = false` targets); lighter than
+# criterion (no plotting stack). Dev-dependency only.
+divan = "0.1.21"
 bytemuck = { version = "1.25", features = ["derive"] }
 # Pinned exactly: crates/indicatrix's SIMD twins (simd/triple_solve.rs, used by
 # geometry/meet_solver/candidates.rs) follow glam 0.34.1's scalar DMat3 sequence
@@ -91,11 +99,16 @@ rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
 # unlike `aws-lc-rs`). `tls12` is deliberately left out of rustls's feature list: this
 # workspace has no reason to ever negotiate down from TLS 1.3, so the TLS 1.2 code path
 # is excluded at compile time rather than merely unconfigured at runtime.
-rustls = { version = "0.23.45", default-features = false, features = ["std", "ring", "logging"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring", "logging"] }
 rustls-pemfile = "2.2"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-sha2 = "0.11.0"
+serde_json = "1.0.154"
+# Version comparison of the new-version check (`indicatrix-update`).
+semver = "1.0.28"
+# The new-version check's one HTTPS GET. `rustls` = rustls on `ring` (the provider pinned
+# above) with the bundled webpki roots: no system TLS library, no cmake/NASM.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+sha2 = "0.11.1"
 # `SockRef::set_tcp_keepalive`/`TcpStream::set_nodelay` tuning for `apps/indicatrix-worker`'s
 # accepted connections (see that crate's `serve` module) -- `std::net::TcpStream` has no
 # keepalive API of its own, and `socket2::SockRef::from` borrows an existing standard-library
@@ -109,6 +122,9 @@ socket2 = { version = "0.6.5", features = ["all"] }
 # `apps/indicatrix-web` names the trimmed wasm set.
 slint = { version = "1.18.1", default-features = false }
 slint-build = "1.18.1"
+# The UI harness, crates.io, own repository github.com/suitable-name/slint-harness
+slint-harness = "=0.18.5"
+slint-harness-hooks = "0.1"
 # `rcgen::CertificateParams::not_before`/`not_after` are `time::OffsetDateTime` --
 # needed directly (not re-exported by `rcgen`) to set certificate validity windows,
 # including the clock-skew backdating in `pki::not_before_with_skew_slack`.
@@ -116,7 +132,7 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 # The native design-file format in `indicatrix_cut_core::native` (TOML on-disk encoding) and
 # `apps/indicatrix-cut`'s settings persistence -- see each crate's own comment on its
 # `toml` dependency for why TOML was chosen there.
-toml = "1.1.6"
+toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # `default-features = false` lives here for the same reason `image`'s does above --
@@ -127,34 +143,37 @@ wgpu = { version = "30.0.1", default-features = false }
 # `build.rs`. Build-dependency only; declared unconditionally (the build script
 # gates on the TARGET OS at run time, so Windows binaries cross-built from Linux
 # get their icon too).
-winresource = "0.1.31"
+winresource = "0.1.34"
+# The mobile app's Android-only glue (`apps/indicatrix-mobile-android/src/platform_android`):
+# JNI calls into the Kotlin activity, logcat output and panics written to logcat. Built only
+# for `target_os = "android"`.
+jni = "0.22.4"
+android_logger = "0.15.1"
+log = "0.4"
+log-panics = { version = "2", features = ["with-backtrace"] }
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.7.2" }
-indicatrix = { path = "crates/indicatrix", version = "0.7.2" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.7.2" }
-indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.7.2" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.7.2" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.7.2" }
-indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.7.2" }
-indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.7.2" }
-indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.7.2" }
-indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.7.2" }
-indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.7.2" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.8.0" }
+indicatrix = { path = "crates/indicatrix", version = "0.8.0" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.8.0" }
+indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.8.0" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.8.0" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.8.0" }
+indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.8.0" }
+indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.8.0" }
+indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.8.0" }
+indicatrix-update = { path = "crates/indicatrix-update", version = "0.8.0" }
+indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.8.0" }
+indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.8.0" }
+indicatrix-mobile-core = { path = "crates/indicatrix-mobile-core", version = "0.8.0" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
+# Integer-to-float conversions (sample counts, pixel sizes, statistics) are the everyday
+# arithmetic of the renderer and the solvers; their precision loss above 2^24 / 2^53 is
+# understood and harmless here. Every other cast lint is on.
 cast_precision_loss = { level = "allow" }
-cast_sign_loss = { level = "allow" }
-cast_possible_wrap = { level = "allow" }
-cast_possible_truncation = { level = "allow" }
-float_cmp = { level = "allow" }
-inline_always = { level = "allow" }
-implicit_hasher = { level = "allow" }
-struct_excessive_bools = { level = "allow" }
-result_large_err = { level = "allow" }
-similar_names = { level = "allow" }
 
 [profile.release]
 codegen-units = 1
@@ -226,6 +245,30 @@ inherits = "release"
 [profile.indicatrix-web-release.package.indicatrix-web]
 opt-level = "s"
 
+# Release `.so` of the Android app for the signed AAB (`gradlew assembleRelease` /
+# `bundleRelease` in `apps/indicatrix-mobile-android/android` passes `--profile
+# android-release`). Unwinding stays on: `log-panics` needs it to write the panic and its
+# backtrace to logcat.
+[profile.android-release]
+inherits = "release"
+lto = "thin"
+
+# Debug APKs of the Android app (`gradlew assembleDebug` passes `--profile android-dev`): the
+# tracer and the solver are unusably slow unoptimised on a phone, so every dependency is
+# optimised while the two mobile crates keep fast rebuilds and their debug checks. A profile
+# of its own, so the desktop `dev` builds are unchanged. The level is set on the profile, not
+# through `package."*"`: that pattern skips workspace members, and the tracer, the solver and
+# the editor crates are members here.
+[profile.android-dev]
+inherits = "dev"
+opt-level = 3
+
+[profile.android-dev.package.indicatrix-mobile-android]
+opt-level = 0
+
+[profile.android-dev.package.indicatrix-mobile-core]
+opt-level = 0
+
 # For the long-running validation harnesses under `crates/indicatrix/examples/` --
 # `gpu_equivalence_harness` and `meet_solver_validation` -- which are rebuilt often
 # while iterating and need release-level speed to finish in reasonable time.
@@ -238,6 +281,18 @@ opt-level = "s"
 inherits = "release"
 lto = false
 codegen-units = 16
+
+# The desktop UI harness (`cargo ui-harness`, see `.cargo/config.toml`): release speed for the
+# hundreds of relaunches and solves a full run makes, without the LTO / one-codegen-unit link
+# that dominates a release rebuild. Line tables and no stripping keep file:line in the panic
+# backtraces the harness reports. Its own output directory (`target/harness/`); the report still
+# goes to `target/ui-harness/report.md`.
+[profile.harness]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = "line-tables-only"
+strip = false
 
 # The rough planner and the tracer are pure arithmetic, and their tests run them at
 # length: the cancel sweep alone plans some sixty roughs, the desktop driver tests plan

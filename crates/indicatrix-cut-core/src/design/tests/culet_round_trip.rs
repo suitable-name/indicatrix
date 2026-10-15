@@ -1,11 +1,12 @@
 //! A culet (a sign-negative zero angle -- see
 //! `indicatrix_formats::asc::AscTier::angle_deg`) must stay a culet through `.asc`
-//! import, `.asc` export, and both native save/load paths; if the sign were lost
-//! anywhere, the shared side rule would put it on the crown as a second table.
+//! import, `.asc` export, the design file save/load and the catalogue `.asc` a save
+//! stores; if the sign were lost anywhere, the shared side rule would put it on the
+//! crown as a second table.
 
 use crate::{
     design::Design,
-    native::{SaveExtras, load_native_only, load_paired, save_native_only_toml, save_paired},
+    native::{DesignExtras, catalogue_asc, design_from_str, design_to_string},
     preform::PreformSpec,
 };
 use indicatrix::geometry::meet_solver::MeetConstraint;
@@ -52,27 +53,23 @@ fn asc_export_writes_the_culet_in_gemcads_form() {
 }
 
 #[test]
-fn the_culet_sign_survives_a_paired_native_save_and_load() {
+fn the_culet_sign_survives_a_design_file_save_and_load() {
     let design = culet_design();
-    let saved = save_paired(&design, "design.asc", None, None, None).expect("must save");
-    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("must load");
-    let culet = &loaded.design.tiers[CULET_TIER];
-    assert_eq!(culet.angle_deg, 0.0);
-    assert!(culet.angle_deg.is_sign_negative(), "{culet:?}");
-    assert!(!loaded.design.tiers[1].angle_deg.is_sign_negative());
-}
-
-#[test]
-fn the_culet_sign_survives_a_native_only_toml_save_and_load() {
-    let design = culet_design();
-    let toml = save_native_only_toml(&design, "design.asc", None, &SaveExtras::default())
-        .expect("must serialize");
-    let loaded = load_native_only(&toml).expect("must load with no .asc present");
+    let text = design_to_string(&design, None, &DesignExtras::default()).expect("must serialize");
+    let loaded = design_from_str(&text).expect("must load");
     let culet = &loaded.design.tiers[CULET_TIER];
     assert_eq!(culet.angle_deg, 0.0);
     assert!(
         culet.angle_deg.is_sign_negative(),
-        "TOML lost the sign of the culet's -0.0 angle:\n{toml}"
+        "TOML lost the sign of the culet's -0.0 angle:\n{text}"
     );
     assert!(!loaded.design.tiers[1].angle_deg.is_sign_negative());
+}
+
+#[test]
+fn the_culet_sign_survives_the_catalogue_asc_a_save_stores() {
+    let design = culet_design();
+    let saved = catalogue_asc(&design, None, None).expect("must write");
+    let reparsed = indicatrix_formats::asc::parse_asc(&saved.asc_text).expect("must reparse");
+    assert!(reparsed.tiers[CULET_TIER].is_culet());
 }

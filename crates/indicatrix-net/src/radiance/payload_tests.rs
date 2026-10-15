@@ -45,18 +45,12 @@ fn every_encoding_round_trips_bit_exactly() {
         let mut encoder = PayloadEncoder::new(encoding);
         let mut decoder = PayloadDecoder::new();
         for raw in &payloads {
-            let encoded = encoder.encode(raw);
-            assert_eq!(encoded.raw_len as usize, raw.len());
-            let decoded = decoder
-                .decode_to_vec(
-                    encoded.encoding,
-                    encoded.raw_len,
-                    encoded.bytes,
-                    width,
-                    height,
-                )
+            let frame = encoder.encode(raw);
+            assert_eq!(frame.raw_len as usize, raw.len());
+            let output = decoder
+                .decode_to_vec(frame.encoding, frame.raw_len, frame.bytes, width, height)
                 .unwrap();
-            let decoded_bytes: Vec<u8> = bytemuck::cast_slice(&decoded).to_vec();
+            let decoded_bytes: Vec<u8> = bytemuck::cast_slice(&output).to_vec();
             assert_eq!(&decoded_bytes, raw, "{encoding:?} is not bit-exact");
         }
     }
@@ -69,22 +63,23 @@ fn decode_and_add_is_bit_identical_to_the_raw_path() {
     let (width, height) = (29, 13);
     let pixels = (width * height) as usize;
     let raw = to_bytes(&mixed_bits(pixels * 3, 21));
+    let raw_len = u32::try_from(raw.len()).expect("a 29x13 payload is tiny");
     let start: Vec<Vec3> = bytemuck::cast_slice(&to_bytes(&mixed_bits(pixels * 3, 22))).to_vec();
 
     let mut reference = start.clone();
     PayloadDecoder::new()
-        .decode_and_add(RAW, raw.len() as u32, &raw, width, height, &mut reference)
+        .decode_and_add(RAW, raw_len, &raw, width, height, &mut reference)
         .unwrap();
 
     for encoding in supported_encodings() {
         let mut encoder = PayloadEncoder::new(encoding);
-        let encoded = encoder.encode(&raw);
+        let frame = encoder.encode(&raw);
         let mut summed = start.clone();
         PayloadDecoder::new()
             .decode_and_add(
-                encoded.encoding,
-                encoded.raw_len,
-                encoded.bytes,
+                frame.encoding,
+                frame.raw_len,
+                frame.bytes,
                 width,
                 height,
                 &mut summed,
@@ -116,19 +111,16 @@ fn compressible_payloads_shrink_and_incompressible_ones_go_raw() {
         PayloadEncoding::ShuffleLz4,
     ] {
         let mut encoder = PayloadEncoder::new(encoding);
-        let encoded = encoder.encode(&smooth);
-        assert_eq!(encoded.encoding, encoding);
+        let frame = encoder.encode(&smooth);
+        assert_eq!(frame.encoding, encoding);
         assert!(
-            encoded.bytes.len() < smooth.len(),
+            frame.bytes.len() < smooth.len(),
             "{encoding:?} did not shrink"
         );
 
-        let encoded = encoder.encode(&noise);
-        assert_eq!(
-            encoded.encoding, RAW,
-            "{encoding:?} should fall back to Raw"
-        );
-        assert_eq!(encoded.bytes, noise.as_slice());
+        let frame = encoder.encode(&noise);
+        assert_eq!(frame.encoding, RAW, "{encoding:?} should fall back to Raw");
+        assert_eq!(frame.bytes, noise.as_slice());
     }
 }
 
@@ -137,9 +129,9 @@ fn compressible_payloads_shrink_and_incompressible_ones_go_raw() {
 fn a_raw_encoder_is_zero_copy() {
     let raw = smooth_payload(8);
     let mut encoder = PayloadEncoder::new(RAW);
-    let encoded = encoder.encode(&raw);
-    assert_eq!(encoded.encoding, RAW);
-    assert!(std::ptr::eq(encoded.bytes, raw.as_slice()));
+    let frame = encoder.encode(&raw);
+    assert_eq!(frame.encoding, RAW);
+    assert!(std::ptr::eq(frame.bytes, raw.as_slice()));
 }
 
 /// The header's `raw_len` must equal `width * height * 12`, checked before any decode.
@@ -148,9 +140,9 @@ fn a_lying_raw_len_is_rejected_before_decoding() {
     let raw = smooth_payload(16);
     for encoding in supported_encodings() {
         let mut encoder = PayloadEncoder::new(encoding);
-        let encoded = encoder.encode(&raw);
-        let err = decode_payload(encoded.encoding, encoded.raw_len * 64, encoded.bytes, 4, 4)
-            .unwrap_err();
+        let frame = encoder.encode(&raw);
+        let err =
+            decode_payload(frame.encoding, frame.raw_len * 64, frame.bytes, 4, 4).unwrap_err();
         assert!(
             matches!(err, RadianceError::RawLenMismatch { .. }),
             "{encoding:?}: {err:?}"
@@ -295,9 +287,10 @@ fn zero_area_payloads_decode_to_nothing() {
 #[test]
 fn decode_and_add_rejects_a_mismatched_accumulator() {
     let raw = smooth_payload(4);
+    let raw_len = u32::try_from(raw.len()).expect("a four-pixel payload is tiny");
     let mut acc = vec![Vec3::ONE; 3];
     let err = PayloadDecoder::new()
-        .decode_and_add(RAW, raw.len() as u32, &raw, 2, 2, &mut acc)
+        .decode_and_add(RAW, raw_len, &raw, 2, 2, &mut acc)
         .unwrap_err();
     assert!(matches!(err, RadianceError::LengthMismatch { .. }));
     assert!(acc.iter().all(|v| *v == Vec3::ONE));

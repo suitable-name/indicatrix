@@ -1,0 +1,150 @@
+// A bottom sheet with three detents: peek (a 56 px header), half and full. Drag the
+// header up or down to change detent, or tap it to step up. At full height a scrim
+// covers the page; tapping the scrim returns the sheet to half.
+//
+// Place a `Sheet` as the last child of the area it should cover (it fills its parent);
+// the children of the `Sheet` become the body shown below the header. Bind
+// `detent <=> Shell.sheet-detent` so the Back key can collapse a full sheet.
+import { Theme } from "../theme.slint";
+
+export component Sheet inherits Rectangle {
+    in property <string> title: "";
+    // False hides the sheet completely (not even the peek header shows).
+    in property <bool> open: true;
+    // Extra space kept free at the bottom (the gesture area, when the sheet sits flush
+    // with the window edge).
+    in property <length> bottom-inset: 0px;
+    // Share of the sheet area the half detent covers.
+    in property <float> half-fraction: 0.5;
+    // 0 peek, 1 half, 2 full.
+    in-out property <int> detent: 1;
+    // Height available to the body at the current panel height.
+    out property <length> content-height: max(0px, root.panel-h - Theme.sheet-peek - root.bottom-inset);
+
+    property <length> peek-h: Theme.sheet-peek + root.bottom-inset;
+    property <length> half-h: max(root.peek-h + 96px, root.height * root.half-fraction);
+    property <length> full-h: max(root.half-h, root.height - 16px);
+    property <length> target-h: root.detent == 0 ? root.peek-h : (root.detent == 1 ? root.half-h : root.full-h);
+
+    // Drag state. The header's touch strip stays at the snapped position while the
+    // finger moves (a strip that moved with the panel would see no movement at all).
+    property <bool> dragging: false;
+    property <bool> moved-far: false;
+    // Positive when the finger has moved up.
+    property <length> drag-delta: 0px;
+    property <length> live-h: min(root.full-h, max(root.peek-h, root.target-h + root.drag-delta));
+    property <length> panel-h: root.open ? root.live-h : 0px;
+    property <int> nearest-detent: root.live-h < (root.peek-h + root.half-h) / 2 ? 0 : (root.live-h < (root.half-h + root.full-h) / 2 ? 1 : 2);
+
+    animate panel-h {
+        duration: root.dragging ? 0ms : 220ms;
+        easing: ease-out;
+    }
+
+    function finish-drag() {
+        if (root.moved-far) {
+            if (root.nearest-detent == root.detent && root.drag-delta > 24px && root.detent < 2) {
+                root.detent = root.detent + 1;
+            } else if (root.nearest-detent == root.detent && root.drag-delta < -24px && root.detent > 0) {
+                root.detent = root.detent - 1;
+            } else {
+                root.detent = root.nearest-detent;
+            }
+        }
+        root.dragging = false;
+        root.drag-delta = 0px;
+    }
+
+    if root.open && root.detent == 2: Rectangle {
+        background: Theme.scrim.with-alpha(0.32);
+
+        TouchArea {
+            clicked => {
+                root.detent = 1;
+            }
+        }
+    }
+
+    panel := Rectangle {
+        x: 0px;
+        y: root.height - self.height;
+        width: root.width;
+        height: root.panel-h;
+        visible: root.open;
+        background: Theme.surface-container;
+        border-top-left-radius: Theme.radius-xl;
+        border-top-right-radius: Theme.radius-xl;
+        drop-shadow-color: Theme.shadow;
+        drop-shadow-blur: Theme.shadow-blur-3;
+        drop-shadow-offset-y: -Theme.shadow-offset-1;
+        clip: true;
+
+        // Swallows taps so they do not reach the page below the sheet.
+        TouchArea { }
+
+        Rectangle {
+            y: 8px;
+            width: 32px;
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.outline;
+        }
+
+        Text {
+            x: Theme.space-lg;
+            y: 20px;
+            width: parent.width - 2 * Theme.space-lg;
+            height: 32px;
+            text: root.title;
+            color: Theme.on-surface;
+            font-size: Theme.text-title;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Rectangle {
+            x: 0px;
+            y: Theme.sheet-peek;
+            width: parent.width;
+            height: root.content-height;
+            visible: root.panel-h > Theme.sheet-peek + root.bottom-inset + 4px;
+            clip: true;
+
+            @children
+        }
+    }
+
+    header-touch := TouchArea {
+        x: 0px;
+        y: root.height - root.target-h;
+        width: root.width;
+        height: Theme.sheet-peek;
+        enabled: root.open;
+
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left) {
+                if (event.kind == PointerEventKind.down) {
+                    root.dragging = true;
+                    root.moved-far = false;
+                    root.drag-delta = 0px;
+                } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                    root.finish-drag();
+                }
+            }
+        }
+
+        moved => {
+            root.drag-delta = self.pressed-y - self.mouse-y;
+            if (root.drag-delta > 8px || root.drag-delta < -8px) {
+                root.moved-far = true;
+            }
+        }
+
+        clicked => {
+            if (!root.moved-far) {
+                root.detent = root.detent == 0 ? 1 : (root.detent == 1 ? 2 : 1);
+            }
+        }
+    }
+}

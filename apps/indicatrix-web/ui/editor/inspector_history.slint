@@ -1,0 +1,94 @@
+import { Theme } from "../components/theme.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { InspectorModel } from "inspector_model.slint";
+import { InfoLine, SectionTitle } from "inspector_widgets.slint";
+
+// One step of the history: its number, what it did, and where it stands (the step the
+// design is at now, or one that was undone and can be gone forward to).
+component HistoryRowView inherits Rectangle {
+    // The step: 0 is "Start" (the design as opened or created), 1.. the changes.
+    in property <int> step-number;
+    in property <string> step-text;
+    in property <bool> usable;
+    callback chosen();
+
+    property <bool> current: root.step-number == InspectorModel.history-position;
+    property <bool> undone: root.step-number > InspectorModel.history-position;
+
+    height: 30px;
+    background: root.current
+        ? Theme.accent-cyan-surface
+        : ((touch.has-hover && root.usable) ? Theme.bg-card-hover : Theme.bg-input);
+    border-radius: Theme.radius-sm;
+    border-width: root.current ? 1px : 0px;
+    border-color: Theme.accent-cyan;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        Text {
+            width: 22px;
+            text: root.step-number == 0 ? "" : "\{root.step-number}";
+            font-size: 9px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+        }
+        Text {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            text: root.step-text;
+            font-size: 10px;
+            font-weight: root.current ? 700 : 400;
+            color: root.undone ? Theme.text-muted : Theme.text-primary;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.current: Text {
+            text: "Now";
+            font-size: 9px;
+            font-weight: 700;
+            color: Theme.accent-cyan;
+            vertical-alignment: center;
+        }
+    }
+
+    // Last, so it sits above the row's texts and receives the tap.
+    touch := TouchArea {
+        enabled: root.usable;
+        mouse-cursor: root.usable ? pointer : default;
+        clicked => { root.chosen(); }
+    }
+}
+
+// The History tab: every step of the open design's undo history, newest at the top, ending
+// with "Start". Tap a step to go back to it; the steps after the current one are the undone
+// ones (dimmed) and stay here, so a later tap goes forward again, until a new change drops
+// them. `InspectorModel.history-labels` is newest first.
+export component HistoryTab inherits VerticalLayout {
+    spacing: 4px;
+
+    property <int> count: InspectorModel.history-labels.length;
+    property <bool> usable: GuideModel.allows-history();
+
+    SectionTitle { text: "History"; }
+    InfoLine {
+        text: root.count == 0
+            ? "No changes yet. Every change you make is listed here, so you can go back to any of them."
+            : "Tap a step to go back to it. Steps after the current one are undone: they stay here until you make a new change.";
+        color: Theme.text-muted;
+    }
+    for entry[i] in InspectorModel.history-labels: HistoryRowView {
+        step-number: root.count - i;
+        step-text: entry;
+        usable: root.usable;
+        chosen => { InspectorModel.history-jump(root.count - i); }
+    }
+    HistoryRowView {
+        step-number: 0;
+        step-text: "Start";
+        usable: root.usable;
+        chosen => { InspectorModel.history-jump(0); }
+    }
+}

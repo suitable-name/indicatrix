@@ -6,12 +6,8 @@ use super::*;
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{
     TierTarget,
-    native::{SaveExtras, save_native_only_toml},
+    native::{DesignExtras, design_from_str, design_to_string},
 };
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    indicatrix_solid::mesh_cache::fnv1a_64(bytes.iter().copied())
-}
 
 fn tier(name: &str, angle_deg: f64, indices: &[f64], constraint: MeetConstraint) -> ConstraintTier {
     ConstraintTier {
@@ -31,9 +27,11 @@ const fn ms(value: u64) -> Duration {
 
 /// The desktop's `identity_pins::scripted_edit_sequence_is_pinned`, driven through
 /// `EditorSession` with explicit timestamps: add three tiers, three coalescing
-/// nudges, undo, redo, mirror, complete orbit. The native TOML hash/length and the
-/// history depth are the values the desktop recorded before the move, so the web
-/// app (which edits through this type) produces the desktop's exact design.
+/// nudges, undo, redo, mirror, complete orbit. The design file text and the
+/// history depth must come out the way the desktop's pin expects, so the web
+/// app (which edits through this type) produces the desktop's exact design. The
+/// file text is checked for determinism and an exact reopen here; the byte pin of
+/// the `.isdd` text lives in the desktop's `identity_pins`.
 #[test]
 fn the_scripted_sequence_matches_the_desktop_pin() {
     let mut session = EditorSession::fresh();
@@ -75,11 +73,13 @@ fn the_scripted_sequence_matches_the_desktop_pin() {
     session.mirror_indices(2).unwrap();
     assert!(session.complete_orbit(2).unwrap());
 
-    let toml =
-        save_native_only_toml(&session.design, "pin.asc", None, &SaveExtras::default()).unwrap();
+    let text = design_to_string(&session.design, None, &DesignExtras::default()).unwrap();
+    let reopened = design_from_str(&text).unwrap().design;
+    assert_eq!(reopened, session.design);
     assert_eq!(
-        (fnv1a(toml.as_bytes()), toml.len()),
-        (8_529_034_122_875_928_046, 1078)
+        design_to_string(&reopened, None, &DesignExtras::default()).unwrap(),
+        text,
+        "the file text is stable under reopen"
     );
     assert_eq!(session.current_generation(), 10);
     assert!(session.is_dirty());
@@ -319,6 +319,37 @@ fn a_replacement_continues_the_generation_counter_and_reads_clean() {
     assert!(session.is_dirty());
     session.mark_saved();
     assert!(!session.is_dirty());
+}
+
+#[test]
+fn a_design_the_user_created_is_unsaved_until_saved() {
+    // Built but not marked: a load or an app's startup placeholder reads clean.
+    let built = EditorSession::from_template(fresh_spec(), 1);
+    assert!(!built.is_dirty(), "a built session is clean until marked");
+
+    let mut created = built.created_by_user();
+    assert!(created.is_dirty());
+    created.mark_saved();
+    assert!(!created.is_dirty(), "saving makes it clean");
+
+    // Marked after a wholesale replacement, as the front ends do.
+    let mut open = EditorSession::fresh();
+    open.replace_with(EditorSession::from_spec(fresh_spec()));
+    assert!(!open.is_dirty(), "a replacement alone reads clean");
+    open.mark_unsaved();
+    assert!(open.is_dirty());
+    open.apply(Edit::AddTier {
+        index: 0,
+        tier: tier("T", 0.0, &[], MeetConstraint::ScaleReference(0.3)),
+    })
+    .unwrap();
+    open.undo().unwrap();
+    assert!(
+        open.is_dirty(),
+        "edits and undo never read as the saved state"
+    );
+    open.mark_saved();
+    assert!(!open.is_dirty());
 }
 
 #[test]

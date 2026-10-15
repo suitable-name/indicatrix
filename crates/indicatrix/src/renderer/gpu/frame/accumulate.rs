@@ -11,6 +11,7 @@ use glam::Vec3;
 
 use crate::{
     optics::raytracer::environment::environment_white_balance,
+    render_setup::hash_planes,
     renderer::buffers::{GpuCameraParams, GpuGemMaterial, encode_facet_finishes},
 };
 
@@ -364,6 +365,16 @@ impl GpuFrameRenderer {
         let scene = request.scene;
         let num_pixels = scene.width as usize * scene.height as usize;
 
+        // The EMA is a per-scene cost estimate: carried into a different design or
+        // resolution it sizes the first chunk by the OLD per-sample cost and can overshoot
+        // `TARGET_CHUNK_MS` by the ratio of the two. Clearing it makes the next dispatch
+        // use the bounded first-dispatch cap again. Resumed turns of one scene share a key.
+        let scene_key = (scene.width, scene.height, hash_planes(scene.planes));
+        if self.last_scene_key != Some(scene_key) {
+            self.ns_per_tuple_ema = None;
+            self.last_scene_key = Some(scene_key);
+        }
+
         let (
             env_mode,
             temp_k,
@@ -495,7 +506,10 @@ impl GpuFrameRenderer {
         if self.pipeline_kind != GpuPipelineKind::Wavefront {
             return byte_budget_pixels;
         }
-        let max_binding_bytes = self.ctx.device.limits().max_storage_buffer_binding_size as usize;
+        // Saturating: a binding limit beyond the address space is effectively unlimited.
+        let max_binding_bytes =
+            usize::try_from(self.ctx.device.limits().max_storage_buffer_binding_size)
+                .unwrap_or(usize::MAX);
         wavefront_pixel_cap(max_binding_bytes, spp, byte_budget_pixels)
     }
 

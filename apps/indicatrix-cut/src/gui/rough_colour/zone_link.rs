@@ -1,4 +1,4 @@
-//! The wizard's side of what the Rough Planner's 3D view does with it (`zoning` feature only): the
+//! The wizard's side of what the Rough Planner's 3D view does with it: the
 //! zone handles the view draws and drags, and the polished windows it paints on the mesh.
 //!
 //! The view (`gui::rough_plan::zoning_hooks`) lives in the planner's private module and never

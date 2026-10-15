@@ -203,12 +203,25 @@ fn design_records(snapshot: &Snapshot, database: &Database) -> Result<Vec<SavedD
         .collect())
 }
 
-/// Serialises the snapshot, proves the text reads back, and stores it (worker thread).
+/// Serialises the snapshot, proves the text reads back, and stores it as a new plan
+/// (worker thread). The app saves through [`write_plan_with`]; this is the tests' shorthand.
+#[cfg(test)]
 pub(super) fn write_plan(
     db: &Mutex<Database>,
     name: &str,
     snapshot: &Snapshot,
-) -> Result<(), String> {
+) -> Result<i64, String> {
+    write_plan_with(db, name, snapshot, false)
+}
+
+/// [`write_plan`]; with `replace` the plan is stored in place of the saved plans that
+/// already have `name`, so the list never shows two plans with one name.
+pub(super) fn write_plan_with(
+    db: &Mutex<Database>,
+    name: &str,
+    snapshot: &Snapshot,
+    replace: bool,
+) -> Result<i64, String> {
     let library_id = match snapshot.library {
         LibraryId::Local => store::library_stamp(db),
         LibraryId::Kept(id) => id,
@@ -237,7 +250,11 @@ pub(super) fn write_plan(
         designs: &designs,
         layouts: &ranked,
     })?;
-    store::save_plan(db, name, &text).map(|_id| ())
+    if replace {
+        store::replace_plan(db, name, &text)
+    } else {
+        store::save_plan(db, name, &text)
+    }
 }
 
 /// The confirmation line after a save.
@@ -260,9 +277,27 @@ fn mark_saved(host: &Host, saved: usize, rows: usize) {
     }
 }
 
-/// `RoughPlanModel.confirm_save`: stores the plan under the name in the name row.
+/// A save that is waiting for the answer to "Replace Saved Plan?": everything it needs,
+/// copied when Save was pressed, so the answer saves exactly what was asked for.
+pub(super) struct PendingSave {
+    /// The cleaned name the plan is saved under.
+    name: String,
+    /// What the save writes.
+    taken: Snapshot,
+    /// How many results were on screen when Save was pressed.
+    all_rows: usize,
+    /// Which results this save is of (see [`confirm_save`]).
+    fingerprint: u64,
+}
+
+/// `RoughPlanModel.confirm_save`: stores the plan under the name in the name row, after
+/// asking whether to replace a saved plan that already has that name.
 pub(super) fn confirm_save(host: &Rc<Host>) {
     let model = host.window.global::<RoughPlanModel>();
+    if model.get_confirm_overwrite_open() {
+        // The question covers the name row; it is answered first.
+        return;
+    }
     let name = clean_plan_name(&model.get_save_name());
     if name.is_empty() {
         show_error(host, "Enter a name for the saved plan.");
@@ -282,16 +317,79 @@ pub(super) fn confirm_save(host: &Rc<Host>) {
     };
     show_error(host, "");
     model.set_save_name_open(false);
-    let count = taken.layouts.len();
-    let task_name = name.clone();
+    let pending = PendingSave {
+        name: name.clone(),
+        taken,
+        all_rows,
+        // Which results this save is of, so an open Rough colour wizard can take the new
+        // plan's id (only while those results are still on screen).
+        fingerprint: crate::gui::rough_plan::colour_link::results_fingerprint(
+            &host.session.borrow(),
+        ),
+    };
     spawn_task(
         host,
-        move |db| write_plan(db, &task_name, &taken),
+        move |db| store::plan_ids_named(db, &name),
         move |host, result| match result {
-            Ok(()) => {
+            Ok(ids) if !ids.is_empty() => ask_to_replace(host, pending),
+            Ok(_) => start_save(host, pending, false),
+            Err(message) => {
+                show_error(host, &message);
+                reopen_name_row(host, &pending.name);
+            }
+        },
+    );
+}
+
+/// Puts the name row back with `name` in it (a save that did not happen).
+fn reopen_name_row(host: &Host, name: &str) {
+    let model = host.window.global::<RoughPlanModel>();
+    model.set_save_name(name.into());
+    model.set_save_name_open(true);
+}
+
+/// Shows "Replace Saved Plan?" above the name row, which stays open under it.
+fn ask_to_replace(host: &Host, pending: PendingSave) {
+    let model = host.window.global::<RoughPlanModel>();
+    model.set_confirm_overwrite_name(pending.name.as_str().into());
+    model.set_save_name(pending.name.as_str().into());
+    host.session.borrow_mut().saved.pending_save = Some(pending);
+    model.set_save_name_open(true);
+    model.set_confirm_overwrite_open(true);
+}
+
+/// `RoughPlanModel.confirm_overwrite`: `true` saves over the plan with that name, `false`
+/// keeps the name row open (the window selects the name) and saves nothing.
+pub(super) fn confirm_overwrite(host: &Rc<Host>, replace: bool) {
+    let pending = host.session.borrow_mut().saved.pending_save.take();
+    host.window
+        .global::<RoughPlanModel>()
+        .set_confirm_overwrite_open(false);
+    if let (true, Some(pending)) = (replace, pending) {
+        start_save(host, pending, true);
+    }
+}
+
+/// Writes `pending` on a worker thread; `replace` stores it in place of the saved plans
+/// that have its name.
+fn start_save(host: &Rc<Host>, pending: PendingSave, replace: bool) {
+    let model = host.window.global::<RoughPlanModel>();
+    model.set_save_name_open(false);
+    let name = pending.name.clone();
+    let all_rows = pending.all_rows;
+    let count = pending.taken.layouts.len();
+    let fingerprint = pending.fingerprint;
+    let task_name = pending.name;
+    let taken = pending.taken;
+    spawn_task(
+        host,
+        move |db| write_plan_with(db, &task_name, &taken, replace),
+        move |host, result| match result {
+            Ok(plan_id) => {
                 mark_saved(host, count, all_rows);
                 announce(host, &saved_message(count, &name));
                 super::list::refresh_list(host);
+                crate::gui::rough_plan::colour_link::plan_saved(host, plan_id, &name, fingerprint);
             }
             Err(message) => {
                 show_error(host, &message);

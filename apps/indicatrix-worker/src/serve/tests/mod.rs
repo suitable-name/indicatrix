@@ -24,7 +24,7 @@ mod render_roundtrip;
 mod streaming;
 mod tilt_curves;
 mod v14;
-#[cfg(feature = "zoning")]
+#[cfg(feature = "worker")]
 mod zoning;
 
 // `mtls` (below) still reaches these through `super::{..}`, exactly as when this whole

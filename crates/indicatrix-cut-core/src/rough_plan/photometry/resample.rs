@@ -16,6 +16,25 @@ use super::{
     mask::{PixelMask, flag},
 };
 
+/// A non-negative whole-number pixel coordinate (already floored or ceiled) as an index.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers pass floored/ceiled coordinates clamped to >= 0 and bounded by the image size"
+)]
+const fn pixel_index(value: f64) -> usize {
+    value as usize
+}
+
+/// Narrows an accumulated `f64` to the `f32` pixel storage precision.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the pixel/variance storage precision; values are in the normal float range"
+)]
+const fn narrow(value: f64) -> f32 {
+    value as f32
+}
+
 /// The default longest side of the working grid, in pixels.
 pub const DEFAULT_WORKING_PX: usize = 384;
 
@@ -52,8 +71,8 @@ impl WorkingGrid {
         let (w, h) = ((x1 - x0) as f64, (y1 - y0) as f64);
         let scale = (w.max(h) / max_px as f64).max(1.0);
         Ok(Self {
-            width: ((w / scale) - 1e-9).ceil().max(1.0) as usize,
-            height: ((h / scale) - 1e-9).ceil().max(1.0) as usize,
+            width: pixel_index(((w / scale) - 1e-9).ceil().max(1.0)),
+            height: pixel_index(((h / scale) - 1e-9).ceil().max(1.0)),
             origin: [x0 as f64, y0 as f64],
             scale,
         })
@@ -187,9 +206,9 @@ pub fn resample(
             let mut var_sum = [0.0_f64; 3];
             let mut excluded_flags = 0_u8;
             if u1 > u0 && v1 > v0 {
-                for j in v0.floor() as usize..(v1.ceil() as usize).min(h) {
+                for j in pixel_index(v0.floor())..pixel_index(v1.ceil()).min(h) {
                     let wy = (v1.min(j as f64 + 1.0) - v0.max(j as f64)).max(0.0);
-                    for i in u0.floor() as usize..(u1.ceil() as usize).min(w) {
+                    for i in pixel_index(u0.floor())..pixel_index(u1.ceil()).min(w) {
                         let wx = (u1.min(i as f64 + 1.0) - u0.max(i as f64)).max(0.0);
                         let weight = wx * wy;
                         if weight <= 0.0 {
@@ -217,18 +236,18 @@ pub fn resample(
                 }
             }
             let share = if total > 0.0 { valid / total } else { 0.0 };
-            coverage.push(share as f32);
+            coverage.push(narrow(share));
             if valid > 0.0 {
                 values.push([
-                    (sum[0] / valid) as f32,
-                    (sum[1] / valid) as f32,
-                    (sum[2] / valid) as f32,
+                    narrow(sum[0] / valid),
+                    narrow(sum[1] / valid),
+                    narrow(sum[2] / valid),
                 ]);
                 let scale = 1.0 / (valid * valid);
                 variance.push([
-                    (var_sum[0] * scale) as f32,
-                    (var_sum[1] * scale) as f32,
-                    (var_sum[2] * scale) as f32,
+                    narrow(var_sum[0] * scale),
+                    narrow(var_sum[1] * scale),
+                    narrow(var_sum[2] * scale),
                 ]);
             } else {
                 values.push([0.0; 3]);

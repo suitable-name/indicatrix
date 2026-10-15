@@ -187,7 +187,7 @@ fn the_worked_example_has_the_two_reading_steps_it_always_had() {
 fn small_guide(id: &str) -> Guide {
     Guide::new(
         id,
-        "A small lesson",
+        "A Small Lesson",
         "Shows the catalogue a generated guide.",
         GuideCategory::BuildThisDesign,
     )

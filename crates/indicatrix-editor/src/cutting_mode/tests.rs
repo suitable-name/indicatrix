@@ -393,9 +393,12 @@ fn the_signature_changes_with_the_depth_and_the_cheater_offset() {
     let mut with_offset = round_brilliant();
     let plain = signature(&with_offset, "Star");
     with_offset.cheater_offsets_deg.insert(1, 1.5);
-    let plan = plan_of(&with_offset);
-    assert_eq!(step_named(&plan, "Star").cheater_offset_deg, Some(1.5));
-    assert_ne!(step_named(&plan, "Star").signature, plain);
+    let offset_plan = plan_of(&with_offset);
+    assert_eq!(
+        step_named(&offset_plan, "Star").cheater_offset_deg,
+        Some(1.5)
+    );
+    assert_ne!(step_named(&offset_plan, "Star").signature, plain);
 }
 
 #[test]
@@ -405,18 +408,21 @@ fn a_note_a_rename_and_the_instructions_leave_the_signature_alone() {
 
     let mut noted = design.clone();
     noted.tier_notes.insert(2, "  go slowly here  ".to_owned());
-    let plan = plan_of(&noted);
-    assert_eq!(step_named(&plan, "Crown Main").notes, "go slowly here");
+    let noted_plan = plan_of(&noted);
     assert_eq!(
-        step_named(&plan, "Crown Main").signature,
+        step_named(&noted_plan, "Crown Main").notes,
+        "go slowly here"
+    );
+    assert_eq!(
+        step_named(&noted_plan, "Crown Main").signature,
         step_named(&plain, "Crown Main").signature
     );
 
     let mut renamed = design;
     renamed.tiers[2].name = "Crown Mains".to_owned();
-    let plan = plan_of(&renamed);
+    let renamed_plan = plan_of(&renamed);
     assert_eq!(
-        step_named(&plan, "Crown Mains").signature,
+        step_named(&renamed_plan, "Crown Mains").signature,
         step_named(&plain, "Crown Main").signature
     );
 

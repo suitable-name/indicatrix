@@ -233,6 +233,31 @@ thread_local! {
     /// Which pending keys wait for the worker and which one is on it.
     static SOLVE_LANE: RefCell<SolveLane> = RefCell::new(SolveLane::default());
     static NEXT_SOLVE_KEY: Cell<u64> = const { Cell::new(0) };
+    /// The window [`SOLVE_SERVICE`] reports to (see [`ensure_solve_service`]).
+    static SOLVE_OWNER: RefCell<Option<slint::Weak<MainWindow>>> = const { RefCell::new(None) };
+}
+
+/// Lets go of the solve worker, the waiting continuations (each may close over a save's
+/// context, which holds the design library handle), the lane and the solve cache a previous
+/// main window left behind. See `gui::window_release`.
+pub(super) fn release_window_state() {
+    let service = SOLVE_SERVICE.with(|cell| cell.borrow_mut().take());
+    let pending = PENDING_SOLVES.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    SOLVE_LANE.with(|lane| *lane.borrow_mut() = SolveLane::default());
+    SOLVE_OWNER.with(|owner| *owner.borrow_mut() = None);
+    LOCAL_SOLVE_CACHE.with(|cell| *cell.borrow_mut() = None);
+    // Dropped with every cell released: a continuation's drop may touch other thread-locals.
+    drop(pending);
+    drop(service);
+}
+
+/// Names this module's holder in `out` while it is still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(super) fn note_holders(out: &mut Vec<&'static str>) {
+    if PENDING_SOLVES.with(|cell| !cell.borrow().is_empty()) {
+        out.push("editor::native_io::solve PENDING_SOLVES (continuations)");
+    }
 }
 
 /// Hands the worker the next queued request, if it is idle.
@@ -266,7 +291,24 @@ fn dispatch_next_solve() {
 }
 
 /// Creates [`SOLVE_SERVICE`]'s worker the first time this module ever needs one.
+///
+/// The worker reports back through a weak handle to the window it was created for. When that
+/// window is gone (a second main window in the same thread, as the UI harness builds one per
+/// scenario) the worker, the waiting continuations and the lane belong to a dead window and would
+/// swallow every later result, so they are dropped and the worker is created again.
 fn ensure_solve_service(ui: &MainWindow) {
+    let owner_alive = SOLVE_OWNER.with(|owner| {
+        owner
+            .borrow()
+            .as_ref()
+            .is_some_and(|weak| weak.upgrade().is_some())
+    });
+    if !owner_alive {
+        SOLVE_SERVICE.with(|cell| *cell.borrow_mut() = None);
+        PENDING_SOLVES.with(|pending| pending.borrow_mut().clear());
+        SOLVE_LANE.with(|lane| *lane.borrow_mut() = SolveLane::default());
+        SOLVE_OWNER.with(|owner| *owner.borrow_mut() = Some(ui.as_weak()));
+    }
     SOLVE_SERVICE.with(|cell| {
         if cell.borrow().is_some() {
             return;

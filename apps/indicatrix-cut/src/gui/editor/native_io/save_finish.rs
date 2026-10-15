@@ -47,10 +47,11 @@ pub(super) fn record_last_saved_path(ui: &MainWindow, path: &Path) {
 /// itself failed (see [`write_back_to_catalogue`]'s own doc comment), so it is
 /// reported on its own rather than folded into a single combined error.
 pub(super) struct WriteNativeOutcome {
-    /// The `.indicatrix` file that was written.
+    /// The `.isdd` file that was written.
     pub(super) native_path: PathBuf,
     pub(super) asc_filename: String,
-    pub(super) paired: indicatrix_cut_core::native::PairedSave,
+    /// The catalogue row's cutting instructions and the draft verdict.
+    pub(super) asc: indicatrix_cut_core::native::CatalogueAsc,
     pub(super) catalogue: Result<(i64, CatalogueWriteBack), String>,
     /// `EditorState::generation`'s value at the moment `design` was cloned out
     /// of `state`, well before this write ever started (`NativeSaveContext::
@@ -68,7 +69,7 @@ pub(super) struct WriteNativeOutcome {
 /// Recent entry and this state's own file (see [`remember_design_location`]'s doc
 /// comment), updates `EditorState`'s own saved-generation bookkeeping, and toasts
 /// the outcome -- a draft note when
-/// [`indicatrix_cut_core::native::PairedSave::draft_reason`] is `Some`, an ordinary
+/// [`indicatrix_cut_core::native::CatalogueAsc::draft_reason`] is `Some`, an ordinary
 /// success note otherwise -- then reports `outcome.catalogue`'s own result.
 pub(super) fn finish_save_native_success(
     ui: &MainWindow,
@@ -80,7 +81,7 @@ pub(super) fn finish_save_native_success(
     let WriteNativeOutcome {
         native_path,
         asc_filename,
-        paired,
+        asc,
         catalogue,
         snapshot_generation,
     } = outcome;
@@ -103,10 +104,10 @@ pub(super) fn finish_save_native_success(
     {
         let mut st = state.borrow_mut();
         st.asc_filename = Some(asc_filename);
-        st.original_asc_text = Some(paired.asc_text);
+        st.original_asc_text = Some(asc.asc_text);
         // A draft save is still a real, successful save -- `design` not
-        // currently solving does not fail `save_paired` at all (see
-        // `PairedSave::draft_reason`'s own doc comment) -- so this is unconditional,
+        // currently solving does not fail `catalogue_asc` at all (see
+        // `CatalogueAsc::draft_reason`'s own doc comment) -- so this is unconditional,
         // not only on the ordinary branch below.
         //
         // `snapshot_generation` (the generation `design` was cloned out of
@@ -124,16 +125,15 @@ pub(super) fn finish_save_native_success(
 
     // `draft_reason` is `Some` iff `design` did not currently solve, or had no
     // tiers at all, and this save fell back to a placeholder-mast `.asc` (see
-    // `save_paired`'s own doc comment and `indicatrix_cut_core::native::DraftReason`)
+    // `catalogue_asc`'s own doc comment and `indicatrix_cut_core::native::DraftReason`)
     // -- worded so the cutter knows the file IS on disk but is not yet a real cut
     // instruction, rather than seeing a "Cannot save" error. `DraftReason`'s own
     // `Display` already names which of the two happened, so it is not repeated
     // here.
-    if let Some(reason) = &paired.draft_reason {
+    if let Some(reason) = &asc.draft_reason {
         // This is a critical outcome -- the cutter's `.asc` is a placeholder, not
-        // a real cut instruction -- so it gets the same persistent "warning" class
-        // as the fingerprint-mismatch toast just below, not an "info" flash that
-        // can vanish before it is read.
+        // a real cut instruction -- so it gets the persistent "warning" class,
+        // not an "info" flash that can vanish before it is read.
         show_toast(
             ui,
             &format!(

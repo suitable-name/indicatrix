@@ -15,7 +15,7 @@ pub const CHECKLIST: [&str; 5] = [
 ];
 
 /// The headline over [`CHECKLIST`].
-pub const CHECKLIST_TITLE: &str = "Before you photograph";
+pub const CHECKLIST_TITLE: &str = "Before You Photograph";
 
 /// The name of a frame for a sentence.
 #[must_use]
@@ -101,7 +101,7 @@ pub fn warning_text(view_name: &str, warning: &ConsistencyWarning) -> String {
             f64::from(*fraction) * 100.0
         ),
         ConsistencyWarning::NonLinearSource => format!(
-            "{view_name}: the stone photo is not linear (8-bit or tone-mapped), so colours will be less certain. RAW is best."
+            "{view_name}: the stone photo is not linear (8-bit or tone-mapped), so colors will be less certain. RAW is best."
         ),
     }
 }

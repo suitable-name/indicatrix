@@ -1,0 +1,115 @@
+import { Button, Switch, ListView } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { SegmentButton, SegmentRow } from "../components/segmented.slint";
+
+// The console: severity-colored lines, filter, copy, clear, follow-tail.
+export component ConsolePanel inherits VerticalLayout {
+    spacing: 8px;
+    private property <bool> follow: true;
+    private property <int> line_count: TrainingController.logs.length;
+
+    changed line_count => {
+        if root.follow {
+            lv.content-y = min(0px, lv.height - lv.content-height);
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+        SegmentRow {
+            width: 330px;
+            SegmentButton {
+                label: "All";
+                tip: "Show every console line.";
+                selected: TrainingController.log_filter == 0;
+                activated => { TrainingController.set_log_filter(0); }
+            }
+            SegmentButton {
+                label: "Warnings";
+                tip: "Show warnings and errors only.";
+                selected: TrainingController.log_filter == 1;
+                activated => { TrainingController.set_log_filter(1); }
+            }
+            SegmentButton {
+                label: "Errors";
+                tip: "Show errors only.";
+                selected: TrainingController.log_filter == 2;
+                activated => { TrainingController.set_log_filter(2); }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Switch {
+            text: "Follow";
+            checked <=> root.follow;
+            accessible-label: "Follow the newest line";
+            Tooltip { text: @markdown("Keep the newest line in view."); }
+        }
+        Button {
+            text: "Copy";
+            enabled: TrainingController.logs.length > 0;
+            accessible-label: "Copy the console to the clipboard";
+            clicked => { TrainingController.copy_logs(); }
+            Tooltip { text: @markdown("Copy the visible lines to the clipboard."); }
+        }
+        Button {
+            text: "Clear";
+            enabled: TrainingController.logs.length > 0;
+            accessible-label: "Clear the console";
+            clicked => { TrainingController.clear_logs(); }
+        }
+    }
+    Rectangle {
+        background: TrainerTheme.bg-input;
+        border-radius: TrainerTheme.radius;
+        border-width: 1px;
+        border-color: TrainerTheme.border-subtle;
+        clip: true;
+
+        lv := ListView {
+            for e in TrainingController.logs: Rectangle {
+                background: ta.has-hover ? TrainerTheme.bg-card-hover : transparent;
+                accessible-role: text;
+                accessible-label: e.timestamp + " " + e.level + " " + e.message;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 2px;
+                    padding-bottom: 2px;
+                    spacing: 10px;
+                    Text {
+                        text: e.timestamp;
+                        color: TrainerTheme.text-muted;
+                        font-family: "monospace";
+                        font-size: 11px;
+                        width: 62px;
+                    }
+                    Text {
+                        text: e.level;
+                        color: TrainerTheme.severity-color(e.severity);
+                        font-family: "monospace";
+                        font-size: 11px;
+                        font-weight: 700;
+                        width: 84px;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: e.message;
+                        color: e.severity >= 2 ? TrainerTheme.severity-color(e.severity) : TrainerTheme.text-primary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+                ta := TouchArea { mouse-cursor: MouseCursor.text; }
+            }
+        }
+        if TrainingController.logs.length == 0: Text {
+            text: TrainingController.log_filter == 0 ? "Nothing logged yet." : "No lines match this filter.";
+            color: TrainerTheme.text-muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}

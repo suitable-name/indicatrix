@@ -21,18 +21,18 @@ use indicatrix_net::{SceneState, client::Accumulator};
 use std::{
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
     time::{Duration, Instant},
 };
 
-/// A single fixed id: every remote dispatch this module makes opens its OWN fresh
-/// connection (`spawn_remote_render` calls `connect_and_handshake` itself), so nothing
-/// is ever pipelined behind something else on the same socket the way the live
-/// viewport's `next_request_id` counter has to guard against. Reusing `1` across
-/// separate connections is therefore safe.
-const REQUEST_ID: u32 = 1;
+/// The next id to hand a dispatch. `spawn_remote_render` now parks a connection after a
+/// clean `DONE` and the next chunk reuses it (one TLS handshake per lane, not per
+/// chunk), so -- as on the live viewport's persistent socket -- consecutive requests on
+/// one socket must not share an id, or a late reply to the previous chunk could not be
+/// told apart from the next one's.
+static NEXT_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Mirrors `bridge::remote::remote_render::connection`'s own `LIVENESS_TIMEOUT` (same
 /// value/reasoning) but kept as its own constant: this is a ONE-SHOT dispatch's idle
@@ -191,7 +191,7 @@ pub(in crate::bridge::export_thread) fn run_remote_batch(
     let handle = remote_render::spawn_remote_render(
         RemoteRenderRequest {
             worker: capability.worker.clone(),
-            request_id: REQUEST_ID,
+            request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
             scene,
             first_sample,
             samples,

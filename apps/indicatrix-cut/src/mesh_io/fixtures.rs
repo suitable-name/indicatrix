@@ -99,7 +99,12 @@ pub fn binary_stl_of(header: &str, points: &[DVec3], triangles: &[[u32; 3]]) -> 
         for &corner in triangle {
             let p = points[corner as usize];
             for value in [p.x, p.y, p.z] {
-                bytes.extend((value as f32).to_le_bytes());
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "STL stores f32 coordinates; fixture points are small"
+                )]
+                let single = value as f32;
+                bytes.extend(single.to_le_bytes());
             }
         }
         bytes.extend(0_u16.to_le_bytes());
@@ -126,7 +131,7 @@ pub fn ply_of(format: &str, points: &[DVec3], faces: &[Vec<u32>]) -> Vec<u8> {
     let big = format == "binary_big_endian";
     let binary = format != "ascii";
     // Pushes `value` as text (ascii) or as the bytes of its type in the file's byte order.
-    let put_f32 = |bytes: &mut Vec<u8>, value: f32| {
+    let put_float = |bytes: &mut Vec<u8>, value: f32| {
         if !binary {
             bytes.extend(format!("{value} ").bytes());
         } else if big {
@@ -135,7 +140,7 @@ pub fn ply_of(format: &str, points: &[DVec3], faces: &[Vec<u32>]) -> Vec<u8> {
             bytes.extend(value.to_le_bytes());
         }
     };
-    let put_i32 = |bytes: &mut Vec<u8>, value: i32| {
+    let put_int = |bytes: &mut Vec<u8>, value: i32| {
         if !binary {
             bytes.extend(format!("{value} ").bytes());
         } else if big {
@@ -153,7 +158,12 @@ pub fn ply_of(format: &str, points: &[DVec3], faces: &[Vec<u32>]) -> Vec<u8> {
     };
     for p in points {
         for value in [p.x, p.y, p.z, 0.0, 0.0, 1.0] {
-            put_f32(&mut bytes, value as f32);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "PLY fixture stores f32 properties; fixture values are small"
+            )]
+            let single = value as f32;
+            put_float(&mut bytes, single);
         }
         for value in [200, 100, 50] {
             put_u8(&mut bytes, value);
@@ -165,16 +175,16 @@ pub fn ply_of(format: &str, points: &[DVec3], faces: &[Vec<u32>]) -> Vec<u8> {
     for face in faces {
         put_u8(&mut bytes, u8::try_from(face.len()).expect("a small face"));
         for &corner in face {
-            put_i32(&mut bytes, i32::try_from(corner).expect("a small index"));
+            put_int(&mut bytes, i32::try_from(corner).expect("a small index"));
         }
-        put_i32(&mut bytes, 7);
+        put_int(&mut bytes, 7);
         if !binary {
             bytes.push(b'\n');
         }
     }
     for (a, b) in [(0, 1), (1, 2)] {
-        put_i32(&mut bytes, a);
-        put_i32(&mut bytes, b);
+        put_int(&mut bytes, a);
+        put_int(&mut bytes, b);
         if !binary {
             bytes.push(b'\n');
         }

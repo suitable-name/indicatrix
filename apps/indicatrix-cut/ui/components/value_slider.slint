@@ -294,7 +294,7 @@ export component PresetMenu inherits Rectangle {
     background: (touch.has-hover && root.live) ? Theme.surface-control-hover : Theme.surface-control;
     opacity: root.live ? 1.0 : 0.5;
     accessible-role: AccessibleRole.button;
-    accessible-label: root.label + " values";
+    accessible-label: root.label + " Values";
     accessible-enabled: root.live;
     accessible-action-default => { menu.show(); }
 

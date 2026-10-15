@@ -8,7 +8,7 @@
 //! * the editor's open design with the render material linked to it: the pick is that
 //!   design's own colour override, the same undoable edit the Edit tab's color box makes
 //!   (the editor side supplies it as a [`DesignColorPort`]);
-//! * anything else (a library design, or the render material unlinked): a view-only
+//! * anything else (a library design, or a material preview from the Stone tab): a view-only
 //!   setting, `RenderContext::view_body_color`, remembered in
 //!   `AppSettings::render_body_color_override` and never written to a design.
 //!
@@ -106,11 +106,11 @@ pub fn choice_for(color: ColorOverride) -> usize {
 #[must_use]
 pub fn choice_label(choice: usize) -> &'static str {
     match choice {
-        0 => "Material default",
+        0 => "Material Default",
         _ => choice
             .checked_sub(1)
             .and_then(|preset| BODY_COLOR_PRESETS.get(preset))
-            .map_or("Custom color", |preset| preset.label),
+            .map_or("Custom Color", |preset| preset.label),
     }
 }
 
@@ -136,6 +136,9 @@ pub struct ControlInput {
     pub target: ColorTarget,
     /// The traced material defines its own colour (a physics recipe).
     pub physics: bool,
+    /// The traced material has colour zones (colour zoning): its colour is its zones, so no
+    /// override applies to it.
+    pub zoned: bool,
     /// The open design's colour override, as applied.
     pub design_color: ColorOverride,
     /// The remembered view-only colour.
@@ -147,6 +150,10 @@ pub struct ControlInput {
 
 /// What the control shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the control's display flags (enabled, physics, zoned, targets_design); they are independent switches"
+)]
 pub struct ControlView {
     /// The selected row: see [`choice_for`].
     pub choice: usize,
@@ -156,8 +163,10 @@ pub struct ControlView {
     pub swatch: Option<[u8; 3]>,
     /// False for a material that defines its own colour.
     pub enabled: bool,
-    /// The reason for `enabled == false`.
+    /// A reason for `enabled == false`: a physics recipe.
     pub physics: bool,
+    /// A reason for `enabled == false`: colour zones.
+    pub zoned: bool,
     /// A pick edits the open design (true) or only the view (false).
     pub targets_design: bool,
 }
@@ -166,7 +175,8 @@ pub struct ControlView {
 /// while they go to the view (and the material can be recoloured at all).
 #[must_use]
 pub fn control_view(input: ControlInput) -> ControlView {
-    let shown = match (input.target, input.physics) {
+    let own_colour = input.physics || input.zoned;
+    let shown = match (input.target, own_colour) {
         (ColorTarget::Design, _) => input.design_color,
         (ColorTarget::View, false) => input.view_color,
         // A view colour never applies to a material with its own colour: show none.
@@ -177,8 +187,9 @@ pub fn control_view(input: ControlInput) -> ControlView {
         choice,
         summary: choice_label(choice),
         swatch: shown.map(|rgb| display_rgb_for_stone(rgb, input.stone_width_mm)),
-        enabled: !input.physics,
+        enabled: !own_colour,
         physics: input.physics,
+        zoned: input.zoned,
         targets_design: input.target == ColorTarget::Design,
     }
 }
@@ -190,6 +201,17 @@ fn update_context(ctx: &mut RenderContext, change: impl FnOnce(&mut RenderContex
     change(ctx);
     if ctx.effective_view_body_color() != before {
         ctx.dirty = true;
+    }
+}
+
+/// Forgets the remembered view-only colour (context and settings file). Called when a material
+/// preview starts or ends, so a tint from an earlier preview never colours the next one.
+pub fn clear_view_color(render_ctx: &Arc<Mutex<RenderContext>>) {
+    update_context(&mut RenderContext::lock(render_ctx), |ctx| {
+        ctx.view_body_color = None;
+    });
+    if let Some(persister) = SettingsPersister::installed_for_this_thread() {
+        persister.update(|file| file.settings.render_body_color_override = None);
     }
 }
 
@@ -249,16 +271,18 @@ fn push_view(ui: &MainWindow, view: &ControlView) {
     );
     model.set_render_color_enabled(view.enabled);
     model.set_render_color_physics(view.physics);
+    model.set_render_color_zoned(view.zoned);
     model.set_render_color_targets_design(view.targets_design);
 }
 
 /// Recomputes the control from the render context and the open design.
 fn refresh(ui: &MainWindow, render_ctx: &Arc<Mutex<RenderContext>>, port: &DesignColorPort) {
-    let (target, physics, view_color, stone_width_mm) = {
+    let (target, physics, zoned, view_color, stone_width_mm) = {
         let ctx = RenderContext::lock(render_ctx);
         (
             ctx.color_target(),
             ctx.physics_color(),
+            ctx.zoned_material(),
             ctx.view_body_color,
             ctx.stone_width_mm,
         )
@@ -277,6 +301,7 @@ fn refresh(ui: &MainWindow, render_ctx: &Arc<Mutex<RenderContext>>, port: &Desig
         &control_view(ControlInput {
             target,
             physics,
+            zoned,
             design_color,
             view_color,
             stone_width_mm,
@@ -292,12 +317,16 @@ fn apply_pick(
     port: &DesignColorPort,
     color: ColorOverride,
 ) {
-    let (target, physics) = {
+    let (target, own_colour) = {
         let ctx = RenderContext::lock(render_ctx);
-        (ctx.color_target(), ctx.physics_color())
+        (
+            ctx.color_target(),
+            ctx.physics_color() || ctx.zoned_material(),
+        )
     };
-    if physics {
-        // The control is greyed out for these; never recolour a material's own colour.
+    if own_colour {
+        // The control is greyed out for these (physics recipe, colour zones); never recolour
+        // a material's own colour.
         return;
     }
     match target {
@@ -347,7 +376,7 @@ pub fn setup_render_body_color_callbacks(
         }
     });
 
-    // "Linked to design" moved: the render pipeline mirrors it (it decides whether the
+    // The view's material link moved: the render pipeline mirrors it (it decides whether the
     // view colour or the design's own colour applies), then the control follows.
     let (ui_weak, ctx, port_link) = (ui.as_weak(), Arc::clone(render_ctx), Rc::clone(&port));
     model.on_render_color_context_changed(move || {
@@ -420,6 +449,7 @@ mod tests {
         ControlInput {
             target,
             physics,
+            zoned: false,
             design_color: Some(BODY_COLOR_PRESETS[1].absorption_rgb),
             view_color: Some(YELLOW),
             stone_width_mm: 0.0,
@@ -464,10 +494,10 @@ mod tests {
     #[test]
     fn no_colour_is_the_default_row_and_an_unlisted_colour_is_the_custom_row() {
         assert_eq!(choice_for(None), 0);
-        assert_eq!(choice_label(0), "Material default");
+        assert_eq!(choice_label(0), "Material Default");
         assert_eq!(choice_for(Some([0.5, 0.5, 0.5])), CUSTOM_CHOICE);
-        assert_eq!(choice_label(CUSTOM_CHOICE), "Custom color");
-        assert_eq!(choice_label(CUSTOM_CHOICE + 3), "Custom color");
+        assert_eq!(choice_label(CUSTOM_CHOICE), "Custom Color");
+        assert_eq!(choice_label(CUSTOM_CHOICE + 3), "Custom Color");
     }
 
     #[test]
@@ -499,7 +529,7 @@ mod tests {
         state.view_color = Some([0.3, 0.9, 1.4]);
         let view = control_view(state);
         assert_eq!(view.choice, CUSTOM_CHOICE);
-        assert_eq!(view.summary, "Custom color");
+        assert_eq!(view.summary, "Custom Color");
         assert!(view.swatch.is_some());
     }
 
@@ -516,6 +546,21 @@ mod tests {
         // A design that already carries an override on a physics material still shows it
         // (the editor warns about it the same way); the control stays greyed out.
         let view = control_view(input(ColorTarget::Design, true));
+        assert!(!view.enabled);
+        assert_eq!(view.choice, 2);
+    }
+
+    #[test]
+    fn a_zoned_material_greys_the_control_out_and_never_shows_a_view_colour() {
+        let mut state = input(ColorTarget::View, false);
+        state.zoned = true;
+        let view = control_view(state);
+        assert!(!view.enabled);
+        assert!(view.zoned && !view.physics);
+        assert_eq!((view.choice, view.swatch), (0, None));
+        // A zoned view whose open design still carries an override shows it, greyed out.
+        state.target = ColorTarget::Design;
+        let view = control_view(state);
         assert!(!view.enabled);
         assert_eq!(view.choice, 2);
     }

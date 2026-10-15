@@ -27,15 +27,24 @@ fn tier(name: &str, angle_deg: f64, indices: &[f64], constraint: MeetConstraint)
     }
 }
 
+/// The f32 narrowing `facet_map` applies to its f64 inputs.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "mirrors facet_map, which narrows angles and indices to f32 (the GPU precision)"
+)]
+const fn narrow(value: f64) -> f32 {
+    value as f32
+}
+
 fn bits(v: Vec3) -> [u32; 3] {
     v.to_array().map(f32::to_bits)
 }
 
 /// `facet_map/build.rs`'s per-facet normal, copied line for line.
 fn reference_normal(angle_deg: f64, idx: f64, gear_teeth: f32, is_crown: bool) -> Vec3 {
-    let theta = (angle_deg.abs() as f32).to_radians();
+    let theta = narrow(angle_deg.abs()).to_radians();
     let (sin_theta, cos_theta) = (theta.sin(), theta.cos());
-    let phi = 2.0 * std::f32::consts::PI * (idx as f32) / gear_teeth;
+    let phi = 2.0 * std::f32::consts::PI * narrow(idx) / gear_teeth;
     let (sin_phi, cos_phi) = (phi.sin(), phi.cos());
     let normal = if is_crown {
         Vec3::new(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi)
@@ -55,9 +64,9 @@ fn reference_normal_with_reference(
     gear_teeth: f32,
     is_crown: bool,
 ) -> Vec3 {
-    let theta = (angle_deg.abs() as f32).to_radians();
+    let theta = narrow(angle_deg.abs()).to_radians();
     let (sin_theta, cos_theta) = (theta.sin(), theta.cos());
-    let phi = StandardGemCuts::index_to_azimuth(idx as f32, gear_teeth, reference);
+    let phi = StandardGemCuts::index_to_azimuth(narrow(idx), gear_teeth, reference);
     let (sin_phi, cos_phi) = (phi.sin(), phi.cos());
     let normal = if is_crown {
         Vec3::new(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi)
@@ -186,7 +195,7 @@ fn facet_frame_of_an_indexless_tier_matches_the_facet_map_special_case() {
     for (angle, sign) in [(34.5_f64, 1.0_f32), (-41.0, -1.0)] {
         let t = tier("X", angle, &[], MeetConstraint::MeetExisting);
         let frame = FacetFrame::from_tier(&t, 0.0, 96, Vec3::ZERO);
-        let theta = (angle.abs() as f32).to_radians();
+        let theta = narrow(angle.abs()).to_radians();
         let expected = Vec3::new(0.0, sign * theta.cos(), theta.sin()).normalize();
         assert_eq!(bits(frame.normal), bits(expected), "angle {angle}");
         assert!(frame.is_indexless());
@@ -329,8 +338,13 @@ fn drag_angle_snaps_to_a_tenth_coarse_a_hundredth_fine_and_not_at_all_off() {
     assert_eq!(angle_of(drag_value(&s, pointer, SnapMode::Coarse)), 43.0);
     assert_eq!(angle_of(drag_value(&s, pointer, SnapMode::Fine)), 43.04);
     let off = angle_of(drag_value(&s, pointer, SnapMode::Off));
+    #[expect(
+        clippy::float_cmp,
+        reason = "the unsnapped value must differ from the snapped 43.04 exactly"
+    )]
+    let differs_from_snapped = off != 43.04;
     assert!(
-        (off - 43.04).abs() < 1e-4 && off != 43.04,
+        (off - 43.04).abs() < 1e-4 && differs_from_snapped,
         "unsnapped: {off}"
     );
 }

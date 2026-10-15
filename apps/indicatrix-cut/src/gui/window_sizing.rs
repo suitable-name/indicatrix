@@ -86,6 +86,10 @@ pub fn fit_initial_window_size(ui: &MainWindow, editor_layout_touched: bool) {
             return;
         };
         let current = ui.window().size().to_logical(ui.window().scale_factor());
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "monitor sizes in logical pixels are far below f32 precision limits"
+        )]
         let target = fitted_size(monitor_width as f32, monitor_height as f32, current);
         let fitted_height = target.map_or(current.height, |size| size.height);
         if let Some(size) = target {

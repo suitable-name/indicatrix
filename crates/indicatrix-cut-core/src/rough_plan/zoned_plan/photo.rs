@@ -154,7 +154,7 @@ pub const MAX_CACHED_PIXELS: usize = 4096 * 4096;
 pub const fn f32_to_f16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
-    let exponent = ((bits >> 23) & 0xff) as i32;
+    let exponent = ((bits >> 23) & 0xff).cast_signed();
     let mantissa = bits & 0x007f_ffff;
     if exponent == 0xff {
         return sign | 0x7c00 | if mantissa == 0 { 0 } else { 0x0200 };
@@ -164,23 +164,33 @@ pub const fn f32_to_f16_bits(value: f32) -> u16 {
         return sign | 0x7c00;
     }
     if unbiased >= -14 {
-        let mut half = (((unbiased + 15) as u32) << 10) | (mantissa >> 13);
+        let mut half = ((unbiased + 15).cast_unsigned() << 10) | (mantissa >> 13);
         let round = mantissa & 0x1fff;
         if round > 0x1000 || (round == 0x1000 && half & 1 == 1) {
             half += 1;
         }
-        return sign | half as u16;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a normal half is at most 0x7c00 (rounding up from the largest finite value), below u16::MAX"
+        )]
+        let half_bits = half as u16;
+        return sign | half_bits;
     }
     if unbiased >= -25 {
         let full = mantissa | 0x0080_0000;
-        let shift = (-unbiased - 1) as u32;
+        let shift = (-unbiased - 1).cast_unsigned();
         let mut half = full >> shift;
         let remainder = full & ((1_u32 << shift) - 1);
         let halfway = 1_u32 << (shift - 1);
         if remainder > halfway || (remainder == halfway && half & 1 == 1) {
             half += 1;
         }
-        return sign | half as u16;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a subnormal half is at most 0x400, far below u16::MAX"
+        )]
+        let half_bits = half as u16;
+        return sign | half_bits;
     }
     sign
 }
@@ -203,6 +213,16 @@ pub fn f16_bits_to_f32(half: u16) -> f32 {
     }
 }
 
+/// `value` rounded and clamped to `0..=255` (`NaN` gives 0).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is rounded and clamped to 0..=255 first"
+)]
+const fn clamped_byte(value: f32) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
+}
+
 /// `samples` as bytes in `encoding` (`Json` is not a sample encoding and gives no bytes).
 /// `U8` rounds and clamps to `0..=255`.
 #[must_use]
@@ -213,10 +233,7 @@ pub fn encode_samples(samples: &[f32], encoding: PhotoEncoding) -> Vec<u8> {
             .flat_map(|&v| f32_to_f16_bits(v).to_le_bytes())
             .collect(),
         PhotoEncoding::F32 => samples.iter().flat_map(|v| v.to_le_bytes()).collect(),
-        PhotoEncoding::U8 => samples
-            .iter()
-            .map(|&v| v.round().clamp(0.0, 255.0) as u8)
-            .collect(),
+        PhotoEncoding::U8 => samples.iter().map(|&v| clamped_byte(v)).collect(),
         PhotoEncoding::Json => Vec::new(),
     }
 }
@@ -420,7 +437,13 @@ pub fn resampled_from_blobs(blobs: &[PhotoBlob]) -> Result<ResampledImage, Photo
     let mut mask = PixelMask::new(grid.width, grid.height);
     for (index, &flags) in mask_bytes.iter().enumerate() {
         if flags > 0.0 {
-            mask.set(index % grid.width, index / grid.width, flags as u8);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "flags were decoded from U8 samples, so they are whole numbers in 1..=255"
+            )]
+            let flag_bits = flags as u8;
+            mask.set(index % grid.width, index / grid.width, flag_bits);
         }
     }
     Ok(ResampledImage {

@@ -11,17 +11,19 @@ use std::path::Path;
 
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::raw::decode_raw_file;
 use super::{
     exif::parse_jpeg_exif,
     linear::{CaptureMeta, LinearImage, PhotometryError, SourceKind},
-    raw::decode_raw_file,
     srgb::{srgb_to_linear, srgb8_table},
 };
 
 /// Decodes a photo file, choosing the decoder from its extension.
 ///
 /// `jpg`, `jpeg`, `png`, `tif` and `tiff` go to the `image` crate, anything else is tried as a
-/// camera RAW first and, if rawler refuses it, as an ordinary image.
+/// camera RAW first and, if rawler refuses it, as an ordinary image. The wasm32 build has no RAW
+/// decoder and tries every file as an ordinary image.
 ///
 /// # Errors
 ///
@@ -34,8 +36,11 @@ pub fn decode_file(path: &Path) -> Result<LinearImage, PhotometryError> {
         .unwrap_or_default();
     match extension.as_str() {
         "jpg" | "jpeg" | "png" | "tif" | "tiff" => decode_standard_file(path),
+        #[cfg(not(target_arch = "wasm32"))]
         _ => decode_raw_file(path)
             .or_else(|raw_error| decode_standard_file(path).map_err(|_| raw_error)),
+        #[cfg(target_arch = "wasm32")]
+        _ => decode_standard_file(path),
     }
 }
 
@@ -199,7 +204,7 @@ pub fn icc_is_linear(profile: &[u8]) -> bool {
             if kind == u32::from_be_bytes(*b"para") {
                 // Parametric curve: function type 0 is `Y = X^g` with g an s15Fixed16.
                 let function = be16(at + 8);
-                let gamma = be32(at + 12).map(|raw| f64::from(raw as i32) / 65536.0);
+                let gamma = be32(at + 12).map(|raw| f64::from(raw.cast_signed()) / 65536.0);
                 return function == Some(0) && gamma.is_some_and(|g| (g - 1.0).abs() < 1e-3);
             }
             break;

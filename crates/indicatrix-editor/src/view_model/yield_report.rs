@@ -514,7 +514,7 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
     // cutting order, which is the usual case.
     let flat_row =
         |tier_index: usize, order_idx: usize, tier: indicatrix_formats::asc::AscTier| CuttingRow {
-            order_idx: order_idx as i32,
+            order_idx: i32::try_from(order_idx).unwrap_or(i32::MAX),
             side: match tier_blocks.get(tier_index) {
                 Some(Block::Crown) => 1,
                 Some(Block::Pavilion) => -1,
@@ -550,7 +550,7 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
             TierRef::Concave(i) => {
                 let tier = design.concave_tiers.get(i)?;
                 Some(CuttingRow {
-                    order_idx: order_idx as i32,
+                    order_idx: i32::try_from(order_idx).unwrap_or(i32::MAX),
                     side: if tier.is_crown_side() { 1 } else { -1 },
                     facet: match tier_codes.concave.get(i) {
                         Some(label) if !label.code.is_empty() => label.code.clone(),

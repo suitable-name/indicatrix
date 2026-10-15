@@ -15,6 +15,10 @@ use std::path::Path;
 
 /// One job row, as the Jobs window shows it.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the Slint job-row model; the can_* fields are independent action switches"
+)]
 pub struct RowView {
     pub id: i32,
     pub number_text: String,
@@ -74,9 +78,9 @@ pub fn row_view(
         number_text: (index + 1).to_string(),
         label: meta.label.clone(),
         kind_text: if meta.kind == "still" {
-            "Still image"
+            "Still Image"
         } else {
-            "Tilt video"
+            "Tilt Video"
         }
         .to_string(),
         state_word: String::new(),
@@ -197,7 +201,13 @@ fn result_name(meta: &RenderJobMeta) -> Option<String> {
 }
 
 fn percent(fraction: f32) -> u32 {
-    (fraction.clamp(0.0, 1.0) * 100.0).round() as u32
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0..=1 and scaled to 0..=100 above"
+    )]
+    let percent = (fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
+    percent
 }
 
 fn capitalise(text: &str) -> String {

@@ -404,7 +404,7 @@ mod tests {
             .iter()
             .find(|row| row.id.as_str() == WORKED_EXAMPLE_ID)
             .expect("listed");
-        assert_eq!(row.title.as_str(), "New design walkthrough");
+        assert_eq!(row.title.as_str(), "New Design Walkthrough");
         assert_eq!(row.category.as_str(), GuideCategory::GettingStarted.label());
         assert!(row.step_text.ends_with("steps"), "{}", row.step_text);
         assert!(!row.summary.is_empty());

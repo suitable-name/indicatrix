@@ -319,7 +319,8 @@ pub struct HostData {
     pub rules: Vec<String>,
     /// Per-host valence split: element -> species label (e.g. `"Fe2+"`) -> fraction of that
     /// element in the species. An element with an entry only populates the listed species; an
-    /// element without one is not split (every chromophore sees the full amount).
+    /// element without one is not split (every chromophore sees the full amount). This is the
+    /// untreated state of the host; [`HostData::treated_split`] applies a recipe's treatments to it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub valence_split: BTreeMap<String, BTreeMap<String, f64>>,
     /// Optional explicit input unit per element (otherwise derived from the host's chromophores).
@@ -413,13 +414,67 @@ impl HostData {
             .map_or(1.0, |m| m.get(species).copied().unwrap_or(0.0))
     }
 
-    /// Upper bound of a selectable id's amount in its input unit.
+    /// The valence split after the `valence_shift` effects of `treatments`, applied in catalogue
+    /// order; a treatment whose `requires` names an element that `present` reports absent is
+    /// skipped (the same rule as `resolve::apply_treatments`, which uses this function).
+    ///
+    /// Treatments the host does not know are ignored here (the resolver warns about them
+    /// separately). The other effect types (`create_centre`, `remove_centre`) do not touch the
+    /// split.
+    #[must_use]
+    pub fn treated_split(
+        &self,
+        treatments: &[String],
+        present: &dyn Fn(&str) -> bool,
+    ) -> BTreeMap<String, BTreeMap<String, f64>> {
+        let mut split = self.valence_split.clone();
+        for treatment in &self.treatments {
+            if !treatments.iter().any(|t| t == &treatment.id) {
+                continue;
+            }
+            if !treatment.requires.iter().all(|r| present(r.as_str())) {
+                continue;
+            }
+            for eff in &treatment.effects {
+                if eff.effect_type != "valence_shift" {
+                    continue;
+                }
+                let (Some(el), Some(from), Some(to), Some(frac)) =
+                    (&eff.element, &eff.from, &eff.to, eff.fraction)
+                else {
+                    continue;
+                };
+                let m = split.entry(el.clone()).or_default();
+                let moved = m.get(from).copied().unwrap_or(0.0) * frac.clamp(0.0, 1.0);
+                *m.entry(from.clone()).or_insert(0.0) -= moved;
+                *m.entry(to.clone()).or_insert(0.0) += moved;
+            }
+        }
+        split
+    }
+
+    /// Upper bound of a selectable id's amount in its input unit, under the host's untreated
+    /// valence split.
     ///
     /// End members: 1.0. Elements: the largest `conc_max` of the offered chromophores driven by the
     /// element, converted into the element's input unit; hosts without any `conc_max` fall back to
-    /// full occupation of the cation sites.
+    /// full occupation of the cation sites. This is [`Self::element_conc_max_split`] with
+    /// [`Self::valence_split`]; a recipe with treatments is bounded by the split its treatments
+    /// produce, see [`Self::treated_split`].
     #[must_use]
     pub fn element_conc_max(&self, id: &str) -> f64 {
+        self.element_conc_max_split(id, &self.valence_split)
+    }
+
+    /// `element_conc_max` under a given valence split (the recipe's treated split): a chromophore
+    /// that represents one valence species (`valence` set) whose fraction is 0 under `split`
+    /// cannot absorb and contributes no bound. Everything else as `element_conc_max`.
+    #[must_use]
+    pub fn element_conc_max_split(
+        &self,
+        id: &str,
+        split: &BTreeMap<String, BTreeMap<String, f64>>,
+    ) -> f64 {
         if self.end_members.iter().any(|m| m.id == id) {
             return 1.0;
         }
@@ -443,6 +498,12 @@ impl HostData {
             {
                 continue;
             }
+            if let Some(species) = &c.valence
+                && c.elements.len() == 1
+                && Self::valence_fraction(split, id, Some(species.as_str())) <= 0.0
+            {
+                continue;
+            }
             if let Some(m) = c.conc_max {
                 best = best.max(m * self.n_site_for_unit(&c.conc_unit) / n_in);
             }
@@ -453,6 +514,121 @@ impl HostData {
         } else {
             site_bound
         }
+    }
+
+    /// The offered multi-element chromophores whose `conc_max` bounds the SUM of their elements,
+    /// each with its `n_site_for_unit(conc_unit)`.
+    ///
+    /// A chromophore qualifies when it is of kind `ion`, `colloid` or `color_centre`, lists two or
+    /// more different elements, has a unit other than `intensity`, a `conc_max` and a positive
+    /// site density for its unit. Pairs, end members and intensity centres are not included (a
+    /// pair is bounded through its partners, an intensity centre has no element amount). A
+    /// suspect chromophore is not offered and caps nothing (tanzanite's heated V3+ / Ti4+ row).
+    #[must_use]
+    pub fn summed_caps(&self) -> Vec<(&ChromophoreData, f64)> {
+        self.chromophores
+            .iter()
+            .filter_map(|c| {
+                if !matches!(c.kind.as_str(), "ion" | "colloid" | "color_centre")
+                    || c.conc_unit == "intensity"
+                    || !c.elements.iter().any(|e| *e != c.elements[0])
+                    || !c.is_offered()
+                    || c.conc_max.is_none()
+                {
+                    return None;
+                }
+                let n_own = self.n_site_for_unit(&c.conc_unit);
+                (n_own > 0.0).then_some((c, n_own))
+            })
+            .collect()
+    }
+
+    /// Factor that converts an amount of `element` in its input unit into the unit whose site
+    /// density is `n_own`; `None` when the element has no input unit.
+    pub(super) fn to_unit_factor(&self, element: &str, n_own: f64) -> Option<f64> {
+        let unit = self.element_unit(element)?;
+        Some(self.n_site_for_unit(&unit) / n_own)
+    }
+
+    /// The distinct elements of `chromo` (those with an input unit) with their factor into the
+    /// unit whose site density is `n_own`, in the order the chromophore lists them.
+    fn element_factors<'a>(&self, chromo: &'a ChromophoreData, n_own: f64) -> Vec<(&'a str, f64)> {
+        let mut out: Vec<(&str, f64)> = Vec::new();
+        for element in &chromo.elements {
+            if out.iter().any(|(seen, _)| *seen == element.as_str()) {
+                continue;
+            }
+            if let Some(factor) = self.to_unit_factor(element, n_own) {
+                out.push((element.as_str(), factor));
+            }
+        }
+        out
+    }
+
+    /// Scales down, proportionally, the elements of every offered chromophore of kind `ion`,
+    /// `colloid` or `color_centre` that lists two or more elements, has a non-`intensity` unit and
+    /// a `conc_max` (see [`Self::summed_caps`]), when their summed amount (each converted from the
+    /// element's input unit into the chromophore's unit) exceeds `conc_max`. Returns
+    /// `(id, before, after)` for each changed amount, in catalogue order. Pairs, end members and
+    /// intensity centres are untouched.
+    pub fn cap_summed_amounts(
+        &self,
+        amounts: &mut BTreeMap<String, f64>,
+    ) -> Vec<(String, f64, f64)> {
+        let mut changed = Vec::new();
+        for (chromo, n_own) in self.summed_caps() {
+            let Some(max) = chromo.conc_max else { continue };
+            // (element, amount, factor into the chromophore's unit) of the elements in the recipe.
+            let parts: Vec<(&str, f64, f64)> = self
+                .element_factors(chromo, n_own)
+                .into_iter()
+                .filter_map(|(element, factor)| {
+                    let amount = amounts.get(element).copied().unwrap_or(0.0);
+                    (amount > 0.0).then_some((element, amount, factor))
+                })
+                .collect();
+            let sum: f64 = parts
+                .iter()
+                .map(|&(_, amount, factor)| amount * factor)
+                .sum();
+            if sum > max * (1.0 + 1e-9) {
+                let scale = max / sum;
+                for (element, before, _) in parts {
+                    let after = before * scale;
+                    amounts.insert(element.to_string(), after);
+                    changed.push((element.to_string(), before, after));
+                }
+            }
+        }
+        changed
+    }
+
+    /// The room `id` has left in the multi-element chromophores it drives (see
+    /// [`Self::cap_summed_amounts`]): the smallest `conc_max` minus the partner elements' amounts,
+    /// converted into `id`'s input unit and floored at 0. `None` when `id` drives no such
+    /// chromophore.
+    #[must_use]
+    pub fn summed_room(&self, id: &str, amount_of: &dyn Fn(&str) -> f64) -> Option<f64> {
+        let n_in = self.n_site_for_unit(&self.element_unit(id)?);
+        if n_in <= 0.0 {
+            return None;
+        }
+        let mut room: Option<f64> = None;
+        for (chromo, n_own) in self.summed_caps() {
+            let Some(max) = chromo.conc_max else { continue };
+            if !chromo.elements.iter().any(|element| element == id) {
+                continue;
+            }
+            let partners: f64 = self
+                .element_factors(chromo, n_own)
+                .into_iter()
+                .filter(|&(element, _)| element != id)
+                .map(|(element, factor)| amount_of(element).max(0.0) * factor)
+                .sum();
+            let in_id_unit = (max - partners) * n_own / n_in;
+            room = Some(room.map_or(in_id_unit, |prev| prev.min(in_id_unit)));
+        }
+        room.map(|left| left.max(0.0))
     }
 
     /// End-member fractions with the colorless remainder, `None` if the host has no end members
@@ -733,10 +909,18 @@ pub struct ChromophoreData {
     pub site: Option<String>,
     /// Explicit concentration unit (e.g. `"wt_pct_oxide:Cr2O3"`, `"ppm_site"`).
     pub conc_unit: String,
-    /// Typical concentration range `[min, max]` in `conc_unit`.
+    /// Typical concentration range `[min, max]` in `conc_unit`: the amount of the chromophore's
+    /// driving element(s) as an analysis reports it (the element total; for a chromophore with
+    /// several elements the total of all of them together; a valence species receives the share
+    /// the host's split, after treatments, assigns to it), for the stones whose color the
+    /// chromophore causes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conc_typical: Option<[f64; 2]>,
-    /// Maximum plausible concentration in `conc_unit`.
+    /// Maximum plausible concentration in `conc_unit`, with the same meaning as `conc_typical`.
+    /// It bounds a recipe: an element may not exceed the largest `conc_max` of the chromophores it
+    /// can feed under the recipe's treatments ([`HostData::element_conc_max_split`]), and the
+    /// elements of a multi-element chromophore may not add up to more than its `conc_max`
+    /// ([`HostData::cap_summed_amounts`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conc_max: Option<f64>,
     /// Species label (`"Fe3+"`) of the single element this chromophore represents; selects the
@@ -768,10 +952,12 @@ pub struct ChromophoreData {
     /// binds Ti4+ into inactive Mg-Ti). Data-driven, never hard-coded in the resolver.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compensator: Option<CompensatorData>,
-    /// Other chromophores required for this one to absorb.
+    /// Other chromophores required for this one to absorb, by exact chromophore id; an entry
+    /// that is no id of the host (an element symbol, a qualified note) is documentation only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
-    /// Other chromophores that mutually exclude this one.
+    /// Other chromophores that mutually exclude this one, by exact chromophore id (see
+    /// [`Self::requires`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excludes: Vec<String>,
     /// Chromophores that quench this chromophore's luminescence.

@@ -1,4 +1,4 @@
-//! Planner integration of rough colour (`zoning` feature).
+//! Planner integration of rough colour.
 //!
 //! Moving a rough's colour zones into the frame of each planned stone, choosing the pose that shows the wanted colour face-up, adopting
 //! a stone as a design with a zoned custom material, and the text and byte formats the vault's

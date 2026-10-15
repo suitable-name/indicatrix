@@ -42,4 +42,6 @@ pub mod search;
 pub mod topics;
 mod viewer;
 
+#[cfg(feature = "ui-harness")]
+pub(crate) use viewer::harness_window;
 pub use viewer::{close_help_window, open_topic, setup_help_callbacks};

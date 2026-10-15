@@ -1,0 +1,111 @@
+import { Theme } from "../../theme.slint";
+import { ParametersModel } from "../../models/parameters.slint";
+import { GuideModel } from "../../models/guide.slint";
+
+// One icon button that shows tab `tab` of the Parameters dock (0 Stone, 1 Lighting &
+// Environment, 2 Render & Output). A press on the tab that is showing collapses the panel, any
+// other press shows that tab (`ParametersModel.toggle_tab`). It lights up while its tab is the
+// one showing. Tab reaches it, Space or Enter presses it, a screen reader reads `name` and
+// `hint` and whether it is on.
+component ParametersToolButton inherits Rectangle {
+    in property <int> tab;
+    in property <image> icon;
+    in property <string> name;
+    in property <string> hint;
+    in property <length> side: 32px;
+    in property <length> glyph: 14px;
+    in property <color> idle_fill: Theme.hint-surface;
+    in property <color> idle_border: Theme.border-medium;
+
+    property <bool> lit: ParametersModel.open && ParametersModel.active_tab == root.tab;
+    // A tutorial step is pointing at this tab (`app.slint` also opens it).
+    property <bool> guided: (root.tab == 0 && (GuideModel.highlight_target == "stone_tab" || GuideModel.highlight_target == "design_settings"))
+        || (root.tab == 1 && GuideModel.highlight_target == "lighting_tab")
+        || (root.tab == 2 && GuideModel.highlight_target == "render_output_tab");
+
+    width: root.side;
+    height: root.side;
+    background: root.lit ? Theme.accent-cyan : (tool_touch.has-hover ? Theme.bg-elevated : root.idle_fill);
+    border-radius: Theme.radius-sm;
+    border-width: tool_focus.has-focus || root.guided ? 2px : 1px;
+    border-color: tool_focus.has-focus ? Theme.accent-cyan-hover : (root.lit || root.guided ? Theme.accent-cyan : root.idle_border);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.name;
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.lit;
+    accessible-action-default => { ParametersModel.toggle_tab(root.tab); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    tool_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                ParametersModel.toggle_tab(root.tab);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Image {
+        source: root.icon;
+        colorize: root.lit ? Theme.text-on-accent : Theme.text-secondary;
+        width: root.glyph;
+        height: root.glyph;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+    }
+
+    tool_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { ParametersModel.toggle_tab(root.tab); }
+    }
+}
+
+// The three tab buttons of the Parameters dock for a viewport toolbar: Stone, Lighting &
+// Environment and Render & Output. Both viewports' toolbars mount it (the Live Render toolbar
+// at 32 px, the Edit view's Solid toolbar at 28 px), so the dock opens from either view.
+export component ParametersButtons inherits HorizontalLayout {
+    in property <length> side: 32px;
+    in property <length> glyph: 14px;
+    in property <color> idle_fill: Theme.hint-surface;
+    in property <color> idle_border: Theme.border-medium;
+
+    spacing: 4px;
+    // Fixed, so a toolbar row never stretches the group (three buttons and two gaps).
+    width: root.side * 3 + 8px;
+
+    ParametersToolButton {
+        tab: 0;
+        icon: @image-url("../../icons/gem.svg");
+        name: "Stone Properties";
+        hint: "Stone properties (Ctrl+Alt+1): the design's material and color, the stone width and its material effects. Press again to fold the panel away.";
+        side: root.side;
+        glyph: root.glyph;
+        idle_fill: root.idle_fill;
+        idle_border: root.idle_border;
+    }
+    ParametersToolButton {
+        tab: 1;
+        icon: @image-url("../../icons/lightbulb.svg");
+        name: "Lighting and Environment";
+        hint: "Lighting and environment (Ctrl+Alt+2): the light, the exposure, the backdrop, the HDR map and the saved lightings. Press again to fold the panel away.";
+        side: root.side;
+        glyph: root.glyph;
+        idle_fill: root.idle_fill;
+        idle_border: root.idle_border;
+    }
+    ParametersToolButton {
+        tab: 2;
+        icon: @image-url("../../icons/gear.svg");
+        name: "Render and Output";
+        hint: "Render and output (Ctrl+Alt+3): picture quality, resolution, compute, ray bounces and thumbnails. Press again to fold the panel away.";
+        side: root.side;
+        glyph: root.glyph;
+        idle_fill: root.idle_fill;
+        idle_border: root.idle_border;
+    }
+}

@@ -116,6 +116,15 @@ pub(super) fn setup_render_color_callbacks(
     );
 }
 
+/// Narrows a UI value to the `f32` the Slint models hold.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Slint model properties are f32; the values are lightness, chroma and hue in the normal float range"
+)]
+const fn to_f32(value: f64) -> f32 {
+    value as f32
+}
+
 /// Pushes a finished solve to the editor: swatches with their captions, the badge, `busy` off.
 fn push_solve(model: &BodyColorEditorModel<'_>, solve: &LchSolve) {
     let colours: Vec<slint::Color> = solve
@@ -251,9 +260,9 @@ fn setup_lch_editor(
             f64::from(picked.blue()) / 255.0,
         ]);
         let model = ui.global::<BodyColorEditorModel>();
-        model.set_tone(l as f32);
-        model.set_chroma(c as f32);
-        model.set_hue(h as f32);
+        model.set_tone(to_f32(l));
+        model.set_chroma(to_f32(c));
+        model.set_hue(to_f32(h));
         start_pick(&ui, [l, c, h]);
     });
 
@@ -346,9 +355,9 @@ fn register_lch_open(
                 f64::from(model.get_hue()),
             ]
         });
-        model.set_tone(l as f32);
-        model.set_chroma(c as f32);
-        model.set_hue(h as f32);
+        model.set_tone(to_f32(l));
+        model.set_chroma(to_f32(c));
+        model.set_hue(to_f32(h));
         start_open(&ui, [l, c, h]);
     });
 }

@@ -10,8 +10,17 @@ use glam::DVec3;
 
 use super::{
     MIN_AREA_FRACTION, MeshError, RAY_DIRECTIONS, WELD_FRACTION,
-    geometry::{bounds_of, ray_meets_triangle},
+    geometry::{bounds_of, index_u32, ray_meets_triangle},
 };
+
+/// The grid-cell coordinate of one point coordinate at the weld `quantum`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the floored cell coordinate of a mesh point is far inside i64; `as` saturates"
+)]
+fn cell_coordinate(coordinate: f64, quantum: f64) -> i64 {
+    (coordinate / quantum).floor() as i64
+}
 
 /// The vertices of `tris` welded by proximity, and the triangles over them.
 ///
@@ -47,10 +56,10 @@ pub(super) fn weld_within(
             if let Some(&id) = exact.get(&bits) {
                 return id;
             }
-            let cell = [p.x, p.y, p.z].map(|c| (c / quantum).floor() as i64);
+            let cell = [p.x, p.y, p.z].map(|c| cell_coordinate(c, quantum));
             let id = near_vertex(&cells, &verts, cell, p, quantum).unwrap_or_else(|| {
                 verts.push(p);
-                let id = (verts.len() - 1) as u32;
+                let id = index_u32(verts.len() - 1);
                 cells.entry(cell).or_default().push(id);
                 id
             });
@@ -116,7 +125,7 @@ pub(super) fn compact(verts: &[DVec3], tris: &[[u32; 3]]) -> (Vec<DVec3>, Vec<[u
         out.push(tri.map(|v| {
             *renumber.entry(v).or_insert_with(|| {
                 kept.push(verts[v as usize]);
-                (kept.len() - 1) as u32
+                index_u32(kept.len() - 1)
             })
         }));
     }

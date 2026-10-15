@@ -41,6 +41,11 @@ pub(super) const MAX_SUBBATCH: u32 = 2048;
 /// over, and never returns 0 -- converges on a sub-batch size that fits the worker's
 /// own actual throughput rather than a single hardcoded sample count.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value clamped to 1.0..=max_growth (at most MAX_SUBBATCH) before the cast"
+)]
 pub(super) fn next_batch_size(prev: u32, elapsed: Duration) -> u32 {
     if elapsed.is_zero() {
         return prev.saturating_mul(4).clamp(1, MAX_SUBBATCH);

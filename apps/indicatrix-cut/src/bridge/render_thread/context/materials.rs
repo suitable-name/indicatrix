@@ -63,7 +63,7 @@ pub struct MaterialSources<'a> {
 /// material override on top of it (see [`MaterialOverrides`]/[`apply_material_overrides`]),
 /// and derives this frame's samples-per-frame from the user's target sample count.
 ///
-/// Bounce count is not resolved here -- the settings dialog's "Max Ray Bounces"
+/// Bounce count is not resolved here -- the Parameters panel's "Max Ray Bounces"
 /// selector is the only thing controlling it; callers use `RenderContext::max_bounces`
 /// directly.
 ///

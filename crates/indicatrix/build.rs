@@ -134,10 +134,8 @@ const TRANSPORT_FUNCTIONS_PIECES: &[&str] = &[
     "08_nee_and_intersect.wgsl",
 ];
 
-/// The zoned-absorption units under `shaders/zoning/`, in concatenation order. Used ONLY
-/// when this crate is built with `--features zoning` (cargo sets `CARGO_FEATURE_ZONING`
-/// for the build script then); a default build never reads them, and its generated shader
-/// text is byte-for-byte what it was before the units existed.
+/// The zoned-absorption units under `shaders/zoning/`, in concatenation order. They are
+/// appended to the shared bounce text of every generated transport shader.
 const ZONING_PIECES: &[&str] = &[
     "01_zone_table.wgsl",
     "02_zone_kernel.wgsl",
@@ -147,7 +145,7 @@ const ZONING_PIECES: &[&str] = &[
 /// Replaces the single occurrence of the one-line `anchor` in `text` with `replacement`.
 ///
 /// Panics when `anchor` is absent or ambiguous, so a later edit to the default shader text
-/// that moves an anchor fails the zoning build loudly instead of silently dropping the
+/// that moves an anchor fails the build loudly instead of silently dropping the
 /// zoned absorption.
 fn patch_once(text: &str, anchor: &str, replacement: &str, what: &str) -> String {
     let count = text.matches(anchor).count();
@@ -160,7 +158,7 @@ fn patch_once(text: &str, anchor: &str, replacement: &str, what: &str) -> String
     text.replacen(anchor, replacement, 1)
 }
 
-/// The `zoning` variant of the shared bounce text (`transport_bounce/*` concatenated): two
+/// The zoned variant of the shared bounce text (`transport_bounce/*` concatenated): two
 /// anchored patches plus the zoned units appended. Everything else is the default text.
 ///
 /// 1. the `GpuGemMaterial` struct gains its trailing `zones: GpuZoneTable` field (the Rust
@@ -173,14 +171,14 @@ fn zoned_bounce_shared(shaders_dir: &Path, bounce_shared: &str) -> String {
     let with_table = patch_once(
         bounce_shared,
         "extraordinary_param_b: vec4<f32>,",
-        "extraordinary_param_b: vec4<f32>,\n    // Zone table (`zoning` build only), appended at byte offset 576.\n    zones: GpuZoneTable,",
+        "extraordinary_param_b: vec4<f32>,\n    // Zone table, appended at byte offset 576.\n    zones: GpuZoneTable,",
         "GpuGemMaterial.zones",
     );
     let with_call = patch_once(
         &with_table,
         "if (material.scattering_sigma_s <= 0.0) {",
         "if (material.zones.header.zone_count > 0u && material.scattering_sigma_s <= 0.0) {\n                \
-         // Zoned stone (`zoning` build): per-zone absorption of this segment.\n                \
+         // Zoned stone: per-zone absorption of this segment.\n                \
          zoned_interior_absorption(\n                    \
          hit.t, (*current_origin), (*current_dir), wave_dir_at_bounce, lambdas,\n                    \
          is_anisotropic, is_biaxial, c_axis, n_alpha_hero, n_beta_hero, n_gamma_hero,\n                    \
@@ -191,7 +189,7 @@ fn zoned_bounce_shared(shaders_dir: &Path, bounce_shared: &str) -> String {
         "zoned interior absorption branch",
     );
     let mut out = with_call;
-    out.push_str("\n// ---- zoning units (shaders/zoning/*.wgsl), `zoning` build only ----\n");
+    out.push_str("\n// ---- zoning units (shaders/zoning/*.wgsl) ----\n");
     for piece in ZONING_PIECES {
         let text = fs::read_to_string(shaders_dir.join("zoning").join(piece))
             .unwrap_or_else(|e| panic!("failed to read shaders/zoning/{piece}: {e}"));
@@ -244,14 +242,8 @@ fn generate_transport_shaders(manifest_dir: &Path, out_dir: &Path) {
     };
     let prelude = read_concat("transport_physics", TRANSPORT_PHYSICS_PIECES);
     let bounce_shared = read_concat("transport_bounce", TRANSPORT_BOUNCE_PIECES);
-    // With `--features zoning` the shared bounce text becomes its zoned variant (see
-    // `zoned_bounce_shared`); without it `bounce_shared` is untouched, so the format!
-    // calls below build exactly the pre-zoning text.
-    let bounce_shared = if std::env::var_os("CARGO_FEATURE_ZONING").is_some() {
-        zoned_bounce_shared(&shaders_dir, &bounce_shared)
-    } else {
-        bounce_shared
-    };
+    // The shared bounce text is its zoned variant (see `zoned_bounce_shared`).
+    let bounce_shared = zoned_bounce_shared(&shaders_dir, &bounce_shared);
 
     // (body file, whether `transport_bounce.wgsl` is concatenated in between the
     // prelude and the body) -- see this function's own doc comment.
@@ -312,13 +304,6 @@ fn main() {
         p.extension()
             .is_some_and(|ext| ext == "rs" || ext == "wgsl")
     });
-    // The zoned-absorption shader units (`src/renderer/shaders/zoning/*.wgsl`) are part of
-    // the build identity only when they are compiled in. A default build must hash exactly
-    // the file set it hashed before they existed, so they are skipped unless `zoning` is on.
-    // (Cargo then also does not rerun on them, which is right: the default build ignores them.)
-    if std::env::var_os("CARGO_FEATURE_ZONING").is_none() {
-        rel_paths.retain(|p| !normalize_path(p).starts_with("src/renderer/shaders/zoning/"));
-    }
 
     // Pathological case: no source files found under src/ at all. Rather than silently
     // emit a hash computed from Cargo.toml alone, fall back to an explicit sentinel --

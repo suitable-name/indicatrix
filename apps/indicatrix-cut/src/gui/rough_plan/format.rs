@@ -138,7 +138,7 @@ pub fn load_titles(db: &Mutex<Database>, layouts: &[RoughLayout]) -> BTreeMap<i6
 }
 
 /// A design's display name.
-fn design_name(titles: &BTreeMap<i64, String>, entry_id: i64) -> String {
+pub(super) fn design_name(titles: &BTreeMap<i64, String>, entry_id: i64) -> String {
     titles
         .get(&entry_id)
         .cloned()
@@ -346,6 +346,10 @@ fn table_orientation(table_normal: [f64; 3]) -> String {
             best = name;
         }
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "acos of a clamped cosine, in degrees, is within 0..=180"
+    )]
     let angle_deg = best_dot.clamp(-1.0, 1.0).acos().to_degrees().round() as i32;
     if angle_deg == 0 {
         format!("table faces {best}")

@@ -19,6 +19,15 @@ use crate::{EditorModel, MainWindow, TierTableModel, gui::show_toast};
 use indicatrix_editor::loading::eval_number;
 use slint::ComponentHandle;
 
+/// Narrows a UI value to the `f32` the Slint models hold.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Slint model properties are f32; the values are angles, positions and color channels in the normal float range"
+)]
+const fn to_f32(value: f64) -> f32 {
+    value as f32
+}
+
 /// Reads the number or calculation in a field called `label`. `Err` is the toast text: a blank
 /// field asks for a number, text that is no number gets the usual "... is not a number.", a
 /// calculation that cannot be done says why, and `inf` or `NaN` is refused.
@@ -64,7 +73,7 @@ pub(in crate::gui::editor) fn setup_tier_table_model(ui: &MainWindow) {
             match read_number("Offset", &text) {
                 Ok(degrees) => {
                     ui.global::<EditorModel>()
-                        .invoke_nudge_angle(anchor, degrees as f32);
+                        .invoke_nudge_angle(anchor, to_f32(degrees));
                     true
                 }
                 Err(message) => {
@@ -84,7 +93,7 @@ pub(in crate::gui::editor) fn setup_tier_table_model(ui: &MainWindow) {
             match read_number("Position", &text) {
                 Ok(position) => {
                     ui.global::<EditorModel>()
-                        .invoke_facet_add(tier, position as f32);
+                        .invoke_facet_add(tier, to_f32(position));
                     true
                 }
                 Err(message) => {
@@ -104,7 +113,7 @@ pub(in crate::gui::editor) fn setup_tier_table_model(ui: &MainWindow) {
             match read_number("Teeth", &text) {
                 Ok(teeth) => {
                     ui.global::<EditorModel>()
-                        .invoke_tier_rotate_indices(tier, signed_teeth(teeth, direction) as f32);
+                        .invoke_tier_rotate_indices(tier, to_f32(signed_teeth(teeth, direction)));
                     true
                 }
                 Err(message) => {

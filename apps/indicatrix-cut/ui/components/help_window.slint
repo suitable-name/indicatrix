@@ -9,7 +9,8 @@
 // per window). Sizing: the whole content hangs off an x/y-positioned wrapper, so no layout
 // constraint inside it reaches the window (see `app.slint`'s sizing notes); the window's
 // own `min-width`/`min-height` are the only limits.
-import { ScrollView, LineEdit } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { SearchInput } from "search_input.slint";
 import { Theme } from "../theme.slint";
 import { HelpModel, HelpTopics, HelpNavItem, HelpBlock, HelpSearchHit } from "../models/help.slint";
 import { HelpToolButton } from "help_button.slint";
@@ -337,7 +338,7 @@ export component HelpWindow inherits Window {
                 HelpModel.forward();
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "f" {
-                search_input.focus();
+                search_input.focus-input();
                 return accept;
             } else if event.text == Key.Escape {
                 if HelpModel.search_text != "" {
@@ -419,19 +420,23 @@ export component HelpWindow inherits Window {
                         spacing: 6px;
                         alignment: stretch;
 
-                        Image {
-                            source: @image-url("../icons/search.svg");
-                            colorize: Theme.text-muted;
-                            width: 12px;
-                            height: 12px;
+                        // Centred by a layout of its own: a fixed-size Image in the row sits at
+                        // the top of its cell.
+                        VerticalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../icons/search.svg");
+                                colorize: Theme.text-muted;
+                                width: 12px;
+                                height: 12px;
+                            }
                         }
 
-                        search_input := LineEdit {
-                            min-width: 0px;
+                        search_input := SearchInput {
                             horizontal-stretch: 1;
                             text <=> HelpModel.search_text;
                             placeholder-text: "Search the manual (Ctrl+F)";
-                            accessible-label: "Search the manual";
+                            accessible-label: "Search the Manual";
                             edited => { HelpModel.search(self.text); }
                         }
 
@@ -444,7 +449,7 @@ export component HelpWindow inherits Window {
                             border-color: Theme.accent-cyan-hover;
 
                             accessible-role: AccessibleRole.button;
-                            accessible-label: "Clear the search";
+                            accessible-label: "Clear the Search";
                             accessible-action-default => {
                                 HelpModel.search_text = "";
                                 HelpModel.search("");
@@ -489,7 +494,7 @@ export component HelpWindow inherits Window {
                 }
 
                 HelpToolButton {
-                    label: "Open manual folder";
+                    label: "Open Manual Folder";
                     hint: "Open the folder with the manual's plain files, to read or copy them outside the program.";
                     clicked => { HelpModel.open_manual_files(); }
                 }
@@ -604,7 +609,7 @@ export component HelpWindow inherits Window {
                                     wrap: word-wrap;
                                 }
 
-                                for entry in HelpModel.hits: HelpHitRow {
+                                for entry in HelpModel.hits: help-hit-row-l612 := HelpHitRow {
                                     hit: entry;
                                 }
                             }

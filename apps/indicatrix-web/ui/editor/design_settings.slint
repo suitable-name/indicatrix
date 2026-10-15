@@ -217,7 +217,7 @@ export component DesignSettingsDialog inherits Rectangle {
             HorizontalLayout {
                 Text {
                     horizontal-stretch: 1;
-                    text: "Design settings";
+                    text: "Design Settings";
                     font-size: 14px;
                     font-weight: 700;
                     color: Theme.text-primary;
@@ -256,7 +256,7 @@ export component DesignSettingsDialog inherits Rectangle {
                         VerticalLayout {
                             width: 100px;
                             spacing: 3px;
-                            Lbl { text: "RI override"; }
+                            Lbl { text: "RI Override"; }
                             LineEdit {
                                 min-width: 0px;
                                 text <=> DesignSettingsModel.ri-override-text;
@@ -272,7 +272,7 @@ export component DesignSettingsDialog inherits Rectangle {
                         VerticalLayout {
                             horizontal-stretch: 1;
                             spacing: 3px;
-                            Lbl { text: "color"; }
+                            Lbl { text: "Color"; }
                             ComboBox {
                                 min-width: 0px;
                                 model: DesignSettingsModel.color-options;
@@ -289,7 +289,7 @@ export component DesignSettingsDialog inherits Rectangle {
                             }
                             if DesignSettingsModel.color-index == DesignSettingsModel.color-options.length - 1 && !DesignSettingsModel.color-picker-open: HorizontalLayout {
                                 Button {
-                                    text: "Choose colour...";
+                                    text: "Choose Color...";
                                     enabled: GuideModel.allows-design-settings();
                                     clicked => {
                                         DesignSettingsModel.color-picker-open = true;
@@ -312,7 +312,7 @@ export component DesignSettingsDialog inherits Rectangle {
                     if DesignSettingsModel.color-picker-open: VerticalLayout {
                         spacing: 4px;
                         Text {
-                            text: "Tone, saturation and hue. The colour depends on the size of the stone: the swatches show it at 3, 5 and 10 mm and at this stone. The closest colour the material model can reach is used; it changes this design and you can undo it.";
+                            text: "Tone, saturation and hue. The color depends on the size of the stone: the swatches show it at 3, 5 and 10 mm and at this stone. The closest color the material model can reach is used; it changes this design and you can undo it.";
                             font-size: 9px;
                             color: Theme.text-muted;
                             wrap: word-wrap;
@@ -367,7 +367,7 @@ export component DesignSettingsDialog inherits Rectangle {
                             }
                         }
                         Button {
-                            text: "Set material";
+                            text: "Set Material";
                             enabled: GuideModel.allows-design-settings();
                             clicked => { DesignSettingsModel.set-material-from-guess(); }
                         }
@@ -383,7 +383,7 @@ export component DesignSettingsDialog inherits Rectangle {
                     // The render material: the Render tab has the one "Linked to design"
                     // switch (its MATERIAL section); this dialog only points at it.
                     Text {
-                        text: "The Render view follows this material while \"Linked to design\" is on (Render settings > MATERIAL).";
+                        text: "The Render view follows this material while \"Linked to Design\" is on (Render Settings > MATERIAL).";
                         font-size: 9px;
                         color: Theme.text-muted;
                         wrap: word-wrap;
@@ -402,7 +402,7 @@ export component DesignSettingsDialog inherits Rectangle {
                     if DesignSettingsModel.custom-open: VerticalLayout {
                         spacing: 6px;
                         Text {
-                            text: "Define a material by its optics. Saving offers it in every material list and sets it as this design's material; the .indicatrix file keeps it, color included.";
+                            text: "Define a material by its optics. Saving offers it in every material list and sets it as this design's material; the .isdd file keeps it, color included.";
                             font-size: 9px;
                             color: Theme.text-muted;
                             wrap: word-wrap;
@@ -414,7 +414,7 @@ export component DesignSettingsDialog inherits Rectangle {
                         HorizontalLayout {
                             spacing: 6px;
                             TextField {
-                                label: "Refractive index (1.30 - 3.20)";
+                                label: "Refractive Index (1.30 - 3.20)";
                                 value <=> DesignSettingsModel.custom-ri;
                             }
                             TextField {
@@ -429,7 +429,7 @@ export component DesignSettingsDialog inherits Rectangle {
                                 value <=> DesignSettingsModel.custom-birefringence;
                             }
                             TextField {
-                                label: "Specific gravity (blank: none)";
+                                label: "Specific Gravity (blank: none)";
                                 value <=> DesignSettingsModel.custom-specific-gravity;
                             }
                         }
@@ -438,7 +438,7 @@ export component DesignSettingsDialog inherits Rectangle {
                             VerticalLayout {
                                 horizontal-stretch: 1;
                                 spacing: 3px;
-                                Lbl { text: "color"; }
+                                Lbl { text: "Color"; }
                                 ComboBox {
                                     min-width: 0px;
                                     model: DesignSettingsModel.custom-color-options;
@@ -448,7 +448,7 @@ export component DesignSettingsDialog inherits Rectangle {
                             VerticalLayout {
                                 alignment: end;
                                 Button {
-                                    text: "Save and use";
+                                    text: "Save and Use";
                                     primary: true;
                                     enabled: GuideModel.allows-design-settings();
                                     clicked => { DesignSettingsModel.save-custom-material(); }
@@ -465,13 +465,13 @@ export component DesignSettingsDialog inherits Rectangle {
                     }
 
                     Rule {}
-                    Section { text: "Index gear and symmetry"; }
+                    Section { text: "Index Gear and Symmetry"; }
                     HorizontalLayout {
                         spacing: 10px;
                         VerticalLayout {
                             horizontal-stretch: 1;
                             spacing: 3px;
-                            Lbl { text: "Index gear"; }
+                            Lbl { text: "Index Gear"; }
                             ComboBox {
                                 min-width: 0px;
                                 model: ["96", "80", "77", "72", "64", "120", "Custom"];
@@ -482,7 +482,7 @@ export component DesignSettingsDialog inherits Rectangle {
                         if DesignSettingsModel.gear-index == 6: VerticalLayout {
                             width: 90px;
                             spacing: 3px;
-                            Lbl { text: "Custom teeth"; }
+                            Lbl { text: "Custom Teeth"; }
                             LineEdit {
                                 min-width: 0px;
                                 text <=> DesignSettingsModel.gear-custom-text;
@@ -582,7 +582,7 @@ export component DesignSettingsDialog inherits Rectangle {
                         edited => { DesignSettingsModel.meta-pending = true; }
                     }
                     TextField {
-                        label: "Extra header lines (join with \";\")";
+                        label: "Extra Header Lines (join with \";\")";
                         value <=> DesignSettingsModel.extra-headers;
                         edited => { DesignSettingsModel.meta-pending = true; }
                     }
@@ -595,7 +595,7 @@ export component DesignSettingsDialog inherits Rectangle {
                         spacing: 10px;
                         TextField {
                             width: 130px;
-                            label: "Gear ref. angle";
+                            label: "Gear Ref. Angle";
                             value <=> DesignSettingsModel.gear-reference-angle;
                             edited => { DesignSettingsModel.meta-pending = true; }
                         }
@@ -612,9 +612,9 @@ export component DesignSettingsDialog inherits Rectangle {
                     }
 
                     Rule {}
-                    Section { text: "Printed proportions"; }
+                    Section { text: "Printed Proportions"; }
                     Text {
-                        text: "The figures printed on a GemCad-style sheet; blank means not typed. They are saved in the .indicatrix file.";
+                        text: "The figures printed on a GemCad-style sheet; blank means not typed. They are saved in the .isdd file.";
                         font-size: 10px;
                         color: Theme.text-muted;
                         wrap: word-wrap;
@@ -682,7 +682,7 @@ export component DesignSettingsDialog inherits Rectangle {
                     padding: 14px;
                     spacing: 8px;
                     Text {
-                        text: "Confirm index remap";
+                        text: "Confirm Index Remap";
                         font-size: 13px;
                         font-weight: 700;
                         color: Theme.text-primary;
@@ -726,7 +726,7 @@ export component DesignSettingsDialog inherits Rectangle {
                         spacing: 6px;
                         alignment: end;
                         Button { text: "Cancel"; clicked => { DesignSettingsModel.remap-cancel(); } }
-                        Button { text: "Confirm remap"; primary: true; clicked => { DesignSettingsModel.remap-confirm(); } }
+                        Button { text: "Confirm Remap"; primary: true; clicked => { DesignSettingsModel.remap-confirm(); } }
                     }
                 }
             }

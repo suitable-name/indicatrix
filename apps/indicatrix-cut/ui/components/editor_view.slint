@@ -1,3 +1,4 @@
+import { ScrollView } from "std-widgets.slint";
 import { EditorCommandBar } from "editor_command_bar.slint";
 import { EditorDesignSettings } from "editor_design_settings.slint";
 import { EditorTierTable } from "editor_tier_table.slint";
@@ -15,16 +16,13 @@ import { GuideModel } from "../models/guide.slint";
 // Tier/Preform/Optimize inspector below it. Kept as the exported name `EditorView`
 // since `app.slint` still imports and instantiates it under that name.
 //
-// Whole-dock scrolling: considered wrapping everything below the command bar in
-// one `ScrollView` (sized to `max(root.height, content-preferred-height)`) so a
-// short dock never clips the design-settings/inspector sections. Not done -- that
-// fights `tier_table`'s own `vertical-stretch`, which needs a real, height-
-// constrained parent to stretch INTO, not a `ScrollView` whose viewport is exactly
-// as tall as its content wants to be. Falling back to the simpler, already-true
-// shape instead: no outer `ScrollView` here, `tier_table` keeps `vertical-stretch`,
-// and `EditorTierTable`'s own internal `ScrollView` (`tier_scroll`) plus
-// `EditorInspector`'s own internal `ScrollView` are what scroll when their content
-// overflows.
+// Whole-dock scrolling: the column sits in one `ScrollView` (`dock_scroll`) whose
+// content is exactly as tall as the viewport, or as its own minimum when that is
+// taller (`max(visible-height, min-height)`), so `tier_table` keeps its
+// `vertical-stretch` against a height-constrained parent while a window too short
+// for the minimum content (768px and the 480px minimum) scrolls instead of
+// clipping. `EditorTierTable`'s `tier_scroll` and `EditorInspector`'s own
+// `ScrollView` still scroll their bodies.
 //
 // Guide-driven reveal: while the worked-example guide highlights the inspector's Tier
 // tab (`GuideModel.highlight_target == "inspector_tier"`), `reveal_tier_form` below
@@ -159,7 +157,16 @@ export component EditorView inherits Rectangle {
     }
     changed height => { root.reclamp_inspector_height(); }
 
-    VerticalLayout {
+    // The whole dock scrolls when the window is too short for its minimum content
+    // (command bar + design settings + the table's 120px + handle + the inspector's
+    // 96px + padding, about 520px: more than the body of a 768px window and far more
+    // than that of the 480px minimum window). With room to spare the column is exactly
+    // as tall as the viewport, so the table's `vertical-stretch` still has a real,
+    // height-constrained parent to stretch into.
+    dock_scroll := ScrollView {
+        VerticalLayout {
+        width: dock_scroll.visible-width;
+        height: max(dock_scroll.visible-height, self.min-height);
         padding: 12px;
         spacing: 8px;
 
@@ -218,6 +225,7 @@ export component EditorView inherits Rectangle {
         // keeps the two header rows at the top instead of spread over the dock.
         if EditorModel.tier_table_collapsed && EditorModel.inspector_collapsed: Rectangle {
             vertical-stretch: 1;
+        }
         }
     }
 }

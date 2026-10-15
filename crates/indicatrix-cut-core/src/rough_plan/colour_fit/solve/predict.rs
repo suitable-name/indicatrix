@@ -17,8 +17,10 @@
 //! The radius is the posterior WITH the smoothness and magnitude priors, which fill the null
 //! space of the data and so make it overconfident. The **metamer spread**
 //! ([`ZonePrediction::metamer_spread`]) is the honest counterpart: the largest face-up CIEDE2000
-//! from the fitted colour among parameter vectors within `Delta chi2 <= 1` of the optimum under
-//! the data alone (see `metamer_steps`, verified with the nonlinear chi-square in the fitter).
+//! from the fitted colour among the verified end points of the constrained extremisation of the
+//! reported colours over `Delta chi2 <= 1` of the data-only optimum (see `extremes`). The older
+//! ellipsoid figure (`metamer_steps`, unverified) is kept as
+//! [`ZonePrediction::metamer_spread_unverified`].
 
 use indicatrix::{
     color::body_color::{Illuminant, body_color, delta_e_2000, delta_e_2000_residual},
@@ -95,8 +97,9 @@ pub const METAMER_STEP_CAP: f64 = 2.0;
 /// colours apart at all.
 ///
 /// Round 3, D3: this returns the full-length STEPS (parameters then gains) at the full ellipsoid,
-/// already capped; [`candidate_point`] applies a fraction of a step, and the fitter verifies
-/// every candidate with the nonlinear chi-square and shrinks it by bisection until it passes.
+/// already capped; [`candidate_point`] applies a fraction of a step. Since round 5 (ZC-4) the
+/// figure built from these candidates is only the `unverified` comparison value: the reported
+/// spread comes from `extremes`, which is centred on the data optimum and has no step cap.
 /// `threshold` is the `Delta chi2` of the ellipsoid (1, or the Birge ratio above 1.2).
 pub(super) fn metamer_steps(metric: &[f64], n: usize, np: usize, threshold: f64) -> Vec<Vec<f64>> {
     if metric.len() != n * n || n == 0 || np == 0 {
@@ -162,10 +165,10 @@ pub(super) fn candidate_point(
 
 /// The predictions of every zone, size and illuminant of `config.prediction` at `params`, with the
 /// uncertainty from `cov` (row stride `stride`; its leading `np x np` block is the covariance of
-/// the model parameters) and the metamer spread from the candidate points `verified` (each at
-/// least `np` long; the model parameters lead), see [`metamer_steps`] and the verification in the
-/// fitter. `unverified` are the same candidates before the verification (the candidates at the
-/// full step), for the comparison.
+/// the model parameters) and the metamer spread from the verified end points `verified` of the
+/// constrained extremisation (each at least `np` long; the model parameters lead), see
+/// `extremes`. `unverified` are the old ellipsoid candidates of [`metamer_steps`] at the full
+/// step, kept for the comparison.
 pub(super) fn predictions(
     model: &dyn FitModel,
     params: &[f64],

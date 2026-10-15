@@ -1,0 +1,134 @@
+// The Render mode of the design viewport, in two layers that `DesignViewport` places
+// around its gesture layer:
+//
+//   RenderPicture    the tone-mapped frame, contain-fitted (below the gesture layer)
+//   RenderControls   a progress bar, the status line and the chips: Pause / Resume, Light,
+//                    Quality, Denoise, Export (above it)
+//
+// Everything comes from `RenderModel`. The camera gestures are the Solid view's; with the
+// Light chip on, one finger moves the light instead (Rust routes the pointer events).
+import { Theme } from "../../theme.slint";
+import { Chip } from "../../shell/chips.slint";
+import { RenderModel } from "render_model.slint";
+
+// The rendered picture, centered and scaled to fit; a message while there is none.
+export component RenderPicture inherits Rectangle {
+    background: Theme.surface-low;
+    accessible-role: AccessibleRole.image;
+    accessible-label: "Rendered picture";
+
+    Image {
+        visible: RenderModel.has-frame;
+        width: parent.width;
+        height: parent.height;
+        source: RenderModel.frame;
+        image-fit: contain;
+    }
+
+    if !RenderModel.has-frame: Text {
+        x: Theme.space-lg;
+        width: parent.width - 2 * Theme.space-lg;
+        height: parent.height;
+        text: RenderModel.status-text;
+        color: Theme.on-surface-variant;
+        font-size: Theme.text-body;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+}
+
+// The bar at the foot of the viewport. The chips sit in a row that scrolls sideways when
+// the viewport is too narrow for all of them.
+export component RenderControls inherits Rectangle {
+    height: 3px + 28px + Theme.touch + Theme.space-xs;
+    background: Theme.surface.with-alpha(0.72);
+
+    // Taps on the bar are not taps on the picture below.
+    TouchArea { }
+
+    VerticalLayout {
+        // The progress of the trace.
+        Rectangle {
+            height: 3px;
+            background: Theme.outline-variant;
+
+            Rectangle {
+                x: 0px;
+                width: parent.width * clamp(RenderModel.progress, 0.0, 1.0);
+                background: Theme.primary;
+            }
+        }
+
+        Text {
+            height: 28px;
+            x: Theme.space-md;
+            width: parent.width - 2 * Theme.space-md;
+            text: RenderModel.status-text;
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-label;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Render status: " + RenderModel.status-text;
+        }
+
+        Flickable {
+            height: Theme.touch;
+            content-width: chips.width;
+            content-height: self.height;
+
+            chips := HorizontalLayout {
+                x: 0px;
+                y: 0px;
+                width: max(self.preferred-width, root.width);
+                height: parent.height;
+                padding-left: Theme.space-sm;
+                padding-right: Theme.space-sm;
+                spacing: Theme.space-xs;
+                alignment: start;
+
+                Chip {
+                    text: RenderModel.paused ? "Resume" : "Pause";
+                    selected: RenderModel.paused;
+                    enabled: RenderModel.can-pause;
+                    clicked => {
+                        RenderModel.pause-toggled();
+                    }
+                }
+
+                Chip {
+                    text: "Light";
+                    selected: RenderModel.light-drag;
+                    clicked => {
+                        RenderModel.light-toggled();
+                    }
+                }
+
+                // Tapping steps through Draft, Normal and Fine.
+                Chip {
+                    text: RenderModel.quality == 0 ? "Draft" : (RenderModel.quality == 2 ? "Fine" : "Normal");
+                    clicked => {
+                        RenderModel.quality-cycled();
+                    }
+                }
+
+                Chip {
+                    text: "Denoise";
+                    selected: RenderModel.denoise;
+                    clicked => {
+                        RenderModel.denoise-toggled();
+                    }
+                }
+
+                Chip {
+                    text: "Export";
+                    enabled: RenderModel.can-render;
+                    clicked => {
+                        RenderModel.export-requested();
+                    }
+                }
+            }
+        }
+    }
+}

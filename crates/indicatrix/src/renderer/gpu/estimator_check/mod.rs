@@ -58,8 +58,6 @@ pub use furnace::{
     FurnaceResult, run_furnace, run_furnace_edge_rounding, run_furnace_frosted_girdle,
     run_furnace_nee_equality_frosted, run_furnace_nee_equality_scattering, run_furnace_scattering,
 };
-#[cfg(feature = "zoning")]
-pub use image_comparison::run_image_comparison_zoned;
 pub use image_comparison::{
     ImageComparisonResult, run_image_comparison, run_image_comparison_absorption_path_scale,
     run_image_comparison_alexandrite, run_image_comparison_aset,
@@ -71,7 +69,7 @@ pub use image_comparison::{
     run_image_comparison_scattering, run_image_comparison_surface_glare,
     run_image_comparison_synthetic_moissanite, run_image_comparison_tanzanite,
     run_image_comparison_topaz, run_image_comparison_tourmaline, run_image_comparison_zircon,
-    run_specialisation_image_comparison,
+    run_image_comparison_zoned, run_specialisation_image_comparison,
 };
 
 pub use spectral_debug::{SpectralDebugResult, run_spectral_debug};
@@ -114,7 +112,6 @@ pub fn furnace_material() -> GemMaterial {
         edge_rounding_radius: 0.0,
         absorption_path_scale: 1.0,
         absorption_unit: crate::optics::materials::AbsorptionUnit::ModelUnit,
-        #[cfg(feature = "zoning")]
         zoning: None,
         uniaxial_extraordinary_dispersion: None,
     }
@@ -497,11 +494,11 @@ fn cpu_sample_xyz(
 
     // Stratified pixel jitter and hero wavelength; mirrors
     // `render_core.rs::trace_samples`.
-    let rot_jx = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_X_ROTATION_STREAM));
-    let rot_jy = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_Y_ROTATION_STREAM));
+    let rot_across = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_X_ROTATION_STREAM));
+    let rot_down = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_Y_ROTATION_STREAM));
     let rot_hero = low_discrepancy_base2(hash_u32(pixel ^ HERO_WAVELENGTH_ROTATION_STREAM));
-    let jx = cranley_patterson_rotate(low_discrepancy_base2(sample_num), rot_jx) - 0.5;
-    let jy = cranley_patterson_rotate(radical_inverse_base(sample_num, 3), rot_jy) - 0.5;
+    let jx = cranley_patterson_rotate(low_discrepancy_base2(sample_num), rot_across) - 0.5;
+    let jy = cranley_patterson_rotate(radical_inverse_base(sample_num, 3), rot_down) - 0.5;
     let hero_rand = cranley_patterson_rotate(radical_inverse_base(sample_num, 5), rot_hero);
 
     let ray = camera.generate_ray(x as f32, y as f32, width as f32, height as f32, jx, jy);
@@ -542,18 +539,22 @@ where
             .chunks_mut(rows_per_chunk * samples_per_pixel as usize)
             .collect();
         for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
-            let start_pixel = (chunk_idx * rows_per_chunk) as u32;
+            let start_pixel = u32::try_from(chunk_idx * rows_per_chunk)
+                .expect("a chunk starts at a pixel below num_pixels, which is a u32");
             let trace_one = &trace_one;
             s.spawn(move || {
                 for (local_pixel, pixel_slot) in
                     chunk.chunks_mut(samples_per_pixel as usize).enumerate()
                 {
-                    let pixel = start_pixel + local_pixel as u32;
+                    let pixel = start_pixel
+                        + u32::try_from(local_pixel).expect("a chunk holds fewer pixels than u32");
                     if pixel >= num_pixels {
                         break;
                     }
                     for (local_sample, slot) in pixel_slot.iter_mut().enumerate() {
-                        let sample_num = sample_offset + local_sample as u32;
+                        let sample_num = sample_offset
+                            + u32::try_from(local_sample)
+                                .expect("samples per pixel is a u32, so the index fits");
                         *slot = trace_one(pixel, sample_num);
                     }
                 }
@@ -583,6 +584,10 @@ impl WelfordXyz {
         self.z.update(f64::from(v.z));
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the estimator's comparison precision; the means are in the normal float range"
+    )]
     const fn mean(&self) -> Vec3 {
         Vec3::new(self.x.mean as f32, self.y.mean as f32, self.z.mean as f32)
     }

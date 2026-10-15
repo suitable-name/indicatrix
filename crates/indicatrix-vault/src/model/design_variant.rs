@@ -17,7 +17,7 @@ pub struct NewVariant<'a> {
     pub parent_variant_id: Option<i64>,
     /// A free-text note. Blank means no note.
     pub note: Option<&'a str>,
-    /// The design as its `.indicatrix` file text. Keeping it free of attached files
+    /// The design as its `.isdd` file text. Keeping it free of attached files
     /// (PDFs, images) keeps the library database small; the design file keeps those.
     pub design_text: &'a str,
     /// A small PNG preview of the design, if one was rendered. An empty slice means none.
@@ -49,6 +49,6 @@ pub struct VariantSummary {
 pub struct DesignVariant {
     /// The list entry for this variant.
     pub summary: VariantSummary,
-    /// The design as its `.indicatrix` file text, exactly as it was saved.
+    /// The design as its `.isdd` file text, exactly as it was saved.
     pub design_text: String,
 }

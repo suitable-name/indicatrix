@@ -207,7 +207,6 @@ pub(super) fn publish_script_facts(
 ) {
     let model = ui.global::<RenderJobsModel>();
     model.set_script_job_count(i32::try_from(unfinished).unwrap_or(i32::MAX));
-    model.set_script_remote_available(worker.is_some());
     model.set_script_remote_label(worker.map_or("", |w| w.address.as_str()).into());
     // The choice cannot stay on a worker that is no longer set up.
     if worker.is_none() && model.get_script_target_index() == 1 {

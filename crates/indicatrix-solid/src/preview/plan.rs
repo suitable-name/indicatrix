@@ -104,7 +104,7 @@ pub fn build_planned_frame(
         show_preform,
         ..SolidStyle::default()
     };
-    let stale = matches!(plan.freshness, live_update::Freshness::Stale { .. });
+    let out_of_date = matches!(plan.freshness, live_update::Freshness::Stale { .. });
     // An `Unsolvable` frame carries NO masts (`plan.solved` is always `None` on that path
     // -- see `live_update::plan_preview`). It used to chain the previous masts forward
     // unchanged, so the caller's `last_solved` cache was not wiped; but the frame is
@@ -123,7 +123,7 @@ pub fn build_planned_frame(
         placements,
         style,
         solved,
-        stale,
+        stale: out_of_date,
         unsolvable_status,
         camera,
         size,

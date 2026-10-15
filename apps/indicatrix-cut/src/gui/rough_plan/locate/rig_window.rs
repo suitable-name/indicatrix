@@ -136,6 +136,12 @@ fn with_rigs<R>(f: impl FnOnce(&Rc<RigHost>) -> R) -> Option<R> {
     Some(f(&host))
 }
 
+/// The rig window when it exists. UI harness only.
+#[cfg(feature = "ui-harness")]
+pub fn harness_window() -> Option<RigWindow> {
+    with_rigs(|host| host.window.clone_strong())
+}
+
 /// [`with_rigs`] for callbacks that return nothing.
 fn on_rigs(f: impl FnOnce(&Rc<RigHost>)) {
     let _ = with_rigs(f);
@@ -402,7 +408,7 @@ fn new_rig(host: &Rc<RigHost>) {
     }
     set_message(
         host,
-        "A new rig with the default eight views. Edit them to match your rig, then press Save rig.",
+        "A new rig with the default eight views. Edit them to match your rig, then press Save Rig.",
     );
     push_all(host);
 }
@@ -554,7 +560,7 @@ fn fill_layout(host: &Rc<RigHost>) {
             }
             set_message(
                 host,
-                "The eight views are filled. Check each camera's position, and press Save rig.",
+                "The eight views are filled. Check each camera's position, and press Save Rig.",
             );
             push_rows(host);
             push_calibration(host);
@@ -575,7 +581,7 @@ fn load_photo(host: &Rc<RigHost>, view: i32) {
     set_error(host, "");
     let request = PickerRequest {
         kind: PickerKind::OpenFile,
-        title: Some("Load the cube photo of this view".to_string()),
+        title: Some("Load the Cube Photo of This View".to_string()),
         filters: vec![PickerFilter {
             label: "Photos (PNG, JPEG)".to_string(),
             extensions: ["png", "jpg", "jpeg"].map(str::to_string).to_vec(),

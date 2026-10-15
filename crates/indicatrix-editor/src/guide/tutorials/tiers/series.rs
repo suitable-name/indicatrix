@@ -49,7 +49,7 @@ fn rungs(first: f64, step: f64) -> Goal {
 fn step_series() -> Guide {
     Guide::new(
         "tiers-step-series",
-        "Generate steps",
+        "Generate Steps",
         "Write a whole ladder of tiers, each a fixed angle step from the last, with one form.",
         GuideCategory::Tiers,
     )
@@ -57,7 +57,7 @@ fn step_series() -> Guide {
     .step(
         GuideStep::new(
             "A ladder of tiers",
-            "A step cut has a row of tiers whose angles climb by a fixed step. Generate steps writes the whole ladder in one go.",
+            "A step cut has a row of tiers whose angles climb by a fixed step. Generate Steps writes the whole ladder in one go.",
         )
         .actions([
             "Click Steps / Mirror above the tier table to open the ladder form.",
@@ -75,7 +75,7 @@ fn step_series() -> Guide {
         .actions([
             "Fill in the form: name Step, start 30, step 4, N 3, indices 0:12:96.",
             "Leave anchor empty.",
-            "Leave Keep linked unticked.",
+            "Leave Keep Linked unticked.",
             "Click Generate.",
         ])
         .check("three new rows, Step1, Step2 and Step3, at 30.00, 34.00 and 38.00.")
@@ -94,7 +94,7 @@ fn step_series() -> Guide {
             "Type 35 and press Enter.",
         ])
         .check("Step2 reads 35.00; Step1 and Step3 did not move.")
-        .why("A plain ladder is only a quick way to add tiers. The next lesson, Keep linked, ties the rungs together.")
+        .why("A plain ladder is only a quick way to add tiers. The next lesson, Keep Linked, ties the rungs together.")
         .goal(Goal::tier("Step2", 35.0), "Step2 at 35.0")
         .highlight("tier_table")
         .allow(TABLE),
@@ -115,7 +115,7 @@ fn step_series() -> Guide {
 fn linked_series() -> Guide {
     Guide::new(
         "tiers-linked-series",
-        "Keep linked",
+        "Keep Linked",
         "Generate a ladder whose rungs follow its first tier, so one edit moves them all.",
         GuideCategory::Tiers,
     )
@@ -123,12 +123,12 @@ fn linked_series() -> Guide {
     .step(
         GuideStep::new(
             "Generate a linked ladder",
-            "Keep linked gives every rung after the first a relation to the first: its angle plus its own number of steps.",
+            "Keep Linked gives every rung after the first a relation to the first: its angle plus its own number of steps.",
         )
         .actions([
             "Click Steps / Mirror to open the ladder form.",
             "Fill in the form: name Step, start 30, step 4, N 3, indices 0:12:96.",
-            "Tick Keep linked.",
+            "Tick Keep Linked.",
             "Click Generate.",
         ])
         .check("Step2 and Step3 show a link icon in the ANGLE column.")
@@ -169,7 +169,7 @@ fn linked_series() -> Guide {
         )
         .actions([
             "Click the Step3 row.",
-            "In the Tier tab, click Remove relation.",
+            "In the Tier tab, click Remove Relation.",
         ])
         .check("Step3 loses its link icon and keeps 40.00.")
         .why("Removing a relation keeps the angle the tier has now. From then on you can edit it on its own.")
@@ -201,7 +201,7 @@ fn linked_series() -> Guide {
 fn mirror_to_other_block() -> Guide {
     Guide::new(
         "tiers-mirror-to-other-block",
-        "Mirror to other block",
+        "Mirror to Other Block",
         "Copy a tier to the opposite side of the girdle: the angle size and everything else are kept, only the block changes.",
         GuideCategory::Tiers,
     )
@@ -209,7 +209,7 @@ fn mirror_to_other_block() -> Guide {
     .step(
         GuideStep::new(
             "Mirror the pavilion to the crown side",
-            "Mirror to other block copies the tier you picked to the opposite block of the stone.",
+            "Mirror to Other Block copies the tier you picked to the opposite block of the stone.",
         )
         .actions([
             "Click the Pavilion Main row.",
@@ -265,7 +265,7 @@ fn mirror_to_other_block() -> Guide {
 fn tier_relations() -> Guide {
     Guide::new(
         "tiers-relations",
-        "Tier relations",
+        "Tier Relations",
         "Make one tier's angle follow another's, so moving one moves the other.",
         GuideCategory::Tiers,
     )
@@ -336,7 +336,7 @@ fn tier_relations() -> Guide {
         )
         .actions([
             "Click the Pavilion Main row.",
-            "In the Tier tab, click Remove relation.",
+            "In the Tier tab, click Remove Relation.",
         ])
         .check("the link icon is gone and the angle stays 42.50.")
         .why("A tier that follows a relation cannot be nudged or edited by hand, which is why the table explains it when you try.")
@@ -369,7 +369,7 @@ fn tier_relations() -> Guide {
 fn arithmetic_in_fields() -> Guide {
     Guide::new(
         "tiers-arithmetic",
-        "Arithmetic in fields",
+        "Arithmetic in Fields",
         "Type a sum such as 34.5+0.3 or 96/16 into a number field and let the program work it out.",
         GuideCategory::Tiers,
     )
@@ -393,11 +393,11 @@ fn arithmetic_in_fields() -> Guide {
     .step(
         GuideStep::new(
             "Calculate a scale value",
-            "The Exact scale value takes a sum too.",
+            "The Exact Scale Value takes a sum too.",
         )
         .actions([
             "Click the Table row.",
-            "Meets: Exact scale value, Scale value: 0.5-0.15",
+            "Meets: Exact Scale Value, Scale Value: 0.5-0.15",
             "Click Save Tier.",
         ])
         .check("the Table row's Meets column reads 0.35.")
@@ -448,7 +448,7 @@ fn arithmetic_in_fields() -> Guide {
         )
         .actions([
             "The Angle field of the Tier tab and of the table's own angle cell.",
-            "The Scale value and the millimetre values of Meets.",
+            "The Scale Value and the millimetre values of Meets.",
             "The position box, the Rotate teeth box, the Offset box and the cheater offset.",
             "The concave tier form's number fields.",
         ])

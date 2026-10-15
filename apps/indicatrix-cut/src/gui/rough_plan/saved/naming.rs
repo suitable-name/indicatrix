@@ -5,8 +5,18 @@ use crate::bridge::export_thread::filename_template::civil_from_unix_seconds;
 use indicatrix_cut_core::rough_plan::{RoughBase, RoughModel};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The default file name suffix of an exported plan.
-pub const EXPORT_SUFFIX: &str = ".indicatrix-rough.toml";
+/// The file extension of an exported plan (Indicatrix Suite Rough Document), without the dot.
+pub const EXPORT_EXTENSION: &str = "isrd";
+
+/// The file name suffix of an exported plan, with the dot.
+pub const EXPORT_SUFFIX: &str = ".isrd";
+
+/// The file name suffix older versions exported plans with. Import still reads such files;
+/// nothing writes it any more.
+pub const LEGACY_EXPORT_SUFFIX: &str = ".indicatrix-rough.toml";
+
+/// The extension of a plain TOML file, which an import still accepts when it holds a plan.
+pub const IMPORT_TOML_EXTENSION: &str = "toml";
 
 /// A Unix timestamp (seconds, UTC) as "YYYY-MM-DD".
 #[must_use]
@@ -182,50 +192,45 @@ mod tests {
     fn export_names_lose_characters_a_file_system_rejects() {
         assert_eq!(
             export_file_name("Pebble 18x11x10 mm Aquamarine 2026-09-30"),
-            "Pebble 18x11x10 mm Aquamarine 2026-09-30.indicatrix-rough.toml"
+            "Pebble 18x11x10 mm Aquamarine 2026-09-30.isrd"
         );
         assert_eq!(
             export_file_name("a/b:c*d?\"e<f>g|h\\i"),
-            "a_b_c_d__e_f_g_h_i.indicatrix-rough.toml"
+            "a_b_c_d__e_f_g_h_i.isrd"
         );
-        assert_eq!(
-            export_file_name("  ..  "),
-            "rough-plan.indicatrix-rough.toml"
-        );
+        assert_eq!(export_file_name("  ..  "), "rough-plan.isrd");
+    }
+
+    #[test]
+    fn the_export_constants_agree() {
+        assert_eq!(EXPORT_SUFFIX, format!(".{EXPORT_EXTENSION}"));
+        assert!(export_file_name("anything").ends_with(EXPORT_SUFFIX));
+        assert!(!export_file_name("anything").ends_with(LEGACY_EXPORT_SUFFIX));
     }
 
     #[test]
     fn windows_device_names_get_an_underscore_in_front() {
-        assert_eq!(export_file_name("CON"), "_CON.indicatrix-rough.toml");
-        assert_eq!(export_file_name("nul"), "_nul.indicatrix-rough.toml");
-        assert_eq!(export_file_name("Com1"), "_Com1.indicatrix-rough.toml");
-        assert_eq!(export_file_name("LPT9"), "_LPT9.indicatrix-rough.toml");
+        assert_eq!(export_file_name("CON"), "_CON.isrd");
+        assert_eq!(export_file_name("nul"), "_nul.isrd");
+        assert_eq!(export_file_name("Com1"), "_Com1.isrd");
+        assert_eq!(export_file_name("LPT9"), "_LPT9.isrd");
         // Windows reserves the device name whatever follows the first dot.
-        assert_eq!(
-            export_file_name("aux.backup"),
-            "_aux.backup.indicatrix-rough.toml"
-        );
+        assert_eq!(export_file_name("aux.backup"), "_aux.backup.isrd");
         // Not devices: COM0, COM10, a longer word, a name that only contains one.
         for plain in ["COM0", "COM10", "CONSOLE", "my CON", "LPT"] {
-            assert_eq!(
-                export_file_name(plain),
-                format!("{plain}.indicatrix-rough.toml")
-            );
+            assert_eq!(export_file_name(plain), format!("{plain}.isrd"));
         }
     }
 
     #[test]
     fn a_long_name_is_cut_to_120_characters_before_the_suffix() {
         let long = "x".repeat(300);
-        assert_eq!(
-            export_file_name(&long),
-            format!("{}.indicatrix-rough.toml", "x".repeat(120))
-        );
+        assert_eq!(export_file_name(&long), format!("{}.isrd", "x".repeat(120)));
         // The cut never leaves a trailing space or dot (Windows drops them).
         let spaced = format!("{} tail", "y".repeat(119));
         assert_eq!(
             export_file_name(&spaced),
-            format!("{}.indicatrix-rough.toml", "y".repeat(119))
+            format!("{}.isrd", "y".repeat(119))
         );
     }
 

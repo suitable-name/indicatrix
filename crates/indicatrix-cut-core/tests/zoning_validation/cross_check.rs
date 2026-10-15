@@ -26,6 +26,16 @@ const MAX_FORWARD_SAMPLES: usize = 4096;
 /// Round 3, D5: a miss of `LIMIT` that is within two combined Monte-Carlo standard errors is
 /// noise, not bias, and is settled by tracing more paths (up to `MAX_FORWARD_SAMPLES`); a miss
 /// beyond two standard errors is a bias and is reported as it is.
+///
+/// Round 5 (ZC-2, ZC-15): the forward model's standard error is now the records' error of the
+/// CLEAR-stone transmittance times the prediction (`Agreement::forward_se`), not the error at
+/// 0.3 per mm, which was 5 to 10 times too large for a pale stone and let a real bias pass as
+/// noise. The forward wavelength grid of the furnace scene is 2.5 nm (`Spectrum::
+/// EnvironmentWhite`, 40 bins of 4 points) so that forward and main tracer weigh every
+/// wavelength alike. The midpoint rule's error for a 23 nm sigma band is nil at any spacing
+/// used here (aliasing `2 exp(-2 pi^2 sigma^2 / h^2)`, see `forward/mod.rs` "Spectral
+/// quadrature"), so a persistent cross-check bias is a transport question, not a quadrature
+/// one.
 fn needs_more_samples(a: &Agreement) -> bool {
     a.relative_difference() > LIMIT && a.z_score() <= 2.0
 }

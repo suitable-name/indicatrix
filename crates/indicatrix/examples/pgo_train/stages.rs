@@ -2,10 +2,12 @@
 //! Every stage takes the `PGO_SCALE` factor (see the example's module docs) and returns a
 //! checksum so the optimiser cannot discard the work.
 
+use crate::stages_extra::{TRAINING_N_D, procedural_hdr_map};
 use glam::{DVec3, Vec3};
 use indicatrix::{
     geometry::{
         GpuFacetPlane, cuts::StandardGemCuts, girdle_facet_finishes, meet_solver, stone_metrics,
+        tool::StoneGeometry,
     },
     optics::{
         materials::GemMaterial,
@@ -18,7 +20,7 @@ use indicatrix::{
     },
     renderer::{
         denoise::{AtrousDenoiser, AtrousParams, GBuffers},
-        env_map::EnvironmentMap,
+        guide_pass::generate_guide_buffers_geom_with_index,
         tonemap::tonemap_to_rgba,
     },
     simd::PlanesSoA32,
@@ -31,6 +33,11 @@ use std::{
 /// Scales `base` by `scale`, rounding to the nearest integer and never going below
 /// `min` -- every stage's frame sizes/iteration counts stay at least `min` so a tiny
 /// `PGO_SCALE` still exercises the real code path, not a degenerate zero-sized one.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "scale is a small positive PGO_SCALE factor; the rounded product is far below u32::MAX and saturating is fine"
+)]
 fn scaled(base: u32, scale: f32, min: u32) -> u32 {
     ((base as f32 * scale).round() as u32).max(min)
 }
@@ -89,16 +96,17 @@ fn trace_row(job: &TraceJob<'_>, y: usize) -> Row {
         normal: vec![Vec3::ZERO; w],
         facet: vec![-1i32; w],
     };
+    let row_base = u32::try_from(y).expect("a row index fits u32") * job.width;
     for x in 0..job.width {
-        let pixel = y as u32 * job.width + x;
-        let rot_jx = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_X_ROTATION_STREAM));
-        let rot_jy = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_Y_ROTATION_STREAM));
+        let pixel = row_base + x;
+        let rot_across = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_X_ROTATION_STREAM));
+        let rot_down = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_Y_ROTATION_STREAM));
         let rot_hero = low_discrepancy_base2(hash_u32(pixel ^ HERO_WAVELENGTH_ROTATION_STREAM));
         let mut primary = None;
         for sample in 0..job.spp {
             let seed = hash_u32(pixel.wrapping_mul(0x9e37_79b9) ^ sample.wrapping_mul(0x85eb_ca6b));
-            let jx = cranley_patterson_rotate(low_discrepancy_base2(sample), rot_jx) - 0.5;
-            let jy = cranley_patterson_rotate(radical_inverse_base(sample, 3), rot_jy) - 0.5;
+            let jx = cranley_patterson_rotate(low_discrepancy_base2(sample), rot_across) - 0.5;
+            let jy = cranley_patterson_rotate(radical_inverse_base(sample, 3), rot_down) - 0.5;
             let hero = cranley_patterson_rotate(radical_inverse_base(sample, 5), rot_hero);
             let ray = job.camera.generate_ray(
                 x as f32,
@@ -124,7 +132,7 @@ fn trace_row(job: &TraceJob<'_>, y: usize) -> Row {
         if let Some(h) = primary {
             row.depth[x as usize] = h.t;
             row.normal[x as usize] = h.normal;
-            row.facet[x as usize] = h.facet_idx as i32;
+            row.facet[x as usize] = i32::try_from(h.facet_idx).unwrap_or(-1);
         }
     }
     row
@@ -268,12 +276,24 @@ pub fn train_tracer(scale: f32) -> f32 {
                 let t0 = Instant::now();
                 let frame = trace_frame(&job);
                 let avg: Vec<Vec3> = frame.accum.iter().map(|v| *v / spp as f32).collect();
+                // BLD-1: every second preset denoises with a real path signature (the
+                // production `frame_denoise` path); the other keeps the signature-less
+                // early-return branch trained too.
+                let guides = (i == 1).then(|| {
+                    generate_guide_buffers_geom_with_index(
+                        width,
+                        height,
+                        &camera,
+                        StoneGeometry::planes_only(planes),
+                        TRAINING_N_D,
+                    )
+                });
                 let g = GBuffers {
                     color: &avg,
                     depth: &frame.depth,
                     normal: &frame.normal,
                     facet_id: &frame.facet,
-                    path_sig: None,
+                    path_sig: guides.as_ref().map(|g| g.path_sig.as_slice()),
                     width: width as usize,
                     height: height as usize,
                     spp,
@@ -343,22 +363,12 @@ pub fn train_lighting(scale: f32) -> f32 {
         println!("  lighting: {preset:?}: {:.2?}", t0.elapsed());
     }
 
-    // One synthetic HDR map: a small deterministic gradient panorama needing no file
-    // I/O (see this file's module doc, "deliberately NOT trained here") -- just
-    // enough texels to exercise `EnvironmentMap`'s importance sampler and
-    // `EnvironmentSource::HdrMap`'s own branch in the transport code.
+    // One procedural, real-sized (1024x512) HDR panorama needing no file I/O: sun,
+    // softboxes and a sky gradient (see `stages_extra::procedural_hdr_map`), so
+    // `EnvironmentMap`'s importance sampler and `EnvironmentSource::HdrMap`'s branch in the
+    // transport code train on a map with a production-like CDF, not an 8x4 gradient.
     let t0 = Instant::now();
-    let (hdr_w, hdr_h) = (8usize, 4usize);
-    let pixels: Vec<[f32; 3]> = (0..hdr_h)
-        .flat_map(|y| {
-            (0..hdr_w).map(move |x| {
-                let t = (x + y * hdr_w) as f32 / (hdr_w * hdr_h) as f32;
-                [t, 0.5f32.mul_add(t, 0.2), 1.0 - t]
-            })
-        })
-        .collect();
-    let env_map =
-        EnvironmentMap::from_rgb(hdr_w, hdr_h, pixels).expect("training HDR map is well-formed");
+    let env_map = procedural_hdr_map(1024, 512);
     let job = TraceJob {
         camera: &camera,
         planes: &planes,
@@ -630,8 +640,8 @@ pub fn train_tilt(scale: f32) -> f32 {
     use indicatrix::color::metrics::{PROFILE_AZIMUTHS_DEG, evaluate_full_axis_profile_at_azimuth};
 
     // At very small scale, still cover at least one full axis rather than none.
-    let axis_count = scaled(PROFILE_AZIMUTHS_DEG.len() as u32, scale, 1)
-        .min(PROFILE_AZIMUTHS_DEG.len() as u32) as usize;
+    let axis_total = u32::try_from(PROFILE_AZIMUTHS_DEG.len()).expect("the azimuth count fits u32");
+    let axis_count = scaled(axis_total, scale, 1).min(axis_total) as usize;
 
     let planes = StandardGemCuts::standard_round_brilliant();
     let materials = [

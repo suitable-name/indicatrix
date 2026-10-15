@@ -12,7 +12,7 @@ Usage:
   indicatrix-cli <command> <design> [options]
   indicatrix-cli <command> --help
 
-A <design> is a .indicatrix, .asc, .gem or .gcs file.
+A <design> is a .isdd (or an older .indicatrix), .asc, .gem or .gcs file.
 
 Commands:
   info      Name, gear, symmetry, tier list and material of a design.
@@ -22,7 +22,7 @@ Commands:
   optimize  Search for better facet angles and optionally save the best result.
   retarget  Adapt the angles to another material with the dialog's validity gate.
   sweep     Score one tier over a range of angles.
-  export    Write .asc, .indicatrix, .gcs or the cutting sheet (.html).
+  export    Write .asc, .isdd, .gcs or the cutting sheet (.html).
   render      Render a still picture from a render job file (*.job.json).
   tilt-video  Render a tilt video from a render job file; resumes from its frames.
 
@@ -31,6 +31,10 @@ render and tilt-video take a job file instead of a design: indicatrix-cli render
 Options for every command:
   -h, --help     Show the page of a command (indicatrix-cli retarget --help).
   -V, --version  Show the version.
+  --no-update-check
+                 Do not ask GitHub for a newer release first. Without it, a newer release
+                 is named in one info line on standard error (never on standard output);
+                 the variable INDICATRIX_NO_UPDATE_CHECK (any value) does the same.
 
 Material and lighting:
   --material NAME   A built-in material, or a custom one of the --db library.
@@ -70,12 +74,12 @@ positions, what each tier meets or follows). Does not solve.
 ";
 
 const SOLVE: &str = "\
-Usage: indicatrix-cli solve <design> [--out FILE.indicatrix] [--json] [--db FILE]
+Usage: indicatrix-cli solve <design> [--out FILE.isdd] [--json] [--db FILE]
 
 Solves every tier, checks that the facets enclose a stone and lists the manufacturability
 warnings. Exit code 2 when the design does not solve or does not close.
 
-  --out FILE   Save the design as a .indicatrix file (also converts .asc, .gem and .gcs).
+  --out FILE   Save the design as a .isdd file (also converts .asc, .gem and .gcs).
                Nothing is written when the design does not solve and close.
   --json       Print JSON instead of text.
   --db FILE    A design library, for custom materials.
@@ -120,14 +124,14 @@ strip: Good, Check or Problem, with the reasons. Exit code 4 when the verdict is
 const OPTIMIZE: &str = "\
 Usage: indicatrix-cli optimize <design> [--preset NAME] [--budget N] [--starts N] [--seed N]
                                [--vary-anchored] [--candidates N] [--lighting NAME]
-                               [--json] [--out FILE.indicatrix] [--db FILE]
+                               [--json] [--out FILE.isdd] [--db FILE]
 
 Runs the Optimize tab's search on the design's own material and lists the ranked candidates.
 The best one is saved with --out. When the search finds nothing better, nothing is written.
 
   --preset NAME      balanced (default), brilliance, low-windowing, low-extinction,
                      keep-weight, lighten-dark or intensify-pale. The last two also steer the
-                     face-up tone (lighter, or a stronger colour) of a coloured material,
+                     face-up tone (lighter, or a stronger color) of a colored material,
                      sized by the design's girdle diameter.
   --budget N         Evaluations of the coordinate stage (default 800), shared by all starts.
   --starts N         Starting arrangements to try, 1 to 32 (default 8). Each start gets at least
@@ -140,7 +144,7 @@ The best one is saved with --out. When the search finds nothing better, nothing 
   --lighting NAME    The light the search scores and tones under (default grading, the canonical
                      preset: a run without --lighting is scored under the grading tray).
   --json             Print JSON instead of text.
-  --out FILE         Save the best candidate as a .indicatrix file.
+  --out FILE         Save the best candidate as a .isdd file.
   --db FILE          A design library, for custom materials.
 ";
 
@@ -150,7 +154,7 @@ Usage: indicatrix-cli retarget <design> (--material NAME | --ri N) [--mode shift
                                [--preset NAME]
                                [--range DEG] [--budget N] [--seed N] [--no-keep-look]
                                [--lighting NAME]
-                               [--json] [--out FILE.indicatrix] [--db FILE]
+                               [--json] [--out FILE.isdd] [--db FILE]
 
 Adapts the facet angles to another material with the Retarget dialog's engine and validity
 gate: every facet turns about its girdle-side edge, and the result is checked for a closed
@@ -177,7 +181,7 @@ The design's material is set to the target in the saved file.
                        scored with that penalty).
   --lighting NAME      The light everything is scored under (default grading, the grading tray).
   --json               Print JSON instead of text.
-  --out FILE           Save the retargeted design as a .indicatrix file.
+  --out FILE           Save the retargeted design as a .isdd file.
   --db FILE            A design library, for custom materials.
 ";
 
@@ -206,16 +210,17 @@ JSON keeps the stored signed ones (a pavilion angle is negative).
 ";
 
 const EXPORT: &str = "\
-Usage: indicatrix-cli export <design> --format asc|indicatrix|gcs|html --out FILE [--db FILE]
+Usage: indicatrix-cli export <design> --format asc|isdd|gcs|html --out FILE [--db FILE]
                              [--date TEXT]
 
 Writes the solved design in another form. The format may be left out when FILE ends in
-.asc, .indicatrix, .gcs or .html. The design must solve and close; nothing is written
+.asc, .isdd, .gcs or .html. The design must solve and close; nothing is written
 otherwise.
 
   --format asc         GemCAD cutting instructions, the file the editor's Export writes
                        (CRLF line ends).
-  --format indicatrix  A self-contained .indicatrix design file.
+  --format isdd        A self-contained .isdd design file (the older name indicatrix is
+                       accepted too).
   --format gcs         A Gem Cut Studio file (experimental).
   --format html        The cutting instructions as a web page, headed by the design's
                        title, designer and notes.

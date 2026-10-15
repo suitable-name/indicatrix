@@ -68,6 +68,16 @@ fn score_state(
     })
 }
 
+/// Whether a tier's angle was edited. Both values come from the same stored `f64`, so an
+/// untouched tier compares bit-equal and any difference is a real edit.
+#[expect(
+    clippy::float_cmp,
+    reason = "exact comparison of an unedited copy of the same stored angle"
+)]
+const fn angle_differs(before: f64, after: f64) -> bool {
+    before != after
+}
+
 /// Every tier whose angle differs between `original` and `state`, except the tiers that
 /// follow a relation: their angle is the result of the tiers they read, so applying the
 /// change of those moves them, and listing them too would ask for a direct change of an
@@ -79,12 +89,13 @@ fn angle_changes(original: &Design, state: &Design) -> Vec<AngleChange> {
         .zip(&state.tiers)
         .enumerate()
         .filter_map(|(index, (before_tier, after_tier))| {
-            (before_tier.angle_deg != after_tier.angle_deg && !original.is_tier_driven(index))
-                .then_some(AngleChange {
-                    index,
-                    from_deg: before_tier.angle_deg,
-                    to_deg: after_tier.angle_deg,
-                })
+            (angle_differs(before_tier.angle_deg, after_tier.angle_deg)
+                && !original.is_tier_driven(index))
+            .then_some(AngleChange {
+                index,
+                from_deg: before_tier.angle_deg,
+                to_deg: after_tier.angle_deg,
+            })
         })
         .collect()
 }

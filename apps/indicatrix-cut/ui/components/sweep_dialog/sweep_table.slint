@@ -24,12 +24,12 @@ component SweepTableRow inherits Rectangle {
     accessible-role: AccessibleRole.list-item;
     accessible-label: "Angle " + root.item.angle + (root.item.status != "" ? ", " + root.item.status : "")
         + (root.item.notes != "" ? ". " + root.item.notes : "");
-    accessible-description: "Select this angle. The chart, the readout and the Use this angle button follow.";
+    accessible-description: "Select this angle. The chart, the readout and the Use This Angle button follow.";
     accessible-item-selectable: true;
     accessible-item-selected: root.selected;
     accessible-action-default => { root.clicked(); }
 
-    Tooltip { text: @markdown("Select this angle. The chart, the readout and the Use this angle button follow."); }
+    Tooltip { text: @markdown("Select this angle. The chart, the readout and the Use This Angle button follow."); }
 
     Rectangle {
         height: SweepTableMetrics.row_height - 1px;
@@ -140,7 +140,7 @@ export component SweepTable inherits VerticalLayout {
     table_focus := FocusScope {
         vertical-stretch: 1;
         accessible-role: AccessibleRole.list;
-        accessible-label: "Angles of the sweep";
+        accessible-label: "Angles of the Sweep";
         accessible-description: "Up and Down choose the previous or next angle. The chart and the readout follow.";
         key-pressed(event) => {
             if event.text == Key.DownArrow {

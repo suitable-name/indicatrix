@@ -162,6 +162,8 @@ export global RoughPlanModel {
     in-out property <bool> save_selected_only: false; // which button opened the name row: true = the ticked results, false = all of them
     in-out property <bool> confirm_replace_open: false; // asking whether to replace results that have not been saved
     in-out property <int> confirm_replace_count: 0; // layouts that would be replaced
+    in-out property <bool> confirm_overwrite_open: false; // asking whether to replace the saved plan that already has the typed name
+    in-out property <string> confirm_overwrite_name: ""; // the name of that saved plan
 
     // callbacks
     callback open();                                // main window's menu item -> Rust: create or show the planner window
@@ -200,9 +202,11 @@ export global RoughPlanModel {
     callback select_group(int, int);              // result, group
     callback show_result_in_library(int);
     callback show_all_in_library();
+    callback open_in_editor(int, int);             // result, group: Rust opens the first stone's design in the editor with the piece of rough as its preform, at the stone's real size
     callback begin_save(bool);                     // true = selected only
     callback confirm_save();                       // uses save_name
     callback confirm_replace(bool);                 // answer to the replace question: true = replace, false = keep the results
+    callback confirm_overwrite(bool);              // answer to the replace-saved-plan question: true = replace it, false = cancel and keep the name row open
     callback open_saved(int);
     callback rename_saved(int, string);
     callback delete_saved(int);

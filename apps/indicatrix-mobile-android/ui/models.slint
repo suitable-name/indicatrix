@@ -1,0 +1,147 @@
+// The data and callbacks that cross between Rust and the Slint UI.
+//
+// Direction rule: Rust -> Slint is properties (`in`, or `in-out` when the UI also
+// writes them), Slint -> Rust is callbacks. Only the three globals named in
+// `app.slint`'s `export { ... }` block are visible to Rust.
+//
+// This file must not import `theme.slint` (the theme imports this file).
+
+// Destination indices match `indicatrix_mobile_core::layout::Destination::index`.
+// More sub-page indices (`Shell.more-page`): 0 menu, 1 preferences, 2 about,
+// 3 licenses, 4 remote, 5 help.
+export global Shell {
+    // 0 compact, 1 medium, 2 expanded (`WindowClass::index`), computed in Rust from the
+    // width the UI reports through `width-changed`.
+    in property <int> window-class: 0;
+    // 0 Library, 1 Design, 2 Cut, 3 More. Rust pushes the restored value at startup;
+    // after that the UI owns it and reports changes through `destination-selected`.
+    in-out property <int> destination: 1;
+    // 0 follow the system, 1 dark, 2 light (`ThemeChoice`).
+    in property <int> theme-choice: 0;
+
+    in property <string> design-title: "Untitled Design";
+    // True while the session has no tiers: the Design page then offers "Start a Design".
+    in property <bool> design-empty: true;
+
+    in-out property <int> more-page: 0;
+
+    // Detent of the one active bottom sheet: 0 peek, 1 half, 2 full. A page binds its
+    // `Sheet.detent` to this two-way so the Back handler can collapse a full sheet.
+    in-out property <int> sheet-detent: 1;
+
+    // Safe-area insets, copied from the window by `AppWindow`.
+    in-out property <length> inset-top: 0px;
+    in-out property <length> inset-bottom: 0px;
+    in-out property <length> inset-left: 0px;
+    in-out property <length> inset-right: 0px;
+    // The bottom inset a page must respect itself: on a compact window the navigation
+    // bar already sits above the gesture area, so the page needs none.
+    out property <length> page-inset-bottom: window-class == 0 ? 0px : inset-bottom;
+
+    // Toast (snackbar). Rust shows it and dismisses it after four seconds.
+    in-out property <string> toast-text: "";
+    in-out property <bool> toast-visible: false;
+
+    // The one modal dialog. `dialog-id` tells Rust which question was answered.
+    in-out property <bool> dialog-visible: false;
+    in-out property <int> dialog-id: 0;
+    in-out property <string> dialog-title: "";
+    in-out property <string> dialog-body: "";
+    in-out property <string> dialog-confirm: "OK";
+    // An empty cancel label hides the cancel button.
+    in-out property <string> dialog-cancel: "Cancel";
+
+    // The info sheet behind every `InfoButton` (the replacement for tooltips).
+    in-out property <bool> info-visible: false;
+    in-out property <string> info-title: "";
+    in-out property <string> info-body: "";
+
+    callback destination-selected(int);
+    callback width-changed(length);
+    callback toast-dismissed();
+    callback dialog-result(int, bool);
+    callback new-design();
+    callback open-design();
+    callback import-files();
+
+    // Switches destination; tapping the active More item again returns to the menu.
+    public function select-destination(index: int) {
+        if (index == destination) {
+            if (index == 3) {
+                more-page = 0;
+            }
+        } else {
+            destination = index;
+            destination-selected(index);
+        }
+    }
+
+    public function show-dialog(id: int, title: string, body: string, confirm: string, cancel: string) {
+        dialog-id = id;
+        dialog-title = title;
+        dialog-body = body;
+        dialog-confirm = confirm;
+        dialog-cancel = cancel;
+        dialog-visible = true;
+    }
+
+    public function close-dialog(confirmed: bool) {
+        if (dialog-visible) {
+            dialog-visible = false;
+            dialog-result(dialog-id, confirmed);
+        }
+    }
+
+    public function show-info(title: string, body: string) {
+        info-title = title;
+        info-body = body;
+        info-visible = true;
+    }
+
+    // One step of "Back": dialog, then info sheet, then a full sheet down to half, then
+    // a More sub-page up, then the Design destination. Returns false when there is
+    // nothing left to close, so the caller lets the system handle Back.
+    public function handle-back() -> bool {
+        if (dialog-visible) {
+            close-dialog(false);
+            return true;
+        }
+        if (info-visible) {
+            info-visible = false;
+            return true;
+        }
+        if (sheet-detent == 2) {
+            sheet-detent = 1;
+            return true;
+        }
+        if (destination == 3 && more-page != 0) {
+            more-page = more-page == 3 ? 2 : 0;
+            return true;
+        }
+        if (destination != 1) {
+            select-destination(1);
+            return true;
+        }
+        return false;
+    }
+}
+
+export global Prefs {
+    // 0 system, 1 dark, 2 light.
+    in property <int> theme: 0;
+    in property <bool> large-handles: true;
+    in property <bool> snap-to-gear: true;
+    in property <bool> battery-saver: false;
+
+    callback set-theme(int);
+    callback set-large-handles(bool);
+    callback set-snap-to-gear(bool);
+    callback set-battery-saver(bool);
+}
+
+export global About {
+    in property <string> app-name: "Indicatrix";
+    in property <string> app-version: "";
+    in property <string> indicatrix-version: "";
+    in property <string> build-id: "";
+}

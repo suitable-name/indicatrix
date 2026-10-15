@@ -128,7 +128,8 @@ pub fn noisy_c_shape(levels: u32, jitter: f64) -> (Vec<DVec3>, Vec<[u32; 3]>) {
         let mut mid = |points: &mut Vec<DVec3>, a: u32, b: u32| {
             *mids.entry((a.min(b), a.max(b))).or_insert_with(|| {
                 points.push((points[a as usize] + points[b as usize]) * 0.5);
-                (points.len() - 1) as u32
+                u32::try_from(points.len() - 1)
+                    .expect("a fixture mesh has far fewer than u32::MAX vertices")
             })
         };
         let mut split = Vec::with_capacity(tris.len() * 4);
@@ -173,7 +174,8 @@ fn sphere_midpoint(
     *cache.entry((a.min(b), a.max(b))).or_insert_with(|| {
         let mid = (points[a as usize] + points[b as usize]) * 0.5;
         points.push(mid.normalize());
-        (points.len() - 1) as u32
+        u32::try_from(points.len() - 1)
+            .expect("a fixture mesh has far fewer than u32::MAX vertices")
     })
 }
 
@@ -315,14 +317,16 @@ pub fn box_enters(centre: DVec3, axes: [DVec3; 3], half: DVec3, lo: DVec3, hi: D
             candidates.push(a.cross(b));
         }
     }
-    for axis in candidates {
-        if axis.length() < 1e-9 {
+    for candidate in candidates {
+        if candidate.length() < 1e-9 {
             continue;
         }
-        let axis = axis.normalize();
-        let on_a: f64 = (0..3).map(|i| half[i] * axes[i].dot(axis).abs()).sum();
-        let on_b: f64 = (0..3).map(|i| reach[i] * basis[i].dot(axis).abs()).sum();
-        if (mid - centre).dot(axis).abs() >= on_a + on_b - 1e-7 {
+        let direction = candidate.normalize();
+        let on_a: f64 = (0..3).map(|i| half[i] * axes[i].dot(direction).abs()).sum();
+        let on_b: f64 = (0..3)
+            .map(|i| reach[i] * basis[i].dot(direction).abs())
+            .sum();
+        if (mid - centre).dot(direction).abs() >= on_a + on_b - 1e-7 {
             return false;
         }
     }

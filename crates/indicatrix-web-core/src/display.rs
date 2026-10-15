@@ -47,7 +47,12 @@ pub fn live_rgba(sum: &[Vec3], sample_count: u32) -> Vec<u8> {
 }
 
 /// The color spaces the web export offers, in the dialog's order.
-pub const EXPORT_COLOR_SPACES: [ColorSpace; 2] = [ColorSpace::Srgb, ColorSpace::DisplayP3];
+pub const EXPORT_COLOR_SPACES: [ColorSpace; 3] =
+    [ColorSpace::Srgb, ColorSpace::DisplayP3, ColorSpace::Rec2020];
+
+/// The largest valid dialog index into [`EXPORT_COLOR_SPACES`] (a test pins it to the
+/// array's length).
+pub const MAX_EXPORT_COLOR_SPACE_INDEX: i32 = 2;
 
 /// The dialog's label for an export color space (the desktop's `{colorspace}` text).
 #[must_use]
@@ -271,6 +276,11 @@ pub fn export_size(view_width: u32, view_height: u32, long_edge: u32) -> (u32, u
     let long_edge = long_edge.clamp(1, MAX_EXPORT_EDGE);
     let (w, h) = (f64::from(view_width.max(1)), f64::from(view_height.max(1)));
     let scale = f64::from(long_edge) / w.max(h);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the edge is positive and at most the long edge (<= 4096); the result is clamped right after"
+    )]
     let fit = |edge: f64| ((edge * scale).round() as u32).clamp(1, MAX_EXPORT_EDGE);
     (fit(w), fit(h))
 }

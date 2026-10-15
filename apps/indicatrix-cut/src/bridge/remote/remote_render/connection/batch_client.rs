@@ -107,6 +107,25 @@ fn to_batch_event(event: StreamEvent, payload: Option<Vec<u8>>) -> Option<BatchE
     }
 }
 
+/// The payload carrying the zones of `items`, `None` when no item is zoned.
+///
+/// # Errors
+///
+/// [`RemoteError::ZoningUnsupported`] when an item is zoned but the server did not advertise
+/// the capability (`takes_zoning == false`): nothing may be written then, the picture would
+/// render as its base zone.
+fn zoning_payload_for(
+    takes_zoning: bool,
+    batch_id: u32,
+    items: &[BatchItem],
+) -> Result<Option<indicatrix_net::messages::ZoningPayload>, RemoteError> {
+    let payload = indicatrix_net::messages::ZoningPayload::for_batch(batch_id, items);
+    if payload.is_some() && !takes_zoning {
+        return Err(RemoteError::ZoningUnsupported);
+    }
+    Ok(payload)
+}
+
 /// One persistent batch connection -- see the module doc comment.
 pub struct BatchClient {
     stream: RemoteStream,
@@ -118,8 +137,7 @@ pub struct BatchClient {
     /// Whether any event arrived since the connection last went from idle to busy: the
     /// first wait gets the longer grace for a cold GPU's pipeline compile.
     seen_event: bool,
-    /// `zoning` builds: whether the server's `WELCOME` advertised the zoning capability.
-    #[cfg(feature = "zoning")]
+    /// Whether the server's `WELCOME` advertised the zoning capability.
     zoning: bool,
 }
 
@@ -132,7 +150,6 @@ impl BatchClient {
     /// [`RemoteError::NoRenderCapacity`] for a library-only server.
     pub fn connect(worker: &WorkerSettings) -> Result<Self, RemoteError> {
         let (stream, welcome) = connect_and_handshake(worker)?;
-        #[cfg(feature = "zoning")]
         let zoning = welcome.zoning;
         let capability = welcome.render.ok_or(RemoteError::NoRenderCapacity)?;
         Ok(Self {
@@ -142,16 +159,14 @@ impl BatchClient {
             outstanding: 0,
             last_event: Instant::now(),
             seen_event: false,
-            #[cfg(feature = "zoning")]
             zoning,
         })
     }
 
-    /// `zoning` builds: whether the server accepts zoned materials. A batch item whose
+    /// Whether the server accepts zoned materials. A batch item whose
     /// scene has zones must not be sent to a client for which this is `false` (it would render
     /// as its base zone); [`Self::send`] refuses such a batch, and the dispatcher hands those
     /// items to the local lane first.
-    #[cfg(feature = "zoning")]
     #[must_use]
     pub const fn takes_zoning(&self) -> bool {
         self.zoning
@@ -192,15 +207,9 @@ impl BatchClient {
                 ),
             )));
         }
-        // `zoning` builds: the zones of the zoned items go first (they are `serde(skip)` in
+        // The zones of the zoned items go first (they are `serde(skip)` in
         // the scene); a server without the capability gets no zoned item at all.
-        #[cfg(feature = "zoning")]
-        if let Some(payload) =
-            indicatrix_net::messages::ZoningPayload::for_batch(batch_id, &request.items)
-        {
-            if !self.zoning {
-                return Err(RemoteError::ZoningUnsupported);
-            }
+        if let Some(payload) = zoning_payload_for(self.zoning, batch_id, &request.items)? {
             indicatrix_net::messages::write_zoning_payload(&mut self.stream, &payload)?;
         }
         indicatrix_net::messages::write_message(
@@ -495,5 +504,77 @@ mod tests {
         assert_eq!(items_fitting(&[500], 100), 1);
         assert_eq!(items_fitting(&[40, 40, 40], 100), 2);
         assert_eq!(items_fitting(&[40, 40, 40], 120), 3);
+    }
+
+    /// A zoned batch is refused before anything is written when the server
+    /// lacks the capability, and passes (with its payload) when it has it.
+    #[test]
+    fn a_zoned_batch_is_refused_for_a_server_without_the_capability() {
+        use indicatrix::{
+            geometry::cuts::StandardGemCuts,
+            optics::{
+                absorption::AbsorptionTensor,
+                fluorescence::Fluorescence,
+                materials::GemMaterial,
+                raytracer::LightingPreset,
+                zoning::{Zone, ZoneAbsorption, ZoneShape, ZonedAbsorption},
+            },
+        };
+        let item = |zoned: bool| {
+            let mut material = GemMaterial::diamond();
+            if zoned {
+                let mut zones = ZonedAbsorption::new(ZoneAbsorption::per_mm(
+                    AbsorptionTensor::isotropic(vec![]),
+                ));
+                zones.zones.push(Zone {
+                    shape: ZoneShape::HalfSpace {
+                        normal: glam::DVec3::X,
+                        offset: 0.0,
+                    },
+                    absorption: ZoneAbsorption::per_mm(AbsorptionTensor::isotropic(vec![])),
+                });
+                material = material.with_zoning(zones);
+            }
+            BatchItem {
+                item_id: 1,
+                scene: indicatrix_net::SceneState {
+                    width: 8,
+                    height: 8,
+                    yaw: 0.4,
+                    pitch: 0.3,
+                    distance: 3.0,
+                    light_yaw: 0.85,
+                    light_pitch: 0.95,
+                    exposure: 1.0,
+                    max_bounces: 4,
+                    lighting_preset: LightingPreset::Daylight,
+                    material,
+                    planes: StandardGemCuts::standard_round_brilliant(),
+                    girdle_frosted: false,
+                    backdrop: 0.0,
+                    environment: indicatrix_net::scene::SceneEnvironment::Studio,
+                    surface_glare: 1.0,
+                    tools: Vec::new(),
+                    fluorescence: Fluorescence::default(),
+                    head_shadow_deg: 16.0,
+                },
+                first_sample: 0,
+                samples: 4,
+                width: 8,
+                height: 8,
+            }
+        };
+        let zoned = vec![item(true)];
+        assert!(matches!(
+            zoning_payload_for(false, 1, &zoned),
+            Err(RemoteError::ZoningUnsupported)
+        ));
+        assert!(zoning_payload_for(true, 1, &zoned).unwrap().is_some());
+        // An unzoned batch needs no capability and has no payload.
+        assert!(
+            zoning_payload_for(false, 1, &[item(false)])
+                .unwrap()
+                .is_none()
+        );
     }
 }

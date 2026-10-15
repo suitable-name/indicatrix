@@ -6,8 +6,7 @@ pub mod body_color;
 pub mod cie1931;
 /// Gamut mapping from CIE XYZ into a target RGB working space.
 pub mod gamut;
-/// The CIE 15:2018 LED illuminants (tabulated spectra). Only with the `zoning` feature.
-#[cfg(feature = "zoning")]
+/// The CIE 15:2018 LED illuminants (tabulated spectra).
 pub mod led;
 /// Optical metrics computed from a traced gemstone image.
 ///

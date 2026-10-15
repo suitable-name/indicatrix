@@ -262,7 +262,13 @@ pub fn to_rgba8(raw: &[u8]) -> Vec<u8> {
         for c in px.as_chunks::<4>().0 {
             let v = f32::from_le_bytes(*c).max(0.0);
             let mapped = (1.0 - (-1.5 * v).exp()).powf(1.0 / 2.2);
-            out.push(mapped.mul_add(255.0, 0.5) as u8);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "mapped is in 0..=1, so the rounded 8-bit value is in 0..=255; `as` saturates"
+            )]
+            let byte = mapped.mul_add(255.0, 0.5) as u8;
+            out.push(byte);
         }
         out.push(255);
     }

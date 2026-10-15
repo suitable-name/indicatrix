@@ -1,0 +1,72 @@
+// The one modal dialog (`Shell.show-dialog`). A scrim covers the window; tapping it or
+// pressing Back cancels. Fill the parent: place it last in the window so it is on top.
+import { Theme } from "../theme.slint";
+import { Shell } from "../models.slint";
+import { PrimaryButton, TextButton } from "buttons.slint";
+
+export component DialogHost inherits Rectangle {
+    visible: Shell.dialog-visible;
+
+    Rectangle {
+        background: Theme.scrim.with-alpha(0.32);
+
+        TouchArea {
+            clicked => {
+                Shell.close-dialog(false);
+            }
+        }
+    }
+
+    card := Rectangle {
+        width: min(root.width - 48px, 360px);
+        height: content.preferred-height;
+        background: Theme.surface-high;
+        border-radius: Theme.radius-xl;
+        drop-shadow-color: Theme.shadow;
+        drop-shadow-blur: Theme.shadow-blur-3;
+        drop-shadow-offset-y: Theme.shadow-offset-3;
+        accessible-role: AccessibleRole.groupbox;
+        accessible-label: Shell.dialog-title;
+
+        // Swallows taps on the card so they do not count as taps on the scrim.
+        TouchArea { }
+
+        content := VerticalLayout {
+            padding: Theme.space-xl;
+            spacing: Theme.space-lg;
+
+            Text {
+                text: Shell.dialog-title;
+                color: Theme.on-surface;
+                font-size: Theme.text-headline-small;
+                wrap: word-wrap;
+            }
+
+            Text {
+                text: Shell.dialog-body;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: Theme.space-sm;
+
+                if Shell.dialog-cancel != "": TextButton {
+                    text: Shell.dialog-cancel;
+                    clicked => {
+                        Shell.close-dialog(false);
+                    }
+                }
+
+                PrimaryButton {
+                    text: Shell.dialog-confirm;
+                    clicked => {
+                        Shell.close-dialog(true);
+                    }
+                }
+            }
+        }
+    }
+}

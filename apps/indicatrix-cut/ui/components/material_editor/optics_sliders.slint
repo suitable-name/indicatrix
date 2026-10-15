@@ -76,7 +76,7 @@ export component MaterialOpticsSliders inherits VerticalLayout {
     // 4. Dispersion (Fire Index) Slider
     if root.show_dispersion_sliders : OpticsSlider {
         label: "Dispersion (Fire ΔnF-C):";
-        hint: "Dispersion: how much the stone spreads white light into colours, which is its fire. Typically 0.005 to 0.03 (diamond 0.0256, moissanite 0.0635; rutile reaches 0.207). See the glossary.";
+        hint: "Dispersion: how much the stone spreads white light into colors, which is its fire. Typically 0.005 to 0.03 (diamond 0.0256, moissanite 0.0635; rutile reaches 0.207). See the glossary.";
         value_text: "" + Math.round(root.disp_val * 1000.0) / 1000.0;
         value_color: Theme.accent-purple;
         minimum: 0.000;

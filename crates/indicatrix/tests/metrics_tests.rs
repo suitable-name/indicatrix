@@ -510,9 +510,14 @@ fn full_axis_profile_agrees_with_the_five_degree_sweep_at_every_shared_angle() {
     assert_eq!(full_w[90], pos_w[18]);
 
     for (i, &deg) in PROFILE_ANGLES_DEG.iter().enumerate() {
-        if deg == 90.0 {
+        if (deg - 90.0).abs() < 1e-6 {
             continue; // the shared table-up pole, already checked above
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "profile angles are whole degrees in 0..=180"
+        )]
         let p = deg as usize;
         let positive_idx = 180 - p; // TILT_ANGLES_DEG[180 - p] == p (pitch, positive azimuth)
         let negative_idx = p; // TILT_ANGLES_DEG[p] == p (pitch, negative azimuth)

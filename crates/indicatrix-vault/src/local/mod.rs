@@ -52,7 +52,7 @@ pub struct ImportedAsc {
     /// one.
     pub derived_from_entry_id: Option<i64>,
     /// Row state that lives outside the entry and detail rows (tags, the ignored mark,
-    /// the Rough Planner exclusion). Empty for everything but a `.indicatrix` design
+    /// the Rough Planner exclusion). Empty for everything but a design (`.isdd`)
     /// file whose `[meta]` table names some; written with [`apply_imported_extras`]
     /// once the row exists.
     pub extras: ImportedExtras,
@@ -77,8 +77,8 @@ pub struct ImportedExtras {
 /// catalogue source row -- see [`ImportedAsc::derived_from_entry_id`]'s own doc
 /// comment for why this exists and [`format_source_entry_footnote`]/
 /// [`parse_source_entry_footnote`] for the two halves of the round trip. A plain `.asc`
-/// footnote (`indicatrix_formats::asc`'s `F` record) rather than a native-sidecar field:
-/// it survives a bare "Export .asc" with no sidecar at all, which is exactly the case
+/// footnote (`indicatrix_formats::asc`'s `F` record) rather than a design-file field:
+/// it survives a bare "Export .asc" with no design file at all, which is exactly the case
 /// this item's own "export-then-reimport" scenario describes, and needs no schema
 /// change to the native TOML format (a different crate this one does not own).
 pub const SOURCE_ENTRY_FOOTNOTE_PREFIX: &str = "Indicatrix-Source-Entry-Id: ";
@@ -124,16 +124,14 @@ pub fn parse_source_entry_footnote(footnotes: &[String]) -> Option<i64> {
 /// updates that design in place -- mirroring how a remote source's real page URL
 /// dedupes a re-sync there.
 ///
-/// `native_sidecar`, when the caller found a `<stem>.indicatrix` design file (or an
-/// older `<stem>.indicatrix.toml`/`.gemcut.toml` sidecar) sitting beside the `.asc` on
-/// disk, is attached as a SECOND [`AttachedFile`] alongside the `.asc` itself: without
-/// it, a design that goes through Import loses every field only the design file
-/// carries (authored meet constraints, preform, detached facets, material/RI
-/// override), since only the `.asc` would otherwise be stored.
-/// `gui::editor::loading::design_from_full_record` already prefers the attached design
-/// file (or `indicatrix_cut_core::load_paired` for an older sidecar) whenever both
-/// attachments are present, so attaching it here is the only piece this crate needs
-/// to add.
+/// `design_file`, when the caller found a `<stem>.isdd` (or earlier `<stem>.indicatrix`)
+/// design file sitting beside the `.asc` on disk, is attached as a SECOND
+/// [`AttachedFile`] alongside the `.asc` itself: without it, a design that goes through
+/// Import loses every field only the design file carries (authored meet constraints,
+/// preform, detached facets, material/RI override), since only the `.asc` would
+/// otherwise be stored. `gui::editor::loading::design_from_full_record` already prefers
+/// the attached design file whenever both attachments are present, so attaching it
+/// here is the only piece this crate needs to add.
 ///
 /// # Errors
 ///
@@ -142,9 +140,9 @@ pub fn parse_source_entry_footnote(footnotes: &[String]) -> Option<i64> {
 pub fn import_asc(
     file_name: &str,
     content: &str,
-    native_sidecar: Option<(&str, &[u8])>,
+    design_file: Option<(&str, &[u8])>,
 ) -> Result<ImportedAsc, String> {
-    build_import(file_name, content, content.as_bytes(), native_sidecar)
+    build_import(file_name, content, content.as_bytes(), design_file)
 }
 
 /// [`import_asc`] for a file's raw `bytes`: parses the text [`asc::decode_asc_bytes`]
@@ -166,10 +164,10 @@ pub fn import_asc(
 pub fn import_asc_bytes(
     file_name: &str,
     bytes: &[u8],
-    native_sidecar: Option<(&str, &[u8])>,
+    design_file: Option<(&str, &[u8])>,
 ) -> Result<ImportedAsc, String> {
     let content = asc::decode_asc_bytes(bytes);
-    build_import(file_name, &content, bytes, native_sidecar)
+    build_import(file_name, &content, bytes, design_file)
 }
 
 /// The shared body of [`import_asc`]/[`import_asc_bytes`]: parses `content` and stores
@@ -178,7 +176,7 @@ fn build_import(
     file_name: &str,
     content: &str,
     attachment: &[u8],
-    native_sidecar: Option<(&str, &[u8])>,
+    design_file: Option<(&str, &[u8])>,
 ) -> Result<ImportedAsc, String> {
     let schedule = asc::parse_asc(content).map_err(|e| e.to_string())?;
 
@@ -187,11 +185,11 @@ fn build_import(
         url: String::new(),
         content: attachment.to_vec(),
     }];
-    if let Some((sidecar_name, sidecar_content)) = native_sidecar {
+    if let Some((design_name, design_content)) = design_file {
         attached_files.push(AttachedFile {
-            name: sidecar_name.to_string(),
+            name: design_name.to_string(),
             url: String::new(),
-            content: sidecar_content.to_vec(),
+            content: design_content.to_vec(),
         });
     }
     Ok(catalogue_rows(
@@ -256,6 +254,7 @@ fn angle_settings_from_tiers(tiers: &[AscTier]) -> Vec<AngleSetting> {
         .iter()
         .enumerate()
         .map(|(order_index, tier)| {
+            #[expect(clippy::float_cmp, reason = "a girdle tier carries the exact 90.0 angle from the file; any other angle is a crown or pavilion tier")]
             let is_girdle = tier.angle_deg.abs() == 90.0;
             let is_culet = tier.is_culet();
             let is_table = tier.angle_deg == 0.0 && !is_culet;
@@ -324,7 +323,7 @@ fn angle_settings_from_tiers(tiers: &[AscTier]) -> Vec<AngleSetting> {
             };
 
             AngleSetting {
-                order_index: order_index as u32,
+                order_index: u32::try_from(order_index).expect("a design never has 2^32 tiers"),
                 facet,
                 angle: format!("{}\u{b0}", tier.angle_deg.abs()),
                 index: tier
@@ -593,21 +592,18 @@ a 41.000000 0.5 92 n T\n"
     }
 
     #[test]
-    fn import_asc_attaches_a_native_sidecar_as_a_second_attached_file() {
-        let sidecar_bytes = b"format_version = 1\n";
+    fn import_asc_attaches_a_design_file_as_a_second_attached_file() {
+        let design_bytes = b"format = \"indicatrix-design\"\n";
         let imported = import_asc(
             "trichecker.asc",
             SAMPLE_ASC,
-            Some(("trichecker.indicatrix.toml", sidecar_bytes)),
+            Some(("trichecker.isdd", design_bytes)),
         )
         .expect("valid .asc");
         assert_eq!(imported.detail.attached_files.len(), 2);
         assert_eq!(imported.detail.attached_files[0].name, "trichecker.asc");
-        assert_eq!(
-            imported.detail.attached_files[1].name,
-            "trichecker.indicatrix.toml"
-        );
-        assert_eq!(imported.detail.attached_files[1].content, sidecar_bytes);
+        assert_eq!(imported.detail.attached_files[1].name, "trichecker.isdd");
+        assert_eq!(imported.detail.attached_files[1].content, design_bytes);
     }
 
     #[test]

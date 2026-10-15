@@ -306,7 +306,9 @@ const fn apply_reproject_gear(last_diagram: &mut DiagramMemory, gear: Option<(u3
 ///
 /// In order: stone geometry (planes and tools), camera, size, view mode, style, solved masts,
 /// stale flag, the ready-to-show unsolvable/unbounded status (always `None` for a
-/// [`RedrawRequest::Reproject`], which never plans), and the generation.
+/// [`RedrawRequest::Reproject`], which never plans), the generation, and the stone's
+/// mesh-cache key when this call already hashed it (`Planned` only), so the render step
+/// need not hash the plane list again (perf review UI-7).
 pub type RequestState = (
     StoneGeometryBuf,
     CameraPose,
@@ -317,6 +319,7 @@ pub type RequestState = (
     bool,
     Option<String>,
     u64,
+    Option<u64>,
 );
 
 /// The request-kind `match` half of [`super::render_request`]. `mesh_cache` is
@@ -369,6 +372,7 @@ pub fn resolve_request_state(
                 false,
                 None,
                 memory.generation,
+                None,
             ))
         }
         // No `Design`, no new camera/planes/size, just an id-keyed style tweak
@@ -400,6 +404,7 @@ pub fn resolve_request_state(
                 false,
                 None,
                 memory.generation,
+                None,
             ))
         }
         RedrawRequest::Planned(frame) => Some(resolve_planned_state(memory, mesh_cache, *frame)),
@@ -438,7 +443,10 @@ fn resolve_planned_state(
         placements,
         ..StoneGeometryBuf::from_halfspaces(&planes)
     };
-    let closes = mesh_cache.get_or_build_geometry(&geometry).is_some();
+    let cache_key = geometry.cache_key();
+    let closes = mesh_cache
+        .get_or_build_geometry_keyed(cache_key, &geometry)
+        .is_some();
     let unbounded_status = if unsolvable_status.is_none() && !closes {
         match mesh_cache.status() {
             Some(SolidStatus::Unbounded { escaping }) => {
@@ -480,7 +488,12 @@ fn resolve_planned_state(
     memory.view_mode = Some(view_mode);
     memory.generation = generation;
     memory.diagram.gear_teeth = design.meta.gear_teeth_abs();
-    memory.diagram.gear_reference_angle = design.meta.gear_reference_angle as f32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the diagram's angle precision; a gear reference angle is in degrees"
+    )]
+    let gear_reference_angle = design.meta.gear_reference_angle as f32;
+    memory.diagram.gear_reference_angle = gear_reference_angle;
     memory.diagram.symmetry_order = design.meta.symmetry_order;
     memory.diagram.mirror = design.meta.mirror;
     memory.diagram.enlarged_panel = panel_kind_from_index(enlarged_panel);
@@ -508,5 +521,6 @@ fn resolve_planned_state(
         stale,
         preview_status,
         generation,
+        Some(cache_key),
     )
 }

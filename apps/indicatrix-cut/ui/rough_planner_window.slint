@@ -24,8 +24,8 @@ component ConfirmReplaceRow inherits Rectangle {
         spacing: 6px;
 
         Text {
-            text: RoughPlanModel.confirm_replace_count == 1 ? "Replace 1 unsaved layout?"
-                : "Replace " + RoughPlanModel.confirm_replace_count + " unsaved layouts?";
+            text: RoughPlanModel.confirm_replace_count == 1 ? "Replace 1 Unsaved Layout?"
+                : "Replace " + RoughPlanModel.confirm_replace_count + " Unsaved Layouts?";
             font-size: 11px;
             font-weight: 700;
             color: Theme.text-primary;
@@ -65,6 +65,61 @@ component ConfirmReplaceRow inherits Rectangle {
     }
 }
 
+// The question shown when the typed save name already belongs to a saved plan: saving
+// would replace that plan. Cancel keeps the save name row open with the name selected.
+component ConfirmOverwriteRow inherits Rectangle {
+    background: Theme.surface-warning;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.accent-amber;
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: "Replace Saved Plan?";
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        Text {
+            text: "Replace Saved Plan?";
+            font-size: 11px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: "A saved plan called \"" + RoughPlanModel.confirm_overwrite_name + "\" already exists. Saving replaces it with these results.";
+            font-size: 10px;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: end;
+
+            RoughPill {
+                text: "Cancel";
+                hint: "Do not replace the saved plan. You can pick another name. Escape does the same.";
+                clicked => {
+                    RoughPlanModel.confirm_overwrite(false);
+                    RoughPlanModel.confirm_overwrite_open = false;
+                }
+            }
+
+            RoughPill {
+                text: "Replace";
+                hint: "Overwrite the saved plan with these results.";
+                active: true;
+                clicked => {
+                    RoughPlanModel.confirm_overwrite(true);
+                    RoughPlanModel.confirm_overwrite_open = false;
+                }
+            }
+        }
+    }
+}
+
 // The results side of the right column: the loaded-plan banner, the summary, the
 // result cards and the pinned footer. It stays alive while the saved list is shown,
 // so the scroll position of the cards survives the switch.
@@ -96,7 +151,7 @@ component ResultsColumn inherits VerticalLayout {
             VerticalLayout {
                 alignment: center;
                 RoughPill {
-                    text: "Re-plan";
+                    text: "Re-Plan";
                     hint: RoughPlanModel.running
                         ? "Wait for the running plan to finish."
                         : "Plan again with the rough, the cuts and the settings of this saved plan, against the library as it is now.";
@@ -122,34 +177,34 @@ component ResultsColumn inherits VerticalLayout {
         }
 
         if RoughPlanModel.results_unsaved && RoughPlanModel.results.length > 0: Text {
-            text: "unsaved";
+            text: "Unsaved";
             font-size: 10px;
             color: Theme.accent-amber;
             vertical-alignment: center;
         }
     }
 
-    // Stone orientation (`zoning` feature, plan with a stored rough colour): which of the
+    // Stone orientation (plan with a stored rough colour): which of the
     // stone's box-symmetric poses the previews and "Use colour" take.
-    if Zoning.enabled && Zoning.colour_available && RoughPlanModel.results.length > 0: HorizontalLayout {
+    if Zoning.colour_available && RoughPlanModel.results.length > 0: HorizontalLayout {
         spacing: 6px;
 
         Text {
-            text: "Stone orientation";
+            text: "Stone Orientation";
             font-size: 11px;
             color: Theme.text-secondary;
             vertical-alignment: center;
         }
         RoughPill {
-            text: "Keep planner pose";
+            text: "Keep Planner Pose";
             hint: "Draw and adopt every stone in the pose the planner gave it.";
             active: Zoning.pose_option == 0;
             enabled: !RoughPlanModel.running;
             clicked => { Zoning.pose_option_changed(0); }
         }
         RoughPill {
-            text: "Best colour";
-            hint: "Turn each stone to the box-symmetric pose that shows the most of the innermost colour zone through the table.";
+            text: "Best Color";
+            hint: "Turn each stone to the box-symmetric pose that shows the most of the innermost color zone through the table.";
             active: Zoning.pose_option == 1;
             enabled: !RoughPlanModel.running;
             clicked => { Zoning.pose_option_changed(1); }
@@ -230,7 +285,7 @@ component ResultsColumn inherits VerticalLayout {
         alignment: end;
 
         RoughPill {
-            text: "Show all in library";
+            text: "Show All in Library";
             hint: RoughPlanModel.links_enabled
                 ? "Show every design these results use in the library list."
                 : "Switch to the local library first: the results link to designs there.";
@@ -244,12 +299,12 @@ component ResultsColumn inherits VerticalLayout {
         spacing: 6px;
         alignment: end;
 
-        RoughPill {
-            text: "Save selected (" + RoughPlanModel.keep_count + ")";
+        rough-pill-keep-count := RoughPill {
+            text: "Save Selected (" + RoughPlanModel.keep_count + ")";
             hint: RoughPlanModel.running ? "Wait for the plan to finish: saving reads the results it is producing."
                 : (RoughPlanModel.keep_count == 0 ? "Tick the box on one or more result cards first, then save them."
                 : "Save the layouts you ticked under a name. Ctrl+S does the same.");
-            active: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
+active: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
             enabled: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
             clicked => {
                 RoughPlanModel.save_selected_only = true;
@@ -258,7 +313,7 @@ component ResultsColumn inherits VerticalLayout {
         }
 
         RoughPill {
-            text: "Save all";
+            text: "Save All";
             hint: RoughPlanModel.running ? "Wait for the plan to finish: saving reads the results it is producing."
                 : "Save every layout in the results under a name.";
             enabled: !RoughPlanModel.running;
@@ -343,6 +398,11 @@ export component RoughPlannerWindow inherits Window {
                     RoughPlanModel.confirm_replace_open = false;
                     return accept;
                 }
+                if RoughPlanModel.confirm_overwrite_open {
+                    RoughPlanModel.confirm_overwrite(false);
+                    RoughPlanModel.confirm_overwrite_open = false;
+                    return accept;
+                }
                 if RoughPlanModel.save_name_open {
                     RoughPlanModel.save_name_open = false;
                     return accept;
@@ -411,7 +471,8 @@ export component RoughPlannerWindow inherits Window {
                                 colorize: Theme.accent-cyan;
                                 width: 12px;
                                 height: 12px;
-                                horizontal-alignment: center;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
                             }
                         }
 
@@ -441,8 +502,8 @@ export component RoughPlannerWindow inherits Window {
                             clicked => { RoughPlanModel.new_model(); }
                         }
 
-                        RoughPill {
-                            text: RoughPlanModel.saved_open ? "Close Saved" : "Saved plans";
+                        rough-pill-saved-open := RoughPill {
+                            text: RoughPlanModel.saved_open ? "Close Saved" : "Saved Plans";
                             hint: RoughPlanModel.saved_open
                                 ? "Go back from the saved plans to the results."
                                 : "Show the plans you saved earlier, to open, rename, export or delete them. Ctrl+O does the same.";
@@ -450,8 +511,8 @@ export component RoughPlannerWindow inherits Window {
                             clicked => { RoughPlanModel.saved_open = !RoughPlanModel.saved_open; }
                         }
 
-                        RoughPill {
-                            text: "Save selected (" + RoughPlanModel.keep_count + ")";
+                        rough-pill-keep-count-2 := RoughPill {
+                            text: "Save Selected ("+ RoughPlanModel.keep_count + ")";
                             hint: RoughPlanModel.running ? "Wait for the plan to finish: saving reads the results it is producing."
                                 : (RoughPlanModel.keep_count == 0 ? "Tick the box on one or more result cards first, then save them."
                                 : "Save the layouts you ticked under a name. Ctrl+S does the same.");
@@ -528,6 +589,8 @@ export component RoughPlannerWindow inherits Window {
                             // Scrollable section for RoughForm and CutList
                             left_scroll := ScrollView {
                                 vertical-stretch: 1;
+                                // Never squeezed shut by the plan settings below.
+                                min-height: 120px;
                                 // The content is exactly as wide as the visible part: no
                                 // sideways scrolling, no content centred past both edges.
                                 content-width: self.visible-width;
@@ -564,8 +627,12 @@ export component RoughPlannerWindow inherits Window {
                                 background: Theme.border-subtle;
                             }
 
-                            // Pinned PlanForm at the bottom
-                            PlanForm {}
+                            // Pinned PlanForm at the bottom, at its own height: the spare
+                            // height goes to the scrolling rough and shape section above
+                            // (a stretching form grew its SpinBoxes to 80 px instead).
+                            PlanForm {
+                                vertical-stretch: 0;
+                            }
                         }
                     }
 
@@ -616,6 +683,8 @@ export component RoughPlannerWindow inherits Window {
                             spacing: 8px;
 
                             if RoughPlanModel.confirm_replace_open: ConfirmReplaceRow {}
+
+                            if RoughPlanModel.confirm_overwrite_open: ConfirmOverwriteRow {}
 
                             if RoughPlanModel.save_name_open: SaveNameRow {}
 

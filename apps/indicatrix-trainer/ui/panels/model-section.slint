@@ -1,0 +1,59 @@
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { UiState } from "../state.slint";
+import { Section } from "../components/section.slint";
+import { SegmentButton, SegmentRow } from "../components/segmented.slint";
+
+export component ModelSection inherits Section {
+    callback tier-requested(string);
+    title: "MODEL";
+
+    Text {
+        text: "Mode";
+        color: TrainerTheme.text-secondary;
+        font-size: 12px;
+    }
+    SegmentRow {
+        SegmentButton {
+            label: "Optimizer";
+            tip: "Adjusts the tier angles inside the design's own material.";
+            selected: TrainingController.model_mode == 0;
+            enabled: UiState.can_command;
+            activated => { if TrainingController.model_mode != 0 { TrainingController.select_model_mode(0); } }
+        }
+        SegmentButton {
+            label: "Retarget";
+            tip: "Scores the stone in a target material. A retarget checkpoint also serves the optimizer, the reverse is refused.";
+            selected: TrainingController.model_mode == 1;
+            enabled: UiState.can_command;
+            activated => { if TrainingController.model_mode != 1 { TrainingController.select_model_mode(1); } }
+        }
+    }
+    Text {
+        text: "Size";
+        color: TrainerTheme.text-secondary;
+        font-size: 12px;
+    }
+    SegmentRow {
+        for t in TrainingController.tiers: SegmentButton {
+            label: t.code;
+            tip: t.params + " · " + t.shape;
+            selected: t.code == TrainingController.model_tier_name;
+            enabled: UiState.can_command;
+            activated => { root.tier-requested(t.code); }
+        }
+        if TrainingController.tiers.length == 0: Text {
+            text: "Model size: " + TrainingController.model_tier_name;
+            color: TrainerTheme.text-muted;
+            font-size: 12px;
+        }
+    }
+    for t in TrainingController.tiers: Text {
+        visible: t.code == TrainingController.model_tier_name;
+        height: self.visible ? self.preferred-height : 0px;
+        text: t.params + " · " + t.shape;
+        color: TrainerTheme.text-muted;
+        font-size: 11px;
+        wrap: word-wrap;
+    }
+}

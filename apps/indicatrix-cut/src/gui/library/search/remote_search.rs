@@ -3,7 +3,7 @@
 
 use super::{
     dispatch::{bump_search_seq, is_current_search},
-    fetch::to_diagram_item,
+    fetch::{slint_count, to_diagram_item},
     filters::{read_range_filter, read_sort_order, read_tag_filter},
 };
 use crate::{
@@ -88,7 +88,8 @@ pub(in crate::gui) fn refresh_diagram_list_remote(
                 let slint_items: Vec<DiagramItem> = items.iter().map(to_diagram_item).collect();
                 ui.global::<LibraryModel>()
                     .set_diagram_list(ModelRc::new(VecModel::from(slint_items)));
-                ui.global::<LibraryModel>().set_total_count(total as i32);
+                ui.global::<LibraryModel>()
+                    .set_total_count(slint_count(total));
                 // No server-side "real match count" exists yet for a remote source --
                 // `LibraryResponse::SearchResults` carries only the capped item list
                 // (see `indicatrix_net::library`'s wire types), not a separate
@@ -98,15 +99,15 @@ pub(in crate::gui) fn refresh_diagram_list_remote(
                 // stale/zero, matching this path's pre-existing `total_count` behaviour
                 // -- a real fix needs a new field on that wire response, out of scope
                 // for this crate alone (`indicatrix-net`/`indicatrix-worker`).
-                ui.global::<LibraryModel>().set_matched_count(total as i32);
+                ui.global::<LibraryModel>()
+                    .set_matched_count(slint_count(total));
                 // `DesignSummary::ignored` and this reply's `excluded_for_missing_curves`
                 // let a remote-sourced list drive the same ignored-row styling and
                 // missing-curves notice the local path (`refresh_diagram_list` below)
-                // already does. `cast_possible_truncation` is workspace-`allow`ed for
-                // this `u32 as i32`, matching every other numeric cast into a Slint
-                // `int` property in this file.
+                // already does. The count is `SEARCH_RESULT_CAP`-bounded, so the
+                // `cast_signed` never wraps.
                 ui.global::<LibraryModel>()
-                    .set_performance_excluded_count(excluded_for_missing_curves as i32);
+                    .set_performance_excluded_count(excluded_for_missing_curves.cast_signed());
             }
             Ok(_) => {
                 ui.global::<LibraryModel>()

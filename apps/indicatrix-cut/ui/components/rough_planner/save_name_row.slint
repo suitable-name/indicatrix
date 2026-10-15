@@ -11,6 +11,16 @@ export component SaveNameRow inherits Rectangle {
     property <int> count: RoughPlanModel.save_selected_only ? RoughPlanModel.keep_count
         : RoughPlanModel.results.length;
 
+    // True while the replace-saved-plan question covers this row; when it closes again
+    // with the row still open (Cancel), the name is selected so a new one can be typed.
+    property <bool> asking: RoughPlanModel.confirm_overwrite_open;
+    changed asking => {
+        if !self.asking && RoughPlanModel.save_name_open {
+            name_input.focus();
+            name_input.select-all();
+        }
+    }
+
     background: Theme.surface-raised;
     border-radius: Theme.radius-sm;
     border-width: 1px;
@@ -31,7 +41,9 @@ export component SaveNameRow inherits Rectangle {
 
         HorizontalLayout {
             spacing: 6px;
-            alignment: center;
+            // Stretch (not `center`): a centred row gives the name field its preferred
+            // width, which left it a 40 px stub.
+            alignment: stretch;
 
             TipBox {
                 horizontal-stretch: 1;
@@ -40,10 +52,10 @@ export component SaveNameRow inherits Rectangle {
                     min-width: 0px;
                     text <=> RoughPlanModel.save_name;
                     placeholder-text: "Plan name...";
-                    accessible-label: "Plan name";
+                    accessible-label: "Plan Name";
                     init => { self.focus(); }
                     accepted => {
-                        if !RoughPlanModel.running {
+                        if !RoughPlanModel.running && !RoughPlanModel.confirm_overwrite_open {
                             RoughPlanModel.confirm_save();
                         }
                     }
@@ -55,7 +67,7 @@ export component SaveNameRow inherits Rectangle {
                 hint: RoughPlanModel.running ? "Wait for the plan to finish: saving reads the results it is producing."
                     : "Save the layouts under this name. Enter does the same.";
                 active: true;
-                enabled: !RoughPlanModel.running;
+                enabled: !RoughPlanModel.running && !RoughPlanModel.confirm_overwrite_open;
                 clicked => { RoughPlanModel.confirm_save(); }
             }
 

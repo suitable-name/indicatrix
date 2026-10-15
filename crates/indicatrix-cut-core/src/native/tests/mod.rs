@@ -1,8 +1,7 @@
 //! Tests for [`super`], split by topic: shared fixtures, per-tier field
-//! round-trips, refractive index, history/notes, fingerprint mismatches,
-//! imported-meet/draft handling, save preserve-vs-regenerate, untouched
-//! `.asc` notes, printed proportions/format version, custom materials, and
-//! the preform offset/native-only autosave path.
+//! round-trips, refractive index, history/notes, imported-meet/draft handling,
+//! catalogue `.asc` preserve-vs-regenerate, untouched `.asc` notes, printed
+//! proportions, custom materials, and the preform offset / whole-design round trip.
 
 mod fixtures;
 
@@ -11,10 +10,9 @@ mod design_file;
 mod design_file_meta;
 mod dispersion_model;
 mod field_round_trips;
-mod fingerprint_mismatch;
 mod history_and_notes;
 mod imported_meet_and_drafts;
-mod preform_offset_and_native_only;
+mod preform_offset_and_full_design;
 mod printed_proportions_and_version;
 mod refractive_index;
 mod relations;

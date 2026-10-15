@@ -10,10 +10,40 @@ fn live_render_opens_changes_the_light_and_returns_to_edit() {
             event(events::LIVE_RENDER_OPENED),
             read(),
             event(events::LIGHTING_PRESET_CHOSEN),
+            // The Parameters dock, the stone's material, back to the Edit tab.
+            read(),
             read(),
             read(),
         ],
     );
+}
+
+#[test]
+fn the_dock_lessons_outline_and_open_the_tab_they_talk_about() {
+    // A step that names a tab of the Parameters dock outlines it (and `app.slint` opens it),
+    // and the lessons that send the learner to the dock use only those targets for it.
+    let live = guide_named("viewing-live-render");
+    let targets: Vec<&str> = live
+        .steps
+        .iter()
+        .map(|step| step.highlight_target.as_str())
+        .collect();
+    assert!(targets.contains(&"lighting_tab"), "{targets:?}");
+    assert!(targets.contains(&"stone_tab"), "{targets:?}");
+    let lighting = guide_named("viewing-design-lighting");
+    for step in &lighting.steps[2..4] {
+        assert_eq!(step.highlight_target, "lighting_tab", "{:?}", step.title);
+    }
+    for id in ["viewing-custom-material", "viewing-material-coefficients"] {
+        let guide = guide_named(id);
+        for step in guide
+            .steps
+            .iter()
+            .filter(|step| !step.highlight_target.is_empty())
+        {
+            assert_eq!(step.highlight_target, "stone_tab", "{id}, {:?}", step.title);
+        }
+    }
 }
 
 #[test]
@@ -31,14 +61,14 @@ fn a_design_can_remember_its_lighting_and_forget_it_again() {
 }
 
 #[test]
-fn saving_the_lighting_is_not_done_by_choosing_a_preset() {
-    // Choosing a preset only changes what is on screen; the step after it asks for the save.
+fn saving_the_lighting_is_not_done_by_choosing_a_rig() {
+    // Choosing a rig only changes what is on screen; the step after it asks for the save.
     let guide = guide_named("viewing-design-lighting");
     let mut sim = Sim::start(&guide.starting_state);
     sim.fire(events::LIGHTING_PRESET_CHOSEN);
     assert!(
         !sim.met(&guide.steps[2].goal),
-        "the save step waits for the save, not for a preset"
+        "the save step waits for the save, not for a rig"
     );
     assert!(
         !sim.met(&guide.steps[3].goal),

@@ -1,12 +1,12 @@
 //! The core parse-measure-save pipeline: turns one candidate `.asc` (plus its
-//! optional `.indicatrix` design file or older sidecar), one `.gem`/`.gcs` design
-//! converted to `.asc`, or one stand-alone `.indicatrix` design file, into a saved
+//! optional `.isdd` design file), one `.gem`/`.gcs` design
+//! converted to `.asc`, or one stand-alone `.isdd` design file, into a saved
 //! catalogue row, and drives that over an entire batch of candidates.
 
 use super::{
     foreign::{ForeignFormat, convert_foreign_design, converted_asc_file_name},
     measure::{apply_measured_metadata, merge_reimport_metadata},
-    scan::{collect_import_candidates, find_design_file_beside, find_native_sidecar},
+    scan::{collect_import_candidates, find_design_file_beside},
 };
 use indicatrix_vault::{db::sqlite::Database, local, model::file::AttachedFile};
 use std::{
@@ -195,7 +195,7 @@ fn record_provenance(db: &Database, id: i64, source_id: i64, file_name: &str) {
     }
 }
 
-/// Parses one `.asc` (plus its design file or older sidecar, when one sits beside it) and fills in
+/// Parses one `.asc` (plus its design file, when one sits beside it) and fills in
 /// the measured proportions -- [`import_path`]'s per-file parse step.
 ///
 /// Runs outside the database lock and inside [`catch_file_panic`]: a single
@@ -209,13 +209,13 @@ fn record_provenance(db: &Database, id: i64, source_id: i64, file_name: &str) {
 fn parse_one_import(
     file_name: &str,
     bytes: &[u8],
-    sidecar: Option<&(String, Vec<u8>)>,
+    design_file: Option<&(String, Vec<u8>)>,
 ) -> Result<local::ImportedAsc, String> {
     parse_guarded(file_name, || {
         local::import_asc_bytes(
             file_name,
             bytes,
-            sidecar.map(|(name, bytes)| (name.as_str(), bytes.as_slice())),
+            design_file.map(|(name, bytes)| (name.as_str(), bytes.as_slice())),
         )
     })
 }
@@ -254,8 +254,7 @@ const WARNINGS_PER_FILE: usize = 3;
 /// Converts one `.gem`/`.gcs` design to `.asc` cutting instructions
 /// ([`convert_foreign_design`], inside [`catch_file_panic`]) and hands the text to
 /// [`parse_guarded`] -- the SAME `local::import_asc` + `apply_measured_metadata`
-/// step a `.asc` file takes. No older sidecar is looked for: a sidecar's
-/// fingerprint describes a `.asc`, never a `.gem`/`.gcs`. A `<stem>.indicatrix` design
+/// step a `.asc` file takes. A `<stem>.isdd` (or legacy `<stem>.indicatrix`) design
 /// file beside it is attached after the original file, and is what the editor opens.
 ///
 /// `local::import_asc` names its one attachment after `file_name`, but its bytes
@@ -333,7 +332,7 @@ fn warning_line(file_name: &str, warnings: &[String]) -> String {
 }
 
 /// Reads and parses one candidate: a `.gem`/`.gcs` through
-/// [`parse_foreign_import`], a stand-alone `.indicatrix` design file through
+/// [`parse_foreign_import`], a stand-alone `.isdd` / legacy `.indicatrix` design file through
 /// [`local::import_native_design`], anything else as `.asc` text (plus its design
 /// file) through [`parse_one_import`]. Split out of [`import_path`] purely to
 /// keep that function under clippy's `too_many_lines` limit.
@@ -356,17 +355,16 @@ fn read_and_parse_candidate(
     }
     // The raw bytes go to the vault, which decodes them for parsing (Windows-1252 and
     // byte-order marks included) and stores the file exactly as received.
-    // A design saved by this app is a self-contained `.indicatrix` file (an older one
-    // is a `.asc` PLUS an older sidecar), carrying everything the bare `.asc` can't
-    // (authored meet constraints, preform, detached facets, material/RI override --
-    // see `indicatrix_formats::native`'s module doc comment). Importing only the
-    // `.asc` would silently discard all of that. `find_native_sidecar` looks beside
-    // the `.asc` itself, independent of what `collect_import_candidates`
-    // collected, and `local::import_asc_bytes` attaches it as a second file when found;
-    // `gui::editor::loading::design_from_full_record` prefers the `.indicatrix` file,
-    // and `indicatrix_cut_core::load_paired` when only a sidecar is attached.
-    let sidecar = find_native_sidecar(file_path);
-    parse_one_import(file_name, &bytes, sidecar.as_ref()).map(|parsed| (parsed, Vec::new()))
+    // A design saved by this app is a self-contained `.isdd` file, carrying everything
+    // the bare `.asc` can't (authored meet constraints, preform, detached facets,
+    // material/RI override -- see `indicatrix_formats::native`'s module doc comment).
+    // Importing only the `.asc` would silently discard all of that.
+    // `find_design_file_beside` looks beside the `.asc` itself, independent of what
+    // `collect_import_candidates` collected, and `local::import_asc_bytes` attaches it
+    // as a second file when found; `gui::editor::loading::design_from_full_record`
+    // prefers the design file.
+    let design_file = find_design_file_beside(file_path);
+    parse_one_import(file_name, &bytes, design_file.as_ref()).map(|parsed| (parsed, Vec::new()))
 }
 
 /// Imports every `.asc`, `.gem` and `.gcs` file at `path` (see

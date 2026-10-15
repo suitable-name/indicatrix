@@ -13,11 +13,10 @@ use super::{
     state::{Orchestrator, current_drag_held, current_pose, lock},
     update::{continue_lane, redraw_from_epoch},
 };
-#[cfg(feature = "zoning")]
-use crate::bridge::{export_thread::SceneSnapshot, remote::zoned_scene_refusal};
 use crate::{
     MainWindow, RemoteWorkerModel,
     bridge::{
+        export_thread::SceneSnapshot,
         frame_cache::guide_pass::GuideCache,
         remote::{
             LiveDispatch,
@@ -25,6 +24,7 @@ use crate::{
             live_lane::LiveLane,
             live_remote_dispatch,
             remote_render::RemoteConnectionHandle,
+            zoned_scene_refusal,
         },
         render_thread::{RedrawGate, RenderContext},
     },
@@ -114,7 +114,6 @@ pub fn setup_remote_rendering(
         remote_connection: None,
         display_only_refused: false,
         remote_hdr: None,
-        #[cfg(feature = "zoning")]
         remote_zoning: None,
         last_pose: current_pose(render_ctx),
         last_change_at: Instant::now(),
@@ -406,7 +405,6 @@ fn drop_stale_connection(state: &Arc<Mutex<Orchestrator>>, endpoint: Option<&Rem
         s.remote_connection = None;
         s.display_only_refused = false;
         s.remote_hdr = None;
-        #[cfg(feature = "zoning")]
         {
             s.remote_zoning = None;
         }
@@ -434,7 +432,6 @@ fn settle_endpoint(
             remote_hdr,
         )
     };
-    #[cfg(feature = "zoning")]
     let decision = keep_zoned_stone_local(decision, render_ctx, state);
     match decision {
         LiveDispatch::Remote => {
@@ -452,7 +449,7 @@ fn settle_endpoint(
     }
 }
 
-/// `zoning` builds: turns a [`LiveDispatch::Remote`] decision into a refusal when the live
+/// Turns a [`LiveDispatch::Remote`] decision into a refusal when the live
 /// remote is known NOT to accept zoned materials ([`Orchestrator::remote_zoning`] is
 /// `Some(false)`: a default-build worker, or a coordinator) and the stone being viewed has
 /// colour zones -- it would show only its base zone remotely. Before the connection first
@@ -460,7 +457,6 @@ fn settle_endpoint(
 /// chunk against the live `WELCOME` (`RemoteError::ZoningUnsupported`), which also teaches this
 /// the answer. The scene is only captured when the remote is known not to accept zones, so a
 /// zoning worker costs nothing here.
-#[cfg(feature = "zoning")]
 fn keep_zoned_stone_local(
     decision: LiveDispatch,
     render_ctx: &Arc<Mutex<RenderContext>>,

@@ -152,7 +152,7 @@ pub(super) fn push_retarget_view(ui: &MainWindow, view: RetargetView) {
         .rows
         .into_iter()
         .map(|r| RetargetRowItem {
-            tier_index: r.tier_index as i32,
+            tier_index: i32::try_from(r.tier_index).unwrap_or(i32::MAX),
             block: r.block.into(),
             name: r.name.into(),
             old_angle: r.old_angle.into(),

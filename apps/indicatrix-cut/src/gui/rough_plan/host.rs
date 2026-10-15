@@ -5,7 +5,7 @@
 use super::{
     counts::{is_remote, refresh_counts, refresh_counts_if_filter_changed, sync_remote_message},
     cut_faces::{corner_names, edge_names, options_model},
-    editing,
+    editing, editor_link,
     exclusions::{self, ExclusionWorker},
     format::to_i32,
     inputs::{built_in_choices, material_choices},
@@ -79,6 +79,12 @@ thread_local! {
 pub(super) fn with_host<R>(f: impl FnOnce(&Rc<Host>) -> R) -> Option<R> {
     let host = PLANNER.with(|cell| cell.borrow().clone())?;
     Some(f(&host))
+}
+
+/// The planner window when it was created (it may be hidden). UI harness only.
+#[cfg(feature = "ui-harness")]
+pub fn harness_window() -> Option<RoughPlannerWindow> {
+    with_host(|host| host.window.clone_strong())
 }
 
 /// [`with_host`] for callbacks that have nothing to return.
@@ -253,7 +259,12 @@ fn fit_to_monitor(window: &RoughPlannerWindow) {
         .window()
         .size()
         .to_logical(window.window().scale_factor());
-    if let Some(size) = fitted_size(monitor_width as f32, monitor_height as f32, current) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the Slint logical-size precision; monitor sizes are in the normal float range"
+    )]
+    let (monitor_width, monitor_height) = (monitor_width as f32, monitor_height as f32);
+    if let Some(size) = fitted_size(monitor_width, monitor_height, current) {
         window.window().set_size(size);
     }
 }
@@ -302,8 +313,6 @@ fn create_host(
     };
     // Starts in the current palette (high contrast) and follows later changes.
     crate::gui::preferences::bind_planner_window_theme(&window);
-    // The `zoning` feature's UI switch (a global is per window).
-    crate::gui::zoning_ui::apply_to_planner(&window);
     let host = Rc::new(Host {
         shape: ShapeWorker::new(window.as_weak()),
         exclusions: ExclusionWorker::new(window.as_weak(), Arc::clone(db)),
@@ -325,12 +334,12 @@ fn create_host(
     model.set_edge_options(options_model(edge_names()));
     model.set_corner_options(options_model(corner_names()));
     editing::setup_edit_callbacks(&host);
-    #[cfg(feature = "zoning")]
     super::colour_link::setup(&host);
     view::setup_view_callbacks(&host);
     run::setup_run_callbacks(&host);
     saved::setup_saved_callbacks(&host);
     library_link::setup_link_callbacks(&host);
+    editor_link::setup_editor_link_callbacks(&host);
     exclusions::setup_callbacks(&host);
     host.filter_watch
         .start(TimerMode::Repeated, FILTER_POLL, || {
@@ -391,7 +400,7 @@ fn risk_message(unsaved_results: usize, plan_running: bool) -> Option<String> {
 /// the planner window was never opened. Closing the planner window itself only hides it,
 /// so this is only asked when the whole application closes.
 pub(in crate::gui) fn planner_work_at_risk() -> Option<String> {
-    with_host(|host| {
+    let planner = with_host(|host| {
         // A session that is being written to right now cannot be read; it then counts as
         // holding no results, and a running plan is still reported.
         let unsaved = host.session.try_borrow().map_or(0, |session| {
@@ -404,12 +413,20 @@ pub(in crate::gui) fn planner_work_at_risk() -> Option<String> {
         let running = host.window.global::<RoughPlanModel>().get_running();
         risk_message(unsaved, running)
     })
-    .flatten()
+    .flatten();
+    // The colour wizard belongs to the planner: a fit that was not accepted is lost with it.
+    let wizard = crate::gui::rough_colour::wizard::host::work_at_risk();
+    match (planner, wizard) {
+        (Some(planner), Some(wizard)) => Some(format!("{planner} {wizard}")),
+        (planner, wizard) => planner.or(wizard),
+    }
 }
 
 /// Closes the planner window for good: asks a running plan to stop and drops the host.
 /// Called wherever the main window hides, so the planner never outlives it.
 pub(in crate::gui) fn close_planner_window() {
+    // The registration holds the library handle, also when the host is already gone.
+    view::release_meshes();
     let Some(host) = PLANNER.with(|cell| cell.borrow_mut().take()) else {
         return;
     };
@@ -419,7 +436,6 @@ pub(in crate::gui) fn close_planner_window() {
     let _ = host.window.hide();
     // The locate and rig windows belong to the planner and go with it.
     super::locate::close_windows();
-    #[cfg(feature = "zoning")]
     super::colour_link::close();
 }
 

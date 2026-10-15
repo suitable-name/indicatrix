@@ -89,16 +89,16 @@ fn a_flag_without_its_value_is_named() {
 
 #[test]
 fn solve_takes_an_output() {
-    let Command::Solve(args) = parsed("solve a.asc --out a.indicatrix") else {
+    let Command::Solve(args) = parsed("solve a.asc --out a.isdd") else {
         panic!("expected solve");
     };
-    assert_eq!(args.out, Some(PathBuf::from("a.indicatrix")));
+    assert_eq!(args.out, Some(PathBuf::from("a.isdd")));
     assert!(!args.json);
 }
 
 #[test]
 fn metrics_defaults_and_flags() {
-    let Command::Metrics(plain) = parsed("metrics a.indicatrix") else {
+    let Command::Metrics(plain) = parsed("metrics a.isdd") else {
         panic!("expected metrics");
     };
     assert_eq!(plain.format, ReportFormat::Text);
@@ -107,7 +107,7 @@ fn metrics_defaults_and_flags() {
     assert_eq!(plain.lighting, CANONICAL_LIGHTING_PRESET);
 
     let Command::Metrics(args) =
-        parsed("metrics a.indicatrix --material Sapphire --tilt --csv --lighting tent")
+        parsed("metrics a.isdd --material Sapphire --tilt --csv --lighting tent")
     else {
         panic!("expected metrics");
     };
@@ -168,7 +168,7 @@ fn validate_flags() {
 
 #[test]
 fn optimize_defaults_match_the_optimize_tab() {
-    let Command::Optimize(args) = parsed("optimize a.indicatrix") else {
+    let Command::Optimize(args) = parsed("optimize a.isdd") else {
         panic!("expected optimize");
     };
     assert_eq!(args.preset, ObjectivePreset::Balanced);
@@ -185,8 +185,8 @@ fn optimize_defaults_match_the_optimize_tab() {
 #[test]
 fn optimize_flags() {
     let Command::Optimize(args) = parsed(
-        "optimize a.indicatrix --preset low-windowing --budget 50 --seed 7 \
-         --vary-anchored --candidates 2 --out best.indicatrix",
+        "optimize a.isdd --preset low-windowing --budget 50 --seed 7 \
+         --vary-anchored --candidates 2 --out best.isdd",
     ) else {
         panic!("expected optimize");
     };
@@ -195,20 +195,20 @@ fn optimize_flags() {
     assert_eq!(args.seed, 7);
     assert!(args.vary_anchored);
     assert_eq!(args.candidates, 2);
-    assert_eq!(args.out, Some(PathBuf::from("best.indicatrix")));
+    assert_eq!(args.out, Some(PathBuf::from("best.isdd")));
 }
 
 #[test]
 fn optimize_starts_flag_is_parsed_and_checked() {
-    let Command::Optimize(args) = parsed("optimize a.indicatrix --starts 3") else {
+    let Command::Optimize(args) = parsed("optimize a.isdd --starts 3") else {
         panic!("expected optimize");
     };
     assert_eq!(args.starts, 3);
-    let Command::Optimize(one) = parsed("optimize a.indicatrix --starts 1") else {
+    let Command::Optimize(one) = parsed("optimize a.isdd --starts 1") else {
         panic!("expected optimize");
     };
     assert_eq!(one.starts, 1);
-    let Command::Optimize(most) = parsed("optimize a.indicatrix --starts 32") else {
+    let Command::Optimize(most) = parsed("optimize a.isdd --starts 32") else {
         panic!("expected optimize");
     };
     assert_eq!(most.starts, 32);
@@ -276,7 +276,7 @@ fn retarget_no_keep_look_turns_the_shape_penalty_off() {
 fn retarget_crown_policy_and_mode() {
     let Command::Retarget(args) = parsed(
         "retarget a.asc --ri 1.7681 --crown-fraction 0.33 --mode optimize --range 10 \
-         --budget 100 --preset brilliance --out out.indicatrix",
+         --budget 100 --preset brilliance --out out.isdd",
     ) else {
         panic!("expected retarget");
     };
@@ -322,9 +322,9 @@ fn retarget_checks_its_flags() {
 
 #[test]
 fn sweep_takes_negative_angles_as_values() {
-    let Command::Sweep(args) = parsed(
-        "sweep a.indicatrix --tier P1 --from -43 --to -39.5 --step 0.5 --tilt --csv rows.csv",
-    ) else {
+    let Command::Sweep(args) =
+        parsed("sweep a.isdd --tier P1 --from -43 --to -39.5 --step 0.5 --tilt --csv rows.csv")
+    else {
         panic!("expected sweep");
     };
     assert_eq!(args.tier, "P1");
@@ -360,7 +360,10 @@ fn export_needs_a_format_and_an_output() {
 fn export_can_infer_the_format_from_the_output_name() {
     for (name, format) in [
         ("a.asc", ExportFormat::Asc),
-        ("a.INDICATRIX", ExportFormat::Indicatrix),
+        ("a.isdd", ExportFormat::Isdd),
+        ("a.ISDD", ExportFormat::Isdd),
+        // The legacy extension still names the design file.
+        ("a.INDICATRIX", ExportFormat::Isdd),
         ("a.gcs", ExportFormat::Gcs),
         ("a.html", ExportFormat::Html),
         ("a.htm", ExportFormat::Html),
@@ -369,6 +372,14 @@ fn export_can_infer_the_format_from_the_output_name() {
             panic!("expected export");
         };
         assert_eq!(args.format, format, "{name}");
+    }
+    // `--format` takes `isdd`, and `indicatrix` as an alias.
+    for word in ["isdd", "indicatrix"] {
+        let Command::Export(args) = parsed(&format!("export in.gem --format {word} --out x.dat"))
+        else {
+            panic!("expected export");
+        };
+        assert_eq!(args.format, ExportFormat::Isdd, "{word}");
     }
     // An explicit format beats the extension.
     let Command::Export(args) = parsed("export in.gem --format html --out a.asc") else {

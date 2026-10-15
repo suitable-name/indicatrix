@@ -1,48 +1,46 @@
-//! The conversions behind the `.indicatrix` design file (see "The self-contained
-//! design file" below), and the older `.indicatrix.toml` sidecar format (legacy
-//! `.gemcut.toml` files still load), paired with (never replacing) a real `.asc`
-//! export, carrying design state `.asc` has no field for at all.
+//! The conversions behind the `.isdd` design file (Indicatrix Suite Design Document;
+//! files saved as `.indicatrix` before are read the same way), plus the catalogue `.asc`
+//! text a save stores next to it.
 //!
-//! The on-disk document shape itself -- the schema, TOML encode/decode, sidecar path
-//! rules, and the paired-`.asc` fingerprint -- lives in [`indicatrix_formats::native`], a
-//! dependency-free-of-editor-types format crate this module re-exports from (see that
-//! module's own doc comment for the format, "the gap this closes", and the
-//! fingerprint). What stays HERE is everything that needs this crate's own editor
-//! types in scope: [`convert`]'s free functions between the on-disk mirror types and
-//! [`crate::design::Design`]/[`crate::preform::PreformSpec`]/
+//! The on-disk document shape itself -- the schema, TOML encode/decode and path
+//! rules -- lives in [`indicatrix_formats::native`], a dependency-free-of-editor-types
+//! format crate this module re-exports from (see that module's own doc comment for the
+//! format and "the gap this closes"). What stays HERE is everything that needs this
+//! crate's own editor types in scope: [`convert`]'s free functions between the on-disk
+//! mirror types and [`crate::design::Design`]/[`crate::preform::PreformSpec`]/
 //! [`crate::material::MaterialSelection`]/`indicatrix`'s own
 //! [`indicatrix::geometry::meet_solver::MeetConstraint`] (see [`convert`]'s own doc
 //! comment for why these are free functions, not `From`/`Into` impls), and the two
-//! directions built on top of them: [`load`]'s [`load_paired`] and [`save`]'s
-//! [`save_paired`].
+//! directions built on top of them: [`design_to_file`]/[`design_from_file`] and
+//! [`save`]'s [`catalogue_asc`].
 //!
 //! # The self-contained design file
 //!
-//! [`design_to_file`]/[`design_from_file`] convert a design to and
-//! from the single-file `.indicatrix` format ([`indicatrix_formats::native::design`]),
-//! which needs no paired `.asc`; [`migrate_sidecar_to_file`] upgrades an already-loaded
-//! paired design. New saves use it; [`load_paired`] still opens the older pair.
+//! [`design_to_file`]/[`design_from_file`] convert a design to and from the single-file
+//! `.isdd` format ([`indicatrix_formats::native::design`]), which carries the whole
+//! design and needs no paired `.asc`. There is no other native file: the older
+//! `.indicatrix.toml` overlay sidecar, which needed its `.asc` next to it, is not read
+//! or written any more.
 //!
 //! # Preserving the original `.asc` text
 //!
 //! [`indicatrix_formats::asc::to_asc_string`] is round-trip-stable but not byte-identical to
 //! hand-authored `GemCAD` output. Saving a design that came from a catalogue `.asc`
-//! and was never actually edited should not reformat that file just because a
-//! design file or sidecar sits beside it: [`save_paired`] takes the caller's already-loaded
-//! original `.asc` text and preserves it byte for byte whenever the design's current
+//! and was never actually edited should not reformat that text just because a design
+//! file sits beside it: [`catalogue_asc`] takes the caller's already-loaded original
+//! `.asc` text and preserves it byte for byte whenever the design's current
 //! [`crate::design::Design::to_asc_schedule`] output is semantically equal to what
 //! that text itself parses to, WITH ONE FIELD MASKED: `refractive_index` is compared
 //! against the original text's own value, not the design's current
 //! [`crate::design::Design::effective_refractive_index`] -- picking a different
 //! built-in material changes that derived figure on its own, with no tier/preform
-//! data touched at all, and the sidecar's `[material]` table already records the
-//! real selection (see [`convert::to_native_file`]), so the exported `I` line
-//! staying at its original value costs nothing. So: nothing authored actually
-//! changed, even if `girdle_diameter_mm`/`material`/`preform` were touched (none of
-//! which round-trip into `.asc` beyond that one masked field). Once a real
-//! tier/preform edit breaks that (masked) equality, this regenerates a fresh `.asc`
-//! instead -- see the
-//! `save_paired_preserves_untouched_text`/`save_paired_preserves_untouched_text_after_a_material_change_alone`/`save_paired_regenerates_after_a_real_edit`
+//! data touched at all, and the design file's `[material]` table already records the
+//! real selection, so the exported `I` line staying at its original value costs
+//! nothing. So: nothing authored actually changed, even if
+//! `girdle_diameter_mm`/`material`/`preform` were touched (none of which round-trip
+//! into `.asc` beyond that one masked field). Once a real tier/preform edit breaks that
+//! (masked) equality, this regenerates a fresh `.asc` instead -- see the
+//! `catalogue_asc_preserves_untouched_text`/`catalogue_asc_preserves_untouched_text_after_a_material_change_alone`/`catalogue_asc_regenerates_after_a_real_edit`
 //! tests, and that module's own (private) `schedules_equal_ignoring_refractive_index`
 //! for the actual comparison.
 
@@ -63,30 +61,23 @@ pub use unknown_keys::UnknownFileKeys;
 
 pub use convert::{
     SaveExtras, SnapshotColor, color_recipe_dto, gem_material_from_custom_snapshot,
-    gem_material_from_custom_snapshot_keeping_recipe, snapshot_color, to_native_file,
+    gem_material_from_custom_snapshot_keeping_recipe, snapshot_color,
 };
 pub use design_file::{
     DESIGN_HISTORY_LIMIT, DesignExtras, DesignLoadError, LoadedDesign, design_from_file,
-    design_from_str, design_to_file, design_to_string, migrate_sidecar_to_file,
+    design_from_str, design_to_file, design_to_string,
 };
-pub use load::{
-    LoadNativeOnlyError, LoadNativeOnlyResult, LoadPairedError, LoadPairedResult,
-    MaterialResolution, TierOverlay, load_native_only, load_paired,
-};
+pub use load::MaterialResolution;
 pub use save::{
-    DraftReason, PairedSave, SaveError, save_native_only, save_native_only_toml, save_paired,
-    save_paired_extended, save_paired_extended_from_solved,
+    CatalogueAsc, DraftReason, SaveError, catalogue_asc, catalogue_asc_extended,
+    catalogue_asc_extended_from_solved,
 };
 
-/// Kept under its historic name -- `apps/indicatrix-cut` calls this as
-/// `indicatrix_cut_core::native::parse_toml_string`.
-pub use indicatrix_formats::native::design::{
-    AttachmentBlob, AttachmentRole, DesignFile, DesignFileError, DesignMetadata, FileKind,
-};
 pub use indicatrix_formats::native::{
-    CustomMaterialSnapshot, DispersionModelDto, FORMAT_VERSION, FingerprintCheck, HistoryTable,
-    LEGACY_NATIVE_EXTENSION_SUFFIX, MaterialTable, NATIVE_EXTENSION_SUFFIX, NativeDesignFile,
-    NativeFormatError, NativeMeetConstraint, NativePreformShape, PreformTable, SourceTable,
-    TierTable, asc_path_for_native, check_fingerprint, from_toml_str as parse_toml_string,
-    native_path_for_asc, sha256_hex, to_toml_string,
+    CustomMaterialSnapshot, DispersionModelDto, HistoryTable, MaterialTable, NativeMeetConstraint,
+    NativePreformShape, PreformTable, SourceTable, TierTable,
+    design::{
+        AttachmentBlob, AttachmentRole, DesignFile, DesignFileError, DesignMetadata, FileKind,
+    },
+    sha256_hex,
 };

@@ -1,4 +1,4 @@
-//! Re-export: the exponent<->sample-count mapping for the settings dialog's "Target
+//! Re-export: the exponent<->sample-count mapping for the Parameters panel's "Target
 //! Samples" slider now lives in `indicatrix::render_setup::sample_scale` (moved there
 //! unchanged, tests included, so the browser app's own samples slider maps exactly the
 //! same way -- see that module's own doc comment) and is re-exported at this path so

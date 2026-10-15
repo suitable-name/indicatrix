@@ -28,8 +28,7 @@ use std::sync::{Arc, Mutex};
 pub(in crate::gui) const DB_PATH: &str = "facet_diagrams.sqlite";
 
 /// Rebuilds the custom-material list (render context and material picker) from the vault. The
-/// planner's "Use colour" calls it after it wrote a new material (`zoning` builds only).
-#[cfg(feature = "zoning")]
+/// planner's "Use colour" calls it after it wrote a new material.
 pub(in crate::gui) fn reload_custom_materials(
     ui: &MainWindow,
     db: &Arc<Mutex<indicatrix_vault::db::sqlite::Database>>,
@@ -104,11 +103,15 @@ pub struct MainWindowHandle {
 /// already panicked while holding that same lock, so this is a symptom of a prior
 /// panic elsewhere, not a new failure mode this function introduces.
 pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
+    // A second main window on this thread (the UI harness builds one per scenario) must not
+    // inherit the first one's database, editor state or kept secondary windows. A no-op for the
+    // application's one window.
+    super::window_release::release_window_state();
     let ui = MainWindow::new()?;
 
     // Local Compute (Feature: a local CPU/CPU+GPU/GPU switch): whether this build was
     // compiled with the `gpu` feature -- Rust-driven, set once here (Slint has no
-    // `cfg!` of its own), never touched again. `settings_dialog.slint`'s "Local
+    // `cfg!` of its own), never touched again. the Parameters panel's "Local
     // Compute" row binds its whole `visible:` to this, so a CPU-only build never
     // offers a choice it has no GPU path to act on.
     ui.global::<SettingsModel>()
@@ -122,10 +125,10 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     // gated build if one ever existed.
     ui.global::<EditorModel>().set_enabled(true);
 
-    // The `zoning` feature's UI switch (`false` in a default build, so nothing shows).
-    super::zoning_ui::apply_to_main(&ui);
-
     let db = open_design_library(&ui)?;
+    // The UI harness checks after each shutdown whether the window and this handle were freed.
+    #[cfg(feature = "ui-harness")]
+    crate::harness_support::register_window(&ui, &db);
 
     // Shared Render Context for 3D Viewport
     let render_ctx = Arc::new(Mutex::new(RenderContext::default()));
@@ -139,8 +142,7 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     let library_source: Arc<Mutex<LibrarySource>> = Arc::new(Mutex::new(LibrarySource::default()));
 
     apply_custom_materials(&ui, &db, &render_ctx);
-    // Zoning builds: the planner's "Use colour" needs the render context to select the material.
-    #[cfg(feature = "zoning")]
+    // The planner's "Use colour" needs the render context to select the material.
     crate::gui::rough_colour::adopt_link::register_render_context(&render_ctx);
     let settings_store = load_settings(&ui, &render_ctx);
 
@@ -173,7 +175,7 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
         &solid.preview_state,
     );
     setup_editor(&ui, &db, &library_source, &render_ctx, &solid);
-    // The lighting a design remembers for itself (settings dialog buttons + the hook the
+    // The lighting a design remembers for itself (Parameters panel buttons + the hook the
     // editor calls when a design opens, see `render::design_lighting`).
     render::design_lighting::setup_design_lighting_callbacks(
         &ui,
@@ -186,6 +188,9 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     let remote_rendering_timer =
         setup_remote_and_batch(&ui, &db, &library_source, &render_ctx, &settings_store);
     setup_window_close(&ui, &render_ctx, &settings_store);
+    // The new-version check: the one-time question, the Preferences switch and, when it is
+    // due, the automatic check on a background thread (never before the user said yes).
+    crate::gui::update_check::setup_update_check(&ui, &settings_store);
 
     // The app always opens on the solid renderer view: the 3D Gem tab's Edit
     // sub-tab in Solid view mode (`startup_settings` forces the view mode to 0).

@@ -1,0 +1,70 @@
+// The data and callbacks between Rust and the Render view (`render_view.slint`) and the
+// export sheet (`export_sheet.slint`). Rust -> Slint is properties, Slint -> Rust is
+// callbacks. A global is visible to Rust only if `app.slint`'s `export { ... }` names it.
+export global RenderModel {
+    // ---- the picture ---------------------------------------------------------------
+    // The latest tone-mapped frame, and whether one has landed yet.
+    in property <image> frame;
+    in property <bool> has-frame: false;
+
+    // ---- the overlay ---------------------------------------------------------------
+    // The line under the picture: "Rendering 24 / 64", "Done", "Paused: Device Is Hot",
+    // "Solve the design to render it".
+    in property <string> status-text: "";
+    // How far the trace is, 0 to 1.
+    in property <float> progress: 0.0;
+    // Pause is shown as Resume.
+    in property <bool> paused: false;
+    // A trace exists that Pause can act on.
+    in property <bool> can-pause: false;
+    // 0 Draft, 1 Normal, 2 Fine (`RenderQuality`).
+    in property <int> quality: 1;
+    in property <bool> denoise: true;
+    // One finger moves the light instead of the camera.
+    in property <bool> light-drag: false;
+    // A solve is current: there is something to render and export.
+    in property <bool> can-render: false;
+
+    callback pause-toggled();
+    callback quality-cycled();
+    callback denoise-toggled();
+    callback light-toggled();
+    callback export-requested();
+
+    // ---- the export sheet ----------------------------------------------------------
+    in property <bool> export-open: false;
+    // The choices ("512 px", "64"), and the chosen index of each (the sheet writes the
+    // index, then reports `export-options-changed`). Color space: 0 sRGB, 1 Display P3.
+    in property <[string]> export-sizes;
+    in-out property <int> export-size: 0;
+    in property <[string]> export-samples;
+    in-out property <int> export-spp: 0;
+    in-out property <int> export-color: 0;
+    // The sentence under the options ("About 40 seconds.").
+    in property <string> export-estimate: "";
+    // A job can be built (a solve is current); otherwise `export-problem` says why not.
+    in property <bool> export-ready: false;
+    in property <string> export-problem: "";
+    in property <bool> export-running: false;
+    in property <float> export-progress: 0.0;
+    // A finished picture is waiting to be shared or saved; `export-result` names it.
+    in property <bool> export-done: false;
+    in property <string> export-result: "";
+
+    callback export-options-changed();
+    callback export-render();
+    callback export-cancel();
+    callback export-share();
+    callback export-save();
+    callback export-closed();
+
+    // One step of "Back": closes the export sheet. Returns false when it is not open, so
+    // the caller goes on to the next step.
+    public function handle-back() -> bool {
+        if (export-open) {
+            export-closed();
+            return true;
+        }
+        return false;
+    }
+}

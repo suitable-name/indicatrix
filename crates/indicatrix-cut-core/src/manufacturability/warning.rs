@@ -86,8 +86,7 @@ pub enum ManufacturabilityWarning {
     /// [`crate::design::meet_name_is_asc_safe`] rejects -- a name that would not
     /// re-parse back to itself from a plain `.asc` `"Meet <names>"` export (see that
     /// function's own doc comment for exactly which names fail and why). A pure
-    /// `.asc` re-export/re-import, or a native load that fell back to
-    /// `TierOverlay::SkippedFingerprintMismatch`, loses or mis-targets this meet
+    /// `.asc` re-export/re-import loses or mis-targets this meet
     /// reference even though the design solves and exports without any other
     /// complaint today. `unsafe_names` is the exact subset of this tier's authored
     /// names that fail the check, in authored order.
@@ -142,7 +141,7 @@ pub enum ManufacturabilityWarning {
     ToolEnclosed { tier: usize, placement: usize },
     /// The design has concave tiers and the file format being written (`.asc`,
     /// `.gem`, `.gcs`) cannot represent them, so they are left out of the tier
-    /// records (`.asc` keeps two footnotes per tier; the native `.indicatrix` file
+    /// records (`.asc` keeps two footnotes per tier; the native `.isdd` file
     /// stays the lossless carrier). About the design as a whole, so it names no
     /// tier: [`Self::tier_index`] reports `0` and [`Self::tier_id`] `TierId(0)` for
     /// it, and it belongs to the export notice, never to a tier-table row.
@@ -407,7 +406,7 @@ impl std::fmt::Display for ManufacturabilityWarning {
             Self::ConcaveTiersOmittedFromExport { count } => write!(
                 f,
                 "{count} concave tier(s) cannot be written to this format and are left out of \
-                 the tier list; the .asc keeps them as footnotes, the .indicatrix file keeps \
+                 the tier list; the .asc keeps them as footnotes, the .isdd file keeps \
                  them in full"
             ),
         }

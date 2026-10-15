@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// One attachment WITH its full byte content.
 ///
-/// A `.asc`/`.gem`/`.pdf`/native-sidecar file, or a scraped page's attachment -- see
+/// A `.asc`/`.gem`/`.pdf`/design file, or a scraped page's attachment -- see
 /// [`crate::model::entry::AttachedFileMeta`] for the metadata-only counterpart a
 /// caller that doesn't need the bytes should prefer.
 #[derive(Debug, Clone, Serialize, Deserialize)]

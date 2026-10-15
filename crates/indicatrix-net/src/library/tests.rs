@@ -165,7 +165,7 @@ fn library_response_variants_round_trip() {
         LibraryResponse::DesignSourceNotAvailable,
         LibraryResponse::DesignNative {
             entry_id: 42,
-            file_name: "scooped.indicatrix".to_string(),
+            file_name: "scooped.isdd".to_string(),
             content: b"version = 2\n".to_vec(),
         },
         LibraryResponse::DesignNativeNotAvailable,

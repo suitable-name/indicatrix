@@ -1,7 +1,12 @@
 //! Shared fixtures for [`super`]'s topic modules: two small real `.asc`
-//! schedules and the [`Design`] builders on top of them.
+//! schedules, the [`Design`] builders on top of them and the design file round trip.
 
-use crate::{design::Design, material::MaterialSelection, preform::PreformSpec};
+use crate::{
+    design::Design,
+    material::MaterialSelection,
+    native::{DesignExtras, LoadedDesign, design_from_str, design_to_string},
+    preform::PreformSpec,
+};
 use indicatrix::geometry::meet_solver::MeetConstraint;
 
 /// A real, small schedule (two anchored tiers, no meet-derived structure needed)
@@ -92,4 +97,14 @@ pub(super) fn unsolved_design() -> Design {
         detached: vec![24.0],
     });
     design
+}
+
+/// The text of `design` as a design file, with no extras.
+pub(super) fn design_text(design: &Design) -> String {
+    design_to_string(design, None, &DesignExtras::default()).expect("must serialize")
+}
+
+/// `design` written as a design file and opened again.
+pub(super) fn reopen(design: &Design) -> LoadedDesign {
+    design_from_str(&design_text(design)).expect("must open its own output")
 }

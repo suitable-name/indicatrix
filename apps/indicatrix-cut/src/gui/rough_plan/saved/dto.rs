@@ -9,17 +9,23 @@ use serde::{Deserialize, Serialize};
 /// The expected format identifier in the header of a plan file.
 pub const ROUGH_PLAN_FORMAT: &str = "indicatrix-rough-plan";
 
-/// The newest schema version this build reads. A plan with inclusions is written with this
-/// version, a plan with a non-convex mesh rough and no inclusions with
+/// The newest schema version this build reads. A plan with a rough colour or stone orientation
+/// choices is written with this version ([`COLOUR_SCHEMA_VERSION`]), a plan with inclusions with
+/// [`INCLUSION_SCHEMA_VERSION`], a plan with a non-convex mesh rough and no inclusions with
 /// [`MESH_SCHEMA_VERSION`], and every other plan with [`BASE_SCHEMA_VERSION`], so the plans of
-/// convex roughs and of meshes without inclusions are byte for byte what they always were.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+/// convex roughs, of meshes without inclusions and of plans without a colour are byte for byte
+/// what they always were (see [`SavedPlanDto::content_version`]).
+pub const CURRENT_SCHEMA_VERSION: u32 = COLOUR_SCHEMA_VERSION;
 
 /// The schema version that introduced the `rough.mesh` table.
 pub const MESH_SCHEMA_VERSION: u32 = 2;
 
 /// The schema version that introduced the `rough.inclusions` tables.
 pub const INCLUSION_SCHEMA_VERSION: u32 = 3;
+
+/// The schema version that introduced the `colour` table and the `pose_choices` array: an
+/// exported plan carries the plan's rough colour and the cutter's stone orientation choices.
+pub const COLOUR_SCHEMA_VERSION: u32 = 4;
 
 /// The schema version of a plan without a mesh rough (version 1; also the oldest this
 /// build reads).
@@ -89,6 +95,74 @@ pub struct SavedPlanDto {
     /// One or more saved cutting layouts with full stone poses.
     #[serde(default)]
     pub layouts: Vec<SavedLayoutDto>,
+    /// The plan's rough colour (schema version 4), written by an export when the plan has one.
+    /// The library keeps it beside the plan, not in the stored payload, so an import takes it
+    /// out of the document again.
+    ///
+    /// The field comes after `layouts` on purpose: the writer puts plain values first and then
+    /// the tables in field order, so the long JSON texts end the file instead of sitting
+    /// between its readable parts. The order is not needed for correctness: a TOML table header
+    /// is absolute, so `[colour]` after the last `[[layouts]]` is this document's own table and
+    /// never part of that layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<RoughColourDto>,
+    /// The cutter's stone orientation choices (schema version 4), one table per stone whose
+    /// pose is not the planner's own. Written and taken out like `colour`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pose_choices: Vec<PoseChoiceDto>,
+}
+
+impl SavedPlanDto {
+    /// The oldest schema version that can hold this document's content: a `colour` section or
+    /// a stone orientation choice needs [`COLOUR_SCHEMA_VERSION`], inclusions
+    /// [`INCLUSION_SCHEMA_VERSION`], a mesh [`MESH_SCHEMA_VERSION`], and anything else is a
+    /// [`BASE_SCHEMA_VERSION`] plan. This is the rule a written plan's `version` follows, so a
+    /// document that gains or loses a section also gains or loses the version it needs.
+    #[must_use]
+    pub const fn content_version(&self) -> u32 {
+        if self.colour.is_some() || !self.pose_choices.is_empty() {
+            COLOUR_SCHEMA_VERSION
+        } else if !self.rough.inclusions.is_empty() {
+            INCLUSION_SCHEMA_VERSION
+        } else if self.rough.mesh.is_some() {
+            MESH_SCHEMA_VERSION
+        } else {
+            BASE_SCHEMA_VERSION
+        }
+    }
+}
+
+/// The rough colour of a plan: the same encoding the library's `rough_colour` table stores
+/// (the table's columns without the plan id), so a file carries the zones and the fit report
+/// of the plan it was exported from. It is validated on import
+/// (`check_version`, `decode_zoned`). The cached rig photos are not part of it: they are a cache the wizard rebuilds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoughColourDto {
+    /// The format version of both texts (`ZONING_FORMAT_VERSION` when they were written).
+    pub version: u32,
+    /// The zones in the rough frame, as the JSON text `encode_zoned` writes.
+    pub zoned_json: String,
+    /// The fit report as JSON text, carried as the library keeps it (it is read only when the
+    /// wizard shows the fit). Absent in a file written by hand: empty.
+    #[serde(default)]
+    pub fit_json: String,
+    /// Unix seconds when the colour was stored. Absent in a file written by hand: 0.
+    #[serde(default)]
+    pub created: i64,
+}
+
+/// The pose the cutter chose for one stone of a plan (the library's `stone_pose_choice` row
+/// without the plan id).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoseChoiceDto {
+    /// The result's index in the plan's layouts, as the loader returns them (best rank first,
+    /// which is the order of `layouts` in every file this build writes). 0-based.
+    pub layout: u32,
+    /// The stone's index in that layout's `stones`. 0-based.
+    pub stone: u32,
+    /// The pose variant, `0..4` (`indicatrix_cut_core::rough_plan::POSE_COUNT`): 0 is the
+    /// planner's own pose, 1 to 3 the three half turns of the stone about its own axes.
+    pub pose: u8,
 }
 
 /// Serialized rough geometry and material info.

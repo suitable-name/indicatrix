@@ -846,7 +846,6 @@ fn sector_core(
         let rel = centroid(set) - c0;
         rel.dot(e2).atan2(rel.dot(e1))
     };
-    let (th_a0, th_b0) = (angle_of(a), angle_of(b));
     let scale = extent(&all).max(1e-9);
     let mut free: Vec<usize> = vec![0, 1];
     if fixed.is_none() {
@@ -855,7 +854,7 @@ fn sector_core(
     }
     free.push(4);
     free.push(5);
-    let base = [0.0, 0.0, 0.0, 0.0, th_a0, th_b0];
+    let base = [0.0, 0.0, 0.0, 0.0, angle_of(a), angle_of(b)];
     let x0: Vec<f64> = free.iter().map(|&i| base[i]).collect();
     let steps: Vec<f64> = free
         .iter()

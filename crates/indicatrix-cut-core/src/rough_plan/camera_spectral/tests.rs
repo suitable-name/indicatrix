@@ -141,6 +141,11 @@ fn csv_is_resampled_linearly_onto_the_grid() {
     let csv = "wavelength,r,g,b\n400,0,1,2\n500,1,2,3\n600,2,3,4\n700,3,4,5\n";
     let response = CameraResponse::from_csv(csv).unwrap();
     assert_eq!(response.tier(), ResponseTier::Measured);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test wavelengths are 450..700 nm, so the grid index is small and non-negative"
+    )]
     let at = |nm: f64| ((nm - 380.0) / 5.0) as usize;
     // r(450) is halfway between r(400)=0 and r(500)=1.
     assert!((response.sensitivity()[0][at(450.0)] - 0.5).abs() < 1e-12);
@@ -370,6 +375,10 @@ fn srgb_fallback_reproduces_xyz_of_any_spectrum() {
     let mut xyz = [0.0; 3];
     for i in 0..GRID_LEN {
         let l = grid_wavelength_nm(i);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the CIE tables are sampled at f32 wavelengths; grid wavelengths are 380..780 nm"
+        )]
         let cmf = cie_1931_cmf(l as f32);
         for c in 0..3 {
             xyz[c] = (trapezoid_weight(i) * f64::from(cmf[c])).mul_add(spectrum(l), xyz[c]);
@@ -394,6 +403,10 @@ fn d50_forward_matrix_is_adapted_back_before_inversion() {
     let mut xyz = [0.0; 3];
     for i in 0..GRID_LEN {
         let l = grid_wavelength_nm(i);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the CIE tables are sampled at f32 wavelengths; grid wavelengths are 380..780 nm"
+        )]
         let cmf = cie_1931_cmf(l as f32);
         for c in 0..3 {
             xyz[c] = (trapezoid_weight(i) * f64::from(cmf[c]))

@@ -18,6 +18,7 @@ use indicatrix_editor::{
     },
     retarget::CrownShift,
 };
+use indicatrix_formats::native::design::{DESIGN_EXTENSION, DESIGN_EXTENSION_DOTTED};
 use indicatrix_render_jobs::{ComputeChoice, LocalEngines, TransferChoice};
 use std::path::PathBuf;
 
@@ -433,9 +434,10 @@ pub(super) fn parse_export(args: &[String]) -> Result<ExportArgs, String> {
     let format = format
         .or_else(|| ExportFormat::from_file_name(&out.to_string_lossy()))
         .ok_or_else(|| {
-            "\"export\" needs --format asc|indicatrix|gcs|html, or an --out file ending in \
-             .asc, .indicatrix, .gcs or .html (see --help)"
-                .to_string()
+            format!(
+                "\"export\" needs --format asc|{DESIGN_EXTENSION}|gcs|html, or an --out file \
+                 ending in .asc, {DESIGN_EXTENSION_DOTTED}, .gcs or .html (see --help)"
+            )
         })?;
     Ok(ExportArgs {
         design,

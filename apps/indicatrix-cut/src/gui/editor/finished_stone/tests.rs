@@ -242,7 +242,7 @@ fn concurrent_jobs_for_one_generation_solve_once() {
     let solved = design.solve().expect("every tier is pinned");
     let whole = cut_slider::cut_geometry(&design, Some(&solved), None);
     let cache = empty_cache();
-    let solves = AtomicUsize::new(0);
+    let solve_count = AtomicUsize::new(0);
     let barrier = Barrier::new(JOBS);
     let results = Mutex::new(Vec::new());
 
@@ -250,12 +250,12 @@ fn concurrent_jobs_for_one_generation_solve_once() {
         for _ in 0..JOBS {
             let job = FinishedStoneJob::when_cut(&design, 7, Some(3), Some(cache.clone()))
                 .expect("the slider is cut back");
-            let (solves, barrier, results) = (&solves, &barrier, &results);
+            let (solve_count, barrier, results) = (&solve_count, &barrier, &results);
             scope.spawn(move || {
                 // All of them hold a cold-cache job before any starts to resolve.
                 barrier.wait();
                 let stone = job.resolve_with(|design| {
-                    solves.fetch_add(1, Ordering::SeqCst);
+                    solve_count.fetch_add(1, Ordering::SeqCst);
                     // Long enough that every other job is waiting at the gate.
                     std::thread::sleep(Duration::from_millis(60));
                     solve_design(design)
@@ -265,7 +265,7 @@ fn concurrent_jobs_for_one_generation_solve_once() {
         }
     });
 
-    assert_eq!(solves.load(Ordering::SeqCst), 1, "one solve in all");
+    assert_eq!(solve_count.load(Ordering::SeqCst), 1, "one solve in all");
     let results = results.into_inner().unwrap();
     assert_eq!(results.len(), JOBS);
     assert!(

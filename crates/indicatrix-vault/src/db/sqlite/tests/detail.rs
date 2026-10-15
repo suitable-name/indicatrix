@@ -332,6 +332,65 @@ fn update_diagram_metadata_touches_only_its_own_fields_and_nothing_else() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// An old record that still carries a retired overlay sidecar (`.indicatrix.toml`,
+/// `.gemcut.toml`, any case) loads without it, in both the full and the metadata-only
+/// form; every other attachment, a design file included, still comes back.
+#[test]
+fn retired_sidecar_attachments_are_hidden_when_a_record_loads() {
+    let path = temp_db_path("retired_sidecar_hidden");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
+    let entry = FacetingDiagramEntry {
+        title: "Old Pair".to_string(),
+        url: "https://example.invalid/old-pair/".to_string(),
+        design_id: String::new(),
+    };
+    let entry_id = db
+        .save_diagram_entry(&entry, LEGACY_SOURCE_ID)
+        .expect("save entry");
+    let file = |name: &str| crate::model::file::AttachedFile {
+        name: name.to_string(),
+        url: String::new(),
+        content: b"bytes".to_vec(),
+    };
+    let detail = FacetingDiagramDetail {
+        page_url: "https://example.invalid/old-pair/".to_string(),
+        attached_files: vec![
+            file("old.asc"),
+            file("old.indicatrix.toml"),
+            file("OLDER.GEMCUT.TOML"),
+            file("old.isdd"),
+            file("notes.toml"),
+        ],
+        ..Default::default()
+    };
+    db.save_diagram_detail(&detail, entry_id)
+        .expect("save detail");
+
+    let expected = ["notes.toml", "old.asc", "old.isdd"];
+    let mut full: Vec<String> = db
+        .get_diagram_full(entry_id)
+        .unwrap()
+        .unwrap()
+        .attached_files
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    full.sort();
+    assert_eq!(full, expected);
+
+    let mut meta: Vec<String> = db
+        .get_diagram_full_meta(entry_id)
+        .unwrap()
+        .unwrap()
+        .attached_files
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    meta.sort();
+    assert_eq!(meta, expected);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn update_diagram_metadata_rejects_unknown_entry_id() {
     let path = temp_db_path("metadata_update_unknown");

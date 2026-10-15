@@ -4,6 +4,7 @@
 
 use super::Database;
 use anyhow::{Context, Result};
+use indicatrix_formats::native::design::is_retired_sidecar_name;
 use rusqlite::{OptionalExtension, Row, params, types::ValueRef};
 
 /// The entry/detail row both record loaders read, one design selected by `?1`.
@@ -114,12 +115,16 @@ impl Database {
                         content: frow.get(2)?,
                     })
                 })?;
-                let files: Vec<_> =
+                let mut files: Vec<_> =
                     f_rows
                         .collect::<rusqlite::Result<Vec<_>>>()
                         .context(format!(
                             "Failed to decode an attached-file row for detail_id: {detail_id}"
                         ))?;
+                // A retired overlay sidecar an old record still carries is hidden: it is
+                // never shown, opened or saved with the design again (the row itself is
+                // left alone here).
+                files.retain(|file| !is_retired_sidecar_name(&file.name));
 
                 (angles, files)
             } else {
@@ -228,8 +233,11 @@ impl Database {
                         size: frow.get(3)?,
                     })
                 })?;
+                // Retired overlay sidecars are hidden, as in `get_diagram_full`.
                 for f in f_rows.flatten() {
-                    files.push(f);
+                    if !is_retired_sidecar_name(&f.name) {
+                        files.push(f);
+                    }
                 }
             }
 

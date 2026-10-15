@@ -308,16 +308,16 @@ fn edge_visibility_hides_tessellation_seams_and_shows_facet_tool_boundaries() {
         .expect("concave path fills visibility");
     assert_eq!(visible.len(), mesh.rings.len());
     let tool_planes = tessellate_tool(&tool, TOOL_SEGMENTS);
-    let tol = 1e-7 * 4.0;
+    let eps = 1e-7 * 4.0;
     let on_p = |p: DVec3| {
         planes
             .iter()
-            .filter(|&&(n, m)| (n.dot(p) - m).abs() <= tol)
+            .filter(|&&(n, m)| (n.dot(p) - m).abs() <= eps)
             .count()
     };
     let on_tool = |p: DVec3| {
         let d: Vec<f64> = tool_planes.iter().map(|&(n, m)| n.dot(p) - m).collect();
-        d.iter().all(|&x| x <= tol) && d.iter().any(|&x| x.abs() <= tol)
+        d.iter().all(|&x| x <= eps) && d.iter().any(|&x| x.abs() <= eps)
     };
     // [flat hidden, flat visible, tool hidden, tool visible]
     let mut seen = [0usize; 4];

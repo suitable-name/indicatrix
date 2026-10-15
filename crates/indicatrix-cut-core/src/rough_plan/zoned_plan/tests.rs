@@ -175,37 +175,8 @@ fn an_unusable_pose_or_placement_gives_no_frame() {
     assert!(rough_to_stone_frame(&identity_pose([0.0; 3], 1.0), &bad_design).is_none());
 }
 
-#[test]
-fn the_four_poses_are_proper_rotations_of_the_same_box() {
-    let pose = StonePose {
-        center_mm: [1.0, 2.0, 3.0],
-        axes: [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]],
-        mm_per_unit: 1.0,
-    };
-    let all = candidate_poses(&pose, false);
-    assert_eq!(all.len(), usize::from(POSE_COUNT));
-    assert_eq!(all[0], (0, pose));
-    for (index, variant) in &all {
-        assert_eq!(variant.center_mm, pose.center_mm);
-        assert!((variant.mm_per_unit - pose.mm_per_unit).abs() < EPS);
-        let [x, y, z] = variant.axes.map(DVec3::from_array);
-        assert!(close(x.cross(y), z), "pose {index} is not right handed");
-        // The axes are the planner's, up to sign: the same lines in space.
-        for (a, b) in variant.axes.iter().zip(&pose.axes) {
-            let dot = DVec3::from_array(*a).dot(DVec3::from_array(*b));
-            assert!((dot.abs() - 1.0).abs() < EPS);
-        }
-    }
-    // Each variant turns the table normal differently: poses 1 and 3 turn the stone over.
-    let ups: Vec<f64> = all
-        .iter()
-        .map(|(_, p)| DVec3::from_array(p.axes[1]).dot(DVec3::from_array(pose.axes[1])))
-        .collect();
-    assert_eq!(ups, vec![1.0, -1.0, 1.0, -1.0]);
-    assert_eq!(pose_variant(&pose, POSE_COUNT), None);
-    // An exact single-stone fit has one pose.
-    assert_eq!(candidate_poses(&pose, true).len(), 1);
-}
+// The box-symmetric poses (`pose_variant`, `candidate_poses`) are tested with their definition in
+// `rough_plan::placement`.
 
 // ---- pose choice -----------------------------------------------------------------------------
 
@@ -319,15 +290,32 @@ fn a_layout_gets_one_pose_per_stone() {
 #[test]
 fn the_adopted_material_name_is_cleaned() {
     assert_eq!(
-        adopted_material_name("Mozambique rough"),
-        "Mozambique rough colour"
+        adopted_material_name("Mozambique rough", "Round Brilliant"),
+        "Mozambique rough - Round Brilliant color"
     );
-    assert_eq!(adopted_material_name("  Tourmaline\n"), "Tourmaline colour");
-    assert_eq!(adopted_material_name("   "), "Rough colour");
-    let long = "x".repeat(200);
     assert_eq!(
-        adopted_material_name(&long).chars().count(),
-        60 + ADOPTED_SUFFIX.chars().count()
+        adopted_material_name("  Tourmaline\n", "\tOval \u{7} "),
+        "Tourmaline - Oval color"
+    );
+    // A blank plan name is "Rough", a blank design title is "design".
+    assert_eq!(adopted_material_name("   ", "Oval"), "Rough - Oval color");
+    assert_eq!(
+        adopted_material_name("Melon", "\n "),
+        "Melon - design color"
+    );
+    assert_eq!(adopted_material_name("", ""), "Rough - design color");
+    // Each stem is cut to 40 characters, so the whole name has a bound.
+    let long = "x".repeat(200);
+    let name = adopted_material_name(&long, &long);
+    assert_eq!(
+        name.chars().count(),
+        40 + 3 + 40 + ADOPTED_SUFFIX.chars().count()
+    );
+    assert!(name.starts_with(&"x".repeat(40)));
+    // Two designs of one plan get two names, so adopting the second never replaces the first.
+    assert_ne!(
+        adopted_material_name("Melon", "Oval"),
+        adopted_material_name("Melon", "Round")
     );
 }
 
@@ -338,26 +326,26 @@ fn adopting_a_stone_keeps_the_base_zone_as_band_rows_and_the_zones_in_the_stone_
         pose: identity_pose([0.0, 0.0, 0.0], 2.0),
         design: DesignPlacement::IDENTITY,
     };
-    let adopted = adopt_colour("Melon", &rough, &placement, 7.0).expect("adoptable");
-    assert_eq!(adopted.material_name, "Melon colour");
+    let adopted = adopt_colour("Melon", "Round", &rough, &placement, 7.0).expect("adoptable");
+    assert_eq!(adopted.material_name, "Melon - Round color");
     assert!((adopted.stone_width_mm - 7.0).abs() < EPS);
     assert_eq!(adopted.base_bands, vec![[480.0, 40.0, 0.05]]);
     assert_eq!(adopted.zoning.zones.len(), 1);
     adopted.zoning.validate().unwrap();
 
     // A bad width, or an unusable pose, adopts nothing.
-    assert!(adopt_colour("Melon", &rough, &placement, 0.0).is_none());
-    assert!(adopt_colour("Melon", &rough, &placement, f64::NAN).is_none());
+    assert!(adopt_colour("Melon", "Round", &rough, &placement, 0.0).is_none());
+    assert!(adopt_colour("Melon", "Round", &rough, &placement, f64::NAN).is_none());
     let broken = StonePlacement {
         pose: identity_pose([0.0; 3], 0.0),
         ..placement
     };
-    assert!(adopt_colour("Melon", &rough, &broken, 7.0).is_none());
+    assert!(adopt_colour("Melon", "Round", &rough, &broken, 7.0).is_none());
 
     // The material renders the base zone where zones are ignored, and is per millimetre.
     let host = GemMaterial::by_name("Quartz").unwrap_or_else(GemMaterial::diamond);
     let material = adopted_material(&host, &adopted, 2.0);
-    assert_eq!(material.name, "Melon colour");
+    assert_eq!(material.name, "Melon - Round color");
     assert_eq!(material.absorption_unit, AbsorptionUnit::PerMm);
     assert_eq!(material.absorption, rough.base.tensor);
     assert_eq!(material.zoning.as_ref(), Some(&adopted.zoning));

@@ -16,6 +16,9 @@ component ViewToggle inherits Rectangle {
     }
 
     height: 20px;
+    // As wide as its content: a Rectangle stretches by default and took a share of the
+    // toolbar's spare width (a 240 px "Cut Faces" box on a wide window).
+    horizontal-stretch: 0;
     border-radius: Theme.radius-sm;
     background: ta.has-hover ? Theme.surface-control-hover : Theme.surface-control;
     border-width: toggle_focus.has-focus ? 2px : 1px;
@@ -88,7 +91,7 @@ component ViewToggles inherits HorizontalLayout {
     spacing: 6px;
 
     if RoughPlanModel.view_mode == 0: ViewToggle {
-        label: "Cut faces";
+        label: "Cut Faces";
         hint: "Show the flat faces your cuts make on the rough, in the 3D view.";
         checked <=> RoughPlanModel.show_cut_faces;
         toggled => { RoughPlanModel.view_toggles_changed(); }
@@ -268,7 +271,7 @@ export component FitView inherits VerticalLayout {
             width: parent.width;
             height: parent.height;
             accessible-role: AccessibleRole.image;
-            accessible-label: RoughPlanModel.view_mode == 0 ? "The rough with its cuts, in 3D" : "The selected layout, in 3D";
+            accessible-label: RoughPlanModel.view_mode == 0 ? "The Rough with Its Cuts, in 3D" : "The Selected Layout, in 3D";
             accessible-description: "Left, right, up and down turn the view. Plus and minus zoom. Home resets the view.";
             key-pressed(event) => {
                 if event.text == Key.LeftArrow {

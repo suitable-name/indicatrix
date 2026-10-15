@@ -105,9 +105,20 @@ use crate::{
 /// scattering no longer scales with the size, so a Worker on 14 would render those scenes
 /// with the old rule.
 ///
+/// 16: `CustomMaterialSpec` carries the crystal system, optical character and biaxial delta
+/// (`crystal_system` and `optical_character` as strings, `biaxial_delta_beta_alpha` as an
+/// `Option<f64>`, appended after `absorption_bands`; postcard has no field defaults, so it is
+/// a wire change): a biaxial custom material restored from a design file keeps its optics.
+///
+/// 17: `LightingSpec::surface_glare` appended (an `f32`, `00 00 80 3F` for the default 1.0;
+/// postcard has no field defaults, so it is a wire change): the cross-polarised scale of the
+/// first surface reflection that the render settings' "Surface Glare" slider dials in. The
+/// export color-space index also gained 2 = Rec.2020 (`PictureKind::Png::color_space`, no new
+/// bytes, but a Worker on 16 would write that export as sRGB).
+///
 /// A change to any message's bytes must bump this and update the pinned bytes in this
 /// module's `wire_format_is_pinned` test.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// What [`ToWorker::Picture`] makes of a sum (see `crate::display`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

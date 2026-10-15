@@ -196,10 +196,10 @@ mod tests {
         assert!(note.starts_with("Stopped at the time limit (5 s): partial search;"));
         assert!(note.contains("a rerun may differ"));
         assert!(note.contains("Scan plan time limit"));
-        let none = nothing_found_message(5);
-        assert!(none.contains("(5 s)"));
-        assert!(none.contains("before the plan had found any layout"));
-        assert!(none.contains("Scan plan time limit"));
+        let nothing_found = nothing_found_message(5);
+        assert!(nothing_found.contains("(5 s)"));
+        assert!(nothing_found.contains("before the plan had found any layout"));
+        assert!(nothing_found.contains("Scan plan time limit"));
     }
 
     #[test]

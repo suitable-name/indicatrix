@@ -1,4 +1,4 @@
-//! The zoning wire extension (`zoning` feature only).
+//! The zoning wire extension (`render` feature only).
 //!
 //! Colour zones travel BESIDE the scene, never inside it, and the protocol version stays 24.
 //!

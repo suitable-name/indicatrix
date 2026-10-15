@@ -206,13 +206,13 @@ fn seed_old_layout_catalogue(path: &std::path::Path) -> [i64; 3] {
     [entry_1, entry_2, entry_3]
 }
 
-/// Writes exactly one real `.asc` + `.indicatrix.toml` sidecar pair into `dir`, the
-/// same way `write_sidecar_pairs` does for its two -- a solved
+/// Writes exactly one real `.asc` + `.isdd` design-file pair into `dir` -- a solved
 /// [`indicatrix_cut_core::design::Design`] from the first entry of
-/// [`indicatrix_cut_core::templates::TEMPLATES`], written out via
-/// [`indicatrix_cut_core::native::save_paired`]. Kept to exactly one pair (unlike
-/// `write_sidecar_pairs`'s two) so this test's corpus imports exactly 2 files, not 3.
-fn write_single_sidecar_pair(dir: &std::path::Path) {
+/// [`indicatrix_cut_core::templates::TEMPLATES`], the `.asc` built via
+/// [`indicatrix_cut_core::native::catalogue_asc`] and the design file via
+/// [`indicatrix_cut_core::native::design_to_string`]. Kept to exactly one pair so this
+/// test's corpus imports exactly 2 files, not 3.
+fn write_single_design_pair(dir: &std::path::Path) {
     let spec = indicatrix_cut_core::templates::TEMPLATES
         .first()
         .expect("TEMPLATES is non-empty");
@@ -229,22 +229,19 @@ fn write_single_sidecar_pair(dir: &std::path::Path) {
     design
         .solve()
         .unwrap_or_else(|e| panic!("template {:?} failed to solve: {e:?}", spec.name));
-    let asc_filename = "old_layout_sidecar.asc";
-    let paired = indicatrix_cut_core::native::save_paired(
-        &design,
-        asc_filename.to_string(),
-        None,
-        None,
-        None,
-    )
-    .unwrap_or_else(|e| panic!("save_paired for template {:?}: {e}", spec.name));
-    std::fs::write(dir.join(asc_filename), &paired.asc_text)
+    let asc_filename = "old_layout_design.asc";
+    let asc = indicatrix_cut_core::native::catalogue_asc(&design, None, None)
+        .unwrap_or_else(|e| panic!("catalogue_asc for template {:?}: {e}", spec.name));
+    std::fs::write(dir.join(asc_filename), &asc.asc_text)
         .unwrap_or_else(|e| panic!("write {asc_filename}: {e}"));
-    std::fs::write(
-        dir.join("old_layout_sidecar.indicatrix.toml"),
-        &paired.native_toml,
+    let design_text = indicatrix_cut_core::native::design_to_string(
+        &design,
+        None,
+        &indicatrix_cut_core::native::DesignExtras::default(),
     )
-    .unwrap_or_else(|e| panic!("write old_layout_sidecar.indicatrix.toml: {e}"));
+    .unwrap_or_else(|e| panic!("design_to_string for template {:?}: {e}", spec.name));
+    std::fs::write(dir.join("old_layout_design.isdd"), design_text)
+        .unwrap_or_else(|e| panic!("write old_layout_design.isdd: {e}"));
 }
 
 /// Proves `import_path` works against a catalogue that was created in the OLD
@@ -257,7 +254,7 @@ fn write_single_sidecar_pair(dir: &std::path::Path) {
 ///    `Database::new`), which runs every migration -- including
 ///    `migrate_blob_columns_last` -- against this genuinely pre-fix data.
 /// 2. Imports a directory holding one plain valid `.asc`, one `.asc` +
-///    older `.indicatrix.toml` sidecar pair, and one empty (unparsable) `.asc`, via
+///    `.isdd` design-file pair, and one empty (unparsable) `.asc`, via
 ///    the same [`super::run_import_catching_panics`] -> `import_path` entry point the
 ///    manual probes in `perf` use.
 /// 3. Asserts no panic, the exact "2 imported, 1 skipped" summary shape, and that
@@ -280,7 +277,7 @@ fn import_into_a_catalogue_created_in_the_old_column_layout_survives_the_migrati
 
     let corpus_dir = temp_dir_for_test("old_layout_migrated_corpus");
     std::fs::write(corpus_dir.join("valid.asc"), VALID_ASC).expect("write valid.asc");
-    write_single_sidecar_pair(&corpus_dir);
+    write_single_design_pair(&corpus_dir);
     std::fs::write(corpus_dir.join("bad.asc"), []).expect("write bad.asc (empty -> unparsable)");
 
     let outcome = run_import_catching_panics(&db, &corpus_dir).unwrap_or_else(|panic_msg| {
@@ -292,7 +289,7 @@ fn import_into_a_catalogue_created_in_the_old_column_layout_survives_the_migrati
     assert_eq!(
         outcome.imported_ids.len(),
         2,
-        "valid.asc + the sidecar pair's .asc must both import: {}",
+        "valid.asc + the design pair's .asc must both import: {}",
         outcome.summary
     );
     assert!(

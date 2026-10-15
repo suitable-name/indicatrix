@@ -16,9 +16,9 @@ use indicatrix_cut_core::{ConstraintTier, Design};
 pub enum MeetKind {
     /// "Unspecified vertex": the tier closes against whatever vertex the solver finds.
     Unspecified,
-    /// "Named facet(s)": the tier closes against the facets it names.
+    /// "Named Facet(s)": the tier closes against the facets it names.
     Named,
-    /// "Exact scale value": the tier's depth is stated outright.
+    /// "Exact Scale Value": the tier's depth is stated outright.
     ExactScale,
 }
 
@@ -37,9 +37,9 @@ impl MeetKind {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Unspecified => "Unspecified vertex",
-            Self::Named => "Named facet(s)",
-            Self::ExactScale => "Exact scale value",
+            Self::Unspecified => "Unspecified Vertex",
+            Self::Named => "Named Facet(s)",
+            Self::ExactScale => "Exact Scale Value",
         }
     }
 }

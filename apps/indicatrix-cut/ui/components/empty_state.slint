@@ -1,3 +1,4 @@
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
 import { GuideModel } from "../models/guide.slint";
@@ -33,20 +34,28 @@ export component EmptyState inherits Rectangle {
 
     // The manual page on this screen, in the top right corner. Positioned by hand, so it adds
     // nothing to the grid's layout.
+    // This card starts below the Solid view toolbar (`EditorViewportOverlay` offsets it), so
+    // this "?" never sits on top of the toolbar's own.
     HelpButton {
         x: parent.width - self.width - 12px;
-        y: 12px;
+        y: 8px;
+        z: 10;
         topic: HelpTopics.empty-state;
         hint: "Open the manual page on starting a design";
     }
 
-    VerticalLayout {
+    // The cards scroll when the viewport is too small for them (a short window); with room to
+    // spare the content is centred.
+    scroll := ScrollView {
+        VerticalLayout {
+        width: max(scroll.visible-width, self.min-width);
+        min-height: scroll.visible-height;
         alignment: center;
         padding: 24px;
         spacing: 14px;
 
         Text {
-            text: "Nothing to show yet";
+            text: "Nothing to Show Yet";
             font-size: 16px;
             font-weight: 700;
             color: Theme.text-primary;
@@ -109,12 +118,12 @@ export component EmptyState inherits Rectangle {
                     alignment: center;
                     padding: 10px;
                     spacing: 4px;
-                    Text { text: "Start from a library design"; font-size: 11px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: "Start from a Library Design"; font-size: 11px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; wrap: word-wrap; }
                     Text { text: "Pick a design from the library and open it in the editor."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
                 }
                 library_touch := TouchButton {
                     enabled: GuideModel.allows_file_ops();
-                    label: "Start from a library design";
+                    label: "Start from a Library Design";
                     hint: GuideModel.allows_file_ops()
                         ? "Go to the library list so you can pick a design and open it here with Load Selected."
                         : GuideModel.locked_hint;
@@ -234,7 +243,7 @@ export component EmptyState inherits Rectangle {
             }
         }
 
-        // The hint line for "Start from a library design", shown once that card was clicked.
+        // The hint line for "Start from a Library Design", shown once that card was clicked.
         if TutorialsModel.library_hint_visible: HorizontalLayout {
             alignment: center;
             Text {
@@ -256,7 +265,7 @@ export component EmptyState inherits Rectangle {
                 border-radius: Theme.radius-sm;
                 background: browse_touch.has_hover ? Theme.bg-elevated : transparent;
                 browse_txt := Text {
-                    text: "Browse all tutorials...";
+                    text: "Browse All Tutorials...";
                     font-size: 10px;
                     font-weight: 700;
                     color: Theme.accent-cyan;
@@ -264,11 +273,12 @@ export component EmptyState inherits Rectangle {
                     vertical-alignment: center;
                 }
                 browse_touch := TouchButton {
-                    label: "Browse all tutorials";
+                    label: "Browse All Tutorials";
                     hint: "Open the list of short guided lessons, one for each tool.";
                     clicked => { TutorialsModel.open_browser(); }
                 }
             }
+        }
         }
     }
 }

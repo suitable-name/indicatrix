@@ -3,25 +3,28 @@
 //! For view `v`, pixel `p` and colour channel `c`,
 //!
 //! ```text
-//! rgb_c = sum_pt w_c(pt) * sum_r weight_r * exp(-sum_z alpha_z(lambda_pt) * lengths_rz)
+//! rgb_c = sum_pt w_c(pt) * sum_r weight_r * chroma_rc * exp(-sum_z alpha_z(lambda_pt) * lengths_rz)
 //! ```
 //!
 //! over the evaluation points `pt` of the spectral setup and the records `r` of the point's bin.
 //! The weights `w_c` fold the camera sensitivity, the backlight spectrum and the wavelength step
 //! and sum to 1 per channel, so the result is the camera RGB of the stone relative to the empty
-//! backlit rig, which is what the transmittance images hold.
+//! backlit rig, which is what the transmittance images hold. `chroma_rc` is the record's
+//! per-channel factor of the light (ZC-13), a table lookup of its one-byte code; a view whose
+//! light is grey stores no codes and the factor is 1 (the evaluation is then the same arithmetic
+//! as without colour).
 //!
 //! The derivative with respect to a model parameter `j` is
-//! `-sum_pt w_c(pt) sum_z (sum_r e_r lengths_rz) dalpha_z(lambda_pt)/dp_j` with
-//! `e_r = weight_r exp(-tau_r)`: one pass over the records collects the per-zone sums, then
-//! the parameters are contracted once per pixel.
+//! `-sum_pt w_c(pt) sum_z (sum_r e_rc lengths_rz) dalpha_z(lambda_pt)/dp_j` with
+//! `e_rc = weight_r chroma_rc exp(-tau_r)`: one pass over the records collects the per-zone sums
+//! of every channel, then the parameters are contracted once per pixel.
 
 use std::sync::atomic::AtomicBool;
 
 use super::{
     ForwardError,
     parallel::run_indexed,
-    records::{ForwardRecords, LENGTHS, ViewRecords},
+    records::{CHROMA_MAX_CODE, ForwardRecords, LENGTHS, ViewRecords, chroma_decode},
 };
 use crate::rough_plan::photometry::WorkingGrid;
 
@@ -95,14 +98,22 @@ pub struct PixelJacobian<'a> {
     pub status: u8,
 }
 
-/// The tables of one evaluation: `alpha[pt * nz + z]`, `dalpha[(pt * nz + z) * n_params + j]`.
+/// The tables of one evaluation: `alpha[pt * nz + z]`, `dalpha[(pt * nz + z) * n_params + j]`, and
+/// the factor of every chroma code.
 struct Tables {
     alpha: Vec<f64>,
     dalpha: Vec<f64>,
     n_params: usize,
+    chroma: Vec<f64>,
+}
+
+/// The factor of every chroma code, indexed by the code.
+fn chroma_table() -> Vec<f64> {
+    (0..=CHROMA_MAX_CODE).map(chroma_decode).collect()
 }
 
 struct Scratch {
+    /// `grad[(pt * nz + z) * 3 + c]`: the sum over the records of `e_rc * lengths_rz`.
     grad: Vec<f64>,
     jac: Vec<f64>,
 }
@@ -110,7 +121,7 @@ struct Scratch {
 impl Scratch {
     fn new(records: &ForwardRecords, tables: &Tables) -> Self {
         Self {
-            grad: vec![0.0; records.spectral.eval_points.len() * records.n_zones],
+            grad: vec![0.0; records.spectral.eval_points.len() * records.n_zones * 3],
             jac: vec![0.0; 3 * tables.n_params],
         }
     }
@@ -134,35 +145,65 @@ fn eval_pixel(
     let mut rgb = [0.0_f64; 3];
     for (k, point) in points.iter().enumerate() {
         let alpha = &tables.alpha[k * nz..(k + 1) * nz];
-        let mut sum = 0.0_f64;
-        for record in view.pixel_records(p, point.bin, traced) {
+        let slice = view.pixel_records(p, point.bin, traced);
+        // Three codes per record, or none when the light is grey: then one sum serves all
+        // channels (and the arithmetic is that of a record without colour).
+        let codes = slice.chroma_codes();
+        let grey = codes.is_empty();
+        let mut sum = [0.0_f64; 3];
+        for (i, record) in slice.raw().enumerate() {
+            // `nz` lengths and then the weight.
+            let (lengths, weight) = (&record[..nz], record[nz]);
             let mut tau = 0.0_f64;
-            for (&a, &length) in alpha.iter().zip(&record.lengths[..nz]) {
+            for (&a, &length) in alpha.iter().zip(lengths) {
                 tau = a.mul_add(f64::from(length), tau);
             }
-            let e = f64::from(record.weight) * (-tau).exp();
-            sum += e;
-            if with_jac {
-                for z in 0..nz {
-                    scratch.grad[k * nz + z] =
-                        e.mul_add(f64::from(record.lengths[z]), scratch.grad[k * nz + z]);
+            let e = f64::from(weight) * (-tau).exp();
+            if grey {
+                sum[0] += e;
+                if with_jac {
+                    for (z, &length) in lengths.iter().enumerate() {
+                        let at = (k * nz + z) * 3;
+                        scratch.grad[at] = e.mul_add(f64::from(length), scratch.grad[at]);
+                    }
+                }
+            } else {
+                for c in 0..3 {
+                    let e_c = e * tables.chroma[usize::from(codes[3 * i + c])];
+                    sum[c] += e_c;
+                    if with_jac {
+                        for (z, &length) in lengths.iter().enumerate() {
+                            let at = (k * nz + z) * 3 + c;
+                            scratch.grad[at] = e_c.mul_add(f64::from(length), scratch.grad[at]);
+                        }
+                    }
                 }
             }
         }
-        for (channel, &weight) in rgb.iter_mut().zip(&point.weight) {
-            *channel = weight.mul_add(sum, *channel);
+        if grey {
+            sum = [sum[0]; 3];
+            if with_jac {
+                for z in 0..nz {
+                    let at = (k * nz + z) * 3;
+                    scratch.grad[at + 1] = scratch.grad[at];
+                    scratch.grad[at + 2] = scratch.grad[at];
+                }
+            }
+        }
+        for ((channel, &weight), &s) in rgb.iter_mut().zip(&point.weight).zip(&sum) {
+            *channel = weight.mul_add(s, *channel);
         }
     }
     if with_jac {
         scratch.jac.fill(0.0);
         for (k, point) in points.iter().enumerate() {
             for z in 0..nz {
-                let g = scratch.grad[k * nz + z];
-                if g == 0.0 {
-                    continue;
-                }
                 let d = &tables.dalpha[(k * nz + z) * np..(k * nz + z + 1) * np];
                 for c in 0..3 {
+                    let g = scratch.grad[(k * nz + z) * 3 + c];
+                    if g == 0.0 {
+                        continue;
+                    }
                     let factor = -point.weight[c] * g;
                     for (j, &dj) in d.iter().enumerate() {
                         scratch.jac[c * np + j] = factor.mul_add(dj, scratch.jac[c * np + j]);
@@ -186,6 +227,7 @@ fn plain_tables(records: &ForwardRecords, alpha: &dyn Fn(usize, f64) -> f64) -> 
         alpha: table,
         dalpha: Vec::new(),
         n_params: 0,
+        chroma: chroma_table(),
     }
 }
 
@@ -215,6 +257,7 @@ fn model_tables(
         alpha,
         dalpha,
         n_params: np,
+        chroma: chroma_table(),
     })
 }
 
@@ -231,6 +274,10 @@ fn run_view(
     let np = tables.n_params;
     let chunks = n.div_ceil(CHUNK);
     let cancel = AtomicBool::new(false);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the prediction and Jacobian storage precision; values are in the normal float range"
+    )]
     let work = |chunk: usize| {
         let (first, last) = (chunk * CHUNK, ((chunk + 1) * CHUNK).min(n));
         let mut scratch = Scratch::new(records, tables);
@@ -310,6 +357,66 @@ pub fn evaluate_with_jacobian(
         predictions,
         jacobians,
     })
+}
+
+/// Folds every valid pixel into per-chunk partials on up to `threads` threads.
+///
+/// Returns the partials in chunk order (view by view, `chunk_pixels` pixels each, the last chunk of a view
+/// shorter). Each chunk is visited serially in pixel order starting from `new_partial()`, so the
+/// partials depend on `chunk_pixels` only, never on `threads`: a caller that combines them in
+/// order gets the same answer for any thread count. This is the parallel form of
+/// [`for_each_pixel_jacobian`] for the normal equations, which cost about a second serially at
+/// full size.
+///
+/// # Errors
+///
+/// [`ForwardError::BadOptions`] when `params` does not have `model.n_params()` entries.
+pub fn fold_pixel_jacobian<P: Send>(
+    records: &ForwardRecords,
+    params: &[f64],
+    model: &dyn SpectralModel,
+    chunk_pixels: usize,
+    threads: usize,
+    new_partial: &(dyn Fn() -> P + Sync),
+    visit: &(dyn Fn(&mut P, PixelJacobian<'_>) + Sync),
+) -> Result<Vec<P>, ForwardError> {
+    let tables = model_tables(records, params, model)?;
+    let chunk_pixels = chunk_pixels.max(1);
+    let mut tasks: Vec<(usize, usize, usize)> = Vec::new();
+    for (slot, view) in records.views.iter().enumerate() {
+        let n = view.pixel_count();
+        for first in (0..n).step_by(chunk_pixels) {
+            tasks.push((slot, first, (first + chunk_pixels).min(n)));
+        }
+    }
+    let cancel = AtomicBool::new(false);
+    let work = |t: usize| {
+        let (slot, first, last) = tasks[t];
+        let view = &records.views[slot];
+        let mut scratch = Scratch::new(records, &tables);
+        let mut partial = new_partial();
+        for p in first..last {
+            if !view.is_valid(p) {
+                continue;
+            }
+            let rgb = eval_pixel(records, view, p, &tables, &mut scratch);
+            visit(
+                &mut partial,
+                PixelJacobian {
+                    view_slot: slot,
+                    view: view.view,
+                    pixel: p,
+                    rgb,
+                    jacobian: &scratch.jac,
+                    mc_variance: view.mc_variance[p],
+                    status: view.status[p],
+                },
+            );
+        }
+        partial
+    };
+    let parts = run_indexed(tasks.len(), threads.max(1), &cancel, &work, &mut |_| {});
+    Ok(parts.into_iter().flatten().collect())
 }
 
 /// Calls `visit` for every valid pixel of every view, in view then pixel order, with the

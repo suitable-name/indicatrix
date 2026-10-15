@@ -89,7 +89,7 @@ const EDIT_ADVANCED_SOLVE: &[Group] = &[
 /// The tier table, Solve and Undo: the verdict's Fix buttons need the tier table unlocked.
 const FIX: &[Group] = &[Group::TierTable, Group::Solve, Group::History];
 
-/// Design Settings (the material), Solve and Undo.
+/// The Stone tab (the material; the `DesignSettings` group gates it), Solve and Undo.
 const SETTINGS: &[Group] = &[Group::DesignSettings, Group::Solve, Group::History];
 
 /// The Preform tab, Solve and Undo.

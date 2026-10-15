@@ -108,6 +108,7 @@ pub struct BatchState<'a> {
 }
 
 impl BatchState<'_> {
+    /// A fresh batch cursor: first picture, first chunk, nothing pending or finished.
     pub(crate) fn new() -> Self {
         Self {
             next_item: 0,

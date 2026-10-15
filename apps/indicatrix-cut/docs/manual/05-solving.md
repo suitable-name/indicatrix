@@ -1,11 +1,11 @@
 # 5. Solving
 
-## What you will do
+## What You Will Do
 
 This chapter explains what Solve actually does, what each status message
 means, and how to fix the failures you will actually run into.
 
-## What Solve does
+## What Solve Does
 
 Click **Solve** (or press **F5**) to run a full, live meet-point solve: the
 app works out the mast (solved depth) of every tier from its stated
@@ -35,7 +35,7 @@ While stale, the status strip reads:
 and the tier list's MAST/SOLVE columns show placeholders rather than
 numbers that might no longer be true.
 
-## Auto-solve: skipping the click on small and medium designs
+## Auto-Solve: Skipping the Click on Small and Medium Designs
 
 The auto-solve control next to the Solve button (Off / 150ms / 300ms /
 1s / 3s) lets small and medium designs skip the manual Solve click
@@ -64,18 +64,18 @@ their own once it completes, exactly as if you had clicked Solve.
 
 This setting is remembered across sessions.
 
-## Reading the status strip after Solve
+## Reading the Status Strip After Solve
 
 One **status strip** runs the width of the Edit tab: always a single colored
 dot plus one line, and a **Details** link at the right that opens every current
 message in full. The solver's own state always leads there — see "The
-status strip's priority order" below — so a running or failed solve can
+Status Strip's Priority Order" below — so a running or failed solve can
 never end up hidden behind something less important.
 
 | Message | Meaning | What to do |
 |---|---|---|
 | `Closed solid -- volume X.XXXX.` | Success. A finite, watertight stone. The volume figure (in the app's internal model units, cubed) is shown alongside. | Nothing — proceed to check the Cutting Instructions, run Deep Solve/Optimize, or export. |
-| `<Block> has no anchor: add a tier with an exact scale value.` (one such sentence per missing block, e.g. two sentences if both crown and pavilion are missing one) | One or more of Crown/Pavilion/Girdle has no anchor tier at all (Chapter 3). | Add at least one tier of kind **Exact scale value** to that block, then Solve again — or use the **Add Anchor** button the tier table shows on that block's own rows (Chapter 3). |
+| `<Block> has no anchor: add a tier with an exact scale value.` (one such sentence per missing block, e.g. two sentences if both crown and pavilion are missing one) | One or more of Crown/Pavilion/Girdle has no anchor tier at all (Chapter 3). | Add at least one tier of kind **Exact Scale Value** to that block, then Solve again — or use the **Add Anchor** button the tier table shows on that block's own rows (Chapter 3). |
 | `Degenerate: only N distinct vertex(es), volume <value or "non-finite"> -- check tier 5 (Girdle), tier 8.` | The facets you have described do bound a region, but it isn't a valid solid — too few real corners, or a volume that comes out zero, negative, or not a finite number. The trailing "check ..." clause, when the app can tell, names the tier(s) most likely responsible. | Check the named tier(s) first; otherwise, two or more facets meeting somewhere they shouldn't, or a wrong angle/constraint, is the usual cause. |
 | `Unbounded: tier 3 (P1) never close the solid.` (one tier, or several by name, separated by commas) | One or more facet planes never actually meet enough others to close the stone off in some direction — geometrically, the shape "leaks" to infinity along that plane. In practice this should be rare once every block has an anchor. | Check the named tier(s) — a missing meet partner, or an angle so shallow/steep it fails to intersect its neighbours, is the usual cause. |
 
@@ -83,7 +83,7 @@ A message naming a missing anchor, or reading "Degenerate..." or
 "Unbounded..." is shown as a problem (styled in red); "Closed solid" is
 shown as success (green).
 
-### The status strip's priority order
+### The Status Strip's Priority Order
 
 Only one message shows in the strip at a time, in this order — a running
 solve or a real problem always wins, so you can never mistake a stale or
@@ -117,7 +117,7 @@ strip opens this section. The Simple interface (Chapter 17) leaves out the
 solve-duration figure, and the **Pin** column of Deep Solve's results in the Details
 list; the Advanced interface shows both.
 
-## Manufacturability warnings
+## Manufacturability Warnings
 
 Alongside the status strip, Solve also refreshes a list of
 manufacturability warnings — practical cutting problems the geometry check
@@ -131,8 +131,8 @@ always run:
 | Vanishing facet | A later tier's cut removes this facet's plane from the solid entirely — it contributed nothing to the final shape. | `tier N (name): X/Y facet(s) cut away entirely by a later tier` |
 | Undersized facet | The surviving facet's area is below about 1% of the stone's width (linear). | `tier N (name): facet spans only X.XX% of the stone's width, below the Y.YY% minimum` |
 | Index off the gear | The tier's authored index does not land on a real gear tooth. | `tier N (name): index X does not land on a gear tooth; nearest achievable is Y (+Z.ZZZZ deg azimuth error)` |
-| Meets a later tier | A **Named facet(s)** reference points at a tier that is not cut until later in the schedule (or at itself). | `tier N (name): meets tier M (target name), which is not cut until later in the schedule` |
-| Meet name not export-safe | A **Named facet(s)** target's own name contains characters (spaces, commas, semicolons, leading/trailing punctuation) that would not survive a plain `.asc` export/re-import round trip. | `tier N (name): meet target name(s) "..." would not survive a plain .asc export/re-import -- rename without spaces, commas or semicolons, and without leading/trailing punctuation` |
+| Meets a later tier | A **Named Facet(s)** reference points at a tier that is not cut until later in the schedule (or at itself). | `tier N (name): meets tier M (target name), which is not cut until later in the schedule` |
+| Meet name not export-safe | A **Named Facet(s)** target's own name contains characters (spaces, commas, semicolons, leading/trailing punctuation) that would not survive a plain `.asc` export/re-import round trip. | `tier N (name): meet target name(s) "..." would not survive a plain .asc export/re-import -- rename without spaces, commas or semicolons, and without leading/trailing punctuation` |
 
 These warnings are informational — they do not block Solve or export — but
 they flag rows worth revisiting before you cut the stone for real. Each
@@ -142,7 +142,7 @@ affected. Like the status strip, they go stale (cleared, not left showing
 an outdated result) the instant you make another edit, and only reappear
 after the next Solve.
 
-## The overall verdict
+## The Overall Verdict
 
 Right beside the solver state at the left of the status strip sits one small
 badge with one word: **Good**, **Check** or **Problem**. It sums up the whole
@@ -152,10 +152,12 @@ Hover over it for the verdict as a plain sentence ("Looks good: closes, no
 warnings." or "Check 3 things."); click it, or Tab to it and press Enter, for
 the list of reasons behind the word. Esc closes the list, and so does its close
 button. The list has its own **?**, which opens this section. A screen reader
-reads the badge as "Overall verdict: Good" (or Check, or Problem) followed by the
+reads the badge as "Overall Verdict: Good" (or Check, or Problem) followed by the
 same sentence, and each reason in the list as "Problem:", "Check:" or "Good:"
 followed by the sentence, with a **Show** and a **Fix** button that say which
 reason they belong to.
+
+![The Diagram view of a solved design with the same crown tier selected.](../../../../assets/cad_solved_diagram.png)
 
 | Word | Meaning |
 |---|---|
@@ -168,7 +170,7 @@ solve, or a finished preview update), never on its own and never with a
 solve of its own. After any edit it stays visible but dimmed, and its Fix
 buttons wait, until the next solve brings the new verdict.
 
-### The reasons, Show and Fix
+### The Reasons, Show and Fix
 
 Every reason is one plain sentence, worst first. **Show** selects the tier
 the sentence is about, exactly as clicking its row would. **Fix** is offered
@@ -192,7 +194,7 @@ the Fix buttons are dimmed and say so in their tooltips. Other reasons (an unsaf
 concave-tool finding, a proportion outside its range, a crown facet that may
 leak) have no Fix: change the design yourself, then look at the verdict again.
 
-### Where the thresholds come from
+### Where the Thresholds Come From
 
 The structural reasons follow the manufacturability checks above and the
 tier table's windowing badge. The three optical figures come from the same
@@ -234,7 +236,7 @@ best-so-far; a meet-point solve is all-or-nothing), so "Abandon" reads
 slightly more accurately for this one button. Functionally, all three
 Cancel/Abandon buttons stop their worker immediately.
 
-## Activity strip and cancelling
+## Activity Strip and Cancelling
 
 Every operation in this app that takes more than about a fifth of a second
 appears as a small chip in the status strip, next to the message
@@ -262,7 +264,7 @@ A camera drag or orbit in the live 3D view never gets its own chip — only a
 genuine full-quality trace does, and only once accumulation has actually
 begun; the chip disappears the moment that trace converges.
 
-## The status strip's small state label
+## The Status Strip's Small State Label
 
 Separately from the one-line message described above, the status strip
 also carries a small colored state word of its own: **Stale**,
@@ -272,7 +274,7 @@ Degenerate, Unbounded) shows the same **Failed** state label even though
 the message itself names the specific problem — so read the message for
 the actual cause and treat the state label only as an at-a-glance summary.
 
-## Why Solve does not run on every keystroke
+## Why Solve Does Not Run on Every Keystroke
 
 If every edit triggered an immediate solve, a multi-second solve on a large
 design would freeze the editor after every single tier edit. The app never
@@ -285,7 +287,7 @@ rather than showing something silently out of date — so what you see is
 always either a real, trustworthy solve, or clearly marked as not current
 ("Not solved..." or "Solving...").
 
-## Next steps
+## Next Steps
 
 Continue to Chapter 6 if you need to adapt a design for a different
 material's refractive index, or Chapter 7 for a full worked example of

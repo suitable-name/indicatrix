@@ -120,7 +120,10 @@ fn remove_tier_now(
         Ok(removed) => {
             // Tier count changed -- the alignment check falls back to a full solve.
             refresh_editor_panel_stale(ui, render_ctx, &st, &BTreeSet::new());
-            adjust_selection_after_remove(ui, index as i32);
+            adjust_selection_after_remove(
+                ui,
+                i32::try_from(index).expect("tier index fits in i32"),
+            );
             submit_preview_replan(
                 ui,
                 render_ctx,
@@ -153,9 +156,9 @@ fn remove_tier_now(
             let solid_last_solved = Arc::clone(solid_last_solved);
             ask_write_confirm(
                 ui,
-                "Remove anyway?",
+                "Remove Anyway?",
                 error.to_string(),
-                "Remove anyway",
+                "Remove Anyway",
                 None,
                 move |ui| {
                     remove_tier_now(
@@ -243,8 +246,9 @@ pub(in crate::gui::editor) fn setup_duplicate_tier_callback(
                         false,
                     );
                     drop(st);
-                    ui.global::<EditorModel>()
-                        .set_selected_tier_index(new_index as i32);
+                    ui.global::<EditorModel>().set_selected_tier_index(
+                        i32::try_from(new_index).expect("tier index fits in i32"),
+                    );
                     // Names the change instead of leaving a
                     // mis-clicked Duplicate indistinguishable from a no-op.
                     show_toast(
@@ -307,11 +311,10 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            if index < 0 {
+            let Ok(index) = usize::try_from(index) else {
                 return;
-            }
+            };
             let mut st = state_toggle.borrow_mut();
-            let index = index as usize;
             match st.toggle_detach(index) {
                 Ok(None) => {}
                 Ok(Some(toggled)) => {
@@ -449,8 +452,9 @@ fn setup_move_tier_callback(
                         true,
                     );
                     drop(st);
-                    ui.global::<EditorModel>()
-                        .set_selected_tier_index(target as i32);
+                    ui.global::<EditorModel>().set_selected_tier_index(
+                        i32::try_from(target).expect("tier index fits in i32"),
+                    );
                 }
                 Err(e) => show_toast(&ui, &e.to_string(), "error"),
             }
@@ -614,9 +618,9 @@ fn remove_multi_selected_now(
             let solid_last_solved = Arc::clone(solid_last_solved);
             ask_write_confirm(
                 ui,
-                "Remove anyway?",
+                "Remove Anyway?",
                 error.to_string(),
-                "Remove anyway",
+                "Remove Anyway",
                 None,
                 move |ui| {
                     remove_multi_selected_now(

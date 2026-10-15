@@ -176,7 +176,7 @@ component VariantRowView inherits Rectangle {
                         height: pill_text.preferred-height + 4px;
                         Tooltip { text: @markdown("The next variant you save is marked as made from this one."); }
                         pill_text := Text {
-                            text: "Working from";
+                            text: "Working From";
                             font-size: 9px;
                             font-weight: 700;
                             color: Theme.text-on-primary;
@@ -228,7 +228,7 @@ component VariantRowView inherits Rectangle {
                     }
                     VariantAction {
                         label: "Note";
-                        reader_label: "Edit the note of " + root.entry.name;
+                        reader_label: "Edit the Note of "+ root.entry.name;
                         hint: root.can_edit ? "Write or change the note that goes with this variant." : root.busy_hint;
                         enabled: root.can_edit;
                         clicked => { root.note_requested(); }
@@ -307,7 +307,7 @@ component VariantForm inherits Rectangle {
                 LineEdit {
                     text <=> VariantsModel.form_name;
                     enabled: !VariantsModel.busy;
-                    accessible-label: "Variant name";
+                    accessible-label: "Variant Name";
                     accepted => { VariantsModel.submit_form(); }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
                     init => { self.focus(); }
@@ -321,7 +321,7 @@ component VariantForm inherits Rectangle {
                     text <=> VariantsModel.form_note;
                     enabled: !VariantsModel.busy;
                     placeholder-text: "Optional, for example: steeper crown";
-                    accessible-label: "Variant note";
+                    accessible-label: "Variant Note";
                     accepted => { VariantsModel.submit_form(); }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
                     init => {
@@ -340,7 +340,7 @@ component VariantForm inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 6px;
-                TipButton {
+                tip-button-form-ok := TipButton {
                     text: VariantsModel.form_ok;
                     hint: root.ok_hint;
                     primary: true;
@@ -378,7 +378,7 @@ component VariantDiffPage inherits Rectangle {
             HorizontalLayout {
                 spacing: 8px;
                 TipButton {
-                    text: "Back to variants";
+                    text: "Back to Variants";
                     hint: "Close the comparison and go back to the list of variants. Escape does the same.";
                     clicked => { VariantsModel.close_diff(); }
                 }
@@ -525,7 +525,7 @@ export component VariantsSection inherits Rectangle {
                     vertical-alignment: center;
                 }
                 TipButton {
-                    text: "Save as variant...";
+                    text: "Save as Variant...";
                     hint: root.can_edit
                         ? "Keep a named copy of the design as it is now. Variants are kept in your library, not in the design file. See the glossary."
                         : "Switched off until a design is open and nothing is being worked out.";
@@ -569,18 +569,18 @@ export component VariantsSection inherits Rectangle {
                     spacing: 6px;
 
                     Text {
-                        text: "Compare two designs";
+                        text: "Compare Two Designs";
                         font-size: 11px;
                         font-weight: 700;
                         color: Theme.text-primary;
                     }
                     HorizontalLayout {
                         spacing: 6px;
-                        CompareChoice {
+                        compare-choice-l579 := CompareChoice {
                             horizontal-stretch: 1;
                             enabled: root.can_edit;
                             hint: "The first design to compare. It is shown on the left in a picture comparison.";
-                            reader_label: "First design to compare";
+                            reader_label: "First Design to Compare";
                             index <=> VariantsModel.compare_first;
                         }
                         Text {
@@ -589,18 +589,18 @@ export component VariantsSection inherits Rectangle {
                             color: Theme.text-muted;
                             vertical-alignment: center;
                         }
-                        CompareChoice {
+                        compare-choice-l592 := CompareChoice {
                             horizontal-stretch: 1;
                             enabled: root.can_edit;
                             hint: "The second design to compare. It is shown on the right in a picture comparison.";
-                            reader_label: "Second design to compare";
+                            reader_label: "Second Design to Compare";
                             index <=> VariantsModel.compare_second;
                         }
                     }
                     HorizontalLayout {
                         spacing: 6px;
                         TipButton {
-                            text: "Compare pictures";
+                            text: "Compare Pictures";
                             hint: root.can_compare
                                 ? "Open the compare window with the two designs side by side. It only looks: nothing is changed."
                                 : "Choose two different designs above to compare them.";
@@ -608,7 +608,7 @@ export component VariantsSection inherits Rectangle {
                             clicked => { VariantsModel.compare_pictures(); }
                         }
                         if root.advanced: TipButton {
-                            text: "Compare text";
+                            text: "Compare Text";
                             hint: root.can_compare
                                 ? "Show the cutting instructions of the two designs line by line, with the lines only one of them has marked."
                                 : "Choose two different designs above to compare them.";

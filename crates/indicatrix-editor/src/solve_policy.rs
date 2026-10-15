@@ -264,6 +264,10 @@ pub fn too_many_planes_message(design: &Design) -> Option<String> {
 /// [`crate::view_model::solid_status::design_to_gpu_planes`] for the
 /// solve-internally counterpart.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the GPU plane precision; the plane offset is a small distance"
+)]
 pub fn design_to_gpu_planes_from_solved(
     design: &Design,
     solved: &[SolvedTier],

@@ -368,11 +368,16 @@ fn cheater_offset_moves_only_its_own_tiers_facets_in_the_2d_diagram() {
         other => panic!("cheatered fixture must close: {other:?}"),
     };
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "DiagramConfig stores the angle as f32; a reference angle in degrees is in the normal float range"
+    )]
+    let gear_reference_angle = design.meta.gear_reference_angle as f32;
     let config = DiagramConfig {
         width: 300,
         height: 300,
         gear_teeth: design.meta.gear_teeth_abs(),
-        gear_reference_angle: design.meta.gear_reference_angle as f32,
+        gear_reference_angle,
         symmetry_order: design.meta.symmetry_order,
         mirror: design.meta.mirror,
     };
@@ -663,7 +668,8 @@ fn a_cut_map_numbers_the_planes_the_partly_cut_stone_is_drawn_from() {
         .flat_map(|tier| cut.facets_of_tier(tier).iter().copied())
         .collect();
     every.sort_unstable();
-    let expected: Vec<u32> = (cut.preform_plane_count() as u32..drawn.len() as u32).collect();
+    let to_u32 = |n: usize| u32::try_from(n).expect("a test plane count fits u32");
+    let expected: Vec<u32> = (to_u32(cut.preform_plane_count())..to_u32(drawn.len())).collect();
     assert_eq!(every, expected);
 
     // Concave facets start after the DRAWN planes, not the finished stone's.

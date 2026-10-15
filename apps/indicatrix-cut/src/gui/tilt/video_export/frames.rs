@@ -472,7 +472,7 @@ mod tests {
         };
         assert!(message.starts_with("Frame 1 of 3: "), "{message}");
         assert_eq!(frames_done, 0);
-        assert!(recorder.saved.is_empty());
+        assert_eq!(recorder.saved.len(), 0);
         assert!(!holds_frames(&dir), "nothing may be traced locally");
         let _ = std::fs::remove_dir_all(&dir);
     }

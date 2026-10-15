@@ -6,8 +6,8 @@
 use super::schedule_state::ScheduleState;
 use crate::{
     design::{
-        ConcaveTier, ConstraintTier, Design, TierId, TierRelation, TierTarget, compute_tier_labels,
-        is_legacy_123_abc,
+        ConcaveTier, ConstraintTier, Design, StoneRenderEffects, TierId, TierRelation, TierTarget,
+        compute_tier_labels, is_legacy_123_abc,
     },
     material::MaterialSelection,
     preform::PreformSpec,
@@ -81,6 +81,10 @@ pub enum Edit {
     /// `ModifyTier`'s own reasoning. The RI override rides inside
     /// `MaterialSelection` itself -- no separate variant.
     SetMaterial { material: MaterialSelection },
+    /// Replaces the design's per-design stone render effects wholesale -- see
+    /// [`crate::design::StoneRenderEffects`]. Mast-inert (no tier input changes), so
+    /// [`crate::resolve::resolve_after_edit`] never re-solves for it.
+    SetRenderEffects { effects: StoneRenderEffects },
     /// Replaces the design's authorable header fields wholesale --
     /// [`crate::design::ScheduleMeta::headers`] (the `.asc` `H` lines, the first of
     /// which the app treats as the design's title -- see the catalogue round-trip
@@ -303,6 +307,7 @@ impl Edit {
             Self::SetMaterial { material } => {
                 format!("Set material to {}", material_display_name(material))
             }
+            Self::SetRenderEffects { .. } => "Change stone render effects".to_string(),
             Self::SetMeta { .. } => "Change design details".to_string(),
             Self::SetCheaterOffset { index, offset_deg } => {
                 let label = tier_label_at(design, *index);

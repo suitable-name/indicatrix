@@ -1,9 +1,8 @@
 // ---------------------------------------------------------------------------------
-// Zoned absorption, unit 1 of 3: the zone table. `zoning` feature only.
+// Zoned absorption, unit 1 of 3: the zone table.
 //
-// This file is NOT part of the default shader text. `build.rs` appends the three
-// `shaders/zoning/*.wgsl` units to the transport shaders (and patches the two anchor
-// sites named in `build.rs`) only when the crate is built with `--features zoning`.
+// `build.rs` appends the three `shaders/zoning/*.wgsl` units to the transport shaders
+// (and patches the two anchor sites named in `build.rs`).
 //
 // The structs below are the WGSL twins of `renderer::buffers::zoning`'s
 // `GpuZoneHeader`/`GpuZoneShape`/`GpuZoneAbsorption`/`GpuZoneTable`. The table is a

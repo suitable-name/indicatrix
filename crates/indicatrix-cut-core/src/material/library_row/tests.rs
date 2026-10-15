@@ -181,6 +181,148 @@ fn the_snapshot_holds_the_typed_numbers_and_the_names_as_text() {
 }
 
 #[test]
+fn a_biaxial_rows_snapshot_restores_its_crystal_optics() {
+    let row = LibraryMaterial {
+        refractive_index: 1.65,
+        birefringence: 0.009,
+        crystal_system: Some("Orthorhombic"),
+        optical_character: Some("BiaxialPositive"),
+        biaxial_delta_beta_alpha: Some(0.004),
+        ..plain("Biaxial")
+    };
+    let snapshot = row.snapshot();
+    assert_eq!(
+        snapshot.biaxial_delta_beta_alpha,
+        Some(f64::from(0.004_f32))
+    );
+
+    let restored = gem_material_from_custom_snapshot("Biaxial", &snapshot);
+    let direct = row.gem_material();
+    assert_eq!(restored.crystal_system, CrystalSystem::Orthorhombic);
+    assert_eq!(restored.crystal_system, direct.crystal_system);
+    assert_eq!(restored.optical_character, direct.optical_character);
+    assert_eq!(
+        restored.biaxial_delta_beta_alpha,
+        direct.biaxial_delta_beta_alpha
+    );
+    assert!(restored.biaxial_delta_beta_alpha.is_some());
+
+    // A row with no biaxial delta writes no figure.
+    assert!(plain("Bare").snapshot().biaxial_delta_beta_alpha.is_none());
+}
+
+/// A row that stores a biaxial delta but no readable names (a row written before the names were
+/// stored) is biaxial by the optic-sign rule, directly and through the snapshot it writes.
+#[test]
+fn a_row_with_a_delta_and_no_names_is_biaxial_by_the_optic_sign_rule() {
+    // Topaz-like (beta nearer alpha: positive) and andalusite-like (beta nearer gamma: negative).
+    let cases = [
+        (0.003_f32, OpticalCharacter::BiaxialPositive),
+        (0.006, OpticalCharacter::BiaxialNegative),
+    ];
+    let unreadable = [
+        (None, None),
+        (Some(""), Some("")),
+        (Some("Amorphous"), Some("Mystery")),
+    ];
+    for (delta, expected) in cases {
+        for (crystal_system, optical_character) in unreadable {
+            let row = LibraryMaterial {
+                refractive_index: 1.609,
+                birefringence: 0.011,
+                crystal_system,
+                optical_character,
+                biaxial_delta_beta_alpha: Some(delta),
+                ..plain("Biaxial")
+            };
+            let direct = row.gem_material();
+            assert_eq!(
+                direct.optical_character, expected,
+                "{crystal_system:?} {optical_character:?} {delta}"
+            );
+            assert_eq!(direct.biaxial_delta_beta_alpha, Some(delta));
+
+            // The snapshot writes empty names; the open path reaches the same character.
+            let restored = gem_material_from_custom_snapshot("Biaxial", &row.snapshot());
+            assert_eq!(restored.optical_character, expected, "{delta}");
+            assert_eq!(restored.biaxial_delta_beta_alpha, Some(delta));
+        }
+    }
+
+    // A readable name wins over the rule.
+    let named = LibraryMaterial {
+        refractive_index: 1.609,
+        birefringence: 0.011,
+        crystal_system: Some("Orthorhombic"),
+        optical_character: Some("BiaxialNegative"),
+        biaxial_delta_beta_alpha: Some(0.003),
+        ..plain("Named")
+    };
+    assert_eq!(
+        named.gem_material().optical_character,
+        OpticalCharacter::BiaxialNegative
+    );
+}
+
+/// The optic-sign rule on its own: `beta` nearer `alpha` is positive, the exact midpoint is
+/// negative, and a delta that cannot describe a biaxial material gives no character.
+#[test]
+fn the_optic_sign_rule_picks_the_character_and_rejects_unusable_deltas() {
+    use OpticalCharacter::{BiaxialNegative, BiaxialPositive};
+    // Topaz (1.606 / 1.609 / 1.617) and andalusite (1.632 / 1.638 / 1.643).
+    assert_eq!(
+        biaxial_character_from_deltas(0.003, 0.011),
+        Some(BiaxialPositive)
+    );
+    assert_eq!(
+        biaxial_character_from_deltas(0.006, 0.011),
+        Some(BiaxialNegative)
+    );
+
+    // The boundary 2 (beta - alpha) == gamma - alpha is negative; just under it is positive.
+    // 0.25 and 0.5 are exact in binary, so the product is exactly the birefringence.
+    assert_eq!(
+        biaxial_character_from_deltas(0.25, 0.5),
+        Some(BiaxialNegative)
+    );
+    assert_eq!(
+        biaxial_character_from_deltas(0.249, 0.5),
+        Some(BiaxialPositive)
+    );
+    // beta on gamma (delta == birefringence) is still negative, by the rule.
+    assert_eq!(
+        biaxial_character_from_deltas(0.5, 0.5),
+        Some(BiaxialNegative)
+    );
+    // The sign of the birefringence is ignored.
+    assert_eq!(
+        biaxial_character_from_deltas(0.003, -0.011),
+        Some(BiaxialPositive)
+    );
+
+    // Unusable pairs: a delta that is zero, negative or not finite, a birefringence that is not
+    // finite or zero, and a delta above the birefringence.
+    let unusable = [
+        (0.0, 0.011),
+        (-0.003, 0.011),
+        (f64::NAN, 0.011),
+        (f64::INFINITY, 0.011),
+        (f64::NEG_INFINITY, 0.011),
+        (0.003, f64::NAN),
+        (0.003, f64::INFINITY),
+        (0.003, 0.0),
+        (0.012, 0.011),
+    ];
+    for (delta, birefringence) in unusable {
+        assert_eq!(
+            biaxial_character_from_deltas(delta, birefringence),
+            None,
+            "delta {delta}, birefringence {birefringence}"
+        );
+    }
+}
+
+#[test]
 fn the_snapshot_carries_a_stored_model_and_a_recipe_with_its_fallback_colour() {
     let model = DispersionModel::Cauchy {
         a: 1.7,
@@ -292,7 +434,7 @@ fn sized(width_mm: f32) -> indicatrix::render_setup::MaterialOverrides {
     }
 }
 
-/// B3: the vault row and the `.indicatrix.toml` snapshot of the same banded custom material
+/// B3: the vault row and the design file's custom-material snapshot of the same banded custom material
 /// build the identical material (absorption, unit and scale), and the render setup gives both
 /// `W / model_width` (7 mm while no size is set).
 #[test]

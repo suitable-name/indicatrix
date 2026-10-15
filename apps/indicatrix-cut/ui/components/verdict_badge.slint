@@ -43,7 +43,7 @@ export component VerdictBadge inherits Rectangle {
     opacity: VerdictModel.stale ? 0.6 : 1.0;
 
     accessible-role: AccessibleRole.button;
-    accessible-label: "Overall verdict: " + VerdictModel.word;
+    accessible-label: "Overall Verdict: " + VerdictModel.word;
     accessible-description: root.tip_text;
     accessible-action-default => {
         root.open_popover();

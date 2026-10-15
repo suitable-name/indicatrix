@@ -399,7 +399,9 @@ pub fn run_studio_env(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         &pipeline,
         &[(4, &in_buf), (5, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("a check case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -431,6 +433,11 @@ pub fn run_studio_env(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
 }
 
 fn preset_for_case(case: &StudioEnvCase) -> LightingPreset {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "case.model holds a small non-negative whole model id (0..=6)"
+    )]
     let model_id = case.model as u32;
     match model_id {
         1 => LightingPreset::IsoHemisphere,

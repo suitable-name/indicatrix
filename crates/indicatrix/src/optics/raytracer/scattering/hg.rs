@@ -4,8 +4,6 @@
 //! bounce-loop wrapper ([`try_scatter_step`]), the phase function and its importance
 //! sampler, and the scattering-point next-event-estimation contribution.
 
-#[cfg(feature = "zoning")]
-use super::super::zoned::{ZoneAlphas, ZonedCache, local_extinction, optical_depths};
 use super::{
     super::{
         NUM_CHANNELS,
@@ -20,6 +18,7 @@ use super::{
             PHASE_DIR_V_STREAM, hash_u32,
         },
         transport::apply_russian_roulette,
+        zoned::{ZoneAlphas, ZonedCache, local_extinction, optical_depths},
     },
     HG_NEE_MAX_CROSSINGS, NeeContext, balance_heuristic, frosted_orthonormal_basis,
 };
@@ -176,7 +175,6 @@ pub(crate) fn maybe_scatter_or_extinguish(
 
 /// The inputs of [`maybe_scatter_or_extinguish_zoned`] that are not the per-channel state:
 /// bundled to keep its argument count down.
-#[cfg(feature = "zoning")]
 pub(in super::super) struct ZonedScatterParams {
     /// `GemMaterial::scattering_sigma_s`, per MODEL unit.
     pub(in super::super) sigma_s_model: f32,
@@ -193,7 +191,7 @@ pub(in super::super) struct ZonedScatterParams {
     pub(in super::super) bounce: u32,
 }
 
-/// [`maybe_scatter_or_extinguish`] for a zoned medium (`zoning` feature): the same estimator
+/// [`maybe_scatter_or_extinguish`] for a zoned medium: the same estimator
 /// with the position-dependent extinction `sigma_t(x) = alpha_z(x) + sigma_s`.
 ///
 /// Along the segment the hero optical depth `tau_h(t)` is piecewise linear and increasing, so
@@ -213,7 +211,6 @@ pub(in super::super) struct ZonedScatterParams {
 /// `ZonedCache::zone_alphas`. The caller disables scattering-point NEE for a zoned medium (its
 /// shadow-ray transmittance would need the zone lengths of the shadow probe), which keeps the
 /// phase-sampled continuation at full weight and the estimator unbiased.
-#[cfg(feature = "zoning")]
 pub(in super::super) fn maybe_scatter_or_extinguish_zoned(
     zoned: &ZonedCache,
     zone_alphas: &ZoneAlphas,
@@ -297,7 +294,6 @@ pub(in super::super) fn maybe_scatter_or_extinguish_zoned(
 
 /// The segment [`try_scatter_step`] tests for a scatter event: the ray, the distance to the
 /// facet it hits and the RNG stream identity.
-#[cfg(feature = "zoning")]
 #[derive(Clone, Copy)]
 struct ScatterSegment {
     ray: Ray,
@@ -309,7 +305,6 @@ struct ScatterSegment {
 /// The scatter-or-survive decision of [`try_scatter_step`]: the position-dependent estimator
 /// for a zoned medium (`zoned` is its cache and per-zone alphas), the homogeneous one
 /// otherwise.
-#[cfg(feature = "zoning")]
 fn scatter_or_survive(
     zoned: Option<(&ZonedCache, &ZoneAlphas)>,
     alphas: &[f32; NUM_CHANNELS],
@@ -476,12 +471,10 @@ pub(in super::super) fn try_scatter_step(
     // A zoned medium: the position-dependent estimator, and no scattering-point NEE (the shadow
     // ray's transmittance would need its own zone lengths); with `nee.enabled` false the
     // phase-sampled continuation keeps full weight, exactly as for an analytic sun.
-    #[cfg(feature = "zoning")]
     let zoned_alphas = cache
         .zoned
         .as_ref()
         .map(|zoned| zoned.zone_alphas(mat_ctx, cache, *current_k, is_extraordinary));
-    #[cfg(feature = "zoning")]
     let nee = if zoned_alphas.is_some() {
         NeeContext {
             enabled: false,
@@ -490,7 +483,6 @@ pub(in super::super) fn try_scatter_step(
     } else {
         nee
     };
-    #[cfg(feature = "zoning")]
     let scatter = scatter_or_survive(
         cache.zoned.as_ref().zip(zoned_alphas.as_ref()),
         &alphas,
@@ -502,20 +494,6 @@ pub(in super::super) fn try_scatter_step(
             rng_seed,
             bounce,
         },
-        stokes,
-        path_pdf,
-    );
-    #[cfg(not(feature = "zoning"))]
-    let scatter = maybe_scatter_or_extinguish(
-        &alphas,
-        material.scattering_sigma_s,
-        material.scattering_g,
-        mat_ctx.hero_idx,
-        current_ray.dir,
-        hit_t,
-        material.absorption_path_scale,
-        rng_seed,
-        bounce,
         stokes,
         path_pdf,
     );

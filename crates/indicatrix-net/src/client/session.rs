@@ -45,9 +45,8 @@ pub fn send_render_request<W: Write>(
     writer: &mut W,
     request: &crate::messages::RenderRequest,
 ) -> Result<(), ClientError> {
-    // `zoning` builds: a zoned scene is preceded by its zones (they are `serde(skip)` in the
+    // A zoned scene is preceded by its zones (they are `serde(skip)` in the
     // scene). The caller has checked `Welcome::zoning`; see `crate::messages::zoning`.
-    #[cfg(feature = "zoning")]
     if let Some(payload) =
         crate::messages::ZoningPayload::for_scene(request.request_id, &request.scene)
     {
@@ -91,7 +90,7 @@ pub fn send_final_image_request<W: Write>(
     request: &crate::messages::FinalImageRequest,
 ) -> Result<(), ClientError> {
     // As in `send_render_request`: the zones of a zoned scene go first.
-    #[cfg(feature = "zoning")]
+    #[cfg(feature = "render")]
     if let Some(payload) =
         crate::messages::ZoningPayload::for_scene(request.request_id, &request.scene)
     {
@@ -507,7 +506,7 @@ mod tests {
 
     /// A zoned scene's zones go first, then the unchanged request; an unzoned scene sends the
     /// request alone, exactly as a default build does.
-    #[cfg(feature = "zoning")]
+    #[cfg(feature = "render")]
     #[test]
     fn a_zoned_request_is_preceded_by_its_zoning_payload() {
         use indicatrix::optics::{

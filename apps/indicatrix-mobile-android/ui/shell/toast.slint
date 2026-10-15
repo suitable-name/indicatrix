@@ -1,0 +1,55 @@
+// A snackbar. `AppWindow` places it above the navigation bar; Rust shows it by
+// setting `Shell.toast-text` / `Shell.toast-visible` and hides it again after four
+// seconds. A tap or the close button dismisses it early.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { IconButton } from "icon_button.slint";
+
+export component Toast inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> shown: false;
+    callback dismissed();
+
+    visible: root.shown;
+    // A Rectangle outside a layout fills its parent unless it is given a height.
+    height: max(48px, lay.preferred-height);
+    background: Theme.inverse-surface;
+    border-radius: Theme.radius-sm;
+    drop-shadow-color: Theme.shadow;
+    drop-shadow-blur: Theme.shadow-blur-2;
+    drop-shadow-offset-y: Theme.shadow-offset-2;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    TouchArea {
+        clicked => {
+            root.dismissed();
+        }
+    }
+
+    lay := HorizontalLayout {
+        padding-left: Theme.space-lg;
+        padding-top: Theme.space-xs;
+        padding-bottom: Theme.space-xs;
+        spacing: Theme.space-sm;
+        cross-axis-alignment: center;
+
+        Text {
+            text: root.text;
+            color: Theme.on-inverse-surface;
+            font-size: Theme.text-body;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+
+        IconButton {
+            icon: Icons.close;
+            label: "Dismiss";
+            tint: Theme.on-inverse-surface;
+            clicked => {
+                root.dismissed();
+            }
+        }
+    }
+}

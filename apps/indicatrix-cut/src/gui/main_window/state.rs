@@ -59,6 +59,12 @@ pub(super) struct SolidView {
 
 /// Opens the on-disk design library, or -- when that fails -- a throwaway in-memory one.
 ///
+/// Stays on the UI thread before `show()` (perf review UI-6, partly not done): the
+/// `Arc<Mutex<Database>>` it returns is a constructor argument of every callback group
+/// wired in `build_main_window`, so the handle has to exist before any of them. The open
+/// itself (pragmas plus the create-if-missing/migration pass) is the only database work
+/// left on that path; the library list, filter options, tags and counts load on a worker.
+///
 /// # Errors
 ///
 /// Returns an error only when the in-memory fallback fails to open too.
@@ -223,26 +229,50 @@ pub(super) fn apply_custom_materials(
     // Load custom gemstone materials from SQLite. `indicatrix-vault` returns plain
     // `CustomMaterialRow`s (it must not depend on `indicatrix`), so convert them into
     // `indicatrix::optics::materials::GemMaterial` here at the boundary.
+    //
+    // Synchronous on purpose (UI-6): `load_settings` runs right after this and validates
+    // the persisted material choice against `RenderContext::custom_materials`, so the
+    // rows must be in before it. One small table; the library list and filter options,
+    // the larger startup reads, load on a worker (`load_filter_options_and_initial_list`).
     let custom_material_rows = db
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_custom_materials()
         .unwrap_or_default();
     let (initial_custom_mats, initial_custom_sg) =
         initial_custom_materials_and_specific_gravity(&custom_material_rows);
-    // Zoning builds only: drop the zoning rows of owners that are gone, then put the stored
-    // zones back on the materials that have them (an adopted "<rough> colour" material), so every
+    // Drop the zoning rows of owners that are gone, then put the stored
+    // zones back on the materials that have them (an adopted "<plan> - <design> color" material), so every
     // later `resolve_material` returns a zoned material. A relative-to-stone library material is
-    // scaled to the default stone width here; the width setting is applied later.
-    #[cfg(feature = "zoning")]
+    // scaled to the mirror of the design's width (`SettingsModel.stone_width_mm`, `0` = the default
+    // width at startup); the design sync and a library row re-scale it through
+    // `material_zones::stone_width_applied` whenever the width they show changes.
     let initial_custom_mats = {
+        crate::gui::rough_colour::material_zones::register_vault(db);
         let mut materials = initial_custom_mats;
+        let width_mm = f64::from(ui.global::<crate::SettingsModel>().get_stone_width_mm());
         let guard = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Err(error) = crate::gui::rough_colour::store::prune_orphans(&guard) {
             tracing::warn!("Rough colour: orphaned rows were not pruned: {error:#}");
         }
-        crate::gui::rough_colour::store::attach_zoning(&guard, &mut materials, 0.0);
+        let report = crate::gui::rough_colour::store::attach_zoning_reporting(
+            &guard,
+            &mut materials,
+            width_mm,
+        );
         drop(guard);
+        // A damaged zone row leaves its material in the base colour: say so (the first one).
+        if let Some((name, sentence)) = report.skipped.first() {
+            let text = if name.is_empty() {
+                sentence.clone()
+            } else {
+                format!(
+                    "The zones of '{name}' could not be read; it renders in its base color. \
+                     ({sentence})"
+                )
+            };
+            show_toast(ui, &text, "warning");
+        }
         materials
     };
     {

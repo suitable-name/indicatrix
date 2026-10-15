@@ -30,7 +30,7 @@ pub fn guides() -> Vec<Guide> {
 fn import() -> Guide {
     Guide::new(
         "library-import",
-        "Import designs into the library",
+        "Import Designs into the Library",
         "Bring an .asc, .gem or .gcs file into your local library.",
         GuideCategory::Library,
     )
@@ -57,8 +57,8 @@ fn import() -> Guide {
         )
         .actions([
             "Click Import at the top right of the window.",
-            "Click Choose file... and pick the .asc file you just wrote.",
-            "Wait for the import to finish. To import a whole folder instead, tick Include subfolders first, then click Choose folder...",
+            "Click Choose File... and pick the .asc file you just wrote.",
+            "Wait for the import to finish. To import a whole folder instead, tick Include Subfolders first, then click Choose Folder...",
         ])
         .check("A toast and the status line at the top report what was imported, and the new design is selected in the Catalog list.")
         .why("A .gem or .gcs file is converted to .asc cutting instructions, and the original file stays attached to the design. A file with the same name as one already in the library asks before it replaces it.")
@@ -72,10 +72,10 @@ fn import() -> Guide {
             "After an import the program asks whether to draw pictures of the new designs.",
         )
         .actions([
-            "Full render traces them, and takes longest.",
-            "Quick (solid) draws a flat-shaded picture of each in moments.",
+            "Full Render traces them, and takes longest.",
+            "Quick (Solid) draws a flat-shaded picture of each in moments.",
             "Skip draws nothing; you can make previews later from the Library menu or a design's right-click menu.",
-            "Tick Remember my choice to stop being asked.",
+            "Tick Remember My Choice to stop being asked.",
         ])
         .why("Every control is unlocked again."),
     )
@@ -84,7 +84,7 @@ fn import() -> Guide {
 fn search() -> Guide {
     Guide::new(
         "library-search",
-        "Search the library",
+        "Search the Library",
         "Find a design by title or designer, and select it to read its details.",
         GuideCategory::Library,
     )
@@ -134,7 +134,7 @@ fn search() -> Guide {
         )
         .actions(["Click a card in the Catalog list."])
         .check("The detail header shows the title, the designer and a row of chips for shape, gear, facets, proportions and refractive index.")
-        .why("Right-click a card for more: Generate Previews, Compute Tilt Curves, Ignore, Exclude from planner and Build this design.")
+        .why("Right-click a card for more: Generate Previews, Compute Tilt Curves, Ignore, Exclude from Planner and Build This Design.")
         .goal(event(LIBRARY_DESIGN_SELECTED), "A design selected")
         .allow(VIEWPORT),
     )
@@ -150,7 +150,7 @@ fn search() -> Guide {
 fn filters() -> Guide {
     Guide::new(
         "library-filters",
-        "Filter and sort the library",
+        "Filter and Sort the Library",
         "Narrow the catalogue by shape, gear and ranges, and put it in the order you like.",
         GuideCategory::Library,
     )
@@ -178,7 +178,7 @@ fn filters() -> Guide {
             "Click outside the panel to close it.",
         ])
         .check("The Filters button turns amber with a dot while a filter is active.")
-        .why("Each slider spans the range your catalogue really has. RI Match centres a tolerance band on a refractive index, and Use current material takes the one in the viewport. Tilt Performance filters narrow by windowing, extinction or brilliance.")
+        .why("Each slider spans the range your catalogue really has. RI Match centres a tolerance band on a refractive index, and Use Current Material takes the one in the viewport. Tilt Performance filters narrow by windowing, extinction or brilliance.")
         .goal(event(LIBRARY_FILTERED), "A range filter changed")
         .highlight("library_filters")
         .allow(VIEWPORT),
@@ -190,7 +190,7 @@ fn filters() -> Guide {
         )
         .actions(["Open the Sort drop-down and choose Newest."])
         .check("The designs added last are at the top.")
-        .why("The other orders are Catalogue order, Title and Recently edited.")
+        .why("The other orders are Catalogue Order, Title and Recently Edited.")
         .goal(event(LIBRARY_FILTERED), "The sort order changed")
         .highlight("library_filters")
         .allow(VIEWPORT),
@@ -215,7 +215,7 @@ fn filters() -> Guide {
 fn load_design() -> Guide {
     Guide::new(
         "library-load-design",
-        "Load a design into the editor",
+        "Load a Design into the Editor",
         "Pick a design in the library and open it in the editor.",
         GuideCategory::Library,
     )
@@ -253,7 +253,7 @@ fn load_design() -> Guide {
             "Loading never changes the library entry.",
         )
         .actions([
-            "Your edits belong to the design in the editor. Save writes them to a .indicatrix file and updates the library entry; Export .asc writes a file and leaves the library alone.",
+            "Your edits belong to the design in the editor. Save writes them to a .isdd file and updates the library entry; Export .asc writes a file and leaves the library alone.",
             "The status strip may offer to set the material when the design's refractive index matches a built-in one.",
         ])
         .why("Every control is unlocked again."),
@@ -313,8 +313,8 @@ fn rough_planner() -> Guide {
             "Each card is one layout, ranked by the weight of finished stone.",
         )
         .actions([
-            "Show all in library filters the library to the designs of the results.",
-            "Save selected and Save all keep plans; Saved plans in the title bar reopens them, and a plan can be shared as a file.",
+            "Show All in Library filters the library to the designs of the results.",
+            "Save Selected and Save All keep plans; Saved Plans in the title bar reopens them, and a plan can be shared as a file.",
             "A design that keeps winning but that you do not want to cut can be excluded with the Exclude pill on its row.",
         ])
         .why("Every control is unlocked again."),

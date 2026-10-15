@@ -94,6 +94,10 @@ fn golden_roughness(
             stage: FitStage::Roughness,
             fraction: evaluations.len() as f32 / total as f32,
         });
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "surface roughness alpha is in 0..1; surfaces take f32"
+        )]
         let alpha = roughness as f32;
         let surfaces = surfaces_for(alpha);
         let records = trace(&inputs.forward, &surfaces, alignment, cancel)?;

@@ -57,7 +57,5 @@ pub mod tag;
 /// Packed tilt-performance sweep curves -- see
 /// [`tilt_curves::TiltPerformanceCurves`].
 pub mod tilt_curves;
-/// Rough colour and colour zoning side-table rows -- see [`zoning::RoughColourRow`]. Only with
-/// the `zoning` feature.
-#[cfg(feature = "zoning")]
+/// Rough colour and colour zoning side-table rows -- see [`zoning::RoughColourRow`].
 pub mod zoning;

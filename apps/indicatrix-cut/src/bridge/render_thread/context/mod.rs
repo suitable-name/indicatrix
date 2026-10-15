@@ -37,8 +37,12 @@ use indicatrix::{
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// Everything the render thread needs to draw one frame.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "shared render-thread state; the flags are independent switches set by different callbacks"
+)]
 pub struct RenderContext {
-    /// Live render resolution, set via `settings_dialog.slint`'s pill selector
+    /// Live render resolution, set via the Parameters panel's pill selector
     /// (`gui::mod::on_resolution_changed`). Restricted to fixed choices (640x480 ...
     /// 1920x1080) because Slint has no way to report a widget's rendered size back to
     /// Rust. Always the CONFIGURED resolution -- `local_preview_scale`/`camera_moving`
@@ -76,9 +80,9 @@ pub struct RenderContext {
     /// to a design. Read through [`Self::effective_view_body_color`] and
     /// [`Self::tinted_material_override`]; written by `gui::render::render_body_color`.
     pub view_body_color: Option<[f32; 3]>,
-    /// Mirror of `ViewportModel.viewport_material_linked` ("Linked to design"), kept by
+    /// Mirror of `ViewportModel.viewport_material_linked` (the view is linked to the design's material), kept by
     /// `gui::render::render_body_color` so the render pipeline can tell a design-driven
-    /// view from a free one without reading the UI. `true` is the toggle's default.
+    /// view from a free one without reading the UI. `true` (following the design) is the default.
     pub material_linked: bool,
     /// Lighting preset the render uses.
     pub lighting_preset: LightingPreset,
@@ -111,7 +115,7 @@ pub struct RenderContext {
     /// Crystal-axis orientation override: `Some(axis)` replaces the resolved
     /// material's `c_axis` (skipped for isotropic materials); `None` (default, "as
     /// cut") leaves it untouched. Already resolved to a `Vec3` --
-    /// `gui::optics::c_axis::angles_to_c_axis` converts the settings dialog's
+    /// `gui::optics::c_axis::angles_to_c_axis` converts the Parameters panel's
     /// tilt/azimuth sliders here.
     pub c_axis_override: Option<Vec3>,
     /// Bruted (frosted) girdle finish toggle: `true` renders the identified girdle

@@ -602,12 +602,16 @@ export component SolidViewportView inherits Rectangle {
         alignment: center;
         spacing: 12px;
 
-        Image {
-            source: @image-url("../icons/gem.svg");
-            colorize: Theme.text-muted;
-            width: 48px;
-            height: 48px;
-            horizontal-alignment: center;
+        // Centred by a layout of its own: a fixed-size Image in the column sits at the left of
+        // its cell (`horizontal-alignment` only places the picture inside the Image).
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../icons/gem.svg");
+                colorize: Theme.text-muted;
+                width: 48px;
+                height: 48px;
+            }
         }
 
         Text {

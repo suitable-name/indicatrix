@@ -100,6 +100,10 @@ pub fn format_index_value(value: f64) -> String {
 /// (`facet_toggle_detach`'s Rust handler) need the wraparound-aware comparison,
 /// and those already go through core's own helpers.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the Slint chip position precision; index positions are small numbers"
+)]
 pub fn index_chip_items(indices: &[f64], detached: &[f64]) -> Vec<IndexChip> {
     indices
         .iter()

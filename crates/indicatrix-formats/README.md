@@ -7,8 +7,7 @@ unaffiliated implementation of file formats originating with `GemCAD` (Robert
 Strickland's faceting-design software) and Gem Cut Studio. It is not
 produced, endorsed, or affiliated with either program or their authors. `asc`,
 `gcs`, and `gem` have **zero runtime dependencies** between them — only `native`
-(this crate's own `.indicatrix` design file format, plus the older `.indicatrix.toml`
-sidecar it replaced) pulls in `serde`/`toml`/`sha2`.
+(this crate's own `.isdd` design file format) pulls in `serde`/`toml`/`sha2`.
 A file-format reader should not force a dependency tree onto callers who just want
 to parse text, and keeping it that way means every downstream crate that touches
 `.asc`/`.gcs`/`.gem` files (`indicatrix`, `indicatrix-vault`, `apps/indicatrix-cut`)
@@ -119,7 +118,7 @@ Each `a` record is one facet tier:
   whitespace-free token (`"Crown_Main"`) before writing the ` n` marker, since a
   name with embedded whitespace would otherwise split into extra tokens on
   re-parse. The true, human-typed name is not lost — it still lives in the
-  `.indicatrix` design file (`indicatrix_formats::native::design`), which restores it
+  `.isdd` design file (`indicatrix_formats::native::design`), which restores it
   on load; only a plain
   `.asc` export ever shows the sanitised form. `is_asc_safe_tier_name` checks,
   without allocating, whether a given name would survive unchanged.

@@ -53,7 +53,7 @@ only under WAL -- `synchronous = NORMAL`. Tables:
 | `diagram_solid_hull` | Cached finished-solid convex hull (packed little-endian `f32` vertex triples, BLOB last) for the Rough Planner, keyed by `entry_id`, with a `hull_version`; cascade-deleted with the entry |
 | `saved_rough_plans` | Saved Rough Planner plans: `name`, `created_at`/`updated_at`, and a versioned text `payload`; not tied to any entry |
 | `diagram_planner_exclusions` | The designs the Rough Planner leaves out of its candidate set: one row per excluded `entry_id`, so the mark is the row's presence, cascade-deleted with the entry. Written by `set_planner_excluded` without touching `diagram_entries.updated_at`, and read back with `planner_excluded_ids` and `planner_excluded_among`; independent of the library's `ignored` flag |
-| `design_variants` | Saved variants of a design: `name`, optional `parent_variant_id` (`ON DELETE SET NULL`, so deleting a variant detaches its children), `created_at`, `note`, the design as its `.indicatrix` text, and an optional PNG preview (BLOB last). Keyed by `design_uuid`, indexed on it, with **no** foreign key to `diagram_entries` — see "Per-design side data" below. Written by `save_variant`, read with `list_variants` (no text, no preview), `load_variant` and `variant_thumbnail`, edited with `rename_variant`/`set_variant_note`/`delete_variant` |
+| `design_variants` | Saved variants of a design: `name`, optional `parent_variant_id` (`ON DELETE SET NULL`, so deleting a variant detaches its children), `created_at`, `note`, the design as its `.isdd` text, and an optional PNG preview (BLOB last). Keyed by `design_uuid`, indexed on it, with **no** foreign key to `diagram_entries` — see "Per-design side data" below. Written by `save_variant`, read with `list_variants` (no text, no preview), `load_variant` and `variant_thumbnail`, edited with `rename_variant`/`set_variant_note`/`delete_variant` |
 | `design_cut_progress` | The cutting steps a cutter marked done: `(design_uuid, step_key)` is the primary key, `step_signature` fingerprints the step's cutting values when it was marked (so a screen can show a stale mark), `done_at` is Unix seconds. `mark_step_done`, `unmark_step`, `cut_progress`, `clear_cut_progress` |
 | `design_lighting` | At most one row per design: `preset_name`, an opaque `settings_json` text the application writes (this crate does not know the lighting model) and `updated_at`. `set_design_lighting`, `design_lighting`, `clear_design_lighting` |
 | `tags` / `diagram_tag_links` | A flat, case-insensitive tag set and its many-to-many join table |
@@ -63,7 +63,7 @@ only under WAL -- `synchronous = NORMAL`. Tables:
 
 `design_variants`, `design_cut_progress` and `design_lighting` hold data about a design
 that the design file itself deliberately does not carry. They are keyed by the design's
-**UUID** (`[meta].id` of the `.indicatrix` file), not by `entry_id`: a design opened from
+**UUID** (`[meta].id` of the `.isdd` file), not by `entry_id`: a design opened from
 disk that was never catalogued has no entry, but every design has a UUID, and the UUID is
 the same on every machine and across Save As. A copy of a design therefore keeps its side
 data. There is no foreign key to `diagram_entries`: deleting an entry does not delete the
@@ -226,7 +226,7 @@ pub struct ImportedAsc {
 pub fn import_asc(
     file_name: &str,
     content: &str,
-    native_sidecar: Option<(&str, &[u8])>,
+    design_file: Option<(&str, &[u8])>,
 ) -> Result<ImportedAsc, String>;
 
 pub fn reconstruct_asc_schedule(
@@ -245,8 +245,8 @@ file against. The parsed tiers become `angle_settings` rows, and the raw file
 bytes are stored as received (`import_asc_bytes` keeps the file's raw bytes, not a re-encoded
 UTF-8 copy) as an `attached_files` entry, so the original can be re-exported exactly later.
 Rows imported by earlier versions hold the already-decoded UTF-8 text instead; readers
-decode either form with `decode_asc_bytes`. `native_sidecar`, when the caller found a
-`.indicatrix` design file (or an older `.indicatrix.toml`/`.gemcut.toml` sidecar)
+decode either form with `decode_asc_bytes`. `design_file`, when the caller found a
+`.isdd` (or earlier `.indicatrix`) design file
 beside the `.asc` on disk, is attached as a second `attached_files` entry, so a
 design round-tripped through Save and back through Import doesn't lose the fields
 only the design file carries. `derived_from_entry_id` recovers the

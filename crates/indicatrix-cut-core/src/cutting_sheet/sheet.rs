@@ -300,6 +300,10 @@ pub fn format_sheet_indices(indices: &[f64]) -> String {
 /// `"120"`), a fractional position keeps two decimals with its whole part padded the same way
 /// (`"03.50"`, `"11.50"`).
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "index is within 1e-9 of a whole index-wheel tooth count, far inside the i64 range"
+)]
 pub fn format_sheet_index(index: f64) -> String {
     if (index - index.round()).abs() < 1e-9 {
         // Through an integer so a `-0.0` prints as `00`, not `-0`.

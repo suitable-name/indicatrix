@@ -36,6 +36,7 @@
 pub mod edit;
 pub mod edit_add;
 pub mod guide;
+pub mod history;
 pub mod inspector;
 pub mod new_design;
 pub mod nudge;
@@ -47,6 +48,7 @@ pub mod settings;
 pub mod snapshot;
 pub mod table;
 pub mod unsaved;
+pub mod verdict;
 
 use crate::{AppWindow, app::Ctx};
 
@@ -63,4 +65,6 @@ pub fn wire(ui: &AppWindow, ctx: &Ctx) {
     new_design::wire(ui, ctx);
     snapshot::wire(ui, ctx);
     guide::wire(ui, ctx);
+    verdict::wire(ui, ctx);
+    history::wire(ui, ctx);
 }

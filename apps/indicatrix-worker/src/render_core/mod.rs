@@ -87,15 +87,13 @@ pub(crate) fn stone_geometry(scene: &SceneState) -> StoneGeometry<'_> {
 /// scene is traced entirely on the CPU -- by the plain CPU path, never by a hybrid split,
 /// which would otherwise hand part of the samples to a GPU that cannot trace them. An
 /// HDR panorama has no lamp, so the preset only counts for the analytic rig.
+///
+/// A zoned material routes like the desktop does, through
+/// `GemMaterial::gpu_supported` (inside `scene_routes_to_gpu`). The GPU zone kernels render the
+/// zones they support; a mesh-shell zone, a scattering zoned stone or an oversized band set
+/// is declined there and so traced entirely on the CPU, never silently as its base zone.
 #[must_use]
 pub(crate) fn scene_uses_gpu(scene: &SceneState) -> bool {
-    // `zoning` builds: a zoned material is traced entirely on the CPU. The WGSL kernels know
-    // nothing about zones (a GPU trace would silently show only the base zone), and a hybrid
-    // split would hand part of the samples to them.
-    #[cfg(feature = "zoning")]
-    if scene.material.zoning.is_some() {
-        return false;
-    }
     let lighting = match scene.environment {
         indicatrix_net::scene::SceneEnvironment::Studio => scene.lighting_preset,
         indicatrix_net::scene::SceneEnvironment::Hdr(_) => {
@@ -340,11 +338,38 @@ pub fn trace_samples_with_gpu_cancellable(
     threads: usize,
     cancel: &AtomicBool,
 ) -> Option<Vec<Vec3>> {
+    let mut buffer = vec![Vec3::ZERO; scene.width as usize * scene.height as usize];
+    trace_samples_with_gpu_into(
+        gpu,
+        scene,
+        (first_sample, samples),
+        threads,
+        cancel,
+        &mut buffer,
+    )
+    .then_some(buffer)
+}
+
+/// [`trace_samples_with_gpu_cancellable`] into a caller-owned `buffer`.
+///
+/// A loop of sub-batches can reuse one frame-sized buffer instead of allocating (and page-faulting)
+/// a fresh ~25 MB one per ~100 ms sub-batch at 1080p.
+///
+/// `buffer` must be `width * height` long and all `Vec3::ZERO` on entry -- both backends
+/// add into it, so the result is bit-identical to a freshly allocated zero buffer.
+/// Returns `false` if `cancel` fired first, with `buffer` untouched (still all-zero).
+pub fn trace_samples_with_gpu_into(
+    gpu: &GpuBackend,
+    scene: &SceneState,
+    (first_sample, samples): (u32, u32),
+    threads: usize,
+    cancel: &AtomicBool,
+    buffer: &mut [Vec3],
+) -> bool {
     let width = scene.width;
     let height = scene.height;
-    let mut buffer = vec![Vec3::ZERO; width as usize * height as usize];
     if samples == 0 || width == 0 || height == 0 {
-        return Some(buffer);
+        return true;
     }
 
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
@@ -371,13 +396,13 @@ pub fn trace_samples_with_gpu_cancellable(
         environment,
     };
     let outcome = if scene_uses_gpu(scene) {
-        gpu.try_accumulate_cancellable(&gpu_scene, first_sample, samples, &mut buffer, cancel)
+        gpu.try_accumulate_cancellable(&gpu_scene, first_sample, samples, buffer, cancel)
     } else {
         GpuAccumulate::Declined
     };
     match outcome {
-        GpuAccumulate::Done => return Some(buffer),
-        GpuAccumulate::Cancelled => return None,
+        GpuAccumulate::Done => return true,
+        GpuAccumulate::Cancelled => return false,
         GpuAccumulate::Declined => {}
     }
 
@@ -389,18 +414,15 @@ pub fn trace_samples_with_gpu_cancellable(
     // `trace_into` returning `false` means `cancel` fired while still queued for CPU
     // permits, before any tracing began, so `buffer` is still all-zero: reporting `None`
     // here is exact, same as the GPU-side `Cancelled` case above.
-    if !trace_into(
+    trace_into(
         scene,
         SampleRange::new(first_sample, samples),
         threads,
         &camera,
         environment,
-        &mut buffer,
+        buffer,
         cancel,
-    ) {
-        return None;
-    }
-    Some(buffer)
+    )
 }
 
 /// The CPU tracing loop itself, adding into an already-sized `buffer` (`width x height`
@@ -454,12 +476,8 @@ fn trace_into(
     let _permits = PermitGuard(num_threads);
 
     let geom = stone_geometry(scene);
-    let planes = geom.planes;
-    let material = &scene.material;
-    let max_bounces = scene.max_bounces;
     // Frosted girdle -- see `resolve_facet_finishes`'s doc comment.
     let facet_finishes = resolve_facet_finishes(scene);
-    let facet_finishes = facet_finishes.as_slice();
     // Built once for this whole `trace_into` call (one sub-batch, potentially many
     // samples x many rows) rather than once per traced sample -- see
     // `trace_spectral_ray_with_finish_soa`'s doc comment: rebuilding this arena per
@@ -467,7 +485,17 @@ fn trace_into(
     // per-sample cost on a 57-plane cut. `planes` is the exact slice this is built from,
     // as that function requires; results stay bit-identical to the rebuild-every-call
     // `trace_spectral_ray_with_finish` this replaces.
-    let plane_soa = build_plane_soa(planes);
+    let plane_soa = build_plane_soa(geom.planes);
+    let tracer = RowTracer {
+        scene,
+        camera,
+        geom,
+        plane_soa: &plane_soa,
+        facet_finishes: facet_finishes.as_slice(),
+        environment,
+        first_sample,
+        samples,
+    };
 
     let rows: Vec<Option<&mut [Vec3]>> = buffer.chunks_mut(width_usize).map(Some).collect();
     let rows = Mutex::new(rows);
@@ -477,7 +505,7 @@ fn trace_into(
         for _ in 0..num_threads {
             let rows = &rows;
             let next_row = &next_row;
-            let plane_soa = &plane_soa;
+            let tracer = &tracer;
 
             s.spawn(move || {
                 loop {
@@ -492,66 +520,94 @@ fn trace_into(
                         .take()
                         .expect("each row index is claimed by exactly one thread via fetch_add");
 
-                    for (x, pixel) in row.iter_mut().enumerate() {
-                        let global_pixel_idx = (y * width_usize + x) as u32;
-                        let mut sample_sum = Vec3::ZERO;
-
-                        // Per-pixel Cranley-Patterson rotations for the stratified
-                        // pixel-jitter/hero-wavelength draws below -- pure functions of
-                        // `global_pixel_idx`, hoisted out of the sample loop. jx/jy/
-                        // hero_rand each use a different prime base (2, 3, 5) rather
-                        // than one base rotated three ways -- measurably better
-                        // variance for the highest-variance pixels this targets.
-                        let rot = pixel_rotations(global_pixel_idx);
-
-                        for s_idx in 0..samples {
-                            let sample_num = first_sample.wrapping_add(s_idx);
-                            // Stratified, a pure function of the absolute sample index
-                            // alone (never batch-relative) -- what lets disjoint worker
-                            // sample ranges compose correctly.
-                            let draws = sample_draws(global_pixel_idx, sample_num, &rot);
-
-                            let ray = camera.generate_ray(
-                                x as f32,
-                                y as f32,
-                                width as f32,
-                                height as f32,
-                                draws.jitter_x,
-                                draws.jitter_y,
-                            );
-
-                            let sample = trace_spectral_ray_with_finish_soa_geom(
-                                ray,
-                                geom,
-                                plane_soa,
-                                facet_finishes,
-                                material,
-                                &scene.fluorescence,
-                                max_bounces,
-                                environment,
-                                draws.seed,
-                                draws.hero_rand,
-                                None,
-                            );
-                            // Defensive: no reachable NaN/Inf producer is known in this
-                            // CPU path, but a single non-finite sample
-                            // summed in would poison this pixel's accumulator
-                            // permanently (NaN propagates through every future `+=`,
-                            // including across later chunks/requests that reuse this
-                            // buffer). Dropped but still counted: the shared rule every
-                            // backend (GUI export, live view, GPU reduction) applies, so
-                            // the client can merge this buffer with theirs.
-                            add_finite_sample(&mut sample_sum, sample);
-                        }
-
-                        *pixel += sample_sum;
-                    }
+                    tracer.trace_row(row, y);
                 }
             });
         }
     });
 
     true
+}
+
+/// What every worker thread of one [`trace_into`] call reads while tracing a row, bundled
+/// so the per-row loop can be its own method.
+struct RowTracer<'a> {
+    scene: &'a SceneState,
+    camera: &'a Camera,
+    geom: StoneGeometry<'a>,
+    /// Built once per `trace_into` call from `geom.planes`, as the tracer requires.
+    plane_soa: &'a indicatrix::simd::PlanesSoA32,
+    facet_finishes: &'a [FacetFinish],
+    environment: EnvironmentSource<'a>,
+    first_sample: u32,
+    samples: u32,
+}
+
+impl RowTracer<'_> {
+    /// Traces every pixel of row `y` over this call's sample range, adding each pixel's
+    /// summed samples into `row`. Rows are independent, so which thread traces which row
+    /// never changes a pixel's sum.
+    fn trace_row(&self, row: &mut [Vec3], y: usize) {
+        let scene = self.scene;
+        let width = scene.width;
+        let height = scene.height;
+        let width_usize = width as usize;
+        for (x, pixel) in row.iter_mut().enumerate() {
+            let global_pixel_idx = u32::try_from(y * width_usize + x)
+                .expect("a pixel index within one frame fits in u32");
+            let mut sample_sum = Vec3::ZERO;
+
+            // Per-pixel Cranley-Patterson rotations for the stratified
+            // pixel-jitter/hero-wavelength draws below -- pure functions of
+            // `global_pixel_idx`, hoisted out of the sample loop. jx/jy/
+            // hero_rand each use a different prime base (2, 3, 5) rather
+            // than one base rotated three ways -- measurably better
+            // variance for the highest-variance pixels this targets.
+            let rot = pixel_rotations(global_pixel_idx);
+
+            for s_idx in 0..self.samples {
+                let abs_sample = self.first_sample.wrapping_add(s_idx);
+                // Stratified, a pure function of the absolute sample index
+                // alone (never batch-relative) -- what lets disjoint worker
+                // sample ranges compose correctly.
+                let draws = sample_draws(global_pixel_idx, abs_sample, &rot);
+
+                let ray = self.camera.generate_ray(
+                    x as f32,
+                    y as f32,
+                    width as f32,
+                    height as f32,
+                    draws.jitter_x,
+                    draws.jitter_y,
+                );
+
+                let sample = trace_spectral_ray_with_finish_soa_geom(
+                    ray,
+                    self.geom,
+                    self.plane_soa,
+                    self.facet_finishes,
+                    &scene.material,
+                    &scene.fluorescence,
+                    scene.max_bounces,
+                    self.environment,
+                    draws.seed,
+                    draws.hero_rand,
+                    None,
+                );
+                // Defensive: no reachable NaN/Inf producer is known in this
+                // CPU path, but a single non-finite sample
+                // summed in would poison this pixel's accumulator
+                // permanently (NaN propagates through every future `+=`,
+                // including across later chunks/requests that reuse this
+                // buffer). Dropped but still counted: the shared rule every
+                // backend (GUI export, live view, GPU reduction) applies, so
+                // the client can merge this buffer with theirs.
+                add_finite_sample(&mut sample_sum, sample);
+            }
+
+            *pixel += sample_sum;
+        }
+    }
 }
 
 #[cfg(test)]

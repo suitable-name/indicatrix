@@ -196,6 +196,11 @@ pub(super) fn traced_size(size: (u32, u32)) -> (u32, u32) {
         return (width, height);
     }
     let scale = f64::from(TRACED_MAX_EDGE) / f64::from(longest);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "edge * scale is a positive value no larger than TRACED_MAX_EDGE, so it fits u32"
+    )]
     let scaled = |edge: u32| ((f64::from(edge) * scale).round() as u32).max(1);
     (scaled(width), scaled(height))
 }
@@ -204,6 +209,11 @@ pub(super) fn traced_size(size: (u32, u32)) -> (u32, u32) {
 /// physical pixels at `scale_factor`, each edge clamped to `[0, 4096]`.
 #[must_use]
 pub(super) fn pixel_size(width: f32, height: f32, scale_factor: f32) -> (u32, u32) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "physical is finite and positive here, and the result is clamped to MAX_SOLID_EDGE"
+    )]
     let edge = |logical: f32| {
         let physical = (logical * scale_factor).round();
         if physical.is_finite() && physical > 0.0 {
@@ -423,23 +433,23 @@ struct TracedSide {
 fn traced_side_pixels(
     side: &SideGeometry,
     pose: CameraPose,
-    size: (u32, u32),
+    frame_size: (u32, u32),
     last_full_estimate: Option<f64>,
 ) -> TracedSide {
     match &side.material {
         Some(material) if !side.stone.planes.is_empty() => {
             let spp = traced_spp_for(TRACED_SPP, !side.stone.tools.is_empty(), last_full_estimate);
             let started = Instant::now();
-            let rgba = render_traced_rgba(&side.stone, material, pose, size, spp);
+            let rgba = render_traced_rgba(&side.stone, material, pose, frame_size, spp);
             let secs = started.elapsed().as_secs_f64();
             TracedSide {
-                pixels: rgba_to_pixels(&rgba, size),
+                pixels: rgba_to_pixels(&rgba, frame_size),
                 spp,
                 full_estimate_secs: Some(secs * f64::from(TRACED_SPP) / f64::from(spp.max(1))),
             }
         }
         _ => TracedSide {
-            pixels: rgba_to_pixels(&placeholder_rgba(size), size),
+            pixels: rgba_to_pixels(&placeholder_rgba(frame_size), frame_size),
             spp: TRACED_SPP,
             full_estimate_secs: None,
         },

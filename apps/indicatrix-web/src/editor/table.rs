@@ -18,6 +18,15 @@
 //! click on a facet in the Solid view all reach the table without those modules knowing
 //! about it -- and immediately after every edit of this module ([`super::edit::finish_edit`]).
 //!
+//! # Flat and concave rows
+//!
+//! The rows are the flat tiers followed by the concave ones (`design.concave_tiers`, a
+//! separate list). A row's id -- `TierRowData::index`, what every callback sends back -- is
+//! its position in that list ([`resolve_row`]), so a concave id is never a valid flat index.
+//! Every action that EDITS a tier goes through [`editable_tier`], which refuses a concave
+//! row with [`CONCAVE_EDIT_REFUSED`]; selecting one only highlights it
+//! ([`set_concave_selected`]).
+//!
 //! # Which masts the rows show
 //!
 //! - a solve of the current design: `tier_items_from_solved`;
@@ -34,14 +43,16 @@ use crate::{
     AppWindow, TierRowData, TierTableModel, WarningLine,
     app::{
         Ctx,
+        push::{MessageKind, show_message},
         solve::is_solving,
         state::{SolveState, WebApp},
     },
 };
+use indicatrix_cut_core::design::TierRef;
 use indicatrix_editor::{
     solve_policy::{SolveCostEstimate, should_solve_synchronously_for},
     view_model::{
-        TierRow,
+        TierRow, TierRowKind,
         rows::{
             manufacturability_warnings_tagged, tier_items, tier_items_from_solved,
             tier_items_stale_with_last_solved,
@@ -54,6 +65,60 @@ use std::{cell::RefCell, collections::BTreeSet, rc::Rc, time::Duration};
 
 /// How often the table checks the app state for changes it did not cause.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+// The row-id helpers are pure and native-tested in `indicatrix_web_core::rows`.
+pub use indicatrix_web_core::rows::{CONCAVE_EDIT_REFUSED, resolve_row, row_id};
+
+/// What row id `raw` names in the app's CURRENT design (the table's own count of flat rows
+/// is not consulted, so this is safe for a selection, which only highlights).
+#[must_use]
+pub fn row_target(ctx: &Ctx, raw: i32) -> Option<TierRef> {
+    let app = ctx.state.borrow();
+    let design = &app.design.as_ref()?.session.design;
+    resolve_row(raw, design.tiers.len(), design.concave_tiers.len())
+}
+
+/// The flat tier row id `raw` names, for an action that EDITS it.
+///
+/// - A flat row: `Some(index)` into `design.tiers`.
+/// - A concave row: shows [`CONCAVE_EDIT_REFUSED`] and returns `None`, so the action never
+///   runs and never touches a flat tier.
+/// - A row id that no longer matches what the table showed (the design changed since the
+///   last push; the next poll rebuilds the rows) or no row at all: `None`, silently.
+///
+/// Call with no `RefCell` borrow of the app held.
+pub fn editable_tier(ctx: &Ctx, raw: i32) -> Option<usize> {
+    let target = {
+        let app = ctx.state.borrow();
+        let design = &app.design.as_ref()?.session.design;
+        let shown = TABLE.with(|cell| cell.borrow().flat_rows);
+        if shown != design.tiers.len() {
+            return None;
+        }
+        resolve_row(raw, shown, design.concave_tiers.len())
+    };
+    match target {
+        Some(TierRef::Flat(index)) => Some(index),
+        Some(TierRef::Concave(_)) => {
+            show_message(ctx, MessageKind::Warning, CONCAVE_EDIT_REFUSED);
+            None
+        }
+        None => None,
+    }
+}
+
+/// The selected concave tier (an index into `design.concave_tiers`), if a concave row is
+/// the selection.
+#[must_use]
+pub fn concave_selected() -> Option<usize> {
+    TABLE.with(|cell| cell.borrow().concave_selected)
+}
+
+/// Makes concave tier `index` (or nothing) the highlighted row. The caller clears the flat
+/// selection; [`sync`] pushes the highlight.
+pub fn set_concave_selected(index: Option<usize>) {
+    TABLE.with(|cell| cell.borrow_mut().concave_selected = index);
+}
 
 /// The tiers whose last solved mast the edits since the last solve made untrustworthy.
 #[derive(Debug, Default)]
@@ -84,6 +149,8 @@ struct RowsKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectionKey {
     selected: Option<usize>,
+    /// The highlighted concave row, when no flat tier is selected.
+    concave: Option<usize>,
     multi: BTreeSet<usize>,
     tiers: usize,
 }
@@ -117,6 +184,12 @@ struct TableState {
     pushed: Option<Snapshot>,
     /// The rows as built (multi-select flags not applied).
     rows: Vec<TierRow>,
+    /// How many of [`Self::rows`] are flat tiers (the rest are concave): a concave row's id
+    /// is this plus its index, see [`resolve_row`].
+    flat_rows: usize,
+    /// The highlighted concave tier. It is never combined with a flat selection:
+    /// [`Self::snapshot`] drops it as soon as one exists.
+    concave_selected: Option<usize>,
     /// `(tier, text)`, tier `-1` for none.
     warnings: Vec<(i32, String)>,
     row_model: Option<Rc<VecModel<TierRowData>>>,
@@ -150,16 +223,25 @@ const fn solve_key(app: &WebApp) -> SolveKey {
 }
 
 impl TableState {
-    fn snapshot(&self, app: &WebApp, solving: bool) -> Snapshot {
-        let (multi, tiers) = app.design.as_ref().map_or_else(
-            || (BTreeSet::new(), 0),
+    fn snapshot(&mut self, app: &WebApp, solving: bool) -> Snapshot {
+        let (multi, tiers, concave_tiers) = app.design.as_ref().map_or_else(
+            || (BTreeSet::new(), 0, 0),
             |d| {
                 (
                     d.session.multi_selected.clone(),
                     d.session.design.tiers.len(),
+                    d.session.design.concave_tiers.len(),
                 )
             },
         );
+        // A flat selection (a click on a facet, an arrow key, ...) or a multi-selection
+        // replaces the concave highlight; so does the concave tier going away.
+        if app.selected_tier.is_some()
+            || !multi.is_empty()
+            || self.concave_selected.is_some_and(|c| c >= concave_tiers)
+        {
+            self.concave_selected = None;
+        }
         Snapshot {
             rows: RowsKey {
                 generation: app.generation(),
@@ -169,6 +251,7 @@ impl TableState {
             },
             selection: SelectionKey {
                 selected: app.selected_tier,
+                concave: self.concave_selected,
                 multi,
                 tiers,
             },
@@ -184,6 +267,15 @@ impl TableState {
 
     /// Rebuilds [`Self::rows`] and [`Self::warnings`] for the app's current state.
     fn rebuild(&mut self, app: &WebApp) {
+        self.rebuild_rows(app);
+        self.flat_rows = self
+            .rows
+            .iter()
+            .filter(|row| row.kind == TierRowKind::Flat)
+            .count();
+    }
+
+    fn rebuild_rows(&mut self, app: &WebApp) {
         let Some(design) = &app.design else {
             self.rows.clear();
             self.warnings.clear();
@@ -244,10 +336,26 @@ fn small_enough_to_resolve(app: &WebApp) -> bool {
     should_solve_synchronously_for(SolveCostEstimate::of(&design.session.design), last)
 }
 
-/// One row as the Slint struct, with the multi-select flag applied.
-fn row_data(row: &TierRow, multi_selected: bool) -> TierRowData {
+/// One row as the Slint struct, with the multi-select flag applied. `flat_count` turns a
+/// concave row's own index into its row id (see [`resolve_row`]).
+fn row_data(row: &TierRow, flat_count: usize, multi_selected: bool) -> TierRowData {
+    let concave = row.kind == TierRowKind::Concave;
+    let tier = usize::try_from(row.index).unwrap_or(usize::MAX);
+    let id = row_id(
+        if concave {
+            TierRef::Concave(tier)
+        } else {
+            TierRef::Flat(tier)
+        },
+        flat_count,
+    )
+    .unwrap_or(row.index);
     TierRowData {
-        index: row.index,
+        index: id,
+        code: row.code.as_str().into(),
+        is_concave: concave,
+        tool_line: row.tool_line.as_str().into(),
+        relation_text: row.relation_text.as_str().into(),
         angle_deg: row.angle_deg.as_str().into(),
         angle_full: row.angle_full.as_str().into(),
         name: row.name.as_str().into(),
@@ -415,18 +523,28 @@ pub fn sync(ctx: &Ctx) {
             let status_changed = before.as_ref().is_none_or(|b| b.status != now.status);
             let push = Push {
                 rows: selection_changed.then(|| {
+                    let flat_rows = table.flat_rows;
                     table
                         .rows
                         .iter()
                         .map(|row| {
                             let index = usize::try_from(row.index).unwrap_or(usize::MAX);
-                            row_data(row, now.selection.multi.contains(&index))
+                            // The multi-selection is a set of flat tiers: a concave row
+                            // shares its index with one of them but is never in it.
+                            let multi = row.kind == TierRowKind::Flat
+                                && now.selection.multi.contains(&index);
+                            row_data(row, flat_rows, multi)
                         })
                         .collect()
                 }),
                 selected: app
                     .selected_tier
                     .and_then(|t| i32::try_from(t).ok())
+                    .or_else(|| {
+                        now.selection
+                            .concave
+                            .and_then(|c| row_id(TierRef::Concave(c), table.flat_rows))
+                    })
                     .unwrap_or(-1),
                 multi_count: i32::try_from(now.selection.multi.len()).unwrap_or(0),
                 status: status_changed.then(|| status_push(&app, solving)),

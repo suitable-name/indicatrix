@@ -196,7 +196,10 @@ fn build_detail(
     let concave_facets = angle_settings_table
         .iter()
         .filter(|a| a.tool.is_some())
-        .map(|a| a.index.split(',').filter(|i| !i.trim().is_empty()).count() as u32)
+        .map(|a| {
+            let placements = a.index.split(',').filter(|i| !i.trim().is_empty()).count();
+            u32::try_from(placements).unwrap_or(u32::MAX)
+        })
         .sum();
     FacetingDiagramDetail {
         page_url: design.page_url.clone(),

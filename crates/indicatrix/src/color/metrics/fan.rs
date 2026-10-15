@@ -42,6 +42,10 @@ thread_local! {
 
 /// The girdle half-width of `planes` in model units, [`FALLBACK_HALF_WIDTH`] when the
 /// design does not measure.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the metrics geometry precision; a stone width in model units is in the normal float range"
+)]
 fn girdle_half_width(planes: &[GpuFacetPlane]) -> f32 {
     let key = hash_planes(planes);
     let cached = LAST_MEASURED

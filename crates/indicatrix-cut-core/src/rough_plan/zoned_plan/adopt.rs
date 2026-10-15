@@ -1,7 +1,7 @@
 //! From the rough's zones to a stone's material.
 //!
-//! The preview material of a planned stone, the custom material "<rough name> colour" an adopted
-//! design gets, and the "relative to stone" scaling of library zoned materials.
+//! The preview material of a planned stone, the custom material "<plan> - <design> color" an
+//! adopted design gets, and the "relative to stone" scaling of library zoned materials.
 //!
 //! # What adopting stores
 //!
@@ -20,12 +20,19 @@ use indicatrix::optics::{
     zoning::{ZoneAbsorption, ZonedAbsorption},
 };
 
-/// The suffix of an adopted material's name.
-pub const ADOPTED_SUFFIX: &str = " colour";
-/// The longest rough name used in a material name (in characters).
-const MAX_ROUGH_NAME_CHARS: usize = 60;
+/// The suffix of an adopted material's name (the name is shown to the user, so it spells
+/// "color").
+pub const ADOPTED_SUFFIX: &str = " color";
+/// The longest rough (plan) name used in a material name (in characters).
+const MAX_ROUGH_NAME_CHARS: usize = 40;
+/// The longest design title used in a material name (in characters).
+const MAX_DESIGN_TITLE_CHARS: usize = 40;
 /// The stem used when the rough has no usable name.
 const DEFAULT_STEM: &str = "Rough";
+/// The stem used when the design has no usable title.
+const DEFAULT_DESIGN_STEM: &str = "design";
+/// What stands between the plan stem and the design stem of an adopted material's name.
+const NAME_SEPARATOR: &str = " - ";
 
 /// Where one planned stone sits: its pose in the rough and how its design relates to the
 /// planner's caliper frame.
@@ -53,25 +60,35 @@ pub fn stone_preview_material(
     Some(host.clone().with_zoning(zoning))
 }
 
-/// The name of the custom material an adopted design gets: `"<rough name> colour"`. The rough
-/// name is trimmed, stripped of control characters and cut to 60 characters; a blank one gives
-/// `"Rough colour"`.
-#[must_use]
-pub fn adopted_material_name(rough_name: &str) -> String {
-    let cleaned: String = rough_name
+/// `text` stripped of control characters, cut to `max_chars` characters and trimmed; `fallback`
+/// when nothing is left.
+fn name_stem(text: &str, max_chars: usize, fallback: &str) -> String {
+    let cleaned: String = text
         .chars()
         .filter(|c| !c.is_control())
-        .take(MAX_ROUGH_NAME_CHARS)
+        .take(max_chars)
         .collect();
     let stem = cleaned.trim();
-    let stem = if stem.is_empty() { DEFAULT_STEM } else { stem };
-    format!("{stem}{ADOPTED_SUFFIX}")
+    String::from(if stem.is_empty() { fallback } else { stem })
+}
+
+/// The name of the custom material an adopted design gets: `"<plan> - <design> color"`.
+///
+/// Two designs adopted from one plan do not replace each other's material. Both stems (the plan's
+/// name and the design's title) are stripped of control characters, cut to 40 characters and
+/// trimmed; a blank plan name gives `"Rough"` and a blank design title `"design"`, so the name
+/// is never empty (`"Rough - design color"` at worst).
+#[must_use]
+pub fn adopted_material_name(rough_name: &str, design_title: &str) -> String {
+    let plan = name_stem(rough_name, MAX_ROUGH_NAME_CHARS, DEFAULT_STEM);
+    let design = name_stem(design_title, MAX_DESIGN_TITLE_CHARS, DEFAULT_DESIGN_STEM);
+    format!("{plan}{NAME_SEPARATOR}{design}{ADOPTED_SUFFIX}")
 }
 
 /// What adopting one planned stone produces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdoptedColour {
-    /// The custom material's name, see [`adopted_material_name`].
+    /// The custom material's name, see [`adopted_material_name`] (`"<plan> - <design> color"`).
     pub material_name: String,
     /// The zones in the stone frame (mm, the design's own model origin and axes); stored in
     /// `material_zoning` with `relative_to_stone = false`.
@@ -86,12 +103,15 @@ pub struct AdoptedColour {
 /// Adopts one planned stone: its zones in the stone frame, the base-zone band rows, the
 /// material name and the real stone width.
 ///
-/// `stone_width_mm` is the stone's girdle width at its planned size
-/// (`DesignHull::width * StonePose::mm_per_unit` for the stone's design). `None` when the
-/// placement is not usable, the zones are invalid, or the width is not positive.
+/// `rough_name` is the plan's name and `design_title` the stone's design's title; they make the
+/// material's name ([`adopted_material_name`]). `stone_width_mm` is the stone's girdle width at
+/// its planned size (the design's axis-aligned width in model units times
+/// `StonePose::mm_per_unit`, which is what the editor's girdle diameter measures). `None` when
+/// the placement is not usable, the zones are invalid, or the width is not positive.
 #[must_use]
 pub fn adopt_colour(
     rough_name: &str,
+    design_title: &str,
     rough_zoned: &ZonedAbsorption,
     placement: &StonePlacement,
     stone_width_mm: f64,
@@ -102,7 +122,7 @@ pub fn adopt_colour(
     let zoning = zones_in_stone_frame(rough_zoned, &placement.pose, &placement.design)?;
     zoning.validate().ok()?;
     Some(AdoptedColour {
-        material_name: adopted_material_name(rough_name),
+        material_name: adopted_material_name(rough_name, design_title),
         base_bands: base_zone_bands(&zoning.base),
         zoning,
         stone_width_mm,

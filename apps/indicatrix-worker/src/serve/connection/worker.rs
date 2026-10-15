@@ -218,18 +218,18 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
     // connection does not forward zones to its joined workers, so it never advertises the
     // bit (a zoning viewer then renders zoned pictures locally). The bit is also only
     // sent back to a viewer that carried it in its own HELLO.
-    #[cfg(feature = "zoning")]
+    #[cfg(feature = "worker")]
     let welcome = Welcome {
         zoning: remote_hello.zoning && ctx.own_lane && ctx.coordinator.is_none(),
         ..welcome
     };
-    #[cfg(not(feature = "zoning"))]
+    #[cfg(not(feature = "worker"))]
     indicatrix_net::messages::write_message(&mut stream, &welcome)?;
-    #[cfg(feature = "zoning")]
+    #[cfg(feature = "worker")]
     indicatrix_net::messages::write_welcome_message(&mut stream, &welcome)?;
 
     // Zones a peer stashes belong to this connection only.
-    #[cfg(feature = "zoning")]
+    #[cfg(feature = "worker")]
     let _zoning_guard = crate::serve::zoning::ConnectionGuard::new();
 
     let session = ctx
@@ -279,7 +279,8 @@ pub fn local_render_capability(gpu: &GpuBackend, threads: usize) -> RenderCapabi
     let _ = gpu.try_recover();
     let backend = gpu.adapter_label().map_or_else(
         || Backend::Cpu {
-            threads: render_core::effective_thread_count(threads) as u32,
+            threads: u32::try_from(render_core::effective_thread_count(threads))
+                .expect("a thread count fits u32"),
         },
         |adapter| Backend::Gpu { adapter },
     );
@@ -421,7 +422,7 @@ fn serve_library_only_connection<S: Read + Write + TimeoutRead>(
             )?,
             ClientMessage::Ping { nonce } => write_pong(stream, nonce)?,
             // A library-only pairing advertised no zoning capability; nothing renders here.
-            #[cfg(feature = "zoning")]
+            #[cfg(feature = "worker")]
             ClientMessage::ZoningPayload(_) => {
                 tracing::debug!("ignoring a ZoningPayload on a library-only pairing");
             }

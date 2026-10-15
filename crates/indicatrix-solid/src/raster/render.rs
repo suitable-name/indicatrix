@@ -246,42 +246,24 @@ impl SolidRasterizer {
         style: &SolidStyle,
     ) {
         let n = verts.len();
-        if n < 3 {
+        let Some((grad_x, grad_y, plane_c)) = fit_inverse_depth_plane(verts) else {
             return;
-        }
-        let (x0, y0, a0) = verts[0];
-        let mut best = (1usize, 2usize);
-        let mut best_area = 0.0f32;
-        for i in 1..n - 1 {
-            let (xi, yi, _) = verts[i];
-            let (xj, yj, _) = verts[i + 1];
-            let area = edge_fn(x0, y0, xi, yi, xj, yj);
-            if area.abs() > best_area.abs() {
-                best_area = area;
-                best = (i, i + 1);
-            }
-        }
-        if best_area.abs() < 1e-8 {
-            return; // Degenerate (zero-area) polygon: nothing to fill.
-        }
-        let (x1, y1, a1) = verts[best.0];
-        let (x2, y2, a2) = verts[best.1];
-        let inv_area = 1.0 / best_area;
-        let (inv_a0, inv_a1, inv_a2) = (1.0 / a0, 1.0 / a1, 1.0 / a2);
-        // Barycentric weights are affine in screen position; gradients follow from
-        // `edge_fn`'s definition.
-        let grad_x =
-            (y1 - y2).mul_add(inv_a0, (y2 - y0).mul_add(inv_a1, (y0 - y1) * inv_a2)) * inv_area;
-        let grad_y =
-            (x2 - x1).mul_add(inv_a0, (x0 - x2).mul_add(inv_a1, (x1 - x0) * inv_a2)) * inv_area;
-        let plane_c = inv_a0 - grad_x.mul_add(x0, grad_y * y0);
+        };
 
         let (mut min_y, mut max_y) = (f32::INFINITY, f32::NEG_INFINITY);
         for &(_, y, _) in verts {
             min_y = min_y.min(y);
             max_y = max_y.max(y);
         }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "clamped to 0.. here; `as` saturates for an off-screen vertex and the empty-range check follows"
+        )]
         let row_start = min_y.floor().max(0.0) as i32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "clamped to at most height-1 here; `as` saturates for an off-screen vertex"
+        )]
         let row_end = max_y.ceil().min((self.height - 1) as f32) as i32;
         if row_start > row_end {
             return; // Polygon's screen bounds miss the frame entirely.
@@ -302,18 +284,19 @@ impl SolidRasterizer {
             255
         };
         let max_px = (self.width - 1) as f32;
+        let facet_pick = u32::try_from(facet_id).expect("a facet id fits u32") + 1;
 
         for py in row_start..=row_end {
             let sy = py as f32 + 0.5;
             let (mut x_left, mut x_right) = (f32::INFINITY, f32::NEG_INFINITY);
             let mut crossings = 0u32;
-            for (i, &(px_a, py_a, _)) in verts.iter().enumerate() {
-                let (px_b, py_b, _) = verts[(i + 1) % n];
-                if (py_a <= sy) == (py_b <= sy) {
+            for (i, &(from_x, from_y, _)) in verts.iter().enumerate() {
+                let (to_x, to_y, _) = verts[(i + 1) % n];
+                if (from_y <= sy) == (to_y <= sy) {
                     continue; // Edge does not straddle this row (half-open).
                 }
-                let t = (sy - py_a) / (py_b - py_a);
-                let x = t.mul_add(px_b - px_a, px_a);
+                let t = (sy - from_y) / (to_y - from_y);
+                let x = t.mul_add(to_x - from_x, from_x);
                 x_left = x_left.min(x);
                 x_right = x_right.max(x);
                 crossings += 1;
@@ -321,12 +304,21 @@ impl SolidRasterizer {
             if crossings < 2 {
                 continue;
             }
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "clamped to 0..=width-1 on one side and bounded by the vertex x on the other; `as` saturates"
+            )]
             let col_start = (x_left - 0.5).ceil().max(0.0) as i32;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "clamped to at most width-1 above; `as` saturates"
+            )]
             let col_end = (x_right - 0.5).floor().min(max_px) as i32;
             if col_start > col_end {
                 continue;
             }
-            let row_base = (py as u32 * self.width) as usize;
+            // `py` is a row index within the frame (>= row_start >= 0).
+            let row_base = (py.cast_unsigned() * self.width) as usize;
             for px in col_start..=col_end {
                 let sx = px as f32 + 0.5;
                 let inv_a = grad_x.mul_add(sx, grad_y.mul_add(sy, plane_c));
@@ -334,10 +326,10 @@ impl SolidRasterizer {
                     continue; // Behind the camera at this pixel -- skip.
                 }
                 let depth = 1.0 / inv_a;
-                let idx = row_base + px as usize;
+                let idx = row_base + px.cast_unsigned() as usize;
                 if depth < self.depth[idx] {
                     self.depth[idx] = depth;
-                    self.pick[idx] = facet_id as u32 + 1;
+                    self.pick[idx] = facet_pick;
                     let stripe = (px + py).rem_euclid(HATCH_PERIOD * 2) < HATCH_PERIOD;
                     let painted = if flagged && stripe {
                         style.hatch_color
@@ -367,7 +359,15 @@ impl SolidRasterizer {
         color: [u8; 3],
         width: i32,
     ) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "screen coordinates; `as` saturates and try_paint_edge_pixel bounds-checks every pixel"
+        )]
         let (x0, y0, a0) = (from.0.round() as i32, from.1.round() as i32, from.2);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "screen coordinates; `as` saturates and try_paint_edge_pixel bounds-checks every pixel"
+        )]
         let (x1, y1, a1) = (to.0.round() as i32, to.1.round() as i32, to.2);
         let dx = (x1 - x0).abs();
         let dy = -(y1 - y0).abs();
@@ -415,10 +415,13 @@ impl SolidRasterizer {
     /// primitive [`Self::draw_edge`]'s Bresenham walk (and its width-2 broadening)
     /// both go through.
     pub(super) fn try_paint_edge_pixel(&mut self, x: i32, y: i32, depth: f32, color: [u8; 3]) {
-        if x < 0 || y < 0 || (x as u32) >= self.width || (y as u32) >= self.height {
+        let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+            return;
+        };
+        if x >= self.width || y >= self.height {
             return;
         }
-        let idx = (y as u32 * self.width + x as u32) as usize;
+        let idx = (y * self.width + x) as usize;
         if depth <= self.depth[idx] + EDGE_DEPTH_BIAS {
             let offset = idx * 4;
             self.color[offset] = color[0];
@@ -544,6 +547,10 @@ fn screen_bounds(pts: &[(f32, f32, f32)]) -> (f32, f32, f32, f32) {
 }
 
 /// Narrows a mesh vertex's `f64` position/normal to the `f32` the camera works in.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the camera's working precision; mesh positions and normals are in the normal float range"
+)]
 pub(super) const fn to_vec3(v: DVec3) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
 }
@@ -588,6 +595,43 @@ pub fn project_point(
         return None;
     }
     project(camera, point.as_dvec3(), width as f32, height as f32)
+}
+
+/// The affine `1 / a` plane `(grad_x, grad_y, plane_c)` fitted through the vertex
+/// triple with the largest screen area, or `None` for fewer than three vertices or a
+/// degenerate (zero-area) polygon.
+fn fit_inverse_depth_plane(verts: &[(f32, f32, f32)]) -> Option<(f32, f32, f32)> {
+    let n = verts.len();
+    if n < 3 {
+        return None;
+    }
+    let (x0, y0, a0) = verts[0];
+    let mut best = (1usize, 2usize);
+    let mut best_area = 0.0f32;
+    for i in 1..n - 1 {
+        let (xi, yi, _) = verts[i];
+        let (xj, yj, _) = verts[i + 1];
+        let area = edge_fn(x0, y0, xi, yi, xj, yj);
+        if area.abs() > best_area.abs() {
+            best_area = area;
+            best = (i, i + 1);
+        }
+    }
+    if best_area.abs() < 1e-8 {
+        return None; // Degenerate (zero-area) polygon: nothing to fill.
+    }
+    let (x1, y1, a1) = verts[best.0];
+    let (x2, y2, a2) = verts[best.1];
+    let inv_area = 1.0 / best_area;
+    let (inv_a0, inv_a1, inv_a2) = (1.0 / a0, 1.0 / a1, 1.0 / a2);
+    // Barycentric weights are affine in screen position; gradients follow from
+    // `edge_fn`'s definition.
+    let grad_x =
+        (y1 - y2).mul_add(inv_a0, (y2 - y0).mul_add(inv_a1, (y0 - y1) * inv_a2)) * inv_area;
+    let grad_y =
+        (x2 - x1).mul_add(inv_a0, (x0 - x2).mul_add(inv_a1, (x1 - x0) * inv_a2)) * inv_area;
+    let plane_c = inv_a0 - grad_x.mul_add(x0, grad_y * y0);
+    Some((grad_x, grad_y, plane_c))
 }
 
 /// Twice the signed area of triangle `(ax,ay)-(bx,by)-(px,py)`: positive when `p`

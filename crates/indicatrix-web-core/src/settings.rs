@@ -40,11 +40,11 @@ use indicatrix_editor::material_lookup::traced_material_for;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    display::{DEFAULT_EXPORT_EDGE, MAX_EXPORT_EDGE},
+    display::{DEFAULT_EXPORT_EDGE, MAX_EXPORT_COLOR_SPACE_INDEX, MAX_EXPORT_EDGE},
     render::{DEFAULT_LIVE_SPP, EXPORT_MAX_SPP, EXPORT_MIN_SPP, LIVE_MAX_SPP, LIVE_MIN_SPP},
     scene::{
-        CameraSpec, DesignMaterialOverrides, FinishSpec, LightingSpec, MaterialOverridesSpec,
-        MaterialSpec, SceneSpec, planes_to_data,
+        CameraSpec, DEFAULT_SURFACE_GLARE, DesignMaterialOverrides, FinishSpec, LightingSpec,
+        MaterialOverridesSpec, MaterialSpec, SceneSpec, planes_to_data,
     },
 };
 
@@ -87,7 +87,7 @@ pub struct ExportSettings {
     pub long_edge: u32,
     /// Samples per pixel (`16..=4096`).
     pub spp: u32,
-    /// `display::EXPORT_COLOR_SPACES` index: 0 sRGB, 1 Display P3.
+    /// `display::EXPORT_COLOR_SPACES` index: 0 sRGB, 1 Display P3, 2 Rec.2020.
     pub color_space: i32,
     /// Denoise before tone mapping (the desktop's export never does, so off).
     pub denoise: bool,
@@ -107,6 +107,10 @@ impl Default for ExportSettings {
 /// The render and view settings. See the module doc comment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the localStorage settings payload; fields are independent switches"
+)]
 pub struct RenderSettings {
     /// The render material's name (a built-in, or a restored custom material); used
     /// while [`Self::link_material`] is off.
@@ -123,6 +127,10 @@ pub struct RenderSettings {
     pub backdrop_index: i32,
     /// Head-shadow radius of the lit presets, degrees (`0..=30`, `0` is off).
     pub head_shadow_deg: f32,
+    /// Surface glare, the scale of the white mirror image of the light on the table
+    /// (`0.0..=1.0`, default `1.0` unscaled; the desktop's `AppSettings::surface_glare`).
+    /// A payload without it loads `1.0`. Ignored while an HDR map lights the scene.
+    pub surface_glare: f32,
     /// Maximum path bounces.
     pub max_bounces: u32,
     /// Live target samples per pixel.
@@ -171,6 +179,7 @@ impl Default for RenderSettings {
             light_pitch_deg: DEFAULT_LIGHT_PITCH_DEG,
             backdrop_index: Backdrop::Grey.index(),
             head_shadow_deg: DEFAULT_HEAD_SHADOW_DEG,
+            surface_glare: DEFAULT_SURFACE_GLARE,
             max_bounces: DEFAULT_MAX_BOUNCES,
             target_spp: DEFAULT_LIVE_SPP,
             camera_yaw: DEFAULT_CAMERA_YAW,
@@ -190,6 +199,33 @@ impl Default for RenderSettings {
             export: ExportSettings::default(),
         }
     }
+}
+
+/// `value` limited to `0.0..=1.0`; NaN means the default `1.0` (the desktop's
+/// `settings::model::clamp_surface_glare`).
+#[must_use]
+pub const fn clamp_surface_glare(value: f32) -> f32 {
+    if value.is_nan() || value >= 1.0 {
+        DEFAULT_SURFACE_GLARE
+    } else if value > 0.0 {
+        value
+    } else {
+        0.0
+    }
+}
+
+/// The slider's percent (`0..=100`) as a glare fraction, snapped to steps of 5 % and
+/// limited to `0.0..=1.0` (NaN means `1.0`), like the desktop's `surface_glare_from_percent`.
+#[must_use]
+pub fn surface_glare_from_percent(percent: f32) -> f32 {
+    clamp_surface_glare((percent / 5.0).round() * 5.0 / 100.0)
+}
+
+/// A glare fraction as the slider's percent (`0.0..=100.0`), like the desktop's
+/// `percent_from_surface_glare`.
+#[must_use]
+pub fn percent_from_surface_glare(glare: f32) -> f32 {
+    clamp_surface_glare(glare) * 100.0
 }
 
 /// `value` when finite, else `fallback`.
@@ -230,7 +266,11 @@ impl RenderSettings {
             finite_or(self.stone_width_mm, 0.0).clamp(STONE_WIDTH_RANGE.0, STONE_WIDTH_RANGE.1);
         self.export.long_edge = self.export.long_edge.clamp(1, MAX_EXPORT_EDGE);
         self.export.spp = self.export.spp.clamp(EXPORT_MIN_SPP, EXPORT_MAX_SPP);
-        self.export.color_space = self.export.color_space.clamp(0, 1);
+        self.export.color_space = self
+            .export
+            .color_space
+            .clamp(0, MAX_EXPORT_COLOR_SPACE_INDEX);
+        self.surface_glare = clamp_surface_glare(self.surface_glare);
         self
     }
 
@@ -280,6 +320,13 @@ impl RenderSettings {
             self.backdrop(),
             self.head_shadow_deg,
         )
+        .with_surface_glare(self.surface_glare)
+    }
+
+    /// The surface-glare slider's percent (`0.0..=100.0`) for these settings.
+    #[must_use]
+    pub fn surface_glare_percent(&self) -> f32 {
+        percent_from_surface_glare(self.surface_glare)
     }
 
     /// The camera these settings hold.
@@ -359,10 +406,15 @@ pub fn render_material(
             if let Some(reason) = unresolved {
                 return Err(reason);
             }
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the render settings' storage precision; a stone width in mm is in the normal float range"
+            )]
+            let stone_width_mm = design.girdle_diameter_mm.unwrap_or(0.0) as f32;
             Ok(RenderMaterial {
                 name,
                 linked_design: Some(DesignMaterialOverrides::from_selection(&design.material)),
-                stone_width_mm: design.girdle_diameter_mm.unwrap_or(0.0) as f32,
+                stone_width_mm,
             })
         }
         _ => Ok(RenderMaterial {
@@ -431,7 +483,11 @@ pub fn auto_solve_budget_index(budget_ms: u32) -> usize {
         .unwrap_or(AUTO_SOLVE_BUDGETS_MS.len() - 1)
 }
 
-/// What `sessionStorage["indicatrix.settings.v1"]` holds.
+/// What `localStorage["indicatrix.settings.v1"]` holds.
+///
+/// `design_name` and `design_unsaved` are legacy fields: a current build keeps them per tab
+/// ([`crate::tab_state::TabState`]) and writes them here empty, but still reads them from an
+/// older payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionPayload {

@@ -38,15 +38,18 @@ pub enum Illuminant {
     /// Short-wave ultraviolet lamp (peak at 254.0 nm, SW UV / mineralogical).
     UvShortWave254,
     /// One of the CIE 15:2018 LED illuminants (tabulated at 5 nm, linearly interpolated, peak
-    /// normalised). Appended last so the earlier variants keep their serialised indices; only
-    /// with the `zoning` feature. See [`LedKind`](super::led::LedKind).
-    #[cfg(feature = "zoning")]
+    /// normalised). Appended last so the earlier variants keep their serialised indices.
+    /// See [`LedKind`](super::led::LedKind).
     Led(super::led::LedKind),
 }
 
 impl Illuminant {
     /// Relative spectral power at wavelength `lambda_nm`.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the tabulated spectra are evaluated in f32; wavelengths are 380..780 nm"
+    )]
     pub fn spectral_power(self, lambda_nm: f64) -> f64 {
         match self {
             Self::D65 => f64::from(d65_relative_spectral_power(lambda_nm as f32)),
@@ -63,7 +66,6 @@ impl Illuminant {
                 let diff = (lambda_nm - 254.0) / SIGMA;
                 (-0.5 * diff * diff).exp()
             }
-            #[cfg(feature = "zoning")]
             Self::Led(kind) => kind.spectral_power(lambda_nm),
         }
     }
@@ -110,6 +112,10 @@ pub fn body_color(alpha_per_mm: impl Fn(f64) -> f64, path_mm: f64, ill: Illumina
 #[expect(
     clippy::option_if_let_else,
     reason = "three-way split: biaxial, uniaxial dichroic, isotropic"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the absorption bands are evaluated in f32; wavelengths are 380..780 nm"
 )]
 pub fn body_colors(tensor: &AbsorptionTensor, path_mm: f64, ill: Illuminant) -> BodyColors {
     let eval_o = |lambda: f64| -> f64 {
@@ -195,7 +201,6 @@ fn body_color_transmittance(t_fn: impl Fn(f64) -> f64, ill: Illuminant) -> BodyC
         // The LED lamps are shown as they are, like D65 and the UV lines: no adaptation. A
         // caller that wants the swatch adapted to the screen uses `body_color_from_spectra`
         // with its own `display_adaptation`.
-        #[cfg(feature = "zoning")]
         Illuminant::Led(_) => None,
     };
     body_color_from_spectra(
@@ -231,6 +236,10 @@ pub fn body_color_from_spectra(
 
     for wavelength_i in 380..=780 {
         let lambda = f64::from(wavelength_i);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the CMF table is evaluated in f32; wavelengths are 380..780 nm"
+        )]
         let cmf = cie_1931_cmf(lambda as f32);
         let s = spd(lambda);
 
@@ -271,10 +280,12 @@ fn display_xyz(xyz: [f64; 3], adaptation: Option<Vec3>) -> [f64; 3] {
     let Some(scale) = adaptation else {
         return xyz;
     };
-    let v = apply_von_kries_white_balance(
-        Vec3::new(xyz[0] as f32, xyz[1] as f32, xyz[2] as f32),
-        scale,
-    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the renderer's white balance works in f32; XYZ values are in the normal float range"
+    )]
+    let adapted_input = Vec3::new(xyz[0] as f32, xyz[1] as f32, xyz[2] as f32);
+    let v = apply_von_kries_white_balance(adapted_input, scale);
     [f64::from(v.x), f64::from(v.y), f64::from(v.z)]
 }
 
@@ -328,6 +339,18 @@ pub fn srgb_to_lab(srgb: [f64; 3]) -> [f64; 3] {
 /// Converts CIE XYZ to sRGB and checks whether it fell out of gamut.
 fn xyz_to_srgb(xyz: [f64; 3]) -> ([u8; 3], bool) {
     const GAMUT_EPS: f32 = 1e-3;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the encoded value is clamped to 0..=1 and scaled by 255, so the rounded value is 0..=255"
+    )]
+    fn to_byte(encoded: f32) -> u8 {
+        (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the colour-space conversion works in f32; XYZ values are in the normal float range"
+    )]
     let v = Vec3::new(xyz[0] as f32, xyz[1] as f32, xyz[2] as f32);
     let raw = ColorSpace::Srgb.xyz_to_linear(v);
     let out_of_gamut = raw.x < -GAMUT_EPS
@@ -338,9 +361,9 @@ fn xyz_to_srgb(xyz: [f64; 3]) -> ([u8; 3], bool) {
         || raw.z > 1.0 + GAMUT_EPS;
 
     let bounded = project_to_gamut_bounded(v, ColorSpace::Srgb, 1.0);
-    let r = (TransferFunction::Srgb.encode(bounded.x).clamp(0.0, 1.0) * 255.0).round() as u8;
-    let g = (TransferFunction::Srgb.encode(bounded.y).clamp(0.0, 1.0) * 255.0).round() as u8;
-    let b = (TransferFunction::Srgb.encode(bounded.z).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let r = to_byte(TransferFunction::Srgb.encode(bounded.x));
+    let g = to_byte(TransferFunction::Srgb.encode(bounded.y));
+    let b = to_byte(TransferFunction::Srgb.encode(bounded.z));
 
     ([r, g, b], out_of_gamut)
 }
@@ -396,8 +419,8 @@ pub fn delta_e_2000_terms(lab1: [f64; 3], lab2: [f64; 3]) -> [f64; 4] {
         if deg < 0.0 { deg + 360.0 } else { deg }
     };
 
-    let delta_l_prime = l2 - l1;
-    let delta_c_prime = c2_prime - c1_prime;
+    let d_lightness = l2 - l1;
+    let d_chroma = c2_prime - c1_prime;
 
     let h_diff = (h2_prime - h1_prime).abs();
     let delta_h_deg = if c1_prime * c2_prime < 1e-12 {
@@ -410,7 +433,7 @@ pub fn delta_e_2000_terms(lab1: [f64; 3], lab2: [f64; 3]) -> [f64; 4] {
         h2_prime - h1_prime + 360.0
     };
 
-    let delta_h_prime = 2.0 * (c1_prime * c2_prime).sqrt() * (delta_h_deg.to_radians() * 0.5).sin();
+    let d_hue = 2.0 * (c1_prime * c2_prime).sqrt() * (delta_h_deg.to_radians() * 0.5).sin();
 
     let l_bar_prime = f64::midpoint(l1, l2);
     let c_bar_prime = f64::midpoint(c1_prime, c2_prime);
@@ -441,9 +464,9 @@ pub fn delta_e_2000_terms(lab1: [f64; 3], lab2: [f64; 3]) -> [f64; 4] {
 
     let r_t = -(2.0 * delta_theta.to_radians()).sin() * r_c;
 
-    let term_l = delta_l_prime / s_l;
-    let term_c = delta_c_prime / s_c;
-    let term_h = delta_h_prime / s_h;
+    let term_l = d_lightness / s_l;
+    let term_c = d_chroma / s_c;
+    let term_h = d_hue / s_h;
 
     [term_l, term_c, term_h, r_t]
 }
@@ -489,6 +512,10 @@ pub fn lab_to_lch(lab: [f64; 3]) -> [f64; 3] {
 #[must_use]
 pub fn body_color_swatches(amplitudes: &[f32; 7], paths_mm: &[f64]) -> Vec<[f32; 3]> {
     let bands = crate::optics::absorption::body_color_bands(*amplitudes);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the absorption bands are evaluated in f32; wavelengths are 380..780 nm"
+    )]
     let alpha = |lambda: f64| -> f64 {
         f64::from(bands.iter().map(|b| b.evaluate(lambda as f32)).sum::<f32>())
     };
@@ -628,6 +655,10 @@ mod tests {
             }
         };
         let col = body_color(alpha, 5.0, Illuminant::Planckian(3200.0));
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the renderer's white balance works in f32; XYZ values are in the normal float range"
+        )]
         let xyz = Vec3::new(col.xyz[0] as f32, col.xyz[1] as f32, col.xyz[2] as f32);
         let adapted = apply_von_kries_white_balance(xyz, compute_illuminant_white_balance(3200.0));
         let (srgb, _) = xyz_to_srgb([

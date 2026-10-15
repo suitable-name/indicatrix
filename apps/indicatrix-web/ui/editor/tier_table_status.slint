@@ -5,7 +5,7 @@ import { GuideModel } from "../models/guide_model.slint";
 import { TableStyle } from "tier_table_style.slint";
 import { TierTableModel } from "tier_table_model.slint";
 
-// The amber "Stale: design changed" chip with a Recompute action (the desktop's
+// The amber "Stale: Design Changed" chip with a Recompute action (the desktop's
 // `stale_badge.slint`): shown while the last solve describes an older design.
 component StaleSolveBadge inherits Rectangle {
     // False while the guided walkthrough locks Solve: Recompute dims and ignores clicks
@@ -25,7 +25,7 @@ component StaleSolveBadge inherits Rectangle {
         padding-bottom: 1px;
         spacing: 6px;
         Text {
-            text: "Stale: design changed";
+            text: "Stale: Design Changed";
             font-size: 9px;
             font-weight: 700;
             color: Theme.accent-amber;

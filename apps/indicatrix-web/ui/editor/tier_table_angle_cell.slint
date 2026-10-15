@@ -33,6 +33,12 @@ export component TierAngleCell inherits Rectangle {
     // False while the guided walkthrough locks the tier table: the value can still be
     // clicked (to select the row) but not edited or nudged.
     in property <bool> editable: true;
+    // What the tooltip says while the cell is not editable (the guide's lock, or a concave
+    // row's note).
+    in property <string> locked-text: GuideModel.locked-hint;
+    // The relation that drives this tier's angle ("P1 - 2"), "" when the angle is free. A
+    // driven angle shows a "=" badge with the relation; typing a number into it is refused.
+    in property <string> relation: "";
     // A plain click on the value: the row selects itself.
     callback picked();
     callback commit(string);
@@ -69,7 +75,10 @@ export component TierAngleCell inherits Rectangle {
         }
     }
 
-    Tooltip { text: root.editable ? @markdown("Click to select this row, double-click to edit. Scroll while editing, or Ctrl+Scroll any time, to nudge 0.1 degrees.") : @markdown("\{GuideModel.locked-hint}"); }
+    Tooltip {
+        text: root.relation != "" ? @markdown("This angle follows the relation = \{root.relation}. Change the tier it follows, or edit the relation in the Tier form.")
+            : (root.editable ? @markdown("Click to select this row, double-click to edit. Scroll while editing, or Ctrl+Scroll any time, to nudge 0.1 degrees.") : @markdown("\{root.locked-text}"));
+    }
 
     area := TouchArea {
         clicked => { root.picked(); }
@@ -95,6 +104,14 @@ export component TierAngleCell inherits Rectangle {
             font-size: 11px;
             font-weight: 600;
             color: Theme.accent-amber;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.relation != "": Text {
+            text: "= " + root.relation;
+            font-size: 9px;
+            font-weight: 600;
+            color: Theme.accent-cyan;
             overflow: elide;
             vertical-alignment: center;
         }

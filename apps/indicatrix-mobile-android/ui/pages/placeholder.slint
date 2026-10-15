@@ -1,0 +1,28 @@
+// A More sub-page that is not built yet: a top bar with Back and an empty state that
+// says what is coming.
+import { EmptyState } from "../shell/empty_state.slint";
+import { TopBar } from "../shell/top_bar.slint";
+
+export component PlaceholderPage inherits Rectangle {
+    in property <string> title;
+    in property <image> icon;
+    in property <string> heading;
+    in property <string> body;
+    callback back-clicked();
+
+    VerticalLayout {
+        TopBar {
+            title: root.title;
+            show-back: true;
+            back-clicked => {
+                root.back-clicked();
+            }
+        }
+
+        EmptyState {
+            icon: root.icon;
+            title: root.heading;
+            body: root.body;
+        }
+    }
+}

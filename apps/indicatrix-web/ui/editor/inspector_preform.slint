@@ -37,27 +37,34 @@ export component PreformTab inherits VerticalLayout {
         current-index <=> InspectorModel.preform-shape-index;
         selected => { InspectorModel.preform-pending = true; }
     }
-    FieldLabel { text: "Half-width (model units, girdle half-width = 1)"; }
+    if InspectorModel.preform-source-note != "": Text {
+        text: InspectorModel.preform-source-note;
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
+    }
+    FieldLabel { text: "Half-Width (Model Units, Girdle Half-Width = 1)"; }
     LineEdit {
         text <=> InspectorModel.preform-half-width;
         edited => { InspectorModel.preform-pending = true; }
         changed has-focus => { AppModel.text-focus = self.has-focus; }
     }
     if InspectorModel.readout.half-width-mm != "": Text { text: InspectorModel.readout.half-width-mm; font-size: 9px; color: Theme.text-muted; }
-    FieldLabel { text: "Length / width (ratio)"; }
+    FieldLabel { text: "Length / Width (Ratio)"; }
     LineEdit {
         text <=> InspectorModel.preform-length-over-width;
         edited => { InspectorModel.preform-pending = true; }
         changed has-focus => { AppModel.text-focus = self.has-focus; }
     }
-    FieldLabel { text: "Depth (model units, girdle half-width = 1)"; }
+    FieldLabel { text: "Depth (Model Units, Girdle Half-Width = 1)"; }
     LineEdit {
         text <=> InspectorModel.preform-depth;
         edited => { InspectorModel.preform-pending = true; }
         changed has-focus => { AppModel.text-focus = self.has-focus; }
     }
     if InspectorModel.readout.depth-mm != "": Text { text: InspectorModel.readout.depth-mm; font-size: 9px; color: Theme.text-muted; }
-    FieldLabel { text: "Girdle Y-offset (mm; positive moves the girdle plane toward the crown)"; }
+    FieldLabel { text: "Girdle Y-Offset (mm; positive moves the girdle plane toward the crown)"; }
     LineEdit {
         text <=> InspectorModel.preform-y-offset-mm;
         edited => { InspectorModel.preform-pending = true; }
@@ -79,21 +86,21 @@ export component PreformTab inherits VerticalLayout {
         text: "Table: " + InspectorModel.readout.table-pct + "    L/W: " + InspectorModel.readout.length-to-width;
         verdict: InspectorModel.verdicts.table;
     }
-    InfoLine { text: "Crown height: " + InspectorModel.readout.crown-height; }
-    InfoLine { text: "Pavilion depth: " + InspectorModel.readout.pavilion-depth; }
+    InfoLine { text: "Crown Height: " + InspectorModel.readout.crown-height; }
+    InfoLine { text: "Pavilion Depth: " + InspectorModel.readout.pavilion-depth; }
     FigureRow {
-        text: "Crown angle (main facet): " + (InspectorModel.verdicts.crown-angle.level >= 0 ? "estimated from schedule" : "-");
+        text: "Crown Angle (Main Facet): " + (InspectorModel.verdicts.crown-angle.level >= 0 ? "estimated from schedule" : "-");
         verdict: InspectorModel.verdicts.crown-angle;
     }
     FigureRow {
-        text: "Pavilion angle (main facet): " + (InspectorModel.verdicts.pavilion-angle.level >= 0 ? "estimated from schedule" : "-");
+        text: "Pavilion Angle (Main Facet): " + (InspectorModel.verdicts.pavilion-angle.level >= 0 ? "estimated from schedule" : "-");
         verdict: InspectorModel.verdicts.pavilion-angle;
     }
     FigureRow {
-        text: "Total depth: " + InspectorModel.readout.total-depth;
+        text: "Total Depth: " + InspectorModel.readout.total-depth;
         verdict: InspectorModel.verdicts.total-depth;
     }
-    InfoLine { text: "Girdle thickness: " + InspectorModel.readout.girdle-thickness; }
+    InfoLine { text: "Girdle Thickness: " + InspectorModel.readout.girdle-thickness; }
     FigureRow {
         text: "C/W: " + InspectorModel.readout.crown-to-width + "    P/W: " + InspectorModel.readout.pavilion-to-width + "    G/W: " + InspectorModel.readout.girdle-to-width;
         verdict: InspectorModel.verdicts.girdle;
@@ -106,14 +113,14 @@ export component PreformTab inherits VerticalLayout {
         text: "Eff. RI " + (DesignSettingsModel.effective-ri-text == "" ? "-" : DesignSettingsModel.effective-ri-text) + ": " + DesignSettingsModel.ri-source-text;
     }
     MaterialGuessBadge {}
-    FieldLabel { text: "Girdle diameter (mm)"; }
+    FieldLabel { text: "Girdle Diameter (mm)"; }
     LineEdit {
         text <=> InspectorModel.girdle-diameter-mm;
         placeholder-text: "unset";
         edited => { InspectorModel.yield-pending = true; }
         changed has-focus => { AppModel.text-focus = self.has-focus; }
     }
-    FieldLabel { text: "Specific gravity override (carat estimate only)"; }
+    FieldLabel { text: "Specific Gravity Override (carat estimate only)"; }
     LineEdit {
         text <=> InspectorModel.specific-gravity-override;
         placeholder-text: "use material default";
@@ -126,9 +133,9 @@ export component PreformTab inherits VerticalLayout {
         primary: InspectorModel.yield-pending;
         clicked => { InspectorModel.apply-yield(); }
     }
-    InfoLine { text: "Volumetric yield: " + (InspectorModel.readout.volumetric-yield == "" ? "-" : InspectorModel.readout.volumetric-yield); }
-    InfoLine { text: "Est. carat weight: " + (InspectorModel.readout.carat-weight == "" ? "-" : InspectorModel.readout.carat-weight); }
-    InfoLine { text: "Specific gravity used: " + (InspectorModel.readout.specific-gravity-used == "" ? "-" : InspectorModel.readout.specific-gravity-used); }
+    InfoLine { text: "Volumetric Yield: " + (InspectorModel.readout.volumetric-yield == "" ? "-" : InspectorModel.readout.volumetric-yield); }
+    InfoLine { text: "Est. Carat Weight: " + (InspectorModel.readout.carat-weight == "" ? "-" : InspectorModel.readout.carat-weight); }
+    InfoLine { text: "Specific Gravity Used: " + (InspectorModel.readout.specific-gravity-used == "" ? "-" : InspectorModel.readout.specific-gravity-used); }
     if InspectorModel.readout.preform-fit-warning != "": Text {
         text: "\u{26A0} " + InspectorModel.readout.preform-fit-warning;
         font-size: 10px;

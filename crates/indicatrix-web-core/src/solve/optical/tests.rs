@@ -115,7 +115,7 @@ fn metrics_equal_the_desktop_call_on_every_template() {
         stone_width_mm: 0.0,
     };
     for (i, template) in TEMPLATES.iter().enumerate() {
-        let design = template_design(i as i32 + 1);
+        let design = template_design(i32::try_from(i).expect("few templates") + 1);
         for name in ["Diamond", "Sapphire"] {
             let material_spec = MaterialSpec {
                 overrides,
@@ -452,7 +452,7 @@ fn the_tilt_sweep_equals_the_four_direct_axis_profiles() {
         .iter()
         .position(|t| t.name == "Simple Teaching Design")
         .expect("the template exists");
-    let design = template_design(template as i32 + 1);
+    let design = template_design(i32::try_from(template).expect("few templates") + 1);
     let with_overrides = MaterialSpec {
         overrides: MaterialOverridesSpec {
             inclusion_sigma_s: 2.0,

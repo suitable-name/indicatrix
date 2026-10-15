@@ -1,5 +1,5 @@
 //! Colour zoning: absorption that changes from place to place inside one stone or rough
-//! (the `zoning` feature; plan 2026-10-09 sections 7.1, 7.2 and 8).
+//! (plan 2026-10-09 sections 7.1, 7.2 and 8).
 //!
 //! A [`ZonedAbsorption`] is a base zone plus up to [`MAX_ZONES`] shaped zones. Each zone has its
 //! own [`AbsorptionTensor`] in per-millimetre units ([`ZoneAbsorption`]). Later zones override
@@ -268,6 +268,10 @@ impl ZoneAbsorption {
     /// Bands are evaluated in `f32`, like the tracer.
     #[must_use]
     pub fn alpha(&self, lambda_nm: f64, mode: Option<&PleochroicMode>) -> f64 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "bands are evaluated in f32 like the tracer; a wavelength in nm is a few hundred"
+        )]
         let lambda = lambda_nm as f32;
         let tensor = &self.tensor;
         let o = spectral_absorption(&tensor.o_ray, lambda);
@@ -305,6 +309,10 @@ impl ZoneAbsorption {
         eigen_b: Vec3,
         c_axis: Vec3,
     ) -> f64 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "bands are evaluated in f32 like the tracer; a wavelength in nm is a few hundred"
+        )]
         let lambda = lambda_nm as f32;
         let tensor = &self.tensor;
         let o = spectral_absorption(&tensor.o_ray, lambda);
@@ -454,7 +462,12 @@ impl ZonedAbsorption {
     pub fn scaled(&self, factor: f64) -> Self {
         let mut out = self.clone();
         out.frame.translation *= factor;
-        out.boundary_softness_mm = (f64::from(self.boundary_softness_mm) * factor) as f32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the softness width is stored as f32 (the GPU precision)"
+        )]
+        let softness = (f64::from(self.boundary_softness_mm) * factor) as f32;
+        out.boundary_softness_mm = softness;
         for zone in &mut out.zones {
             match &mut zone.shape {
                 ZoneShape::HalfSpace { offset, .. } => *offset *= factor,

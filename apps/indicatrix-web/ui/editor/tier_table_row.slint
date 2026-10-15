@@ -11,7 +11,8 @@ import { TierAngleCell } from "tier_table_angle_cell.slint";
 export global Columns {
     out property <length> hash-width: 26px;
     out property <length> warn-width: 16px;
-    out property <length> block-width: 20px;
+    // The code column (P1, G1, C1, T, ...): wide enough for "Culet".
+    out property <length> block-width: 36px;
     out property <length> angle-width: 96px;
     out property <length> name-min: 64px;
     out property <length> indices-min: 64px;
@@ -27,6 +28,12 @@ export global Columns {
     out property <length> move-width: 18px;
     out property <length> dup-width: 20px;
     out property <length> remove-width: 20px;
+}
+
+// The note a concave row's disabled controls and angle cell carry: concave tiers are listed
+// and selectable, but their editing arrives later.
+global ConcaveHint {
+    out property <string> text: "Concave tier -- edited on the desktop for now (click to select this row).";
 }
 
 // A small action chip inside a cell (Adopt, Pin, Detach, Add Anchor, ...). `enabled` is
@@ -84,7 +91,7 @@ export component TierTableRow inherits Rectangle {
     property <bool> problem: root.item.needs-anchor || root.item.strategy == "blocked" || root.item.strategy == "no anchor yet" || root.item.strategy == "FAILED (untrusted)";
     property <bool> visible-in-filter: TierTableModel.filter-text == ""
         || TierTableModel.matches-filter(
-            root.item.name + " " + root.item.indices + " " + root.item.block + " " + root.item.strategy + " " + root.item.constraint-text,
+            root.item.name + " " + root.item.code + " " + root.item.indices + " " + root.item.block + " " + root.item.strategy + " " + root.item.constraint-text + " " + root.item.tool-line,
             TierTableModel.filter-text);
 
     height: TableStyle.row-height;
@@ -138,7 +145,9 @@ export component TierTableRow inherits Rectangle {
             background: root.item.multi-selected ? TableStyle.amber-glow
                 : (root.select-mode && hash-touch.has-hover ? Theme.bg-card-hover : transparent);
             Text {
-                text: root.item.multi-selected ? "\u{2713}" : (root.select-mode ? "\u{25A1}" : (root.item.index + 1));
+                // A concave row has no row number (its id is a table position, not a tier
+                // number) and no multi-select; its code column names it.
+                text: root.item.multi-selected ? "\u{2713}" : (root.select-mode ? "\u{25A1}" : (root.item.is-concave ? "" : (root.item.index + 1)));
                 font-size: 11px;
                 font-weight: root.item.multi-selected ? 700 : 400;
                 color: root.item.multi-selected ? Theme.accent-amber : Theme.text-muted;
@@ -147,7 +156,7 @@ export component TierTableRow inherits Rectangle {
             }
             // In Select mode a click toggles multi-select like Ctrl+click.
             hash-touch := TouchArea {
-                enabled: root.select-mode && root.unlocked;
+                enabled: root.select-mode && root.unlocked && !root.item.is-concave;
                 clicked => { TierTableModel.toggle-multi(root.item.index); }
             }
         }
@@ -167,11 +176,15 @@ export component TierTableRow inherits Rectangle {
             if root.item.warning-text != "": Tooltip { text: @markdown("\{root.item.warning-text}"); }
         }
 
-        // Crown / Pavilion / Girdle, one letter. At exactly 0 degrees the side cannot be
-        // seen from the angle, so a click flips it (sends "0" or "-0").
+        // The tier's code in cutting order (P1, G1, C1, T, Culet; a concave tier's P4, ...),
+        // the label the cutting sheet prints; a row with no code shows its block's one
+        // letter. At exactly 0 degrees the side cannot be seen from the angle, so a click
+        // flips it (sends "0" or "-0"); never for a concave row.
         Rectangle {
-            property <bool> zero-angle: root.item.angle-deg == "0.00" || root.item.angle-deg == "-0.00";
-            property <string> flip-hint: !self.zero-angle ? root.item.block + " facet."
+            property <bool> zero-angle: !root.item.is-concave && (root.item.angle-deg == "0.00" || root.item.angle-deg == "-0.00");
+            property <string> code-text: root.item.code != "" ? root.item.code
+                : (root.item.block == "Crown" ? "C" : (root.item.block == "Pavilion" ? "P" : "G"));
+            property <string> flip-hint: !self.zero-angle ? root.item.block + " facet, " + self.code-text + "."
                 : (root.item.block == "Pavilion"
                     ? "Pavilion facet at 0\u{b0} -- click to flip to Crown."
                     : "Crown facet at 0\u{b0} -- click to flip to Pavilion.");
@@ -179,18 +192,19 @@ export component TierTableRow inherits Rectangle {
             height: 100%;
             background: self.zero-angle && block-touch.has-hover ? Theme.bg-card-hover : transparent;
             Text {
-                text: root.item.block == "Crown" ? "C" : (root.item.block == "Pavilion" ? "P" : "G");
+                text: parent.code-text;
                 font-size: 10px;
                 font-weight: 600;
-                color: Theme.text-muted;
+                color: root.item.is-concave ? Theme.accent-cyan : Theme.text-muted;
                 horizontal-alignment: center;
                 vertical-alignment: center;
+                overflow: elide;
             }
             block-touch := TouchArea {
                 enabled: parent.zero-angle && root.unlocked;
                 clicked => { TierTableModel.flip-block(root.item.index, root.item.block == "Pavilion"); }
             }
-            Tooltip { text: (root.unlocked || !parent.zero-angle) ? @markdown("\{parent.flip-hint}") : @markdown("\{GuideModel.locked-hint}"); }
+            Tooltip { text: (root.unlocked || !parent.zero-angle) ? @markdown("\{parent.flip-hint} The code is the tier's label on the cutting sheet: P is pavilion, G is girdle, C is crown and T is the table, numbered in cutting order.") : @markdown("\{GuideModel.locked-hint}"); }
         }
 
         angle-cell := TierAngleCell {
@@ -201,7 +215,10 @@ export component TierTableRow inherits Rectangle {
             index: root.item.index;
             focus-target: root.inline-edit-target;
             focus-pulse: root.inline-edit-pulse;
-            editable: root.unlocked;
+            // A concave tier's angle is not edited on the web yet.
+            editable: root.unlocked && !root.item.is-concave;
+            locked-text: root.item.is-concave ? ConcaveHint.text : GuideModel.locked-hint;
+            relation: root.item.relation-text;
             picked => {
                 root.request-focus-return();
                 TierTableModel.select-tier(root.item.index);
@@ -211,14 +228,28 @@ export component TierTableRow inherits Rectangle {
             closed => { root.request-focus-return(); }
         }
 
-        Text {
+        // The name; a concave row carries its tool line (tool, theta, displacement, details)
+        // as a small second line under it, and the whole line as the tooltip.
+        Rectangle {
             horizontal-stretch: 1;
             min-width: Columns.name-min;
-            text: root.item.name == "" ? "(unnamed)" : root.item.name;
-            font-size: 11px;
-            color: Theme.text-secondary;
-            overflow: elide;
-            vertical-alignment: center;
+            height: 100%;
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.item.name == "" ? "(unnamed)" : root.item.name;
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                    overflow: elide;
+                }
+                if root.item.is-concave: Text {
+                    text: root.item.tool-line;
+                    font-size: 8px;
+                    color: Theme.text-muted;
+                    overflow: elide;
+                }
+            }
+            if root.item.is-concave && root.item.tool-line != "": Tooltip { text: @markdown("\{root.item.tool-line}"); }
         }
         Text {
             horizontal-stretch: 1;
@@ -235,7 +266,25 @@ export component TierTableRow inherits Rectangle {
         Rectangle {
             width: Columns.meets-width;
             height: 100%;
-            Text {
+            // A concave tier has no meet constraint: its cell carries a "Tool" badge, with
+            // the tool line as the tooltip.
+            if root.item.is-concave: Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: parent.width - 4px;
+                height: 18px;
+                background: Theme.primary-glow;
+                border-radius: 3px;
+                Text {
+                    text: "Tool";
+                    font-size: 9px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                Tooltip { text: @markdown("\{root.item.tool-line}"); }
+            }
+            if !root.item.is-concave: Text {
                 text: root.item.constraint-kind == 2 ? ("\u{1F4CC} " + root.item.constraint-text)
                     : root.item.constraint-kind == 1 ? ("meets " + root.item.constraint-text)
                     : root.item.constraint-kind == 3 ? ("\u{2192} " + root.item.constraint-text + " mm depth")
@@ -307,11 +356,11 @@ export component TierTableRow inherits Rectangle {
                 overflow: elide;
                 vertical-alignment: center;
             }
-            if root.item.orbit-incomplete && !root.item.is-detached: TouchArea {
+            if root.item.orbit-incomplete && !root.item.is-detached && !root.item.is-concave: TouchArea {
                 enabled: root.unlocked;
                 clicked => { TierTableModel.complete-orbit(root.item.index); }
             }
-            if root.item.orbit-incomplete && !root.item.is-detached: Tooltip {
+            if root.item.orbit-incomplete && !root.item.is-detached && !root.item.is-concave: Tooltip {
                 text: root.unlocked ? @markdown("Click to complete this tier's orbit (adds the missing symmetric facets).") : @markdown("\{GuideModel.locked-hint}");
             }
         }
@@ -332,7 +381,7 @@ export component TierTableRow inherits Rectangle {
         // estimate or stale (pinning it would freeze the wrong number).
         Rectangle {
             width: Columns.pin-width;
-            if root.item.constraint-kind != 2 && root.item.constraint-kind < 3 && !root.item.strategy-is-uncertain: CellButton {
+            if !root.item.is-concave && root.item.constraint-kind != 2 && root.item.constraint-kind < 3 && !root.item.strategy-is-uncertain: CellButton {
                 text: "Pin";
                 enabled: root.unlocked;
                 hint: "Pin this tier's current solved mast (" + root.item.mast-full + ") as an exact scale-reference anchor.";
@@ -343,7 +392,7 @@ export component TierTableRow inherits Rectangle {
         // Detach / Reattach the tier's facets from its orbit.
         Rectangle {
             width: Columns.detach-width;
-            if root.item.orbit-status != "": CellButton {
+            if root.item.orbit-status != "" && !root.item.is-concave: CellButton {
                 text: root.item.is-detached ? "Reattach" : "Detach";
                 accent: root.item.is-detached ? Theme.accent-cyan : Theme.text-secondary;
                 font-size: 9px;

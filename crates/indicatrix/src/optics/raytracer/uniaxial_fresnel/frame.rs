@@ -103,6 +103,11 @@ pub(crate) struct QRoots {
 }
 
 #[must_use]
+#[expect(
+    clippy::float_cmp,
+    clippy::similar_names,
+    reason = "n_o == n_e is the exact isotropic limit (a stored zero birefringence); qo/qe and n_o2/n_e2 are the established ordinary/extraordinary names"
+)]
 pub(crate) fn uniaxial_q_roots(
     n_o: f32,
     n_e: f32,
@@ -199,6 +204,10 @@ pub(crate) fn ordinary_mode_fields(
 }
 
 #[must_use]
+#[expect(
+    clippy::similar_names,
+    reason = "n_o2/n_e2 are the established ordinary/extraordinary squared-index names"
+)]
 pub(crate) fn extraordinary_mode_fields(
     n_o: f32,
     n_e: f32,

@@ -25,7 +25,7 @@ pub mod stamp;
 pub mod state;
 pub mod unload;
 
-use crate::{AppWindow, GalleryModel, TemplateCard};
+use crate::AppWindow;
 use slint::{ComponentHandle, Timer};
 use state::WebApp;
 use std::{cell::RefCell, rc::Rc, time::Duration};
@@ -66,18 +66,10 @@ pub fn coalesce_now() -> Duration {
     Duration::from_secs_f64((ms / 1000.0).max(0.0))
 }
 
-/// Fills the New Design gallery from `indicatrix_editor::templates`.
+/// Fills the New Design gallery from `indicatrix_editor::templates::gallery_cards`, in the
+/// dialog's section order (see `editor::new_design::push_cards`).
 fn push_template_cards(ui: &AppWindow) {
-    let cards: Vec<TemplateCard> = indicatrix_editor::templates::template_cards()
-        .into_iter()
-        .map(|card| TemplateCard {
-            name: card.name.into(),
-            shape: card.shape.into(),
-            description: card.description.into(),
-        })
-        .collect();
-    ui.global::<GalleryModel>()
-        .set_templates(Rc::new(slint::VecModel::from(cards)).into());
+    crate::editor::new_design::push_cards(ui);
 }
 
 /// The wasm entry point, run once when the module has instantiated.

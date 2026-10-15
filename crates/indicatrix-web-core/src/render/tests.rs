@@ -97,7 +97,7 @@ fn simulated_workers_recombine_bit_for_bit_against_a_stride_one_trace() {
         let acc = accumulate_via_workers(&scene, workers);
         assert_eq!(
             acc.completed_passes(),
-            PASSES.len() as u32,
+            u32::try_from(PASSES.len()).expect("the pass count fits u32"),
             "{workers} workers"
         );
         assert_eq!(acc.sample_count(), 6);

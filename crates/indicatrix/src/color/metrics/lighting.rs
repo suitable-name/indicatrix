@@ -2,7 +2,7 @@
 //! light source or only the dim surround.
 //!
 //! The test reads the same radiance the tracer lights the image with
-//! ([`sample_studio_environment_with_rig`] for the analytic rigs, the map's own luminance for an
+//! (`sample_studio_environment_with_rig` for the analytic rigs, the map's own luminance for an
 //! HDR panorama), so the lobes that make a facet flash in the render are the lobes that
 //! count as "illuminated" here, and a preset change moves the numbers the way it moves
 //! the picture.
@@ -34,7 +34,8 @@ use super::visibility::head_shadow_cone_cos;
 use crate::{
     optics::{
         raytracer::{
-            EnvironmentSource, LightingModel, LightingPreset, sample_studio_environment_with_rig,
+            EnvironmentSource, LightingModel, LightingPreset,
+            sample_studio_environment_with_rig_spec_power, studio_spec_power,
         },
         studio_rig::StudioRig,
     },
@@ -76,6 +77,9 @@ enum RadianceSource<'a> {
     Studio {
         preset: LightingPreset,
         rig: Box<StudioRig>,
+        /// [`studio_spec_power`] of `preset` at [`PROBE_WAVELENGTH_NM`], evaluated once: it
+        /// is a pure function of the preset, and every exited ray used to recompute it.
+        spec_power: f32,
     },
     /// A loaded HDR panorama.
     Hdr(&'a EnvironmentMap),
@@ -85,13 +89,17 @@ impl RadianceSource<'_> {
     /// The radiance seen along unit direction `dir`.
     fn radiance(&self, dir: Vec3) -> f32 {
         match self {
-            Self::Studio { preset, rig } => sample_studio_environment_with_rig(
+            Self::Studio {
+                preset,
+                rig,
+                spec_power,
+            } => sample_studio_environment_with_rig_spec_power(
                 dir,
-                PROBE_WAVELENGTH_NM,
                 *preset,
                 PROBE_EXPOSURE,
                 rig,
                 Vec3::ZERO,
+                *spec_power,
             ),
             Self::Hdr(map) => {
                 let [r, g, b] = map.radiance_rgb(dir);
@@ -166,6 +174,7 @@ impl<'a> ExitLighting<'a> {
                     RadianceSource::Studio {
                         preset,
                         rig: Box::new(StudioRig::new(light_yaw, light_pitch)),
+                        spec_power: studio_spec_power(preset, PROBE_WAVELENGTH_NM),
                     },
                     // Only the Studio rigs have pinpoint sources; every other model (tent,
                     // dome, ISO hemisphere, and any later one) scores "light return".
@@ -325,20 +334,22 @@ mod tests {
     #[test]
     fn a_studio_rig_keeps_the_pinpoint_rule() {
         let rig = StudioRig::new(YAW, PITCH);
-        let ring = lighting(LightingPreset::RingLights);
+        let ring_lights = lighting(LightingPreset::RingLights);
         assert!(
-            ring.is_illuminated(rig.key_dir),
+            ring_lights.is_illuminated(rig.key_dir),
             "the key softbox is a source"
         );
         assert!(
-            !ring.is_illuminated(-Vec3::Y),
+            !ring_lights.is_illuminated(-Vec3::Y),
             "the backdrop is not a source"
         );
         // The threshold is the 4x pinpoint one, not the 0.5x lit-environment one.
-        let ambient = ambient_level(&ring.source);
+        let ambient = ambient_level(&ring_lights.source);
         assert!(
-            ambient.mul_add(-SOURCE_OVER_AMBIENT, ring.threshold).abs()
-                <= f32::EPSILON * ring.threshold
+            ambient
+                .mul_add(-SOURCE_OVER_AMBIENT, ring_lights.threshold)
+                .abs()
+                <= f32::EPSILON * ring_lights.threshold
         );
     }
 }

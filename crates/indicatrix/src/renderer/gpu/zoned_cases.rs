@@ -1,4 +1,4 @@
-//! The zoned stones the GPU checks render (`zoning` feature only).
+//! The zoned stones the GPU checks render.
 //!
 //! One fixture list shared by the Tier 3 statistical image comparisons
 //! (`estimator_check::run_image_comparison_zoned`), the GPU harness and the `gpu_backend`
@@ -132,6 +132,29 @@ fn bicolour(softness_mm: f32) -> ZonedAbsorption {
     )
 }
 
+/// The bicolour fixture written the other way round.
+///
+/// The BLUE band is the base and the RED band is the override on the `-X` half space. Physically
+/// the same stone as
+/// [`ZonedImageCase::Bicolour`] (red for `x < 0`, blue for `x > 0`), so a renderer that handles
+/// zone-crossing segments consistently renders both identically.
+#[must_use]
+pub fn mirrored_bicolour_material() -> GemMaterial {
+    GemMaterial::diamond()
+        .with_zoning(zoned(
+            blue_absorbing(),
+            vec![Zone {
+                shape: ZoneShape::HalfSpace {
+                    normal: -DVec3::X,
+                    offset: 0.0,
+                },
+                absorption: red_absorbing(),
+            }],
+            0.0,
+        ))
+        .with_absorption_path_scale(ZONED_PATH_SCALE)
+}
+
 fn watermelon(softness_mm: f32) -> ZonedAbsorption {
     zoned(
         green_absorbing(),
@@ -224,5 +247,13 @@ mod tests {
             assert_eq!(zoning.validate(), Ok(()), "{}", case.label());
             assert!(material.gpu_supported(), "{}", case.label());
         }
+    }
+
+    #[test]
+    fn the_mirrored_bicolour_is_valid_and_gpu_renderable() {
+        let material = mirrored_bicolour_material();
+        let zoning = material.zoning.as_ref().expect("zoned");
+        assert_eq!(zoning.validate(), Ok(()));
+        assert!(material.gpu_supported());
     }
 }

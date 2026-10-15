@@ -450,13 +450,19 @@ pub fn plan_sweep(
     // The count is worked out in floating point first: a tiny step over a wide range
     // must be refused before anything is allocated.
     let grid_count = ((high - low) / range.step_deg + 1e-9).floor() + 1.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "grid_count is a floored count >= 1 (high >= low, step > 0); `as` saturates for an absurd count, which the cap below refuses"
+    )]
+    let grid_steps = grid_count as usize;
     if grid_count >= (MAX_SWEEP_STEPS + 1) as f64 {
         return Err(SweepError::TooManySteps {
-            steps: grid_count as usize,
+            steps: grid_steps,
             max: MAX_SWEEP_STEPS,
         });
     }
-    let mut magnitudes: Vec<f64> = (0..grid_count as usize)
+    let mut magnitudes: Vec<f64> = (0..grid_steps)
         .map(|k| snap_noise((k as f64).mul_add(range.step_deg, low)))
         .collect();
     let current_row = if let Some(found) = magnitudes

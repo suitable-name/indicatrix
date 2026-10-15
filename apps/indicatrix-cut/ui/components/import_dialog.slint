@@ -109,9 +109,12 @@ export component ImportDialog inherits PopupWindow {
 
         // Escape closes the panel (an import in progress carries on in the background, so
         // closing never loses work), and Tab moves between the buttons below.
+        // The panel takes the keyboard as it is built (as the filter panel does), so Esc
+        // reaches it without a click first.
         FocusScope {
             width: 100%;
             height: 100%;
+            init => { self.focus(); }
             key-pressed(event) => {
                 if event.text == Key.Escape {
                     root.close();
@@ -128,7 +131,7 @@ export component ImportDialog inherits PopupWindow {
                 spacing: 6px;
                 Text {
                     horizontal-stretch: 1;
-                    text: "Import designs";
+                    text: "Import Designs";
                     font-size: 14px;
                     font-weight: 700;
                     color: Theme.text-primary;
@@ -177,7 +180,7 @@ export component ImportDialog inherits PopupWindow {
             // the order the user actually needs to use them, rather than next to
             // "Choose folder..." where it would read as a same-click option.
             ToggleRow {
-                text: "Include subfolders (set this first)";
+                text: "Include Subfolders (Set This First)";
                 hint: "Also import the designs in the folders inside the one you pick. Turn this on BEFORE you press Choose folder, because the import starts as soon as you pick.";
                 label_color: root.importing ? Theme.text-muted : Theme.text-secondary;
                 checked: root.recurse_subfolders;
@@ -188,14 +191,14 @@ export component ImportDialog inherits PopupWindow {
             HorizontalLayout {
                 spacing: 6px;
                 TipButton {
-                    text: "Choose file...";
+                    text: "Choose File...";
                     hint: "Pick one .asc, .gem or .gcs file. It is imported as soon as you pick it.";
                     icon: @image-url("../icons/page.svg");
                     enabled: !root.importing;
                     clicked => { root.pick_asc_file(); }
                 }
                 TipButton {
-                    text: "Choose folder...";
+                    text: "Choose Folder...";
                     hint: "Pick a folder. Every .asc, .gem and .gcs file in it is imported as soon as you pick it.";
                     icon: @image-url("../icons/folder.svg");
                     enabled: !root.importing;
@@ -244,7 +247,7 @@ export component ImportDialog inherits PopupWindow {
                         border-color: Theme.border-dialog;
                         clip: true;
                         accessible-role: AccessibleRole.progress-indicator;
-                        accessible-label: "Import progress";
+                        accessible-label: "Import Progress";
                         accessible-value: Math.round(root.import_progress * 100) + " percent";
 
                         Rectangle {

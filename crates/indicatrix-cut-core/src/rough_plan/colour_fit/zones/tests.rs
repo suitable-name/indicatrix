@@ -320,7 +320,7 @@ fn the_role_beyond_gives_a_tube_wall() {
     .expect("a tube");
     match fit.shape {
         ZoneShape::CoaxialCylinder { r_in, r_out, .. } => {
-            assert!((r_in - 2.0).abs() < 0.05 && r_out == 5.0);
+            assert!((r_in - 2.0).abs() < 0.05 && (r_out - 5.0).abs() < 1e-12);
         }
         other => panic!("not a cylinder: {other:?}"),
     }
@@ -351,7 +351,7 @@ fn prism_points(
     let half_side = apothem * (PI / f64::from(sides)).tan() * 0.95;
     (0..count)
         .map(|i| {
-            let k = (i as u32) % sides;
+            let k = u32::try_from(i).expect("test point counts fit in u32") % sides;
             let theta = phase + TAU * f64::from(k) / f64::from(sides);
             let normal = u * theta.cos() + v * theta.sin();
             let tangent = -u * theta.sin() + v * theta.cos();

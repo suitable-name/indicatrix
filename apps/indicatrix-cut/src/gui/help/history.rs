@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn the_trail_keeps_only_the_latest_places() {
         let mut trail = Trail::default();
-        for place in 0..(LIMIT as u32 + 20) {
+        for place in 0..(u32::try_from(LIMIT).expect("the trail limit fits u32") + 20) {
             trail.visit(place);
         }
         let mut steps = 0;

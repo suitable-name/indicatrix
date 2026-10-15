@@ -27,7 +27,7 @@ fn after_both_changes(ctx: &GoalContext<'_>) -> bool {
 fn history() -> Guide {
     Guide::new(
         "solving-history",
-        "History panel and jumping",
+        "History Panel and Jumping",
         "Read the list of every change, go back to any step in one click, and come forward again.",
         GuideCategory::Optimizing,
     )
@@ -172,7 +172,7 @@ fn variants() -> Guide {
             "Click History, the last tab at the top of the inspector below the tier table.",
             "Click Variants at the top of the tab. If the tab already shows Variants, click Steps and then Variants again.",
         ])
-        .check("the tab shows a Save as variant... button.")
+        .check("the tab shows a Save as Variant... button.")
         .why("Variants are kept in your library on this computer, under the design's id, and not in the design file. A design file you send to someone does not carry them.")
         .goal(
             Goal::All(vec![
@@ -190,7 +190,7 @@ fn variants() -> Guide {
             "Keep the design as it is now.",
         )
         .actions([
-            "Click Save as variant...",
+            "Click Save as Variant...",
             "Leave the name as Variant 1, or type one you will recognise. A note is optional.",
             "Click Save, or press Enter.",
         ])
@@ -220,7 +220,7 @@ fn variants() -> Guide {
             "Keep this version too.",
         )
         .actions([
-            "Click Save as variant... again, name it Steeper crown, and click Save.",
+            "Click Save as Variant... again, name it Steeper crown, and click Save.",
         ])
         .check("two rows. The newest one is at the top, and under its name it says it was made from the first.")
         .why("When you open or save a variant, the program remembers it as the one the design came from. The next variant you save is marked from: that one, so a run of saves reads as a chain, and saving after opening an older one starts a second branch.")
@@ -263,9 +263,9 @@ fn variants() -> Guide {
             "Look at two versions next to each other.",
         )
         .actions([
-            "Under Compare two designs, pick Variant 1 in the first box and Current design in the second.",
-            "Click Compare pictures. The compare window opens with the first design on the left and the second on the right.",
-            "In the Advanced interface, Compare text shows the cutting instructions of the two designs line by line instead. Lines only in the second design are marked added, lines only in the first removed, and long runs of unchanged lines are folded into one row. Back to variants, or Esc, returns to the list.",
+            "Under Compare Two Designs, pick Variant 1 in the first box and Current Design in the second.",
+            "Click Compare Pictures. The compare window opens with the first design on the left and the second on the right.",
+            "In the Advanced interface, Compare Text shows the cutting instructions of the two designs line by line instead. Lines only in the second design are marked added, lines only in the first removed, and long runs of unchanged lines are folded into one row. Back to Variants, or Esc, returns to the list.",
         ])
         .check("the compare window, or the line-by-line list.")
         .why("This comparison only looks: it has no Keep or Discard. To go to a variant, use Open on its row. The text holds the cutting instructions only, so a different rough, girdle size or material shows in the pictures, not in the text.")
@@ -345,7 +345,7 @@ fn snapshot_compare() -> Guide {
             "The compare window shows what the stone looks like before and after.",
         )
         .actions([
-            "Click Compare again, then Compare visually... at the bottom of the table.",
+            "Click Compare again, then Compare Visually... at the bottom of the table.",
             "The compare window opens: a separate window you can move and resize.",
         ])
         .check("a window with the snapshot on the left and the design now on the right.")
@@ -359,10 +359,10 @@ fn snapshot_compare() -> Guide {
             "Close the compare window and the table when you have looked.",
         )
         .actions([
-            "Side by side shows the two stones next to each other. Split slider shows one stone with a draggable divider, the before design to its left and the after design to its right. Dragging turns both stones together, the mouse wheel zooms both and a double-click resets them.",
+            "Side by Side shows the two stones next to each other. Split Slider shows one stone with a draggable divider, the before design to its left and the after design to its right. Dragging turns both stones together, the mouse wheel zooms both and a double-click resets them.",
             "Solid is the flat grey view. Traced runs the path tracer at a modest fixed quality in each side's own material and starts once you stop turning the stone.",
             "Under the stones, a small table gives brilliance, windowing, extinction, fire and scintillation for both, with the change and the word better, worse or same. The figures are measured table up, in each side's own material, under the lighting chosen in the viewport when you opened Compare.",
-            "A snapshot comparison only offers Close. Keep after and Discard belong to the Retarget and Optimize comparisons.",
+            "A snapshot comparison only offers Close. Keep After and Discard belong to the Retarget and Optimize comparisons.",
         ])
         .why("A change smaller than a threshold, 2 points for brilliance, windowing and extinction, reads same: two stones are never measured to the last digit.")
         .allow(TOOLS_EDIT),
@@ -398,8 +398,8 @@ fn raw_text() -> Guide {
             "The box holds the design's cutting instructions as .asc text, the same text Export Edited .asc writes. Each tier is one line that starts with a, then its angle and its depth, with its name after n. A space in a name is written as an underscore.",
             "Find the line that contains Crown_Main. Change its angle, the first number after the a, from 34.5 to 36.",
             "Wait a moment. One sentence under the box says whether the text can be used, and lists what Apply would change.",
-            "Click Compare with..., then Snapshot. The box is laid against the snapshot line by line. Your changed line is marked added, the old one removed, and long runs of unchanged lines are folded into one row.",
-            "Click Back to the text, then click Apply. The dialog closes.",
+            "Click Compare With..., then Snapshot. The box is laid against the snapshot line by line. Your changed line is marked added, the old one removed, and long runs of unchanged lines are folded into one row.",
+            "Click Back to the Text, then click Apply. The dialog closes.",
         ])
         .check("Crown Main reads 36.00 in the tier table.")
         .why("Apply is one undo step. Tiers are matched by name, so a tier you keep keeps its note, offset, target and relation. The text never holds the preform, the material or the girdle size, and Apply never changes them. Revert writes the text again from the design, and closing with edits that were not applied asks first.")
@@ -432,7 +432,7 @@ fn raw_text() -> Guide {
             "Two more things the dialog does.",
         )
         .actions([
-            "Compare with... > Saved file on disk lays the text against the .indicatrix file the design was last opened from or saved to. A design that was never saved says it has nothing to compare with, and a design from a plain .asc compares with that file's text.",
+            "Compare With... > Saved File on Disk lays the text against the .isdd file the design was last opened from or saved to. A design that was never saved says it has nothing to compare with, and a design from a plain .asc compares with that file's text.",
             "A line under the intro, starting Not in this text, names what an .asc file cannot hold for this design: tier notes, cheater offsets, depth and width targets, tier relations, concave tiers, and always the preform, the material and the girdle size.",
             "If the design does not solve, the dialog says so instead of showing depths that are not real. Fix the design first.",
         ])

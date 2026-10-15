@@ -1,4 +1,4 @@
-//! The descriptive `[meta]` table of a `.indicatrix` design file as the browser app
+//! The descriptive `[meta]` table of an `.isdd` design file as the browser app
 //! handles it: kept from the opened file, stamped on save, written back unchanged.
 //!
 //! The file codec reads no clock and generates no randomness, so the page supplies both:
@@ -20,7 +20,12 @@ pub fn iso8601_utc_from_epoch_ms(epoch_ms: f64) -> String {
     let seconds = if epoch_ms.is_finite() {
         // Saturating float-to-int conversion; dates outside the representable range are
         // not a case a browser clock produces.
-        (epoch_ms / 1000.0).floor() as i64
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "saturating float-to-int cast; a browser clock stays far inside the i64 range"
+        )]
+        let whole_seconds = (epoch_ms / 1000.0).floor() as i64;
+        whole_seconds
     } else {
         0
     };

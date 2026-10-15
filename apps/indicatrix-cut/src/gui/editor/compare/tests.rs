@@ -864,7 +864,7 @@ fn the_before_side_is_the_original_when_picked_and_the_live_design_otherwise() {
 
     let (design, label, offer) = pick_before(&current, held(), Reference::Current);
     assert_eq!(design, current);
-    assert_eq!(label, "Current design");
+    assert_eq!(label, "Current Design");
     assert_eq!(
         offer.original_label.as_deref(),
         Some("Before retarget to Sapphire")
@@ -882,10 +882,10 @@ fn the_picker_is_hidden_and_falls_back_to_current_when_no_original_is_held() {
     let current = round_brilliant();
     let (design, label, offer) = pick_before(&current, None, Reference::Original);
     assert_eq!(design, current);
-    assert_eq!(label, "Current design");
+    assert_eq!(label, "Current Design");
     assert!(offer.original_label.is_none());
     assert_eq!(
         reference_options(&offer),
-        vec!["Current design".to_string()]
+        vec!["Current Design".to_string()]
     );
 }

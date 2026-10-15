@@ -14,10 +14,10 @@
 # Normalisation: the CIE does not normalise the columns to a common value (each is relative);
 #   `Illuminant::Led` therefore divides each curve by its own maximum when asked for spectral
 #   power, and colorimetry divides by the Y of the white anyway.
-# Retrieval note: transcribed through WebFetch (the page text was processed by a language model),
-#   not a byte-exact download. `data/cie_illum_leds_5nm.csv` is cross-checked by the tests in
-#   `color::led` (chromaticity against the published CCT); compare against the CIE file's MD5
-#   rows if exactness matters.
+# Verification: checked on 2026-10-12 against the downloaded CIE file (`CIE_illum_LEDs_1nm.csv`
+#   beside this file, MD5 matches the published one): all 729 values here are byte-identical to
+#   its rows at 5 nm. `color::led::tests::columns_match_the_cie_1nm_file` pins each column's sum
+#   and three interior values; `chromaticity_matches_the_published_cct` checks the CCTs.
 #
 # Columns: wavelength_nm, LED-B1, LED-B2, LED-B3, LED-B4, LED-B5, LED-BH1, LED-RGB1, LED-V1, LED-V2
 380,0.00274889500126459,0.00102127392292205,0.00191857784345128,0.000664693256821035,0.00282533646661051,0.0031204616744593,0.0010212459469473,0.00725257255802118,0.0130887918150576

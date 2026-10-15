@@ -11,11 +11,11 @@ use crate::{
     LibraryModel, MainWindow,
     bridge::library::source::LibrarySource,
     gui::library::{
-        diagram_list::{apply_attribute_range_bounds_preserving_filters, fetch_attribute_ranges},
+        diagram_list::apply_attribute_range_bounds_preserving_filters,
         search::{
             DisplaySearchOptions, apply_diagram_list_to_ui, bump_search_seq,
-            fetch_diagram_list_with_options, is_current_search, read_id_filter, read_local_only,
-            read_range_filter, read_sort_order, read_tag_filter,
+            fetch_list_and_ranges_with_own_connection, is_current_search, read_id_filter,
+            read_local_only, read_range_filter, read_sort_order, read_tag_filter,
         },
     },
 };
@@ -41,8 +41,8 @@ use tracing::warn;
 /// showing remote results rather than silently switching to local ones after a
 /// local-only write.
 ///
-/// The LOCAL path itself runs the two `Database` reads (`fetch_attribute_ranges`,
-/// `fetch_diagram_list`) on a background thread and only marshals the resulting
+/// The LOCAL path itself runs the two `Database` reads (attribute ranges, list query)
+/// on a background thread, over its own read-only connection, and only marshals the resulting
 /// `ui.set_*` calls back through `upgrade_in_event_loop` -- unlike every OTHER caller
 /// of those same reads (a search-box keystroke, a filter-slider drag), which stay
 /// synchronous because that responsiveness is the point. This call site is different:
@@ -70,14 +70,16 @@ pub fn refresh_after_library_change(
             // than threading it through `spawn_local_refresh`'s worker thread.
             crate::gui::library::diagram_list::sync_tag_vocabulary_to_ui(ui, db);
             let search = ui.global::<LibraryModel>().get_search_text().to_string();
-            let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
+            let shape_idx = usize::try_from(ui.global::<LibraryModel>().get_selected_shape_index())
+                .unwrap_or(usize::MAX);
             let shape = ui
                 .global::<LibraryModel>()
                 .get_shape_options()
                 .row_data(shape_idx)
                 .unwrap_or_default()
                 .to_string();
-            let gear_idx = ui.global::<LibraryModel>().get_selected_gear_index() as usize;
+            let gear_idx = usize::try_from(ui.global::<LibraryModel>().get_selected_gear_index())
+                .unwrap_or(usize::MAX);
             let gear = ui
                 .global::<LibraryModel>()
                 .get_gear_options()
@@ -111,13 +113,15 @@ pub fn refresh_after_library_change(
         }
         LibrarySource::Remote(_) => {
             let search = ui.global::<LibraryModel>().get_search_text();
-            let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
+            let shape_idx = usize::try_from(ui.global::<LibraryModel>().get_selected_shape_index())
+                .unwrap_or(usize::MAX);
             let shape = ui
                 .global::<LibraryModel>()
                 .get_shape_options()
                 .row_data(shape_idx)
                 .unwrap_or_default();
-            let gear_idx = ui.global::<LibraryModel>().get_selected_gear_index() as usize;
+            let gear_idx = usize::try_from(ui.global::<LibraryModel>().get_selected_gear_index())
+                .unwrap_or(usize::MAX);
             let gear = ui
                 .global::<LibraryModel>()
                 .get_gear_options()
@@ -130,7 +134,7 @@ pub fn refresh_after_library_change(
     }
 }
 
-/// Runs [`fetch_attribute_ranges`] + [`fetch_diagram_list`] on their own worker
+/// Runs the attribute-range read + the list query on their own worker
 /// thread and applies both results in one hop back onto the UI thread -- the
 /// background half of [`refresh_after_library_change`]'s `LibrarySource::Local`
 /// branch; see that function's own doc comment for why this one call site needs to be
@@ -156,8 +160,7 @@ struct DiagramListQuery {
 }
 
 /// A keystroke/filter change that lands while this background refresh is
-/// still in flight takes the FAST synchronous path (`refresh_diagram_list`) and
-/// displays first; without the [`crate::gui::library::search::is_current_search`]
+/// still in flight (`refresh_diagram_list`) bumps the sequence and may display first; without the [`crate::gui::library::search::is_current_search`]
 /// check below, this closure's own (now-stale) results would then land right on top
 /// of it moments later, silently reverting the list to the OLD search text/filters.
 fn spawn_local_refresh(
@@ -167,8 +170,9 @@ fn spawn_local_refresh(
 ) {
     thread::spawn(move || {
         let seq = query.seq;
-        let ranges = fetch_attribute_ranges(&db);
-        let list_result = fetch_diagram_list_with_options(
+        // One dedicated read-only connection for both reads: this worker no longer holds
+        // the shared `Mutex<Database>` for the whole fetch (DB-1).
+        let (ranges, list_result) = fetch_list_and_ranges_with_own_connection(
             &db,
             &query.search,
             &query.shape,

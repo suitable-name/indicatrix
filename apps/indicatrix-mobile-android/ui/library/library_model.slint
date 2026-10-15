@@ -1,0 +1,150 @@
+// The data and callbacks between Rust and the Library destination. Rust -> Slint is
+// properties, Slint -> Rust is callbacks. A global is visible to Rust only if
+// `app.slint`'s `export { ... }` names it (and the two structs below, which Rust fills).
+//
+// Cards are addressed by their row index in `cards`; Rust maps the index back to the
+// library entry. Option lists carry an "Any" entry at index 0 where a choice can be
+// cleared; the matching `*-index` property says which entry is chosen.
+
+// One design of the library as a card or a list row.
+export struct LibraryCardData {
+    title: string,
+    designer: string,
+    // "Round · 96 · 57 Facets".
+    subtitle: string,
+    // At most three tags.
+    tags: [string],
+    thumb: image,
+    has-thumb: bool,
+    selected: bool,
+    mine: bool,
+    ignored: bool,
+}
+
+// One toggle chip of the tag sheet.
+export struct TagChipData {
+    text: string,
+    on: bool,
+}
+
+export global LibraryModel {
+    // The cards of the loaded pages, in sort order.
+    in property <[LibraryCardData]> cards;
+    // The number of designs that match the search and the filters (more than `cards`
+    // while pages are still to come).
+    in property <int> count: 0;
+    // True once the library database is open.
+    in property <bool> opened: false;
+    // A search is running.
+    in property <bool> loading: false;
+    // An import or another long write is running; the text names it.
+    in property <bool> busy: false;
+    in property <string> busy-text: "";
+    // Why the library could not be opened; empty when it can.
+    in property <string> error: "";
+    // 0 there is something to show, 1 the library has no designs, 2 nothing matches.
+    in property <int> empty-kind: 0;
+    // Bumped when the list restarts from the top (a new search, filter or sort).
+    in property <int> scroll-token: 0;
+
+    // List preferences (stored in the settings).
+    in property <bool> list-mode: false;
+    // 0 Catalogue Order, 1 Title, 2 Newest, 3 Recently Edited.
+    in property <int> sort: 0;
+
+    // The search box.
+    in-out property <string> query-text: "";
+
+    // Filters. The option lists start with "Any" (except `tag-options`).
+    in property <[string]> shape-options;
+    in property <int> shape-index: 0;
+    in property <[string]> gear-options;
+    in property <int> gear-index: 0;
+    in property <[string]> ri-options;
+    in property <int> ri-index: 0;
+    in property <[string]> tag-options;
+    // -1 for no tag filter.
+    in property <int> tag-index: -1;
+    in property <bool> mine-only: false;
+    in property <bool> show-ignored: false;
+    // How many filters are set (the search text does not count).
+    in property <int> filter-count: 0;
+    // Short texts for the filter chips ("Shape", or "Round").
+    in property <string> shape-text: "Shape";
+    in property <string> gear-text: "Gear";
+    in property <string> ri-text: "Refractive Index";
+    in property <string> tag-text: "Tag";
+
+    // Selection mode.
+    in property <bool> selecting: false;
+    in property <int> selection-count: 0;
+    // True when every selected design is ignored (the action then un-ignores).
+    in property <bool> selection-ignored: false;
+
+    // The tag sheet.
+    in property <bool> tag-sheet-open: false;
+    in property <[TagChipData]> tag-add;
+    in property <[TagChipData]> tag-remove;
+    in-out property <string> tag-new-text: "";
+
+    // Overlays of the page that Back closes.
+    in-out property <bool> filter-open: false;
+    in-out property <bool> sort-open: false;
+
+    // One step of Back inside the Library: the tag sheet, the filter sheet, the sort
+    // menu, then selection mode. Returns false when there is nothing to close. Call it
+    // only while the Library is the shown destination.
+    public function handle-back() -> bool {
+        if (tag-sheet-open) {
+            close-tag-sheet();
+            return true;
+        }
+        if (filter-open) {
+            filter-open = false;
+            return true;
+        }
+        if (sort-open) {
+            sort-open = false;
+            return true;
+        }
+        if (selecting) {
+            clear-selection();
+            return true;
+        }
+        return false;
+    }
+
+    // The page became visible (the first visit opens the library).
+    callback page-shown();
+    callback import-designs();
+    callback search-edited(string);
+    callback set-list-mode(bool);
+    callback set-sort(int);
+    // The first and last card index that are on screen (or about to be).
+    callback visible-range(int, int);
+
+    callback card-tapped(int);
+    callback card-long-pressed(int);
+
+    callback set-shape(int);
+    callback set-gear(int);
+    callback set-ri(int);
+    // -1 clears the tag filter.
+    callback set-tag(int);
+    callback set-mine-only(bool);
+    callback set-show-ignored(bool);
+    callback clear-filters();
+
+    callback select-all();
+    callback clear-selection();
+    callback open-tag-sheet();
+    callback close-tag-sheet();
+    callback toggle-tag-add(int);
+    callback toggle-tag-remove(int);
+    // Adds the typed name to the chips to add.
+    callback add-new-tag();
+    callback apply-tags();
+    callback toggle-ignore-selected();
+    callback share-selected();
+    callback delete-selected();
+}

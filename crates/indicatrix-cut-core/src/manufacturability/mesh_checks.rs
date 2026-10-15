@@ -13,8 +13,9 @@ use glam::DVec3;
 use indicatrix::geometry::{
     meet_solver::{SolveStrategy, SolvedTier},
     stone_metrics::{
-        SolidMesh, SolidStatus, TOOL_SEGMENTS, ToolBounds, build_solid_mesh, build_solid_mesh_geom,
-        measure_solid, measure_solid_with_vertices, mesh_volume, tessellate_tool, tool_bounds,
+        SolidMesh, SolidMetrics, SolidStatus, TOOL_SEGMENTS, ToolBounds, build_solid_mesh,
+        build_solid_mesh_geom, measure_solid, measure_solid_with_vertices, mesh_volume,
+        tessellate_tool, tool_bounds,
     },
     tool::ToolPrimitive,
 };
@@ -65,12 +66,47 @@ pub fn check_manufacturability(
     solved: &[SolvedTier],
     min_facet_area_fraction_of_w2: f64,
 ) -> Vec<ManufacturabilityWarning> {
+    let planes = design.planes_from_solved(solved);
+    let mesh = match build_solid_mesh(&planes) {
+        SolidStatus::Closed(mesh) => Some(mesh),
+        _ => None,
+    };
+    let metrics = mesh.as_ref().and_then(|_| measure_solid(&planes));
+    check_manufacturability_with_geometry(
+        design,
+        solved,
+        mesh.as_ref(),
+        metrics.as_ref(),
+        min_facet_area_fraction_of_w2,
+    )
+}
+
+/// [`check_manufacturability`] for a caller that already built the geometry of `solved`.
+///
+/// `mesh` is `Some` exactly when `build_solid_mesh(&design.planes_from_solved(solved))`
+/// is [`SolidStatus::Closed`], and `metrics` is `measure_solid` of those same planes (only
+/// read when `mesh` is `Some`).
+///
+/// The optimiser and the AI environment already hold both for every candidate they
+/// score; rebuilding them here was 2 of the 5 plane-list/mesh/measure passes per
+/// evaluation. The warnings are bit for bit the wrapper's, which calls this.
+///
+/// # Panics
+///
+/// Same alignment contract as [`check_manufacturability`].
+#[must_use]
+pub fn check_manufacturability_with_geometry(
+    design: &Design,
+    solved: &[SolvedTier],
+    mesh: Option<&SolidMesh>,
+    metrics: Option<&SolidMetrics>,
+    min_facet_area_fraction_of_w2: f64,
+) -> Vec<ManufacturabilityWarning> {
     let mut warnings = super::authored_checks::check_gear_quantization(design);
     warnings.extend(super::authored_checks::check_cut_order(design));
     warnings.extend(super::authored_checks::check_meet_name_asc_safety(design));
 
-    let planes = design.planes_from_solved(solved);
-    if let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) {
+    if let Some(mesh) = mesh {
         let schedule = design.to_asc_schedule_from_solved(solved);
         let boundaries = facet_plane_boundaries(&schedule);
         let preform_len = design.preform.planes().len();
@@ -84,7 +120,7 @@ pub fn check_manufacturability(
             &ring_by_index,
         ));
 
-        if let Some(metrics) = measure_solid(&planes) {
+        if let Some(metrics) = metrics {
             let threshold = min_facet_area_fraction_of_w2 * metrics.width_axis * metrics.width_axis;
             warnings.extend(check_undersized_facets(
                 design,
@@ -112,18 +148,19 @@ pub fn check_manufacturability(
 /// own contribution, in [`Design::planes`]'s combined list (offset by the
 /// preform's own plane count, which the caller adds).
 ///
-/// # Why this calls the real production function repeatedly instead of re-deriving plane counts
+/// # Why this asks the production plane builder instead of re-deriving plane counts
 ///
 /// `StandardGemCuts::from_asc_schedule` deduplicates near-identical planes (two
 /// `.asc` tier rows occasionally produce the exact same half-space), so a tier's
 /// contribution is not always exactly `indices.len().max(1)`. Dedup only ever
-/// *drops* an element based on what came before it, so calling
-/// [`StandardGemCuts::from_asc_schedule`] once per prefix and taking the length is
-/// byte-for-byte consistent with a single call over the whole schedule, avoiding a
-/// second copy of the dedup rule that could drift out of sync. This costs O(n^2)
-/// tier-generation passes rather than O(n), but `n` is capped at
-/// `meet_solver::MAX_PLANES = 400` and each pass is well under a millisecond,
-/// negligible next to the solve this module's caller already paid for.
+/// *drops* an element based on what came before it, so the count after tier `i` is
+/// the number of planes kept among the first `i + 1` tiers' planes in one pass over
+/// the whole schedule ([`StandardGemCuts::asc_tier_plane_boundaries`], which shares
+/// the dedup rule with `from_asc_schedule` rather than copying it). It used to build
+/// one prefix schedule per tier (O(n^2) tier clones, 5 356 for a 103-tier design),
+/// which the 12-tier interactive optimiser case, at 200 evaluations a second and a
+/// half, could not call negligible. The prefix schedules ran with a reference angle
+/// of `0.0`, and so does the single pass: the figure is unchanged bit for bit.
 ///
 /// `pub`, not re-exported crate-wide, since this `mesh_checks` module is
 /// itself private: [`crate::design::Design::tier_for_plane_index`] reaches
@@ -132,26 +169,9 @@ pub fn check_manufacturability(
 /// without re-deriving this same offset itself; nothing outside this crate
 /// needs the raw boundaries directly, only that per-index lookup.
 ///
-/// [`StandardGemCuts::from_asc_schedule`]: indicatrix::geometry::cuts::StandardGemCuts::from_asc_schedule
+/// [`StandardGemCuts::asc_tier_plane_boundaries`]: indicatrix::geometry::cuts::StandardGemCuts::asc_tier_plane_boundaries
 pub fn facet_plane_boundaries(schedule: &indicatrix_formats::asc::AscSchedule) -> Vec<usize> {
-    (0..schedule.tiers.len())
-        .map(|i| {
-            let prefix = indicatrix_formats::asc::AscSchedule {
-                gemcad_version: String::new(),
-                gear_teeth: schedule.gear_teeth,
-                gear_reference_angle: 0.0,
-                symmetry_order: 0,
-                mirror: false,
-                refractive_index: 0.0,
-                headers: Vec::new(),
-                footnotes: Vec::new(),
-                tiers: schedule.tiers[..=i].to_vec(),
-                warnings: Vec::new(),
-                line_ending: schedule.line_ending,
-            };
-            indicatrix::geometry::cuts::StandardGemCuts::from_asc_schedule(&prefix).len()
-        })
-        .collect()
+    indicatrix::geometry::cuts::StandardGemCuts::asc_tier_plane_boundaries(schedule, 0.0)
 }
 
 /// Check 1: a facet plane this tier describes never reaches the solid's surface --

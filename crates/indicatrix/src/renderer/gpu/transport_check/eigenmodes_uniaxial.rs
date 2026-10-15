@@ -77,6 +77,10 @@ fn build_eigen_polarization_cases() -> Vec<EigenPolarizationCase> {
 }
 
 /// Runs the eigen polarization check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_eigen_polarization(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -107,7 +111,9 @@ pub fn run_eigen_polarization(
         &pipeline,
         &[(18, &in_buf), (19, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -311,6 +317,10 @@ fn cpu_theta_c(c: &ThetaCCase) -> f32 {
 }
 
 /// Runs the theta c check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_theta_c(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<ThetaCCase> {
     let cases = build_theta_c_cases();
@@ -335,7 +345,9 @@ pub fn run_theta_c(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<The
         &pipeline,
         &[(20, &in_buf), (21, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -454,6 +466,10 @@ fn cpu_walk_off(c: &WalkOffCase) -> Vec3 {
 }
 
 /// Runs the walk off check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_walk_off(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<WalkOffCase> {
     let cases = build_walk_off_cases();
@@ -478,7 +494,9 @@ pub fn run_walk_off(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<Wa
         &pipeline,
         &[(22, &in_buf), (23, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -623,6 +641,10 @@ fn cpu_per_mode_index(case: &PerModeIndexCase, model: DispersionModel) -> (f32, 
 }
 
 /// Runs the per mode index check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_per_mode_index(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -654,7 +676,9 @@ pub fn run_per_mode_index(
         &pipeline,
         &[(24, &in_buf), (25, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

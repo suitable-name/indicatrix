@@ -48,15 +48,49 @@ pub fn with_host<R>(f: impl FnOnce(&Rc<Host>) -> R) -> Option<R> {
     Some(f(&host))
 }
 
+/// The wizard window when it exists. UI harness only.
+#[cfg(feature = "ui-harness")]
+#[must_use]
+pub fn harness_window() -> Option<RoughColourWindow> {
+    with_host(|host| host.window.clone_strong())
+}
+
 /// [`with_host`] for callbacks that return nothing.
 pub fn on_host(f: impl FnOnce(&Rc<Host>)) {
     let _ = with_host(f);
 }
 
-/// Hides the window for good (the planner is closing).
+/// Hides the window for good (the planner is closing). A running job is asked to stop first, so
+/// a fit does not keep every core busy for a window nobody can see.
 pub fn close() {
     if let Some(host) = WIZARD.with(|cell| cell.borrow_mut().take()) {
+        cancel_job(&host);
         let _ = host.window.hide();
+    }
+}
+
+/// The Rough Planner saved its plan: an open wizard takes the plan id and redraws (Accept
+/// becomes available). Does nothing when the wizard was never opened.
+pub fn plan_saved() {
+    on_host(actions::plan_saved);
+}
+
+/// What closing the Rough Planner would lose in the wizard.
+///
+/// A sentence when a job is running or a fit has not been accepted (stored with the saved plan),
+/// `None` otherwise or when the wizard was never opened.
+#[must_use]
+pub fn work_at_risk() -> Option<String> {
+    let host = WIZARD.with(|cell| cell.borrow().clone())?;
+    // A handler that is writing the state right now cannot be read; it counts as holding nothing
+    // (the same rule as the planner's own `planner_work_at_risk`).
+    let state = host.state.try_borrow().ok()?;
+    if state.job.is_some() {
+        Some("The rough color wizard is still working on a step.".to_owned())
+    } else if state.fit.is_some() && !state.fit_accepted {
+        Some("The rough color wizard has a fit that was not accepted.".to_owned())
+    } else {
+        None
     }
 }
 
@@ -82,7 +116,6 @@ fn create(link: &PlannerLink) -> Option<Rc<Host>> {
         }
     };
     crate::gui::preferences::bind_rough_colour_window_theme(&window);
-    crate::gui::zoning_ui::apply_to_rough_colour(&window);
     window
         .window()
         .on_close_requested(|| CloseRequestResponse::HideWindow);
@@ -129,10 +162,13 @@ pub fn spawn_job<T: Send + 'static>(
 ) {
     let ticket = NEXT_TICKET.fetch_add(1, Ordering::Relaxed);
     let cancel = Arc::new(AtomicBool::new(false));
-    host.state.borrow_mut().job = Some(Job {
+    // A job that is still running is superseded: stop it, its result would be dropped anyway.
+    if let Some(previous) = host.state.borrow_mut().job.replace(Job {
         ticket,
         cancel: Arc::clone(&cancel),
-    });
+    }) {
+        previous.cancel.store(true, Ordering::Relaxed);
+    }
     host.window.set_busy(true);
     host.window.set_busy_text(busy_text.into());
     host.window.set_progress(0.0);

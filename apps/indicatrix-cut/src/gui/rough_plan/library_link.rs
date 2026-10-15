@@ -77,7 +77,7 @@ fn designs_text(count: usize) -> String {
 }
 
 /// The start of a banner: "Rough plan", or `Saved plan "name"` for a loaded plan.
-fn label_prefix(saved_name: Option<&str>) -> String {
+pub(super) fn label_prefix(saved_name: Option<&str>) -> String {
     saved_name.map_or_else(
         || "Rough plan".to_string(),
         |name| format!("Saved plan \"{name}\""),

@@ -122,11 +122,11 @@ impl SlabState {
             if denom < 0.0 {
                 if t > self.t_near {
                     self.t_near = t;
-                    self.near_idx = i as i32;
+                    self.near_idx = i32::try_from(i).expect("plane index fits in i32");
                 }
             } else if t < self.t_far {
                 self.t_far = t;
-                self.far_idx = i as i32;
+                self.far_idx = i32::try_from(i).expect("plane index fits in i32");
             }
         } else if side > 0.0 {
             return false;
@@ -212,14 +212,15 @@ fn slab_scan_avx2(planes: &PlanesSoA32, origin: Vec3, dir: Vec3) -> SlabScan {
     let mut side_l = [0f32; 8];
     let mut t_l = [0f32; 8];
     let mut i = 0usize;
-    let (nx_a, ny_a, nz_a, d_a) = (planes.nx(), planes.ny(), planes.nz(), planes.dvals());
+    // The plane columns: the three normal components, then the offsets.
+    let columns = [planes.nx(), planes.ny(), planes.nz(), planes.dvals()];
     while i + 8 <= n {
         // SAFETY: i + 8 <= len for every section; loads/stores stay in bounds.
         let interesting = unsafe {
-            let nx = _mm256_loadu_ps(nx_a.as_ptr().add(i));
-            let ny = _mm256_loadu_ps(ny_a.as_ptr().add(i));
-            let nz = _mm256_loadu_ps(nz_a.as_ptr().add(i));
-            let d = _mm256_loadu_ps(d_a.as_ptr().add(i));
+            let nx = _mm256_loadu_ps(columns[0].as_ptr().add(i));
+            let ny = _mm256_loadu_ps(columns[1].as_ptr().add(i));
+            let nz = _mm256_loadu_ps(columns[2].as_ptr().add(i));
+            let d = _mm256_loadu_ps(columns[3].as_ptr().add(i));
             let denom = _mm256_add_ps(
                 _mm256_add_ps(_mm256_mul_ps(nx, dx), _mm256_mul_ps(ny, dy)),
                 _mm256_mul_ps(nz, dz),
@@ -307,14 +308,15 @@ fn slab_scan_avx512(planes: &PlanesSoA32, origin: Vec3, dir: Vec3) -> SlabScan {
     let mut side_l = [0f32; 16];
     let mut t_l = [0f32; 16];
     let mut i = 0usize;
-    let (nx_a, ny_a, nz_a, d_a) = (planes.nx(), planes.ny(), planes.nz(), planes.dvals());
+    // The plane columns: the three normal components, then the offsets.
+    let columns = [planes.nx(), planes.ny(), planes.nz(), planes.dvals()];
     while i + 16 <= n {
         // SAFETY: i + 16 <= len for every section; loads/stores stay in bounds.
         let interesting = unsafe {
-            let nx = _mm512_loadu_ps(nx_a.as_ptr().add(i));
-            let ny = _mm512_loadu_ps(ny_a.as_ptr().add(i));
-            let nz = _mm512_loadu_ps(nz_a.as_ptr().add(i));
-            let d = _mm512_loadu_ps(d_a.as_ptr().add(i));
+            let nx = _mm512_loadu_ps(columns[0].as_ptr().add(i));
+            let ny = _mm512_loadu_ps(columns[1].as_ptr().add(i));
+            let nz = _mm512_loadu_ps(columns[2].as_ptr().add(i));
+            let d = _mm512_loadu_ps(columns[3].as_ptr().add(i));
             let denom = _mm512_add_ps(
                 _mm512_add_ps(_mm512_mul_ps(nx, dx), _mm512_mul_ps(ny, dy)),
                 _mm512_mul_ps(nz, dz),

@@ -74,7 +74,7 @@ fn deep_solve() -> Guide {
             "It needs a design with printed proportions: one loaded from the library. A new design or a template has none, and the button is dim. Hover the button to see why.",
             "It also has nothing to repair while every tier is still pinned to its recorded mast: Adopt a tier first (the tier table's IMPORTED column).",
         ])
-        .why("If the button is dim, use Skip step: this lesson only reads the result of a run. Load a catalogue design from the Library, adopt a tier, and start the lesson again to run it.")
+        .why("If the button is dim, use Skip Step: this lesson only reads the result of a run. Load a catalogue design from the Library, adopt a tier, and start the lesson again to run it.")
         .highlight("deep_solve_button")
         .allow(TOOLS),
     )
@@ -135,13 +135,12 @@ fn optimize() -> Guide {
             "Optimize scores the stone in its own material, so name one first.",
         )
         .actions([
-            "Open the Design Settings panel above the tier table.",
-            "Set Material to Quartz.",
-            "Click Apply Material.",
+            "Open the Stone tab of the Parameters dock (View > Stone Properties, or Ctrl+Alt+1).",
+            "Set Material to Quartz. It applies at once.",
         ])
-        .check("the panel shows Quartz, and Apply Material no longer shows an asterisk.")
+        .check("the Stone tab shows Quartz, with its Eff. RI and critical angle (Crit.) beside it.")
         .goal(Goal::Material("Quartz".to_owned()), "the material set to Quartz")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(SETTINGS),
     )
     .step(
@@ -150,7 +149,7 @@ fn optimize() -> Guide {
             "Everything about a search is on the inspector's Optimize tab: what to favour, what may change, the run and the results.",
         )
         .actions(["Click Optimize in the inspector below the tier table."])
-        .check("the tab shows Objective, What may change, Run and Candidates.")
+        .check("the tab shows Objective, What May Change, Run and Candidates.")
         .why("The Optimize button on the command bar starts a run with the same settings without opening the tab.")
         .goal(Goal::InspectorTab(2), "the Optimize tab open")
         .highlight("optimize_tab")
@@ -162,11 +161,11 @@ fn optimize() -> Guide {
             "The Objective list sets four weights. The choices only differ in which weight counts most.",
         )
         .actions([
-            "Open the Objective list and choose Low windowing.",
+            "Open the Objective list and choose Low Windowing.",
             "Read the line under the list: it says what the choice favours.",
         ])
-        .check("the Objective list reads Low windowing.")
-        .why("Balanced weighs windowing, extinction and tilt brilliance equally. Brilliance, Low extinction and Keep weight lean the other ways; Keep weight also counts how much of the rough is wasted. Lighten dark rough and Intensify pale rough pull the face-up colour lighter or stronger. Custom shows the weight boxes so you can set them yourself.")
+        .check("the Objective list reads Low Windowing.")
+        .why("Balanced weighs windowing, extinction and tilt brilliance equally. Brilliance, Low Extinction and Keep Weight lean the other ways; Keep Weight also counts how much of the rough is wasted. Lighten Dark Rough and Intensify Pale Rough pull the face-up color lighter or stronger. Custom shows the weight boxes so you can set them yourself.")
         .goal(
             event(events::OPTIMIZE_PRESET_CHOSEN),
             "an entry of the Objective list chosen",
@@ -180,11 +179,11 @@ fn optimize() -> Guide {
             "Say which tiers the search may move, and by how much.",
         )
         .actions([
-            "Under What may change, see that Vary anchored tiers is ticked. It starts ticked on a design where every tier is pinned, like this one: the search then turns each tier about the edge where it meets the girdle, so the girdle outline stays.",
-            "Click Angle ranges... Each tier the search may move can change by 5 degrees either way, never past 0.5 or 89.5 degrees. Type your own MIN and MAX to narrow or widen a range, or press Reset ranges.",
+            "Under What May Change, see that Vary Anchored Tiers is ticked. It starts ticked on a design where every tier is pinned, like this one: the search then turns each tier about the edge where it meets the girdle, so the girdle outline stays.",
+            "Click Angle Ranges... Each tier the search may move can change by 5 degrees either way, never past 0.5 or 89.5 degrees. Type your own MIN and MAX to narrow or widen a range, or press Reset Ranges.",
         ])
         .check("a table of the tiers with MIN and MAX boxes.")
-        .why("The table, the culet and the girdle never move, and a tier whose angle follows a relation shows follows a relation instead of boxes: it goes along with the tier it reads. Keep the girdle (at least half its thickness) drops a candidate whose girdle gets thinner than half of what it was.")
+        .why("The table, the culet and the girdle never move, and a tier whose angle follows a relation shows follows a relation instead of boxes: it goes along with the tier it reads. Keep the Girdle (at Least Half Its Thickness) drops a candidate whose girdle gets thinner than half of what it was.")
         .goal(
             event(events::OPTIMIZE_RANGES_OPENED),
             "the angle ranges opened",
@@ -232,7 +231,7 @@ fn optimize() -> Guide {
             "Apply a candidate",
             "A result is only a report until you apply it.",
         )
-        .actions(["Click Apply this candidate."])
+        .actions(["Click Apply This Candidate."])
         .check("the tier table shows the new angles.")
         .why("Apply is one undo step: the new angles, each turned tier's mast and every relation worked out again. It is only offered while the design has not been edited since the run.")
         .goal(
@@ -259,7 +258,7 @@ fn optimize() -> Guide {
 fn retarget_shift() -> Guide {
     Guide::new(
         "optimizing-retarget-shift",
-        "Retarget for a new material (Shift)",
+        "Retarget for a New Material (Shift)",
         "Move a design from quartz to topaz with Retarget's Shift mode: read the proposal and its verdict, apply, and undo.",
         GuideCategory::Optimizing,
     )
@@ -270,13 +269,12 @@ fn retarget_shift() -> Guide {
             "Retarget moves a design from the material it is in to another one, so start by naming one.",
         )
         .actions([
-            "Open the Design Settings panel above the tier table.",
-            "Set Material to Quartz.",
-            "Click Apply Material.",
+            "Open the Stone tab of the Parameters dock (View > Stone Properties, or Ctrl+Alt+1).",
+            "Set Material to Quartz. It applies at once.",
         ])
-        .check("the panel shows Quartz, and Apply Material no longer shows an asterisk.")
+        .check("the Stone tab shows Quartz, with its Eff. RI and critical angle (Crit.) beside it.")
         .goal(Goal::Material("Quartz".to_owned()), "the material set to Quartz")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(SETTINGS),
     )
     .step(
@@ -302,10 +300,10 @@ fn retarget_shift() -> Guide {
             "Click Retarget... on the command bar's second row.",
             "Set Target Material to Topaz. A card under it shows its n_D and critical angle. Leave Mode on Shift.",
             "Read the table: Block, Tier, Old, New, Margin and Risk (Safe, Marginal or Windows) for each crown and pavilion tier. The table and culet are greyed and read Not changed.",
-            "Wait until the line under the table no longer says Checking..., and read it: Valid, with the girdle and table figures and the stone's depth (for example depth 61 % (was 58 %)), or Not valid, with the reasons. Under it, Optical comparison (table up) gives windowing, brilliance and extinction for the current stone, the current stone in Topaz, and the retargeted stone.",
+            "Wait until the line under the table no longer says Checking..., and read it: Valid, with the girdle and table figures and the stone's depth (for example depth 61 % (was 58 %)), or Not valid, with the reasons. Under it, Optical Comparison (Table Up) gives windowing, brilliance and extinction for the current stone, the current stone in Topaz, and the retargeted stone.",
             "Click Apply. This lesson goes on when the design has changed, and the dialog closes itself.",
         ])
-        .check("the tier table shows new pavilion angles and the Design Settings panel shows Topaz.")
+        .check("the tier table shows new pavilion angles and the Stone tab shows Topaz.")
         .why("A change is judged before you can apply it. Apply stays disabled while it is Checking... or Not valid. Apply commits the new angles, the adjusted facet heights and the material as ONE undo step. Cancel closes the dialog and changes nothing.")
         .goal(
             Goal::All(vec![
@@ -350,7 +348,7 @@ fn retarget_shift() -> Guide {
 fn retarget_optimize() -> Guide {
     Guide::new(
         "optimizing-retarget-optimize",
-        "Retarget: Optimize mode",
+        "Retarget: Optimize Mode",
         "Let Retarget search for the best crown and pavilion angles in the new material, pick an option and apply it.",
         GuideCategory::Optimizing,
     )
@@ -361,13 +359,12 @@ fn retarget_optimize() -> Guide {
             "Start the design in quartz.",
         )
         .actions([
-            "Open the Design Settings panel above the tier table.",
-            "Set Material to Quartz.",
-            "Click Apply Material.",
+            "Open the Stone tab of the Parameters dock (View > Stone Properties, or Ctrl+Alt+1).",
+            "Set Material to Quartz. It applies at once.",
         ])
-        .check("the panel shows Quartz, and Apply Material no longer shows an asterisk.")
+        .check("the Stone tab shows Quartz, with its Eff. RI and critical angle (Crit.) beside it.")
         .goal(Goal::Material("Quartz".to_owned()), "the material set to Quartz")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(SETTINGS),
     )
     .step(
@@ -378,7 +375,7 @@ fn retarget_optimize() -> Guide {
         .actions([
             "Optimize starts from the Shift result and moves every crown and pavilion angle on its own, inside a range you choose, looking for the best score in the new material.",
             "It can find a valid stone when the formula's result is not valid, and a better one than the formula gives, because the crown can move too.",
-            "It never tilts the table or culet, moves the girdle or a tier whose angle follows a relation; it keeps at least half the girdle thickness, refits the table and culet heights so they keep their size, and (Keep the design's look, on by default) favours options that keep the design's table size and crown-to-pavilion ratio.",
+            "It never tilts the table or culet, moves the girdle or a tier whose angle follows a relation; it keeps at least half the girdle thickness, refits the table and culet heights so they keep their size, and (Keep the Design's Look, on by default) favours options that keep the design's table size and crown-to-pavilion ratio.",
         ])
         .why("The search is seeded, not random: the same design, settings and target give the same options every time. It runs only when you press Search, in the background.")
         .highlight("retarget_button")
@@ -393,11 +390,11 @@ fn retarget_optimize() -> Guide {
             "Click Retarget... on the command bar's second row.",
             "Set Target Material to Sapphire and Mode to Optimize.",
             "Leave Objective on Balanced and Range on 6 degrees either side, and set Effort to Quick (100 steps). These three show in the Advanced interface; the lesson shows them for now.",
-            "Click Search for better angles. A line names the stage and how far it has got; Cancel stops the search without closing the dialog.",
+            "Click Search for Better Angles. A line names the stage and how far it has got; Cancel stops the search without closing the dialog.",
             "Under Options (click one to see it) up to three options are listed, best score first. Click one: the table, the verdict and the comparison switch to it. Only valid options are listed.",
             "Click Apply. It stays dim until an option is picked. This lesson goes on when the design has changed, and the dialog closes itself.",
         ])
-        .check("the tier table shows the option's angles and the Design Settings panel shows Sapphire.")
+        .check("the tier table shows the option's angles and the Stone tab shows Sapphire.")
         .why("Searching and picking change nothing. Apply commits the option's angles, heights and the material as one undo step.")
         .goal(
             Goal::All(vec![
@@ -466,7 +463,7 @@ fn sweep() -> Guide {
         .actions([
             "Choose Edit > Angle Sweep... (or press Ctrl+K and type sweep).",
             "Set Tier to the Pavilion Main entry. Set From to 38, To to 42 and Step to 1. The line under the form says how many angles it tries and about how long it takes.",
-            "Click Run sweep. A bar shows how many angles are done. Cancel keeps the rows already finished.",
+            "Click Run Sweep. A bar shows how many angles are done. Cancel keeps the rows already finished.",
             "Read the table. The best figure in each column is bold and green. The row marked Current is your design as it is.",
             "Click a row that is not Current. The button at the bottom then names it, for example Use 42.00\u{b0}. Click it.",
             "This lesson goes on when the tier has its new angle. Then press Close (or Esc) to leave the dialog.",

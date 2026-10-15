@@ -61,6 +61,10 @@ fn build_balance_heuristic_cases() -> Vec<BalanceHeuristicCase> {
 }
 
 /// Runs the Tier 2 ULP check for [`balance_heuristic`].
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_balance_heuristic(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -91,7 +95,9 @@ pub fn run_balance_heuristic(
         &pipeline,
         &[(60, &in_buf), (61, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

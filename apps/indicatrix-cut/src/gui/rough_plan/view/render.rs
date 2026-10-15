@@ -92,6 +92,10 @@ pub(super) enum Hover {
 
 /// The switches of a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the four show_* fields are independent layer switches of a frame"
+)]
 pub(super) struct RenderOptions {
     /// Model: tint the faces of the cuts.
     pub(super) show_cut_faces: bool,
@@ -156,6 +160,11 @@ impl PickSnapshot {
     /// The facet under the point `(fx, fy)` of the image, both in `0..1` from the top
     /// left.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "fx and fy are checked to lie in 0..1, so the products are non-negative and below the image size"
+    )]
     pub(super) fn facet_at(&self, fx: f32, fy: f32) -> Option<usize> {
         if self.width == 0
             || self.height == 0

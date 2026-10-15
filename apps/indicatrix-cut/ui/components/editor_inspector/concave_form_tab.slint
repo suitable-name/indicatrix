@@ -159,7 +159,7 @@ export component ConcaveFormTab inherits VerticalLayout {
         LineEdit {
             enabled: root.unlocked;
             text <=> root.c_name;
-            accessible-label: "Facet name";
+            accessible-label: "Facet Name";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("name"); }
@@ -173,7 +173,7 @@ export component ConcaveFormTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> root.c_angle;
             placeholder-text: "e.g. -42";
-            accessible-label: "Angle in degrees";
+            accessible-label: "Angle in Degrees";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("angle"); }
@@ -187,7 +187,7 @@ export component ConcaveFormTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> root.c_indices;
             placeholder-text: "e.g. 0, 24, 48, 72";
-            accessible-label: "Index positions";
+            accessible-label: "Index Positions";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("indices"); }
@@ -200,7 +200,7 @@ export component ConcaveFormTab inherits VerticalLayout {
             horizontal-stretch: 1;
             enabled: root.unlocked;
             text <=> root.c_instructions;
-            accessible-label: "Cutting instructions";
+            accessible-label: "Cutting Instructions";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
         }
@@ -215,7 +215,7 @@ export component ConcaveFormTab inherits VerticalLayout {
         ComboBox {
             horizontal-stretch: 1;
             enabled: root.unlocked;
-            accessible-label: "Tool shape";
+            accessible-label: "Tool Shape";
             model: [
                 "Cylinder (CYL)",
                 "Cone (CON)",
@@ -235,7 +235,7 @@ export component ConcaveFormTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> root.c_theta;
             placeholder-text: "0";
-            accessible-label: "Tool azimuth in degrees";
+            accessible-label: "Tool Azimuth in Degrees";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("theta"); }
@@ -250,7 +250,7 @@ export component ConcaveFormTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> root.c_x;
             placeholder-text: "X";
-            accessible-label: "Tool displacement X";
+            accessible-label: "Tool Displacement X";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("x"); }
@@ -260,7 +260,7 @@ export component ConcaveFormTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> root.c_y;
             placeholder-text: "Y";
-            accessible-label: "Tool displacement Y";
+            accessible-label: "Tool Displacement Y";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("y"); }
@@ -270,7 +270,7 @@ export component ConcaveFormTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> root.c_z;
             placeholder-text: "Z";
-            accessible-label: "Tool displacement Z";
+            accessible-label: "Tool Displacement Z";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("z"); }
@@ -284,21 +284,21 @@ export component ConcaveFormTab inherits VerticalLayout {
             enabled: root.unlocked;
             text <=> root.c_diameter;
             placeholder-text: "e.g. 0.25";
-            accessible-label: "Tool diameter over stone width";
+            accessible-label: "Tool Diameter over Stone Width";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("diameter"); }
         }
     }
     FormRow {
-        label: "Tool angle";
+        label: "Tool Angle";
         tooltip: "Included angle of a cone or disc, in degrees. Only those two tools have one; leave it blank for the others.";
         invalid: root.field_error == "tool_angle";
         LineEdit {
             enabled: root.unlocked && root.has_tool_angle;
             text <=> root.c_tool_angle;
             placeholder-text: root.has_tool_angle ? "e.g. 60" : "n/a";
-            accessible-label: "Tool included angle in degrees";
+            accessible-label: "Tool Included Angle in Degrees";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
             edited => { root.clear_field_error("tool_angle"); }
@@ -309,7 +309,7 @@ export component ConcaveFormTab inherits VerticalLayout {
         Tooltip { text: @markdown("Reciprocating: the tool is stroked back and forth. Unticked, it is plunged straight in."); }
         motion_box := CheckBox {
             enabled: root.unlocked;
-            text: "Reciprocating (stroked back and forth)";
+            text: "Reciprocating (Stroked Back and Forth)";
             checked <=> root.c_reciprocating;
         }
     }
@@ -330,7 +330,7 @@ export component ConcaveFormTab inherits VerticalLayout {
         property <EditorTierItem> tier_row: EditorModel.tiers[root.loaded_tier_index];
         spacing: 4px;
         Rectangle { height: 1px; background: Theme.border-subtle; }
-        Text { text: "Sheet line"; font-size: 11px; font-weight: 700; color: Theme.text-primary; accessible-role: AccessibleRole.text; }
+        Text { text: "Sheet Line"; font-size: 11px; font-weight: 700; color: Theme.text-primary; accessible-role: AccessibleRole.text; }
         Text {
             text: tier_row.tool_line;
             font-size: 10px;

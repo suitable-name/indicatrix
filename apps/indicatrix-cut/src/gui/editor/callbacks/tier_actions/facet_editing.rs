@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use indicatrix_cut_core::EditError;
 use slint::ComponentHandle;
 
 use super::facet_overlay::{facet_map_from_aligned_solve, resubmit_facet_overlay};
@@ -59,20 +60,40 @@ pub(super) fn setup_highlight_tooth_callback(ui: &MainWindow, state: &Rc<RefCell
             let Some(preview_state) = auto_solve::preview_state() else {
                 return;
             };
-            if tooth < 0 {
+            let Ok(tooth) = u32::try_from(tooth) else {
                 resubmit_facet_overlay(&preview_state, |overlay| overlay.multi_selected.clear());
                 return;
-            }
+            };
             let st = state.borrow();
             let facet_map = facet_map_from_aligned_solve(&st.design);
-            let tooth = tooth as u32;
-            let facet_ids: Vec<u32> = (0..facet_map.facet_count() as u32)
+            let facet_count =
+                u32::try_from(facet_map.facet_count()).expect("facet count fits in u32");
+            let facet_ids: Vec<u32> = (0..facet_count)
                 .filter(|&facet_id| facet_map.index_on_gear(facet_id as usize) == tooth)
                 .collect();
             resubmit_facet_overlay(&preview_state, |overlay| {
                 overlay.multi_selected = facet_ids;
             });
         });
+}
+
+/// The toast for a per-facet Remove/Detach/Reattach that [`Design`] refused to build.
+/// Those builders report a `position` the tier does not hold with the same
+/// [`EditError`] shape as an out-of-range tier, but with an index that IS in range;
+/// shown as is, that read "tier index 0 out of range (schedule has 8 tier(s))". Says
+/// which tier lacks which position instead, and keeps the error's own text for a real
+/// out-of-range tier.
+///
+/// [`Design`]: indicatrix_cut_core::Design
+fn facet_edit_error_text(error: &EditError, position: f64) -> String {
+    if error.index < error.tier_count {
+        format!(
+            "Tier #{} has no facet at index position {position}.",
+            error.index + 1
+        )
+    } else {
+        error.to_string()
+    }
 }
 
 /// Per-facet index editing (#45): "Remove" -- removes one index-wheel occurrence
@@ -108,12 +129,16 @@ pub(super) fn setup_facet_remove_callback(
             let Ok(tier_index) = usize::try_from(tier_index) else {
                 return;
             };
+            let position = f64::from(position);
             let mut st = state.borrow_mut();
-            match st
-                .design
-                .remove_orbit_member(tier_index, f64::from(position))
-                .and_then(|edit| st.apply(edit))
-            {
+            let edit = match st.design.remove_orbit_member(tier_index, position) {
+                Ok(edit) => edit,
+                Err(e) => {
+                    show_toast(&ui, &facet_edit_error_text(&e, position), "error");
+                    return;
+                }
+            };
+            match st.apply(edit) {
                 Ok(()) => {
                     refresh_editor_panel_stale(
                         &ui,
@@ -179,7 +204,14 @@ pub(super) fn setup_facet_toggle_detach_callback(
             } else {
                 st.design.detach_orbit_member(tier_index, position)
             };
-            match edit_result.and_then(|edit| st.apply(edit)) {
+            let edit = match edit_result {
+                Ok(edit) => edit,
+                Err(e) => {
+                    show_toast(&ui, &facet_edit_error_text(&e, position), "error");
+                    return;
+                }
+            };
+            match st.apply(edit) {
                 Ok(()) => {
                     refresh_editor_panel_stale(
                         &ui,
@@ -370,4 +402,33 @@ pub(super) fn setup_tier_mirror_indices_callback(
                 Err(e) => show_toast(&ui, &e.to_string(), "error"),
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_position_names_the_tier_and_the_position() {
+        let error = EditError {
+            index: 0,
+            tier_count: 8,
+        };
+        assert_eq!(
+            facet_edit_error_text(&error, 24.0),
+            "Tier #1 has no facet at index position 24."
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_tier_keeps_the_errors_own_text() {
+        let error = EditError {
+            index: 9,
+            tier_count: 8,
+        };
+        assert_eq!(
+            facet_edit_error_text(&error, 24.0),
+            "tier index 9 out of range (schedule has 8 tier(s))"
+        );
+    }
 }

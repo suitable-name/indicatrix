@@ -113,6 +113,10 @@ impl ToneIlluminant {
     /// Relative spectral power at `lambda_nm`: the D65 table when falling back or when the
     /// preset itself is a D65 one, else the preset's own Planckian fit.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the spectral tables take an f32 wavelength; nanometres are in the normal float range"
+    )]
     pub fn spectral_power(&self, lambda_nm: f64) -> f64 {
         if self.fallback_to_d65 || self.preset.uses_d65() {
             f64::from(d65_relative_spectral_power(lambda_nm as f32))
@@ -171,6 +175,11 @@ impl ToneAccumulator {
     /// Adds one returned ray with Fresnel weight `transmittance` and internal path
     /// `path_len` (model units).
     pub(super) fn offer(&mut self, transmittance: f32, path_len: f32) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a non-negative path over the bin width; `as` saturates (NaN gives 0) and the bin is clamped below"
+        )]
         let bin = ((path_len / self.bin_width) as usize).min(PATH_BINS - 1);
         self.bins[bin] += transmittance;
         self.weighted_path = path_len.mul_add(transmittance, self.weighted_path);
@@ -202,6 +211,10 @@ impl ToneAccumulator {
             })
             .collect();
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "band evaluation takes an f32 wavelength; nanometres are in the normal float range"
+        )]
         let alpha_of = |bands: &[AbsorptionBand], lambda: f64| -> f64 {
             f64::from(
                 bands
@@ -253,10 +266,15 @@ impl ToneAccumulator {
             if deg < 0.0 { deg + 360.0 } else { deg }
         };
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the tone's storage precision; L*, chroma and hue are in the normal float range"
+        )]
+        let (l_star, chroma_f32, hue_f32) = (l as f32, chroma as f32, hue_deg as f32);
         FaceUpTone {
-            l_star: l as f32,
-            chroma: chroma as f32,
-            hue_deg: hue_deg as f32,
+            l_star,
+            chroma: chroma_f32,
+            hue_deg: hue_f32,
             srgb: colour.srgb,
             mean_path_units: self.weighted_path / self.weight_sum,
             returned_fraction,
@@ -288,6 +306,10 @@ mod tests {
             ToneIlluminant::for_environment(LightingPreset::Daylight.studio(1.0, 0.85, 0.95));
         let tone = acc.finish(&material, illuminant);
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "band evaluation takes an f32 wavelength; nanometres are in the normal float range"
+        )]
         let alpha = |lambda: f64| -> f64 {
             f64::from(
                 material

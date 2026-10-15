@@ -18,13 +18,23 @@
   The documented default is `-Cpu avx2` and `-Cpu scalar` (two separate invocations) --
   avx512 remains available but is opt-in and auto-skipped/refused where unsupported.
 
-  A profile trained with `INDICATRIX_SIMD=avx2` (this script always caps training to the
-  tier it is building) leaves `indicatrix`'s avx512 and scalar SIMD kernels
-  (`simd::simd_level`) with zero profile counts, so LLVM treats them as cold/size-optimised
-  in that binary even if the CPU it later runs on supports a wider tier. Ship the avx2
-  build to AVX2-and-newer machines (including AVX-512 ones) and the scalar build only to
-  machines without AVX2 -- do not expect an avx2-trained binary's avx512 path, or a
-  scalar-trained binary's avx2 path, to be well-optimised.
+  Two-run tier training (BLD-1). The shipped binary runs with `INDICATRIX_SIMD` unset and
+  dispatches at run time (`simd::simd_level`) to the host's best kernels, so an `avx2` build
+  on an AVX-512 machine runs the AVX-512 slab/feasibility/triple-solve kernels. Training
+  only under the tier's own cap (the old behaviour) left exactly those kernels with zero
+  counts, i.e. cold. Now, per tier build, the instrumented `pgo_train` is asked for the
+  host's native tier (`pgo_train --print-simd-tier`, INDICATRIX_SIMD unset) and, when that
+  outranks the build's tier, is run TWICE: once unset (host-native dispatch: the AVX-512
+  kernels) and once capped to the tier (the tier's own kernels); both runs' `.profraw`
+  files merge into the tier's one `.profdata`. A host whose native tier equals the tier gets
+  a single run; `-Cpu native` always gets the single unset run. A scalar-trained binary's
+  avx2 path and an avx2 binary's scalar path are still only trained on a host that runs them.
+  After a run, `llvm-profdata show --topn=20 <profdata>` on an AVX-512 host must list the
+  AVX-512 kernels (slab.rs / feasibility.rs / triple_solve.rs variants) with non-zero counts.
+
+  sccache is switched off (RUSTC_WRAPPER / CARGO_BUILD_RUSTC_WRAPPER empty) for the whole
+  combination, instrumented and -Cprofile-use builds alike: a cache hit would serve objects
+  built without -Cprofile-generate (empty profiles) or stale profile-use objects.
 
 .DESCRIPTION
   `-Target all` (the default) is ONE combined build per combination, not a worker run plus
@@ -53,10 +63,13 @@
        hash) is identical between this step and step 4: if the two builds select
        different package sets, every profiled crate gets a different hash, profile-use
        finds nothing to apply and the binary is optimised as if untrained.
-    2. run the pgo_train.exe produced by that build (CPU tracer, every lighting model,
-       denoiser, tone-map, meet-point solver against synthetic AND real designs,
-       CAD-preview mesh extraction; GPU only under the `gpu` tier and only if an
-       adapter exists)
+    2. run the pgo_train.exe produced by that build, once or twice per the two-run tier
+       training above. Stages: tracer (denoised with and without a path signature),
+       lighting (every preset + a procedural 1024x512 HDR map), brep, solver (synthetic AND
+       real designs, CAD-preview mesh extraction), tilt (per-azimuth), guide (path-signature
+       prepass at 800x600 and 1080p), denoise_sig (denoiser with a real signature at
+       800x600), tilt_sweep (the apps' all-axes sweep entry points, parallel and stepped);
+       GPU only under the `gpu` tier and only if an adapter exists
     2b. (cut target only) run `indicatrix-cut-core`'s OWN `pgo_train_cutcore` example
        (Design::solve, .asc export, design-file save/load, resolve_after_edit,
        optimize_design). It is built by step 1's SAME `cargo build` invocation
@@ -85,8 +98,9 @@
     6. copy the executables to <OutDir> as <binary>-win-<cpu>-<gpu>.exe
 
   Training coverage is a known limitation, not a complete picture. The training binaries
-  do NOT exercise: the radiance (HDR) image codecs, the solid rasterizer, `guide_pass`,
-  the `indicatrix-vault` database, the desktop editor's event loops and GUI code, or the
+  do NOT exercise: the `indicatrix-net` payload codecs (shuffle + zstd/lz4; `indicatrix`
+  cannot depend on `indicatrix-net`), the radiance (HDR) image codecs, the solid rasterizer
+  and mesh cache (`indicatrix-solid`), the rough planner, the `indicatrix-vault` database, the desktop editor's event loops and GUI code, or the
   `GpuBackend` type. The `gpu` tier's `train_gpu` stage trains `render_hybrid`, which no
   app calls today, so it warms code the shipped binaries do not run. Functions in these
   areas have zero profile counts and are optimised as cold code. One further limit:
@@ -270,6 +284,27 @@ function Get-PgoFeatures([bool]$IncludeCut, [bool]$IncludeWorker, [string]$GpuNa
     return ($features -join ',')
 }
 
+# The `INDICATRIX_SIMD` values `pgo_train` is run with for one tier build (BLD-1). The shipped
+# binary runs with the variable UNSET and dispatches at run time to the host's best kernels
+# (`simd::simd_level`), so a tier build trained only under its own cap leaves the higher
+# tier's kernels (the AVX-512 slab/feasibility/triple-solve variants in an `avx2` build)
+# with zero counts. When the host's native tier outranks the cap, return `''` (unset =
+# host-native dispatch) AND the cap, so both kernel sets are profiled and the `.profraw`
+# files of both runs merge into the tier's one `.profdata`. The host tier comes from the
+# instrumented training binary itself (`--print-simd-tier`), never from CPUID tools. A native
+# build (`$SimdCap` empty) gets the single unset run.
+function Get-SimdTrainingCaps([string]$Exe, [string]$SimdCap) {
+    if (-not $SimdCap) { return @('') }
+    $rank = @{ scalar = 0; avx2 = 1; avx512 = 2 }
+    $saved = $env:INDICATRIX_SIMD
+    Remove-Item Env:INDICATRIX_SIMD -ErrorAction SilentlyContinue
+    try { $hostTier = ((& $Exe --print-simd-tier) | Select-Object -First 1).ToString().Trim() }
+    finally { if ($null -ne $saved) { $env:INDICATRIX_SIMD = $saved } }
+    if (-not $rank.ContainsKey($hostTier)) { throw "unexpected --print-simd-tier output '$hostTier' from $Exe" }
+    if ($rank[$hostTier] -gt $rank[$SimdCap]) { return @('', $SimdCap) }
+    return @($SimdCap)
+}
+
 # Runs `indicatrix-cut-core`'s own `pgo_train_cutcore` example (cut target only), which
 # the caller's instrumented `cargo build` already built in the same invocation as
 # everything else -- see .DESCRIPTION's step 2b. `$env:CARGO_ENCODED_RUSTFLAGS` need not
@@ -305,6 +340,26 @@ function Invoke-NetTraining([string]$Tdir, [string]$Name, [string]$LogFile) {
     $env:LLVM_PROFILE_FILE = Join-Path (Split-Path -Parent $env:LLVM_PROFILE_FILE) 'net-%p-%m.profraw'
     & $netExe --test-threads=1 2>&1 | Out-File -FilePath $LogFile -Append -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw "[$Name] indicatrix-net training run failed (exit $LASTEXITCODE)" }
+}
+
+# Builds and runs `indicatrix-net`'s `pgo_codecs` example under the same instrumentation:
+# the payload codecs (byte shuffle + zstd + LZ4 encode/decode, 1080p and one 4K frame) that
+# neither `pgo_train` (cannot link `indicatrix-net`) nor `scene_roundtrip` reaches. Built
+# with the same `--features render` as the test build above so the crate set matches.
+# `$env:CARGO_ENCODED_RUSTFLAGS` and `$env:LLVM_PROFILE_FILE` must already carry the
+# instrumented build's settings; the profile file name is replaced by `codecs-%p-%m.profraw`.
+function Invoke-CodecTraining([string]$Tdir, [string]$Name, [string]$LogFile) {
+    "==> [$Name] instrumented build (indicatrix-net pgo_codecs example)" |
+        Out-File -FilePath $LogFile -Append -Encoding utf8
+    cargo build --release --target $hostTarget --target-dir $Tdir `
+        -p indicatrix-net --features render --example pgo_codecs 2>&1 |
+        Out-File -FilePath $LogFile -Append -Encoding utf8
+    if ($LASTEXITCODE -ne 0) { throw "[$Name] indicatrix-net pgo_codecs build failed (exit $LASTEXITCODE)" }
+    "==> [$Name] indicatrix-net payload codec training run" | Out-File -FilePath $LogFile -Append -Encoding utf8
+    $env:LLVM_PROFILE_FILE = Join-Path (Split-Path -Parent $env:LLVM_PROFILE_FILE) 'codecs-%p-%m.profraw'
+    $codecsExe = Join-Path $Tdir "$hostTarget\release\examples\pgo_codecs.exe"
+    & $codecsExe 2>&1 | Out-File -FilePath $LogFile -Append -Encoding utf8
+    if ($LASTEXITCODE -ne 0) { throw "[$Name] indicatrix-net pgo_codecs training run failed (exit $LASTEXITCODE)" }
 }
 
 # The last `"executable"` path in a `cargo --message-format=json` log, JSON-unescaped
@@ -360,12 +415,20 @@ function Test-ProfileHashApplied([string]$Profdata, [string]$Tdir, [string]$Name
 # rlib of that crate. `$PackageDir` is the package's directory name under the cargo
 # build-dir layout, `$RlibStem` the rlib's crate-name stem (underscores).
 function Test-CrateHashToken([string]$Profdata, [string]$Tdir, [string]$Name, [string]$FuncName, [string]$TokenPattern, [string]$PackageDir, [string]$RlibStem) {
-    $profLine = & $profdata show --all-functions $Profdata 2>&1 | Select-String -SimpleMatch $FuncName | Select-Object -First 1
-    if (-not $profLine) {
+    # Every manifest line that names the function, not just the first (BLD-1): a merged
+    # profile can hold the same symbol under more than one crate hash (e.g. the net test
+    # build's differently-featured `indicatrix`), and the order of `show --all-functions`
+    # decides which one comes first. All distinct tokens are collected; the rlib's token
+    # must be among them.
+    $profLines = @(& $profdata show --all-functions $Profdata 2>&1 | Select-String -SimpleMatch $FuncName)
+    if ($profLines.Count -eq 0) {
         Write-Warning "[$Name] '$FuncName' not found in $Profdata -- cannot verify the $PackageDir crate-hash match (training may not have recorded it; check the training run's own output)."
         return $false
     }
-    $profToken = [regex]::Match($profLine.Line, $TokenPattern).Value
+    $profTokens = @($profLines | ForEach-Object { [regex]::Match($_.Line, $TokenPattern).Value } |
+        Where-Object { $_ } | Sort-Object -Unique)
+    $profToken = $profTokens -join ','
+    $profLine = $profLines[0]
 
     # The compiled library is `lib<stem>-<hash>.rlib` in one of two layouts: the new
     # cargo build-dir layout (`build\<package>\<hash>\out\`, current nightly) or the
@@ -392,7 +455,7 @@ function Test-CrateHashToken([string]$Profdata, [string]$Tdir, [string]$Name, [s
         Write-Warning "[$Name] could not extract a '$TokenPattern' crate-hash token from one or both symbols -- cannot verify the $PackageDir crate-hash match. profile: '$($profLine.Line)' rlib: '$($nmLine.Line)'"
         return $false
     }
-    if ($profToken -ne $nmToken) {
+    if ($profTokens -notcontains $nmToken) {
         throw "[$Name] profile did NOT apply to ${PackageDir}: the merged profile's crate-hash token ($profToken) differs from the optimised build's rlib ($nmToken) for '$FuncName'. The instrumented and optimised builds resolved '$FuncName' to two different compiled crates (their package set, target, target-dir or feature list differ), so profile-use silently found nothing to apply."
     }
     Write-Host "  [$Name] crate-hash check OK ($PackageDir): $FuncName -> $profToken"
@@ -466,6 +529,11 @@ if ($Parallel) {
 
         Set-Location $root
         Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+        # sccache OFF for the instrumented and the -Cprofile-use build alike (BLD-1; see
+        # the sequential branch's comment for why). This job is its own process, so the
+        # setting dies with it and needs no restore.
+        $env:RUSTC_WRAPPER = ''
+        $env:CARGO_BUILD_RUSTC_WRAPPER = ''
 
         if (-not $SkipTrain -or -not (Test-Path $sharedMerged)) {
             if (Test-Path $pdir) { Remove-Item -Recurse -Force $pdir }
@@ -480,9 +548,21 @@ if ($Parallel) {
             }
 
             $env:LLVM_PROFILE_FILE = Join-Path $pdir 'train-%p-%m.profraw'
-            if ($SimdCap) { $env:INDICATRIX_SIMD = $SimdCap } else { Remove-Item Env:INDICATRIX_SIMD -ErrorAction SilentlyContinue }
             $exe = Join-Path $tdir "$hostTarget\release\examples\pgo_train.exe"
-            Invoke-Checked "[$name] training run (INDICATRIX_SIMD='$SimdCap')" { & $exe }
+            # Two-run tier training (BLD-1). A job cannot call Get-SimdTrainingCaps, so the
+            # same logic is inlined (keep the two in step).
+            Remove-Item Env:INDICATRIX_SIMD -ErrorAction SilentlyContinue
+            $runCaps = @($SimdCap)
+            if ($SimdCap) {
+                $rank = @{ scalar = 0; avx2 = 1; avx512 = 2 }
+                $hostTier = ((& $exe --print-simd-tier) | Select-Object -First 1).ToString().Trim()
+                if (-not $rank.ContainsKey($hostTier)) { throw "[$name] unexpected --print-simd-tier output '$hostTier'" }
+                if ($rank[$hostTier] -gt $rank[$SimdCap]) { $runCaps = @('', $SimdCap) }
+            }
+            foreach ($runCap in $runCaps) {
+                if ($runCap) { $env:INDICATRIX_SIMD = $runCap } else { Remove-Item Env:INDICATRIX_SIMD -ErrorAction SilentlyContinue }
+                Invoke-Checked "[$name] training run (INDICATRIX_SIMD='$runCap')" { & $exe }
+            }
 
             # indicatrix-cut-core's own training binary (cut target only), built by the
             # instrumented invocation above (see .DESCRIPTION's step 2b). A job cannot
@@ -505,6 +585,15 @@ if ($Parallel) {
             $netExe = $netMatches[$netMatches.Count - 1].Groups[1].Value -replace '\\\\', '\'
             $env:LLVM_PROFILE_FILE = Join-Path $pdir 'net-%p-%m.profraw'
             Invoke-Checked "[$name] indicatrix-net wire-protocol training run" { & $netExe --test-threads=1 }
+
+            # indicatrix-net's payload codecs (shuffle + zstd + LZ4), the fourth training
+            # binary; a job cannot call Invoke-CodecTraining, so it is inlined (keep in step).
+            Invoke-Checked "[$name] instrumented build (indicatrix-net pgo_codecs example)" {
+                cargo build --release --target $hostTarget --target-dir $tdir -p indicatrix-net --features render --example pgo_codecs
+            }
+            $env:LLVM_PROFILE_FILE = Join-Path $pdir 'codecs-%p-%m.profraw'
+            $codecsExe = Join-Path $tdir "$hostTarget\release\examples\pgo_codecs.exe"
+            Invoke-Checked "[$name] indicatrix-net payload codec training run" { & $codecsExe }
 
             $raw = @(Get-ChildItem -Path $pdir -Filter '*.profraw')
             if ($raw.Count -eq 0) { throw "no .profraw files were written to $pdir" }
@@ -637,6 +726,8 @@ else {
         $savedRustflags = $env:RUSTFLAGS
         $savedSimd = $env:INDICATRIX_SIMD
         $savedProfileFile = $env:LLVM_PROFILE_FILE
+        $savedWrapper = $env:RUSTC_WRAPPER
+        $savedCargoWrapper = $env:CARGO_BUILD_RUSTC_WRAPPER
 
         function Invoke-Checked {
             param([string]$Description, [scriptblock]$Command, [string]$LogFile)
@@ -649,6 +740,17 @@ else {
         try {
             Push-Location $root
             Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+            # sccache OFF for every cargo call of this combination, i.e. the instrumented
+            # build(s) AND the final -Cprofile-use build (BLD-1). `.cargo/config.toml` sets
+            # `[build] rustc-wrapper = "sccache"`; an empty env value overrides it (cargo
+            # treats an empty wrapper as none). With the wrapper on, an instrumented crate
+            # can be served from the cache as an object compiled WITHOUT
+            # `-Cprofile-generate` -> the training run writes empty profiles, and a
+            # profile-use build can be served stale objects keyed on the profdata PATH --
+            # the documented root cause of "profiles never applied" (2026-09-28).
+            # Restored in the `finally` below.
+            $env:RUSTC_WRAPPER = ''
+            $env:CARGO_BUILD_RUSTC_WRAPPER = ''
 
             if (-not $SkipTrain -or -not (Test-Path $sharedMerged)) {
                 if (Test-Path $pdir) { Remove-Item -Recurse -Force $pdir }
@@ -660,9 +762,12 @@ else {
                 } $logfile
 
                 $env:LLVM_PROFILE_FILE = Join-Path $pdir 'train-%p-%m.profraw'
-                if ($SimdCap) { $env:INDICATRIX_SIMD = $SimdCap } else { Remove-Item Env:INDICATRIX_SIMD -ErrorAction SilentlyContinue }
                 $exe = Join-Path $tdir "$hostTarget\release\examples\pgo_train.exe"
-                Invoke-Checked "[$name] training run (INDICATRIX_SIMD='$SimdCap')" { & $exe } $logfile
+                # Two-run tier training (BLD-1): see Get-SimdTrainingCaps.
+                foreach ($runCap in (Get-SimdTrainingCaps $exe $SimdCap)) {
+                    if ($runCap) { $env:INDICATRIX_SIMD = $runCap } else { Remove-Item Env:INDICATRIX_SIMD -ErrorAction SilentlyContinue }
+                    Invoke-Checked "[$name] training run (INDICATRIX_SIMD='$runCap')" { & $exe } $logfile
+                }
 
                 # indicatrix-cut-core's own training binary (cut target only), built by
                 # the instrumented invocation above -- see .DESCRIPTION's step 2b.
@@ -671,6 +776,10 @@ else {
                 # indicatrix-net's wire-protocol test, the third training binary
                 # (same set as scripts/pgo-bolt-build.sh).
                 Invoke-NetTraining $tdir $name $logfile
+
+                # indicatrix-net's payload codecs (shuffle + zstd + LZ4), the fourth
+                # training binary.
+                Invoke-CodecTraining $tdir $name $logfile
 
                 $raw = @(Get-ChildItem -Path $pdir -Filter '*.profraw')
                 if ($raw.Count -eq 0) { throw "no .profraw files were written to $pdir" }
@@ -721,6 +830,8 @@ else {
             if ($null -ne $savedRustflags) { $env:RUSTFLAGS = $savedRustflags } else { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
             if ($null -ne $savedSimd) { $env:INDICATRIX_SIMD = $savedSimd } else { Remove-Item Env:INDICATRIX_SIMD -ErrorAction SilentlyContinue }
             if ($null -ne $savedProfileFile) { $env:LLVM_PROFILE_FILE = $savedProfileFile } else { Remove-Item Env:LLVM_PROFILE_FILE -ErrorAction SilentlyContinue }
+            if ($null -ne $savedWrapper) { $env:RUSTC_WRAPPER = $savedWrapper } else { Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue }
+            if ($null -ne $savedCargoWrapper) { $env:CARGO_BUILD_RUSTC_WRAPPER = $savedCargoWrapper } else { Remove-Item Env:CARGO_BUILD_RUSTC_WRAPPER -ErrorAction SilentlyContinue }
         }
     }
 

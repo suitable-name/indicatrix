@@ -1,0 +1,152 @@
+import { TrainerTheme } from "theme.slint";
+import { TrainingController, StoneMetrics, LogEntry, MaterialItem, TierItem, DesignItem, ChartData } from "models.slint";
+import { UiState } from "state.slint";
+import { Banner } from "components/banner.slint";
+import { SegmentButton, SegmentRow } from "components/segmented.slint";
+import { AppBar } from "panels/app-bar.slint";
+import { SetupPanel } from "panels/setup-panel.slint";
+import { OverviewPanel } from "panels/overview-panel.slint";
+import { ChartsPanel } from "panels/charts-panel.slint";
+import { ConsolePanel } from "panels/console-panel.slint";
+import { Dialogs } from "panels/dialogs.slint";
+
+export { TrainingController, StoneMetrics, LogEntry, MaterialItem, TierItem, DesignItem, ChartData }
+
+export component AppWindow inherits Window {
+    title: "Indicatrix Trainer";
+    preferred-width: 1280px;
+    preferred-height: 840px;
+    min-width: 1060px;
+    min-height: 720px;
+    background: TrainerTheme.bg-app;
+    forward-focus: keys;
+
+    // Return focus to the shortcut scope when a dialog closes.
+    private property <bool> dialog_open: dialogs.open();
+    changed dialog_open => { if !root.dialog_open { keys.focus(); } }
+
+    function toggle_run() {
+        if TrainingController.is_training {
+            if UiState.can_command { TrainingController.pause_training(); }
+        } else if UiState.can_start {
+            TrainingController.start_training();
+        }
+    }
+
+    keys := FocusScope {
+        key-pressed(e) => {
+            if dialogs.open() { return reject; }
+            if e.text == Key.F5 { root.toggle_run(); return accept; }
+            if e.text == Key.F6 {
+                if UiState.can_start && !TrainingController.is_training { TrainingController.step_training(); }
+                return accept;
+            }
+            if e.modifiers.control {
+                if e.text == "s" || e.text == "\u{13}" {
+                    if UiState.can_command { TrainingController.save_weights(); }
+                    return accept;
+                }
+                if e.text == "o" || e.text == "\u{f}" {
+                    if UiState.can_command { dialogs.request_load(); }
+                    return accept;
+                }
+                if e.text == "1" { UiState.tab = 0; return accept; }
+                if e.text == "2" { UiState.tab = 1; return accept; }
+                if e.text == "3" { UiState.tab = 2; return accept; }
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+
+            AppBar { reset-requested => { dialogs.request_reset(); } }
+
+            // Banners
+            VerticalLayout {
+                spacing: 6px;
+                if !TrainingController.worker_alive: Banner {
+                    kind: 2;
+                    message: "The training worker has stopped. Commands are disabled until it restarts.";
+                    action_text: "Restart Worker";
+                    action_tip: "Start a fresh worker. Weights that were not saved are lost.";
+                    dismissible: false;
+                    action => { TrainingController.restart_worker(); }
+                }
+                if TrainingController.notice != "": Banner {
+                    kind: TrainingController.notice_is_error ? 2 : 0;
+                    message: TrainingController.notice;
+                    dismiss => { TrainingController.dismiss_notice(); }
+                }
+                if TrainingController.update_notice != "": Banner {
+                    kind: 0;
+                    message: TrainingController.update_notice;
+                    action_text: "View Release";
+                    action_tip: "Open the release page in your browser. Nothing is downloaded.";
+                    secondary_text: "Skip This Version";
+                    secondary_tip: "Do not announce this version again.";
+                    dismiss_text: "Later";
+                    action => { TrainingController.open_release(); }
+                    secondary => { TrainingController.skip_release(); }
+                    dismiss => { TrainingController.dismiss_release(); }
+                }
+                if TrainingController.viewing_import: Banner {
+                    kind: 1;
+                    message: "Viewing imported run — " + TrainingController.import_label + ". Training is not shown.";
+                    action_text: "Return to Live";
+                    action_tip: "Show the live run again.";
+                    dismissible: false;
+                    action => { TrainingController.return_to_live(); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                SetupPanel {
+                    tier-requested(c) => { dialogs.request_tier(c); }
+                    load-requested => { dialogs.request_load(); }
+                    import-requested => { dialogs.request_import(); }
+                }
+                VerticalLayout {
+                    spacing: 10px;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        alignment: start;
+                    SegmentRow {
+                        height: 32px;
+                        preferred-width: 440px;
+                        SegmentButton {
+                            label: "Overview";
+                            tip: "Key figures, reward chart and optics. Shortcut: Ctrl+1";
+                            selected: UiState.tab == 0;
+                            activated => { UiState.tab = 0; }
+                        }
+                        SegmentButton {
+                            label: "Charts";
+                            tip: "Loss, cosine, acceptance, model to oracle ratio, speed and phase times. Shortcut: Ctrl+2";
+                            selected: UiState.tab == 1;
+                            activated => { UiState.tab = 1; }
+                        }
+                        SegmentButton {
+                            label: "Console" + (TrainingController.warning_count + TrainingController.error_count > 0
+                                ? " (" + TrainingController.warning_count + " ⚠ " + TrainingController.error_count + " ✖)" : "");
+                            tip: "The training log. Shortcut: Ctrl+3";
+                            selected: UiState.tab == 2;
+                            activated => { UiState.tab = 2; }
+                        }
+                    }
+                    }
+                    if UiState.tab == 0: OverviewPanel { }
+                    if UiState.tab == 1: ChartsPanel { }
+                    if UiState.tab == 2: ConsolePanel { }
+                }
+            }
+        }
+    }
+
+    dialogs := Dialogs {
+        width: parent.width;
+        height: parent.height;
+    }
+}

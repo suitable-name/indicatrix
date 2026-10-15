@@ -1,18 +1,17 @@
-//! The self-contained `.indicatrix` design file: round trips, determinism, version
-//! gating, kind detection, tier correlation by id and sidecar migration.
+//! The self-contained `.isdd` design file: round trips, determinism, version
+//! gating, kind detection and tier correlation by id.
 
 use super::fixtures::{simple_design, unsolved_design};
 use crate::{
-    design::{ConcaveTier, ConcaveTool, Design, TierTarget, ToolMotion},
+    design::{ConcaveTier, ConcaveTool, Design, StoneRenderEffects, TierTarget, ToolMotion},
     native::{
         DESIGN_HISTORY_LIMIT, DesignExtras, DesignFileError, DesignLoadError, FileKind,
-        design_from_file, design_from_str, design_to_file, design_to_string, load_paired,
-        migrate_sidecar_to_file, save_paired,
+        catalogue_asc, design_from_file, design_from_str, design_to_file, design_to_string,
     },
     preform::PreformSpec,
 };
 use indicatrix::geometry::stone_metrics::ExternalProportions;
-use indicatrix_formats::native::design::{CONCAVE_FRAME_V0, DESIGN_VERSION_RELATIONS, detect_kind};
+use indicatrix_formats::native::design::{CONCAVE_FRAME_V0, DESIGN_VERSION_PLANES, detect_kind};
 
 fn proportions() -> ExternalProportions {
     ExternalProportions {
@@ -82,6 +81,80 @@ fn a_design_round_trips_bit_identically_through_the_file() {
 /// Builds from 2026-09-28 wrote the per-design body colour as `body_colour_override`. Such
 /// a design file must still give the design its colour, and saving it again must write the
 /// current key once, not both.
+/// A design with every per-design stone effect on, and one value that is not a round number.
+fn hazy_design() -> Design {
+    let mut design = simple_design();
+    design.render_effects =
+        StoneRenderEffects::from_render_values(0.5, true, 30.0, 120.0, true, 0.0125);
+    design
+}
+
+/// The stone effects live in the file's `[render_effects]` table and come back exactly.
+#[test]
+fn the_stone_effects_round_trip_through_the_render_effects_table() {
+    let design = hazy_design();
+    let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
+    assert!(text.contains("[render_effects]"), "{text}");
+    let loaded = design_from_str(&text).expect("opens");
+    assert_eq!(loaded.design.render_effects, design.render_effects);
+    assert_eq!(loaded.design, design);
+    // And the text is stable under a reload, like the rest of the file.
+    let again =
+        design_to_string(&loaded.design, None, &DesignExtras::default()).expect("serializes");
+    assert_eq!(again, text);
+}
+
+/// A design with every effect off writes no table at all, so its file is byte-identical to what
+/// builds before the table wrote, and a file without the table reads as "all effects off".
+#[test]
+fn a_design_without_stone_effects_writes_no_render_effects_table() {
+    let mut design = hazy_design();
+    design.render_effects = StoneRenderEffects::default();
+    let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
+    assert!(!text.contains("render_effects"), "{text}");
+    // The same design with the effects on differs from it only by that table.
+    let with_effects =
+        design_to_string(&hazy_design(), None, &DesignExtras::default()).expect("serializes");
+    let table_start = with_effects
+        .find("[render_effects]")
+        .expect("the table is written");
+    let without_table = with_effects[..table_start].trim_end();
+    assert!(
+        text.starts_with(without_table),
+        "the table is the only difference before it"
+    );
+    let loaded = design_from_str(&text).expect("opens");
+    assert!(loaded.design.render_effects.is_default());
+}
+
+/// A table written by an older or newer revision (a key missing, a key not known) still loads.
+#[test]
+fn a_partial_render_effects_table_reads_the_missing_keys_as_off() {
+    let design = hazy_design();
+    let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
+    let start = text.find("[render_effects]").expect("the table is written");
+    let tail = &text[start..];
+    let end = tail[1..]
+        .find(
+            "
+[",
+        )
+        .map_or(tail.len(), |i| i + 1);
+    let edited = format!(
+        "{}[render_effects]
+girdle_frosted = true
+a_future_key = 1
+{}",
+        &text[..start],
+        &tail[end..]
+    );
+    let loaded = design_from_str(&edited).expect("opens");
+    let effects = loaded.design.render_effects;
+    assert!(effects.girdle_frosted);
+    assert!(!effects.c_axis_override_enabled);
+    assert!(effects.inclusion_sigma_s.abs() < f64::EPSILON);
+}
+
 #[test]
 fn a_design_file_with_the_old_body_colour_spelling_still_applies_it() {
     let design = rich_design();
@@ -159,15 +232,40 @@ fn a_newer_major_version_is_a_typed_error() {
     let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
     let newer = text.replacen(
         "version = 1",
-        &format!("version = {}", DESIGN_VERSION_RELATIONS + 1),
+        &format!("version = {}", DESIGN_VERSION_PLANES + 1),
         1,
     );
     match design_from_str(&newer) {
         Err(DesignLoadError::File(DesignFileError::UnsupportedVersion { found, .. })) => {
-            assert_eq!(found, i64::from(DESIGN_VERSION_RELATIONS + 1));
+            assert_eq!(found, i64::from(DESIGN_VERSION_PLANES + 1));
         }
         other => panic!("expected UnsupportedVersion, got {other:?}"),
     }
+}
+
+/// A design whose preform is a plane set is written as a version 4 file (a build that
+/// predates the kind refuses it by version) and opens with the identical set.
+#[test]
+fn a_plane_set_preform_writes_a_version_4_file_and_round_trips() {
+    let mut design = rich_design();
+    design.preform = PreformSpec::from_planes(
+        PreformSpec::block(2.0, 1.0, 2.0).planes(),
+        "plan 'Aqua'".to_string(),
+    )
+    .expect("a block's planes close");
+    let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
+    assert!(
+        text.starts_with(&format!(
+            "format = \"indicatrix-design\"\nversion = {DESIGN_VERSION_PLANES}\n"
+        )),
+        "{text}"
+    );
+    let loaded = design_from_str(&text).expect("opens");
+    assert_eq!(loaded.design.preform, design.preform);
+    assert_eq!(loaded.design, design);
+    let again =
+        design_to_string(&loaded.design, None, &DesignExtras::default()).expect("serializes");
+    assert_eq!(again, text);
 }
 
 #[test]
@@ -208,94 +306,28 @@ fn history_is_bounded_to_the_newest_entries() {
     assert_eq!(kept.first().map(String::as_str), Some("edit 5"));
 }
 
+/// A file of the removed overlay sidecar format is no design file: it is not recognised
+/// as one and is refused with a typed error rather than opened.
 #[test]
-fn an_old_overlay_sidecar_is_recognised_and_not_opened_as_a_design() {
-    let design = simple_design();
-    let saved = save_paired(&design, "design.asc", None, None, None).expect("saves");
-    assert_eq!(
-        detect_kind(saved.native_toml.as_bytes()),
-        FileKind::OverlaySidecar
-    );
+fn an_old_overlay_sidecar_is_not_a_design_file_and_is_refused() {
+    let sidecar = "format_version = 1\n\
+                   asc_filename = \"design.asc\"\n\
+                   asc_sha256 = \"00\"\n\n\
+                   [preform]\n\
+                   shape = { kind = \"block\" }\n\
+                   half_width = 1.0\n\
+                   length_over_width = 1.0\n\
+                   depth = 2.0\n";
+    assert_eq!(detect_kind(sidecar.as_bytes()), FileKind::Unknown);
     assert!(matches!(
-        design_from_str(&saved.native_toml),
+        design_from_str(sidecar),
         Err(DesignLoadError::File(
             DesignFileError::NotADesignFile { .. }
         ))
     ));
+    let design = simple_design();
     let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
     assert_eq!(detect_kind(text.as_bytes()), FileKind::Design);
-}
-
-#[test]
-fn a_paired_design_migrates_to_a_self_contained_file() {
-    let design = rich_design();
-    let history = vec!["Set angle".to_string()];
-    let saved =
-        save_paired(&design, "design.asc", None, None, Some(&proportions())).expect("saves");
-    let saved = {
-        // Re-save with a history trail attached to the sidecar.
-        let mut native = saved.native.clone();
-        native.history = Some(indicatrix_formats::native::HistoryTable::new(
-            history.clone(),
-        ));
-        native
-            .unknown
-            .insert("future_key".to_string(), toml::Value::Integer(7));
-        (saved.asc_text, native)
-    };
-    let (asc_text, sidecar) = saved;
-    let sidecar_text = indicatrix_formats::native::to_toml_string(&sidecar).expect("serializes");
-    let paired = load_paired(&asc_text, &sidecar_text, false).expect("paired load");
-
-    let file = migrate_sidecar_to_file(&paired.design, &sidecar);
-    assert_eq!(
-        file.unknown
-            .get("future_key")
-            .and_then(toml::Value::as_integer),
-        Some(7)
-    );
-    let text = indicatrix_formats::native::design::to_string(&file).expect("serializes");
-    assert!(!text.contains("asc_filename") && !text.contains("asc_sha256"));
-
-    let loaded = design_from_str(&text).expect("opens");
-    assert_eq!(loaded.design, paired.design);
-    assert!(loaded.design.tier_ids_eq(&paired.design));
-    assert_eq!(
-        loaded.printed_proportions.map(figures),
-        Some(figures(proportions()))
-    );
-    assert_eq!(loaded.history_entries, history);
-}
-
-/// The sidecar's concave stash and the fingerprint written next to it are both rebuilt from
-/// the design; neither may ride along into the design file as an unknown top-level key (it
-/// would be rewritten on every save and never read).
-#[test]
-fn migrating_a_concave_sidecar_drops_its_stash_and_its_fingerprint() {
-    use crate::native::convert::{CONCAVE_FLAT_FINGERPRINT_KEY, CONCAVE_TIERS_STASH_KEY};
-    let design = concave_design();
-    let saved = save_paired(&design, "x.asc", None, None, None).expect("saves");
-    assert!(saved.native.unknown.contains_key(CONCAVE_TIERS_STASH_KEY));
-    assert!(
-        saved
-            .native
-            .unknown
-            .contains_key(CONCAVE_FLAT_FINGERPRINT_KEY),
-        "the sidecar carries the fingerprint, so the migration has something to drop"
-    );
-    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("loads");
-
-    let file = migrate_sidecar_to_file(&loaded.design, &saved.native);
-    assert!(!file.unknown.contains_key(CONCAVE_TIERS_STASH_KEY));
-    assert!(!file.unknown.contains_key(CONCAVE_FLAT_FINGERPRINT_KEY));
-    let text = indicatrix_formats::native::design::to_string(&file).expect("serializes");
-    assert!(
-        !text.contains(CONCAVE_FLAT_FINGERPRINT_KEY) && !text.contains(CONCAVE_TIERS_STASH_KEY),
-        "no stash or fingerprint key in the file"
-    );
-    // The concave tiers themselves still come from the design.
-    let reopened = design_from_str(&text).expect("opens");
-    assert_eq!(reopened.design.concave_tiers, design.concave_tiers);
 }
 
 /// Two concave tiers touching every field, one per angle sign, with a cone (which
@@ -393,22 +425,6 @@ fn concave_tier_ids_survive_a_reopen_after_a_flat_tier_and_a_reorder() {
     assert_eq!(again, text);
 }
 
-#[test]
-fn the_paired_sidecar_and_the_autosave_keep_concave_tier_ids() {
-    use crate::native::{SaveExtras, load_native_only, save_native_only_toml};
-    let mut design = concave_design();
-    design.concave_tier_ids.reverse();
-    design.concave_tiers.reverse();
-    let toml =
-        save_native_only_toml(&design, "x.asc", None, &SaveExtras::default()).expect("serializes");
-    let restored = load_native_only(&toml).expect("restores").design;
-    assert_eq!(restored.concave_tier_ids, design.concave_tier_ids);
-
-    let saved = save_paired(&design, "x.asc", None, None, None).expect("saves");
-    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("loads");
-    assert_eq!(loaded.design.concave_tier_ids, design.concave_tier_ids);
-}
-
 /// A file saved before the key existed still opens; its concave tiers get fresh ids that
 /// no flat tier holds. A repeated id, or one a flat tier owns, is kept by one holder only.
 #[test]
@@ -462,30 +478,6 @@ fn files_without_or_with_clashing_concave_tier_ids_still_open_with_distinct_ids(
     }
 }
 
-/// A concave record that cannot be written must leave a marker in its slot, so the
-/// restore names the position instead of the list silently shrinking.
-#[test]
-fn a_concave_record_that_cannot_be_stashed_leaves_a_marker_the_restore_refuses() {
-    use crate::native::convert::{
-        CONCAVE_TIERS_STASH_KEY, concave_tier_tables, stash_entry, unstash_concave_tiers,
-    };
-    let design = concave_design();
-    let good = toml::Value::try_from(concave_tier_tables(&design)[0].clone()).expect("writes");
-    let marker = stash_entry(1, Err::<toml::Value, _>("a made-up failure"));
-    let toml::Value::String(text) = &marker else {
-        panic!("the marker is a text value, not a dropped slot");
-    };
-    assert!(text.contains("concave tier 2") && text.contains("a made-up failure"));
-
-    let mut unknown = toml::Table::new();
-    unknown.insert(
-        CONCAVE_TIERS_STASH_KEY.to_string(),
-        toml::Value::Array(vec![good, marker]),
-    );
-    let (position, _) = unstash_concave_tiers(&unknown).expect_err("the marker is refused");
-    assert_eq!(position, 1);
-}
-
 #[test]
 fn a_concave_tier_with_an_unknown_tool_is_refused_on_open() {
     let text = design_to_string(&concave_design(), None, &DesignExtras::default()).expect("ok");
@@ -496,34 +488,17 @@ fn a_concave_tier_with_an_unknown_tool_is_refused_on_open() {
     ));
 }
 
+/// The catalogue `.asc` a save stores carries each concave tier as two ASCII footnotes
+/// tagged as generated, after the footnotes the user typed (which stay, in order, even
+/// when one is shaped exactly like a tool line).
 #[test]
-fn the_paired_sidecar_and_the_autosave_carry_concave_tiers_too() {
-    use crate::native::{SaveExtras, load_native_only, save_native_only_toml};
-    let design = concave_design();
-    let toml =
-        save_native_only_toml(&design, "x.asc", None, &SaveExtras::default()).expect("serializes");
-    let restored = load_native_only(&toml).expect("restores").design;
-    assert_eq!(restored.concave_tiers, design.concave_tiers);
-
-    let saved = save_paired(&design, "x.asc", None, None, None).expect("saves");
-    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("loads");
-    assert_eq!(loaded.design.concave_tiers, design.concave_tiers);
-    // A planar sidecar gains no stash key.
-    let planar = save_paired(&simple_design(), "x.asc", None, None, None).expect("saves");
-    assert!(!planar.native_toml.contains("concave"));
-}
-
-/// The paired `.asc` carries each concave tier as two ASCII footnotes tagged as generated;
-/// the paired load takes exactly those out of the design's footnotes again and leaves alone
-/// a note the user typed in the same shape.
-#[test]
-fn the_paired_asc_footnotes_are_ascii_and_a_users_look_alike_note_survives_the_load() {
+fn the_catalogue_asc_footnotes_are_ascii_and_a_users_look_alike_note_stays() {
     let mut design = concave_design();
     design.meta.footnotes = vec![
         "Notch  12.00  5  by hand".to_string(),
         "CYL  +45.00 deg  X = 0.100, Y = 0.200, Z = 0.300  D/W = 0.300, plunge".to_string(),
     ];
-    let saved = save_paired(&design, "x.asc", None, None, None).expect("saves");
+    let saved = catalogue_asc(&design, None, None).expect("saves");
     let footnote_lines: Vec<&str> = saved
         .asc_text
         .lines()
@@ -538,71 +513,10 @@ fn the_paired_asc_footnotes_are_ascii_and_a_users_look_alike_note_survives_the_l
         "{footnote_lines:?}"
     );
 
-    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("loads");
+    // The design file itself keeps the user's footnotes only: the concave tiers are
+    // records of their own, never footnotes.
+    let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
+    let loaded = design_from_str(&text).expect("opens");
     assert_eq!(loaded.design.meta.footnotes, design.meta.footnotes);
-}
-
-/// An older build can edit the flat tiers and re-save the stash verbatim; the stash
-/// then describes a different stone. Restoring it is an error, never a silent drop
-/// or a silent restore, and a stash from before the fingerprint existed still loads.
-#[test]
-fn a_stash_saved_against_other_flat_tiers_is_refused_not_restored() {
-    use crate::native::{
-        LoadNativeOnlyError, LoadPairedError, SaveExtras, load_native_only, save_native_only_toml,
-    };
-    const KEY: &str = "indicatrix_cut_core_concave_flat_fingerprint";
-    let design = concave_design();
-    let saved = save_paired(&design, "x.asc", None, None, None).expect("saves");
-    assert!(
-        saved.native_toml.contains(KEY),
-        "the stash carries a fingerprint"
-    );
-
-    let forged = |toml: &str| -> String {
-        toml.lines()
-            .map(|line| {
-                if line.trim_start().starts_with(KEY) {
-                    format!("{KEY} = \"{}\"", "0".repeat(64))
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    assert!(matches!(
-        load_paired(&saved.asc_text, &forged(&saved.native_toml), false),
-        Err(LoadPairedError::ConcaveStale { .. })
-    ));
-
-    // The flat schedule edited under the stash (an older build re-saved the stash).
-    // The concave fixture solves, so its sidecar is an ordinary (non-draft) one.
-    let fixture = Design::concave_fixture();
-    let paired = save_paired(&fixture, "x.asc", None, None, None).expect("saves");
-    assert!(paired.draft_reason.is_none());
-    load_paired(&paired.asc_text, &paired.native_toml, false).expect("the untouched pair loads");
-    let mut edited = fixture;
-    edited.tiers[1].angle_deg += 1.0;
-    let edited_asc = save_paired(&edited, "x.asc", None, None, None).expect("saves");
-    assert!(matches!(
-        load_paired(&edited_asc.asc_text, &paired.native_toml, false),
-        Err(LoadPairedError::ConcaveStale { .. })
-    ));
-
-    let autosave =
-        save_native_only_toml(&design, "x.asc", None, &SaveExtras::default()).expect("saves");
-    assert!(matches!(
-        load_native_only(&forged(&autosave)),
-        Err(LoadNativeOnlyError::ConcaveStale { .. })
-    ));
-
-    // A stash written before the fingerprint existed has none to check.
-    let legacy: String = saved
-        .native_toml
-        .lines()
-        .filter(|line| !line.trim_start().starts_with(KEY))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let loaded = load_paired(&saved.asc_text, &legacy, false).expect("loads");
     assert_eq!(loaded.design.concave_tiers, design.concave_tiers);
 }

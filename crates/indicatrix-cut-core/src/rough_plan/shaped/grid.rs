@@ -88,6 +88,10 @@ impl ShapedGrid {
     /// lane count. Reports [`PlanProgress::Grid`] once per x-plane (`done` is the plane,
     /// 1-based; the events of different lanes interleave) on the calling thread; `None`
     /// when cancelled. With one lane nothing is spawned.
+    ///
+    /// # Panics
+    /// Panics if a design index exceeds `u32::MAX` or an orientation index exceeds
+    /// `u8::MAX`, which the bounded design pool and the six orientations never produce.
     pub fn size_table_lanes(
         &self,
         settings: &PlanSettings,
@@ -116,8 +120,10 @@ impl ShapedGrid {
                             let (d, o, v) = best_pick(&norms, p, settings.min_width_mm)
                                 .unwrap_or((0, 0, f64::NEG_INFINITY));
                             part.values.push(v);
-                            part.design.push(d as u32);
-                            part.orient.push(o as u8);
+                            part.design
+                                .push(u32::try_from(d).expect("a design index fits u32"));
+                            part.orient
+                                .push(u8::try_from(o).expect("an orientation index is below 6"));
                         }
                     }
                     if !report(PlanProgress::Grid {

@@ -7,13 +7,31 @@
 //! Error propagation (independent noise, `D = white - dark`):
 //! `var(t) = (var_s + (1 - t)^2 var_d / n_d + t^2 var_w / n_w) / D^2`, with the frame variances
 //! from the view's [`NoiseModel`] and `n_w`, `n_d` the numbers of averaged frames.
+//!
+//! # The JPEG block-DC error (S2)
+//!
+//! The stone frame's compression error of an 8-bit JPEG has two parts (see
+//! [`estimate_stone_compression`]): the per-pixel AC error, independent from pixel to pixel, and
+//! the DC quantisation offset of each 8 x 8 block, constant inside a block. The photo-resolution
+//! [`TransmittanceImage::variance`] holds both (the marginal variance of one pixel), and
+//! [`TransmittanceImage::block_variance`] the DC part alone. Averaging onto the working grid
+//! ([`TransmittanceImage::to_working`]) treats the AC part as independent (variance divided by the
+//! pixel count `N = scale^2` under a working pixel) and the DC part as fully correlated within a
+//! block: for a working pixel of `N` photo pixels the DC variance is `var_dc * min(1, 64 / N)` (a
+//! working pixel of one block or less does not average it down, many blocks average by the block
+//! count). The correlation BETWEEN working pixels that share a block (working pixels smaller than
+//! a block) is not modelled, and the white frame's own block offsets are not estimated (the
+//! flat white frame is averaged over several exposures).
 
 use super::{
     linear::{LinearImage, PhotometryError, SourceKind},
     mask::{PixelMask, flag},
     noise::{NoiseModel, NoiseOptions, estimate_noise},
     resample::{ResampleOptions, ResampleSource, ResampledImage, WorkingGrid, resample},
-    srgb::{COMPRESSION_SIGMA_ENCODED, encoding_variance_with, estimate_compression_sigma},
+    srgb::{
+        COMPRESSION_SIGMA_ENCODED, JPEG_BLOCK, StoneCompression, block_dc_variance,
+        encoding_variance_with, estimate_compression_sigma, estimate_stone_compression,
+    },
 };
 
 /// The empty-rig frames of one view: the backlit white frames and the backlight-off dark frames.
@@ -27,6 +45,10 @@ pub struct CalibrationFrames {
 }
 
 /// The mean of several frames of one size, and how many there were.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the pixel storage precision; the per-channel mean is a normal-range float"
+)]
 fn average(frames: &[LinearImage]) -> Result<(LinearImage, usize), PhotometryError> {
     let first = frames.first().ok_or(PhotometryError::NoFrames)?;
     let mut sum = vec![[0.0_f64; 3]; first.pixels.len()];
@@ -112,6 +134,10 @@ pub struct TransmittanceImage {
     pub values: Vec<[f32; 3]>,
     /// The propagated variance per channel; infinite where `white - dark` is not positive.
     pub variance: Vec<[f32; 3]>,
+    /// The part of [`variance`](Self::variance) that is the stone frame's JPEG block-DC error
+    /// (zero for every source but an 8-bit one, and where no block estimate exists): constant
+    /// inside an 8 x 8 block, so it is propagated onto the working grid as fully correlated.
+    pub block_variance: Vec<[f32; 3]>,
     /// [`flag::SATURATED`] (stone or white frame) and [`flag::BELOW_NOISE`].
     pub mask: PixelMask,
 }
@@ -120,25 +146,60 @@ impl TransmittanceImage {
     /// Area-averages the transmittance onto the working grid; masked pixels do not enter the
     /// average (see [`resample`]).
     ///
+    /// The per-pixel part of the variance is averaged as independent noise; the block-DC part
+    /// ([`block_variance`](Self::block_variance)) as fully correlated within a block: a working
+    /// pixel of `N = scale^2` photo pixels carries `var_dc * min(1, 64 / N)` of it (module notes).
+    ///
     /// # Errors
     ///
     /// As [`resample`].
+    #[expect(
+        clippy::float_cmp,
+        reason = "an all-zero block-variance plane is the exact 'no block data' marker, never a computed value"
+    )]
     pub fn to_working(
         &self,
         grid: &WorkingGrid,
         options: &ResampleOptions,
     ) -> Result<ResampledImage, PhotometryError> {
-        resample(
-            &ResampleSource {
-                width: self.width,
-                height: self.height,
-                values: &self.values,
-                variance: Some(&self.variance),
-                mask: Some(&self.mask),
-            },
-            grid,
-            options,
-        )
+        let source = |variance: &[[f32; 3]]| {
+            resample(
+                &ResampleSource {
+                    width: self.width,
+                    height: self.height,
+                    values: &self.values,
+                    variance: Some(variance),
+                    mask: Some(&self.mask),
+                },
+                grid,
+                options,
+            )
+        };
+        if self.block_variance.iter().all(|v| *v == [0.0; 3]) {
+            return source(&self.variance);
+        }
+        let per_pixel: Vec<[f32; 3]> = self
+            .variance
+            .iter()
+            .zip(&self.block_variance)
+            .map(|(total, block)| [0, 1, 2].map(|c| (total[c] - block[c]).max(0.0)))
+            .collect();
+        let mut image = source(&per_pixel)?;
+        let block = source(&self.block_variance)?;
+        // The independent average of the block variance is `var_dc / N`; the correlated one is
+        // `var_dc * min(1, 64 / N)`, i.e. a factor `min(N, 64)` on top.
+        let photo_pixels = grid.scale * grid.scale;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the factor is in 1..=64; f32 is the image-variance storage precision"
+        )]
+        let factor = photo_pixels.min((JPEG_BLOCK * JPEG_BLOCK) as f64).max(1.0) as f32;
+        for (total, dc) in image.variance.iter_mut().zip(&block.variance) {
+            for c in 0..3 {
+                total[c] = dc[c].mul_add(factor, total[c]);
+            }
+        }
+        Ok(image)
     }
 }
 
@@ -177,14 +238,46 @@ impl ViewCalibration {
         stone: &LinearImage,
         options: &TransmittanceOptions,
     ) -> Result<TransmittanceImage, PhotometryError> {
+        self.transmittance_masked(stone, options, None)
+    }
+
+    /// [`transmittance`](Self::transmittance) with the stone's exclusion mask, at the stone
+    /// photo's resolution, for the estimate of the stone's compression error (the pixels the
+    /// mask flags, outline and edge included, do not enter it). Without a mask every pixel does.
+    ///
+    /// # Errors
+    ///
+    /// As [`transmittance`](Self::transmittance), and [`PhotometryError::SizeMismatch`] when the
+    /// mask and the stone photo differ in size.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one straight-line pipeline (validate, linearise, divide, propagate variance); splitting adds plumbing only"
+    )]
+    pub fn transmittance_masked(
+        &self,
+        stone: &LinearImage,
+        options: &TransmittanceOptions,
+        stone_mask: Option<&PixelMask>,
+    ) -> Result<TransmittanceImage, PhotometryError> {
         let (white, n_white) = self.frames.mean_white()?;
         let (dark, n_dark) = self.frames.mean_dark()?;
         stone.require_same_size(&white)?;
         white.require_same_size(&dark)?;
+        if let Some(mask) =
+            stone_mask.filter(|m| m.width() != stone.width || m.height() != stone.height)
+        {
+            return Err(PhotometryError::SizeMismatch {
+                expected: [stone.width, stone.height],
+                found: [mask.width(), mask.height()],
+            });
+        }
         let (n_w, n_d) = (n_white as f32, n_dark as f32);
-        // The compression error of an 8-bit source, estimated from the first white frame itself
-        // (round 3, D4.2); the assumed constant only without a usable white frame.
-        let compression = self
+        // The compression error of an 8-bit source (ZC-3). The stone's own term comes from the
+        // stone frame (a robust Laplacian: a flat frame compresses almost perfectly, a textured
+        // stone does not); the white and dark frames use the local variance of the first white
+        // frame, which is correctly tiny for a flat frame. The assumed constant only where the
+        // frame offers no usable estimate.
+        let compression_white = self
             .frames
             .white
             .first()
@@ -192,9 +285,22 @@ impl ViewCalibration {
                 estimate_compression_sigma(frame, &self.noise, options.saturation_fraction)
             })
             .unwrap_or([COMPRESSION_SIGMA_ENCODED; 3]);
+        let compression_stone = if stone.variance.is_some() {
+            StoneCompression {
+                ac: compression_white,
+                block_dc: [0.0; 3],
+            }
+        } else {
+            estimate_stone_compression(stone, &self.noise, stone_mask, options.saturation_fraction)
+                .unwrap_or(StoneCompression {
+                    ac: [COMPRESSION_SIGMA_ENCODED; 3],
+                    block_dc: [0.0; 3],
+                })
+        };
         let count = stone.pixels.len();
         let mut values = Vec::with_capacity(count);
         let mut variance = Vec::with_capacity(count);
+        let mut block_variance = Vec::with_capacity(count);
         let mut mask = PixelMask::new(stone.width, stone.height);
         let stone_limit = stone.full_scale * options.saturation_fraction;
         let white_limit = white.full_scale * options.saturation_fraction;
@@ -208,6 +314,7 @@ impl ViewCalibration {
             let (x, y) = (i % stone.width, i / stone.width);
             let mut t = [0.0_f32; 3];
             let mut var = [f32::INFINITY; 3];
+            let mut block = [0.0_f32; 3];
             let mut bits = 0_u8;
             for c in 0..3 {
                 if s[c] >= stone_limit || w[c] >= white_limit {
@@ -223,7 +330,7 @@ impl ViewCalibration {
                                 stone.source,
                                 stone.non_linear_source,
                                 s[c],
-                                compression[c],
+                                compression_stone.ac[c],
                             )
                     },
                     |v| v[i][c],
@@ -233,7 +340,7 @@ impl ViewCalibration {
                         white.source,
                         white.non_linear_source,
                         w[c],
-                        compression[c],
+                        compression_white[c],
                     ))
                     / n_w;
                 let var_d = (self.noise.variance(c, d[c])
@@ -241,7 +348,7 @@ impl ViewCalibration {
                         dark.source,
                         dark.non_linear_source,
                         d[c],
-                        compression[c],
+                        compression_white[c],
                     ))
                     / n_d;
                 let var_span = var_w + var_d;
@@ -254,6 +361,15 @@ impl ViewCalibration {
                     var[c] = (one_minus * one_minus)
                         .mul_add(var_d, (t[c] * t[c]).mul_add(var_w, var_s))
                         / (span * span);
+                    // The stone frame's block-DC error (S2), divided by the span like the rest.
+                    let dc = block_dc_variance(
+                        stone.source,
+                        stone.non_linear_source,
+                        s[c],
+                        compression_stone.block_dc[c],
+                    ) / (span * span);
+                    block[c] = dc;
+                    var[c] += dc;
                 }
             }
             if bits != 0 {
@@ -261,12 +377,14 @@ impl ViewCalibration {
             }
             values.push(t);
             variance.push(var);
+            block_variance.push(block);
         }
         Ok(TransmittanceImage {
             width: stone.width,
             height: stone.height,
             values,
             variance,
+            block_variance,
             mask,
         })
     }

@@ -278,7 +278,7 @@ fn report_progress(
     let ui_weak = ui_weak.clone();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         let model = ui.global::<TiltVideoExportModel>();
-        model.set_current_frame(done as i32);
+        model.set_current_frame(i32::try_from(done).unwrap_or(i32::MAX));
         let fraction = params::export_progress_fraction(done, total);
         model.set_progress(fraction);
         model.set_last_frame_seconds(last_frame_secs);

@@ -7,7 +7,7 @@
 use super::{
     attachment::{AttachmentsError, validate_attachments},
     schema::{
-        CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION_RELATIONS, DesignFile, MAX_DESIGN_TIERS,
+        CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION_PLANES, DesignFile, MAX_DESIGN_TIERS,
     },
 };
 use crate::asc::AscParseError;
@@ -128,21 +128,15 @@ impl std::error::Error for DesignFileError {
 pub enum FileKind {
     /// A self-contained design file (`format = "indicatrix-design"`).
     Design,
-    /// An overlay sidecar of the older paired format (`.indicatrix.toml` or
-    /// `.gemcut.toml`): it needs its `.asc` next to it.
-    OverlaySidecar,
-    /// Neither.
+    /// Anything else, including the removed overlay sidecar (`.indicatrix.toml`).
     Unknown,
 }
 
-/// The two header keys, plus the keys that identify an older overlay sidecar. Every
-/// other key is ignored here.
+/// The two header keys. Every other key is ignored here.
 #[derive(Debug, Default, serde::Deserialize)]
 struct Header {
     format: Option<String>,
     version: Option<i64>,
-    format_version: Option<i64>,
-    asc_filename: Option<String>,
 }
 
 /// The byte offset of the first table header line: everything before it holds the
@@ -190,10 +184,10 @@ pub fn check_header(text: &str) -> Result<u32, DesignFileError> {
     }
     match header.version {
         None => Err(DesignFileError::MissingVersion),
-        Some(v) if v > i64::from(DESIGN_VERSION_RELATIONS) => {
+        Some(v) if v > i64::from(DESIGN_VERSION_PLANES) => {
             Err(DesignFileError::UnsupportedVersion {
                 found: v,
-                supported: DESIGN_VERSION_RELATIONS,
+                supported: DESIGN_VERSION_PLANES,
             })
         }
         Some(v) if v < 1 => Err(DesignFileError::InvalidVersion(v)),
@@ -294,12 +288,11 @@ pub fn to_string(file: &DesignFile) -> Result<String, DesignFileError> {
     toml::to_string_pretty(file).map_err(DesignFileError::Serialize)
 }
 
-/// Tells a design file from an older overlay sidecar by its content.
+/// Tells a design file from anything else by its content.
 ///
 /// Reads only the header: `format = "indicatrix-design"` is a [`FileKind::Design`];
-/// the older sidecar's `format_version`/`asc_filename` keys make it a
-/// [`FileKind::OverlaySidecar`]; anything else (including bytes that are not UTF-8
-/// TOML) is [`FileKind::Unknown`].
+/// anything else (including bytes that are not UTF-8 TOML, and a file of the removed
+/// overlay sidecar) is [`FileKind::Unknown`].
 #[must_use]
 pub fn detect_kind(bytes: &[u8]) -> FileKind {
     let Ok(text) = std::str::from_utf8(bytes) else {
@@ -310,10 +303,6 @@ pub fn detect_kind(bytes: &[u8]) -> FileKind {
     };
     if header.format.as_deref() == Some(DESIGN_FORMAT) {
         FileKind::Design
-    } else if header.format.is_none()
-        && (header.format_version.is_some() || header.asc_filename.is_some())
-    {
-        FileKind::OverlaySidecar
     } else {
         FileKind::Unknown
     }

@@ -54,7 +54,8 @@ export global RenderJobsModel {
     // 0 this computer, 1 this computer and the remote worker
     in-out property <int> script_target_index: 0;
     in-out property <bool> script_outputs_beside: false;
-    in property <bool> script_remote_available: false;
+    // (Whether a remote worker is set up is `RemoteWorkerModel.availability.configured`, the one
+    // remote-availability value; this model keeps only the worker's label.)
     // "render-box.local:7878"
     in property <string> script_remote_label: "";
     in property <int> script_job_count: 0;

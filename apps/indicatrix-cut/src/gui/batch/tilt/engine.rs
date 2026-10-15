@@ -5,16 +5,19 @@
 use crate::{
     BatchModel,
     bridge::{
-        preview_render::{BATCH_TILT_LIGHTING_PRESET, PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW},
+        preview_render::{
+            BATCH_TILT_LIGHTING_PRESET, FingerprintMaterial, PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW,
+        },
         remote::remote_render,
     },
     gui::{
         batch::{
-            batch_queue::WorkQueue,
-            material_choice::ensure_balanced_material,
-            preview::{RI_MATCH_TOLERANCE, target_ri_for_design},
+            batch_queue::{WorkQueue, local_lane_count},
+            catalogue_material::{CatalogueMaterialSource, catalogue_material},
+            preview::target_ri_for_design,
             remote_dispatch::{DispatcherGroup, RemoteStatus},
         },
+        editor::CataloguePlanes,
         progress_eta::{EtaEstimator, batch_eta_label},
     },
     settings::WorkerSettings,
@@ -22,9 +25,9 @@ use crate::{
 use indicatrix::{
     color::metrics::{
         PROFILE_AZIMUTHS_DEG, SweepProgress, evaluate_all_axes_profiles_stepped,
-        evaluate_full_axis_profile_at_azimuth,
+        evaluate_full_axis_profile_at_azimuth_geom_threaded,
     },
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
     optics::{
         fluorescence::Fluorescence,
         materials::GemMaterial,
@@ -98,6 +101,10 @@ pub(super) struct BatchContext<'a> {
     pub(super) db: &'a Mutex<indicatrix_vault::db::sqlite::Database>,
     pub(super) material_candidates:
         &'a [indicatrix_vault::model::material_match::RiPresetCandidate],
+    /// The vault's custom materials (`catalogue_material::load_custom_materials`), read
+    /// once per batch, against which a design file's material name is resolved before the
+    /// built-ins -- as `gui::batch::preview::engine::BatchContext::custom_materials`.
+    pub(super) custom_materials: &'a [GemMaterial],
     /// The designs whose geometry came from the angle table rather than a design
     /// file -- see `gui::batch::record_planes_for_batch`. Read once at the end for
     /// the batch's summary line.
@@ -117,21 +124,39 @@ struct ResolvedDesign {
     /// The persisted preview material's name `material` was looked up by -- part of the
     /// fingerprint the curves are stored with.
     material_name: String,
+    /// The girdle diameter in millimetres `material` was sized with (`0.0`: not set) --
+    /// part of the fingerprint.
+    girdle_mm: f64,
+    /// How `material_name` was decided -- part of the fingerprint.
+    material_source: CatalogueMaterialSource,
     /// The catalogue row's `updated_at`, read together with the record `planes` come
     /// from: the compare-and-swap token `Database::save_tilt_curves` checks, so curves
     /// swept from a superseded record are refused instead of stored.
     updated_at: Option<i64>,
 }
 
-/// `full`'s facet planes for a tilt-curve sweep -- the design file first, the angle
-/// table only as the fallback (`gui::batch::record_planes_for_batch`, shared with the
-/// preview batch and the library detail view). Both the local and the remote lane get
-/// their planes here, through [`resolve_design`]; a remote `TILT_CURVES` request
-/// ships these planes in its scene, so the worker never resolves a record itself.
+impl ResolvedDesign {
+    /// The material part of the fingerprint the design's curves are stored with: the same
+    /// name, size and source the scans rebuild from the persisted row.
+    fn fingerprint_material(&self) -> FingerprintMaterial<'_> {
+        FingerprintMaterial {
+            name: Some(self.material_name.as_str()),
+            girdle_mm: self.girdle_mm,
+            from_design_file: self.material_source == CatalogueMaterialSource::DesignFile,
+        }
+    }
+}
+
+/// `full`'s facet planes for a tilt-curve sweep, with the material and stone size its
+/// design file records -- the design file first, the angle table only as the fallback
+/// (`gui::batch::record_planes_for_batch`, shared with the preview batch and the library
+/// detail view). Both the local and the remote lane get their planes here, through
+/// [`resolve_design`]; a remote `TILT_CURVES` request ships these planes in its scene, so
+/// the worker never resolves a record itself.
 pub(super) fn record_planes(
     ctx: &BatchContext<'_>,
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
-) -> Option<Vec<GpuFacetPlane>> {
+) -> Option<CataloguePlanes> {
     super::super::record_planes_for_batch(full, ctx.angle_table_entries)
 }
 
@@ -141,6 +166,10 @@ pub(super) fn record_planes(
 /// exactly, factored out here since BOTH lanes need it independently (a design claimed
 /// by remote and a design claimed by local each resolve their own copy; nothing about a
 /// design's resolved geometry is shared or cached across lanes).
+///
+/// The material is the one `gui::batch::catalogue_material::catalogue_material` decides --
+/// the design file's own, else the refractive-index pick, sized by the design's girdle
+/// diameter -- so a design's curves are scored on the stone its thumbnail shows.
 fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesign> {
     // The record and its revision stamp are read under one lock hold, so the stamp
     // describes exactly this record.
@@ -157,36 +186,36 @@ fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesig
     let Ok(updated_at) = updated_at else {
         return None;
     };
-    let planes = record_planes(ctx, &full)?;
+    let resolved = record_planes(ctx, &full)?;
 
     let target_ri = target_ri_for_design(&full);
-    let material_name = {
+    let chosen = {
         let guard = ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
-        ensure_balanced_material(
+        catalogue_material(
             &guard,
             entry_id,
-            target_ri,
+            &resolved,
+            ctx.custom_materials,
             ctx.material_candidates,
-            RI_MATCH_TOLERANCE,
-            &planes,
+            target_ri,
         )
     };
-    let Ok(Some(material_name)) = material_name else {
-        return None;
+    let chosen = match chosen {
+        Ok(Some(chosen)) => chosen,
+        Ok(None) => return None,
+        Err(e) => {
+            warn!("Could not choose the tilt-curve material for entry {entry_id}: {e}");
+            return None;
+        }
     };
-    // Through the render's size rule (a library design has no stone size): the same absorption
-    // calibration the live view applies to a built-in's per-model-unit colour.
-    let material = indicatrix::render_setup::material_for_stone(
-        GemMaterial::by_name(&material_name)?,
-        0.0,
-        &planes,
-    );
 
     Some(ResolvedDesign {
         title: full.title,
-        planes,
-        material,
-        material_name,
+        planes: resolved.planes,
+        material: chosen.material,
+        material_name: chosen.name,
+        girdle_mm: chosen.girdle_mm,
+        material_source: chosen.source,
         updated_at,
     })
 }
@@ -294,6 +323,15 @@ fn fetch_tilt_curves_remote(
     }
 }
 
+/// Threads each local lane may spend inside one design's sweep: the machine's parallelism
+/// divided by the lane count, floored at `1`, so lanes x inner threads never exceeds the
+/// cores. The sweep itself is parallel now (`evaluate_full_axis_profile_at_azimuth_geom_threaded`),
+/// and the lanes already run whole designs side by side.
+fn inner_threads_per_lane() -> usize {
+    let cores = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    (cores / local_lane_count()).max(1)
+}
+
 /// Computes all 4 axis sweeps for one design LOCALLY, checking `cancel` before each --
 /// the finer-grained cancellation the local path affords over the remote one (see this
 /// group's `mod.rs` doc comment). Returns `None` the moment `cancel` is observed,
@@ -315,12 +353,14 @@ fn compute_tilt_curves_locally(
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
-        let (brilliance_pct, extinction_pct, windowing_pct) = evaluate_full_axis_profile_at_azimuth(
-            planes,
-            material,
-            azimuth_deg,
-            batch_environment(),
-        );
+        let (brilliance_pct, extinction_pct, windowing_pct) =
+            evaluate_full_axis_profile_at_azimuth_geom_threaded(
+                StoneGeometry::planes_only(planes),
+                material,
+                azimuth_deg,
+                batch_environment(),
+                Some(inner_threads_per_lane()),
+            );
         axes.push(StorageAxisTiltCurves {
             brilliance_pct,
             extinction_pct,
@@ -383,7 +423,7 @@ fn process_local_entry(ctx: &BatchContext<'_>, entry_id: i64, cancel: &AtomicBoo
         ctx.db,
         entry_id,
         &curves,
-        Some(&resolved.material_name),
+        resolved.fingerprint_material(),
         resolved.updated_at,
     )
 }
@@ -417,7 +457,7 @@ pub(super) fn process_remote_entry(
         ctx.db,
         entry_id,
         &curves,
-        Some(&resolved.material_name),
+        resolved.fingerprint_material(),
         resolved.updated_at,
     )
 }
@@ -487,19 +527,19 @@ pub(super) fn push_progress(
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         ui.global::<BatchModel>().set_tilt_eta(eta_text.into());
         ui.global::<BatchModel>()
-            .set_tilt_design_index(snapshot.completed as i32);
+            .set_tilt_design_index(snapshot.completed.cast_signed());
         ui.global::<BatchModel>()
-            .set_tilt_design_total(design_total as i32);
+            .set_tilt_design_total(design_total.cast_signed());
         ui.global::<BatchModel>()
-            .set_tilt_local_active(snapshot.local_active as i32);
+            .set_tilt_local_active(snapshot.local_active.cast_signed());
         ui.global::<BatchModel>()
-            .set_tilt_local_lane_total(local_lane_total as i32);
+            .set_tilt_local_lane_total(local_lane_total.cast_signed());
         ui.global::<BatchModel>()
             .set_tilt_remote_title(snapshot.remote.title().into());
         ui.global::<BatchModel>()
             .set_tilt_remote_active(snapshot.remote.is_active());
         ui.global::<BatchModel>()
-            .set_tilt_remote_in_flight(snapshot.remote.in_flight() as i32);
+            .set_tilt_remote_in_flight(snapshot.remote.in_flight().cast_signed());
     });
 }
 
@@ -673,10 +713,9 @@ pub fn tilt_curves_for_planes(
     cancel: &AtomicBool,
     on_step: &mut dyn FnMut(SweepProgress),
 ) -> Option<TiltPerformanceCurves> {
-    // Zoning builds: a `TILT_CURVES` request carries no colour zones (it is a bare `SceneState`
+    // A `TILT_CURVES` request carries no colour zones (it is a bare `SceneState`
     // and the zoning payload is only sent with render requests), so a zoned material's curves are
     // always computed here.
-    #[cfg(feature = "zoning")]
     let worker = worker.filter(|_| material.zoning.is_none());
     if let Some(worker) = worker
         && let Some(curves) = fetch_tilt_curves_remote(worker, planes, material, cancel)

@@ -190,6 +190,11 @@ pub fn cie_1931_cmf(lambda_nm: f32) -> [f32; 3] {
     }
 
     let position = (lambda_nm - TABLE_START_NM) / TABLE_STEP_NM;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "lambda_nm is inside the table range, so position is 0..=table length and the floor is a valid index"
+    )]
     let index0 = (position.floor() as usize).min(LAST_INDEX - 1);
     let index1 = index0 + 1;
     let t = position - index0 as f32;

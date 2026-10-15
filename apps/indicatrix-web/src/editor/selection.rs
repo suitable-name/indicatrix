@@ -12,16 +12,44 @@
 
 use super::table;
 use crate::{TierTableModel, app::Ctx, views};
+use indicatrix_cut_core::design::TierRef;
 use std::collections::BTreeSet;
 
-/// Selects tier `index` (the plain selection); a negative index clears it.
+/// Selects row `index` (the plain selection); a negative index clears it.
+///
+/// A concave row is highlighted but not selected as a tier: `WebApp::selected_tier` and the
+/// multi-selection address `design.tiers` only, so the Solid and Diagram views, the handles
+/// and the inspector form see no selection (a concave tier is edited on the desktop for now).
 pub fn select(ctx: &Ctx, index: i32) {
-    views::select_tier(ctx, usize::try_from(index).ok());
+    match table::row_target(ctx, index) {
+        Some(TierRef::Flat(tier)) => {
+            table::set_concave_selected(None);
+            views::select_tier(ctx, Some(tier));
+        }
+        Some(TierRef::Concave(tier)) => {
+            views::select_tier(ctx, None);
+            table::set_concave_selected(Some(tier));
+        }
+        None => {
+            table::set_concave_selected(None);
+            views::select_tier(ctx, None);
+        }
+    }
     table::sync(ctx);
+}
+
+/// Whether row `index` is a concave row (the multi-selection group is flat tiers only, so
+/// such a click selects the row instead).
+fn is_concave_row(ctx: &Ctx, index: i32) -> bool {
+    matches!(table::row_target(ctx, index), Some(TierRef::Concave(_)))
 }
 
 /// Ctrl+click / Select-mode click: toggles row `index` in the group.
 fn toggle_multi(ctx: &Ctx, index: i32) {
+    if is_concave_row(ctx, index) {
+        select(ctx, index);
+        return;
+    }
     let Ok(index) = usize::try_from(index) else {
         return;
     };
@@ -43,6 +71,10 @@ fn toggle_multi(ctx: &Ctx, index: i32) {
 
 /// Shift+click: the group becomes every row between the anchor and `index`.
 fn select_range(ctx: &Ctx, index: i32) {
+    if is_concave_row(ctx, index) {
+        select(ctx, index);
+        return;
+    }
     let Ok(index) = usize::try_from(index) else {
         return;
     };

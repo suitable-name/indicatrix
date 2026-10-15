@@ -81,11 +81,11 @@ impl ObjectivePreset {
         match self {
             Self::Balanced => "Balanced",
             Self::Brilliance => "Brilliance",
-            Self::LowWindowing => "Low windowing",
-            Self::LowExtinction => "Low extinction",
-            Self::KeepWeight => "Keep weight",
-            Self::LightenDark => "Lighten dark rough",
-            Self::IntensifyPale => "Intensify pale rough",
+            Self::LowWindowing => "Low Windowing",
+            Self::LowExtinction => "Low Extinction",
+            Self::KeepWeight => "Keep Weight",
+            Self::LightenDark => "Lighten Dark Rough",
+            Self::IntensifyPale => "Intensify Pale Rough",
         }
     }
 
@@ -98,19 +98,19 @@ impl ObjectivePreset {
                 "Brilliance: favours the light returned to the eye as the stone tilts."
             }
             Self::LowWindowing => {
-                "Low windowing: favours avoiding see-through areas in the pavilion."
+                "Low Windowing: favours avoiding see-through areas in the pavilion."
             }
             Self::LowExtinction => {
-                "Low extinction: favours avoiding dark areas where light is lost."
+                "Low Extinction: favours avoiding dark areas where light is lost."
             }
             Self::KeepWeight => {
-                "Keep weight: also weighs how much of the rough the finished stone keeps."
+                "Keep Weight: also weighs how much of the rough the finished stone keeps."
             }
             Self::LightenDark => {
-                "Lighten dark rough: favours shorter light paths through the body colour, so the stone shows lighter face-up."
+                "Lighten Dark Rough: favours shorter light paths through the body color, so the stone shows lighter face-up."
             }
             Self::IntensifyPale => {
-                "Intensify pale rough: favours longer light paths through the body colour, so the stone shows a stronger colour face-up."
+                "Intensify Pale Rough: favours longer light paths through the body color, so the stone shows a stronger color face-up."
             }
         }
     }

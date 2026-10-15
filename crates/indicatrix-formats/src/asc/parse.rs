@@ -433,6 +433,10 @@ const INTEGRAL_TOLERANCE: f64 = 1e-9;
 /// can legitimately be negative (an internal handedness convention), so this checks
 /// magnitude, not sign. A plain `as i32` would silently truncate or saturate; this
 /// instead reports the exact line and offending token.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is checked to be finite, whole and within i32 range before the cast"
+)]
 fn require_integral_i32(
     value: f64,
     line_no: usize,
@@ -487,6 +491,11 @@ fn require_nonzero_gear_teeth(
 /// Same contract as [`require_integral_i32`], narrowed to `u32` instead -- used for
 /// the `y` (symmetry order) header field, which (unlike gear teeth) has no negative
 /// convention, so this also rejects negative values outright.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is checked to be finite, whole and within 0..=u32::MAX before the cast"
+)]
 fn require_integral_u32(
     value: f64,
     line_no: usize,

@@ -6,7 +6,7 @@
 use super::design_paths::design_file_name_for;
 use crate::{MainWindow, gui::editor::state::EditorState};
 use indicatrix_formats::native::design::{
-    DESIGN_EXTENSION, DESIGN_EXTENSION_DOTTED, DESIGN_FILE_DESCRIPTION,
+    DESIGN_EXTENSION, DESIGN_EXTENSION_DOTTED, DESIGN_FILE_DESCRIPTION, DESIGN_READ_EXTENSIONS,
 };
 use std::path::{Path, PathBuf};
 
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 /// dialog this module's own write/export/open paths need, translated to a
 /// [`crate::gui::pickers::PickerRequest`] by [`pick_file`] itself.
 pub(super) enum PickKind {
-    /// "Save" / "Save As...": the `.indicatrix` design-file save-as picker.
+    /// "Save" / "Save As...": the `.isdd` design-file save-as picker.
     SaveDesign { default_name: String },
     /// "Export .asc": the `.asc` save-as picker.
     SaveAsc { default_name: String },
@@ -37,11 +37,19 @@ pub(super) enum PickKind {
     SaveCuttingSheet { default_name: String },
     /// "Export Diagram": the `.png` save-as picker.
     SaveDiagram { default_name: String },
-    /// "Open": accepts a `.indicatrix` design file, an older `.indicatrix.toml` sidecar, a
-    /// bare `.asc`, or a `.gem`/`.gcs` design (converted to `.asc` on open).
+    /// "Open": accepts a `.isdd` design file (or a legacy `.indicatrix` one), a bare
+    /// `.asc`, or a `.gem`/`.gcs` design (converted to `.asc` on open).
     OpenDesign,
-    /// [`resolve_paired_asc_text_then`]'s "Locate the paired .asc" recovery picker.
-    LocateAsc,
+}
+
+/// The Open dialog's design-file filter label, listing every readable extension:
+/// "Indicatrix design file (*.isdd, *.indicatrix)".
+fn open_design_filter_label() -> String {
+    let patterns: Vec<String> = DESIGN_READ_EXTENSIONS
+        .iter()
+        .map(|extension| format!("*.{extension}"))
+        .collect();
+    format!("{DESIGN_FILE_DESCRIPTION} ({})", patterns.join(", "))
 }
 
 /// The `.asc design` filter every save/open dialog below that touches a
@@ -50,7 +58,7 @@ pub(super) enum PickKind {
 /// why), which cannot be built in a `const` context.
 fn asc_filter() -> crate::gui::pickers::PickerFilter {
     crate::gui::pickers::PickerFilter {
-        label: ".asc design".to_string(),
+        label: ".asc Design".to_string(),
         extensions: vec!["asc".to_string()],
     }
 }
@@ -76,8 +84,8 @@ pub(super) fn pick_file(
                 extensions: vec![DESIGN_EXTENSION.to_string()],
             }],
             default_file_name: Some(default_name),
-            // Where the design was last opened from (an older paired file is saved
-            // anew beside it), else the `./exports` convention.
+            // Where the design was last opened from (a legacy `.indicatrix` file is
+            // saved anew beside it as `.isdd`), else the `./exports` convention.
             starting_dir: super::SUGGESTED_SAVE_DIR
                 .with(|cell| cell.borrow().clone())
                 .or_else(default_export_dir),
@@ -98,7 +106,7 @@ pub(super) fn pick_file(
             kind: PickerKind::SaveFile,
             title: None,
             filters: vec![PickerFilter {
-                label: "Gem Cut Studio design (.gcs)".to_string(),
+                label: "Gem Cut Studio Design (.gcs)".to_string(),
                 extensions: vec!["gcs".to_string()],
             }],
             default_file_name: Some(default_name),
@@ -108,7 +116,7 @@ pub(super) fn pick_file(
             kind: PickerKind::SaveFile,
             title: None,
             filters: vec![PickerFilter {
-                label: "Cutting sheet (HTML)".to_string(),
+                label: "Cutting Sheet (HTML)".to_string(),
                 extensions: vec!["html".to_string()],
             }],
             default_file_name: Some(default_name),
@@ -124,42 +132,25 @@ pub(super) fn pick_file(
             default_file_name: Some(default_name),
             starting_dir: None,
         },
-        // The design file filter leads; the older sidecar filter must use the FULL
-        // compound suffix (not a bare `"toml"`) or `rfd` would offer to select
-        // `Cargo.toml`.
+        // The design file filter leads and also lists the legacy extension, which is
+        // read exactly like the current one.
         PickKind::OpenDesign => PickerRequest {
             kind: PickerKind::OpenFile,
             title: Some("Open Design".to_string()),
             filters: vec![
                 PickerFilter {
-                    label: format!("{DESIGN_FILE_DESCRIPTION} (*{DESIGN_EXTENSION_DOTTED})"),
-                    extensions: vec![DESIGN_EXTENSION.to_string()],
-                },
-                PickerFilter {
-                    label: "Older Indicatrix sidecar (*.indicatrix.toml, *.gemcut.toml)"
-                        .to_string(),
-                    extensions: vec![
-                        indicatrix_cut_core::native::NATIVE_EXTENSION_SUFFIX.to_string(),
-                        indicatrix_cut_core::native::LEGACY_NATIVE_EXTENSION_SUFFIX.to_string(),
-                    ],
-                },
-                PickerFilter {
-                    label: "All TOML files".to_string(),
-                    extensions: vec!["toml".to_string()],
+                    label: open_design_filter_label(),
+                    extensions: DESIGN_READ_EXTENSIONS
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
                 },
                 asc_filter(),
                 PickerFilter {
-                    label: "GemCAD / Gem Cut Studio design (.gem, .gcs)".to_string(),
+                    label: "GemCAD / Gem Cut Studio Design (.gem, .gcs)".to_string(),
                     extensions: vec!["gem".to_string(), "gcs".to_string()],
                 },
             ],
-            default_file_name: None,
-            starting_dir: None,
-        },
-        PickKind::LocateAsc => PickerRequest {
-            kind: PickerKind::OpenFile,
-            title: Some("Locate the paired .asc".to_string()),
-            filters: vec![asc_filter()],
             default_file_name: None,
             starting_dir: None,
         },
@@ -191,7 +182,7 @@ pub(super) fn suggested_file_name(st: &EditorState) -> String {
 }
 
 /// The file name a Save/Save As dialog should default to: the design's own name with
-/// the `.indicatrix` extension (`foo.asc` -> `foo.indicatrix`). Derived from
+/// the `.isdd` extension (`foo.asc` -> `foo.isdd`). Derived from
 /// [`suggested_file_name`], so the two dialogs stay in step apart from the extension.
 pub(super) fn suggested_design_file_name(st: &EditorState) -> String {
     design_file_name_for(&suggested_file_name(st))

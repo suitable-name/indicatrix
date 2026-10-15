@@ -261,6 +261,33 @@ fn renaming_or_deleting_a_plan_that_is_gone_says_so() {
 }
 
 #[test]
+fn a_name_collision_is_an_exact_match_and_a_replace_leaves_one_plan_with_the_name() {
+    let db = library();
+    let text = write(&plain_block(), &[]);
+    let first = store::save_plan(&db, "Pebble", &text).expect("stored");
+    store::save_plan(&db, "pebble", &text).expect("stored");
+    assert_eq!(
+        store::plan_ids_named(&db, "Cobble").unwrap(),
+        Vec::<i64>::new()
+    );
+    assert_eq!(store::plan_ids_named(&db, "Pebble").unwrap(), vec![first]);
+
+    let replaced = store::replace_plan(&db, "Pebble", &text).expect("replaced");
+    assert_ne!(replaced, first);
+    assert_eq!(
+        store::plan_ids_named(&db, "Pebble").unwrap(),
+        vec![replaced]
+    );
+    let names: Vec<String> = store::list_saved(&db)
+        .expect("lists")
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+    assert_eq!(names.iter().filter(|name| *name == "Pebble").count(), 1);
+    assert_eq!(names.len(), 2, "the other plan stays: {names:?}");
+}
+
+#[test]
 fn an_exported_plan_imports_into_another_library_unchanged_and_keeps_an_unknown_key() {
     let first = library();
     let second = library();

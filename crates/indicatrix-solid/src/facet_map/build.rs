@@ -15,55 +15,16 @@ impl FacetMap {
     /// Builds the map for `design` against an already-solved mast list -- `solved`
     /// must come from the same solve as the plane arrangement this map describes,
     /// or the facet ids will not line up with the rasterizer's `pick_at` results.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the facet count exceeds `u32::MAX`, which no real design reaches.
     #[must_use]
     pub fn from_design(design: &Design, solved: &[SolvedTier]) -> Self {
         let preform_plane_count = design.preform.planes().len();
         let inputs = design.meet_tier_inputs();
         let blocks = classify_blocks(&inputs);
-        let gear_teeth = (design.meta.gear_teeth_abs().max(1)) as f32;
-        let gear_reference_angle = design.meta.gear_reference_angle as f32;
-
-        let mut candidates: Vec<Candidate> = Vec::new();
-        for (tier_index, tier) in design.tiers.iter().enumerate() {
-            let is_crown = tier_is_crown_side(tier.angle_deg);
-
-            let theta = (tier.angle_deg.abs() as f32).to_radians();
-            let (sin_theta, cos_theta) = (theta.sin(), theta.cos());
-            let mast = solved.get(tier_index).map_or(0.0, |s| s.mast);
-            let offset = -(mast.abs() as f32);
-
-            if tier.indices.is_empty() {
-                let normal = if is_crown {
-                    Vec3::new(0.0, cos_theta, sin_theta)
-                } else {
-                    Vec3::new(0.0, -cos_theta, sin_theta)
-                };
-                candidates.push(Candidate {
-                    normal: normal.normalize(),
-                    offset,
-                    tier_index,
-                    index_on_gear: 0,
-                });
-                continue;
-            }
-
-            for &idx in &tier.indices {
-                let phi =
-                    StandardGemCuts::index_to_azimuth(idx as f32, gear_teeth, gear_reference_angle);
-                let (sin_phi, cos_phi) = (phi.sin(), phi.cos());
-                let normal = if is_crown {
-                    Vec3::new(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi)
-                } else {
-                    Vec3::new(sin_theta * cos_phi, -cos_theta, sin_theta * sin_phi)
-                };
-                candidates.push(Candidate {
-                    normal: normal.normalize(),
-                    offset,
-                    tier_index,
-                    index_on_gear: idx.round() as u32,
-                });
-            }
-        }
+        let candidates = Self::candidates(design, solved);
 
         // First-occurrence-wins dedup under the plane builder's own rule
         // (module doc, step 3): coinciding normals and an offset within a
@@ -84,7 +45,7 @@ impl FacetMap {
         let mut orbits: Vec<Vec<u32>> = vec![Vec::new(); design.tiers.len()];
         let canonical_labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
         for candidate in kept {
-            let facet_id = facets.len() as u32;
+            let facet_id = u32::try_from(facets.len()).expect("a facet count fits u32");
             let block = blocks.get(candidate.tier_index).copied();
             let angle_deg = design
                 .tiers
@@ -118,6 +79,77 @@ impl FacetMap {
         }
     }
 
+    /// The candidate planes of every tier, in tier then index order, before dedup.
+    fn candidates(design: &Design, solved: &[SolvedTier]) -> Vec<Candidate> {
+        let gear_teeth = (design.meta.gear_teeth_abs().max(1)) as f32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the render/GPU precision; an angle in degrees is in the normal float range"
+        )]
+        let gear_reference_angle = design.meta.gear_reference_angle as f32;
+
+        let mut candidates: Vec<Candidate> = Vec::new();
+        for (tier_index, tier) in design.tiers.iter().enumerate() {
+            let is_crown = tier_is_crown_side(tier.angle_deg);
+
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the render/GPU precision; a tier angle in degrees is in the normal float range"
+            )]
+            let theta = (tier.angle_deg.abs() as f32).to_radians();
+            let (sin_theta, cos_theta) = (theta.sin(), theta.cos());
+            let mast = solved.get(tier_index).map_or(0.0, |s| s.mast);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the render/GPU precision; a mast offset is in the normal float range"
+            )]
+            let offset = -(mast.abs() as f32);
+
+            if tier.indices.is_empty() {
+                let normal = if is_crown {
+                    Vec3::new(0.0, cos_theta, sin_theta)
+                } else {
+                    Vec3::new(0.0, -cos_theta, sin_theta)
+                };
+                candidates.push(Candidate {
+                    normal: normal.normalize(),
+                    offset,
+                    tier_index,
+                    index_on_gear: 0,
+                });
+                continue;
+            }
+
+            for &idx in &tier.indices {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "f32 is the render/GPU precision; a gear index is a small number"
+                )]
+                let phi =
+                    StandardGemCuts::index_to_azimuth(idx as f32, gear_teeth, gear_reference_angle);
+                let (sin_phi, cos_phi) = (phi.sin(), phi.cos());
+                let normal = if is_crown {
+                    Vec3::new(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi)
+                } else {
+                    Vec3::new(sin_theta * cos_phi, -cos_theta, sin_theta * sin_phi)
+                };
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a gear index is a small non-negative number; `as` saturates and maps NaN to 0"
+                )]
+                let index_on_gear = idx.round() as u32;
+                candidates.push(Candidate {
+                    normal: normal.normalize(),
+                    offset,
+                    tier_index,
+                    index_on_gear,
+                });
+            }
+        }
+        candidates
+    }
+
     /// [`Self::from_design`] plus one facet per concave tool, with ids above every
     /// flat one: tool `k` of `placements` is facet `flat_count + k`.
     ///
@@ -143,6 +175,11 @@ impl FacetMap {
             let concave = design.concave_tiers.get(tier);
             let name = concave.map_or("", |t| t.name.as_str());
             let angle_deg = concave.map_or(0.0, |t| t.angle_deg);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a gear index is a small non-negative number; `as` saturates and maps NaN to 0"
+            )]
             let index = concave
                 .and_then(|t| t.indices.get(placement))
                 .map_or(0, |i| i.round() as u32);

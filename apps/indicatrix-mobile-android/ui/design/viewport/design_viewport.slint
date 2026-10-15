@@ -1,0 +1,550 @@
+// The design viewport: the shaded solid or the 2D diagram as a picture, a gesture layer
+// over it, the manipulation handles, the Slice line, and the chips around it.
+//
+// Fills its parent. Everything it shows comes from `ViewportModel`; the raster, the pan
+// and zoom and every handle position are computed in Rust (`src/design/viewport`).
+//
+// Gestures (recognized in Rust from the raw events forwarded here):
+//   one finger     orbit (Solid) or pan (Diagram); tap picks a tier; double tap resets
+//                  the camera or enlarges a diagram panel; long press opens a text card;
+//                  dragging a handle's disc edits the selected tier
+//   two fingers    pinch zooms (the camera distance in Solid, the picture in Diagram) and
+//                  the fingers' centre pans
+//   desktop preview  left drag = one finger, wheel = pinch, right drag = two-finger pan
+//
+// The third view mode, Render, swaps the picture for the progressive ray-traced frame
+// (`ui/design/render`) and adds its progress bar, status line and chips along the foot.
+// The camera gestures are the same; the raster, picks and handles belong to Solid and
+// Diagram only.
+import { ProgressIndicator } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { Prefs } from "../../models.slint";
+import { Chip, Segmented } from "../../shell/chips.slint";
+import { IconButton } from "../../shell/icon_button.slint";
+import { RenderPicture, RenderControls } from "../render/render_view.slint";
+import { ViewportModel } from "viewport_model.slint";
+
+// A straight bar from (x0, y0), `len` long, tilted by `deg` degrees. The handles' stems
+// and the Slice line are drawn with it. (Slint ignores a transform on a component's
+// root element, so the root is a zero-size anchor and the child bar rotates.)
+component Stem inherits Rectangle {
+    in property <length> x0;
+    in property <length> y0;
+    in property <length> len;
+    in property <float> deg;
+    in property <color> tint: white;
+    in property <length> thickness: 2px;
+
+    x: root.x0;
+    y: root.y0;
+    width: 0px;
+    height: 0px;
+
+    Rectangle {
+        x: 0px;
+        y: -root.thickness / 2;
+        width: root.len;
+        height: root.thickness;
+        background: root.tint;
+        transform-origin: { x: 0px, y: root.thickness / 2 };
+        transform-rotation: root.deg * 1deg;
+    }
+}
+
+// The disc on the tip of a handle, with its letter (A angle, D depth, I index).
+component HandleDot inherits Rectangle {
+    in property <string> letter;
+    in property <color> tint;
+    in property <length> cx;
+    in property <length> cy;
+    in property <bool> active: false;
+    property <length> diameter: 32px * ViewportModel.handle-scale;
+
+    x: root.cx - root.diameter / 2;
+    y: root.cy - root.diameter / 2;
+    width: root.diameter;
+    height: root.diameter;
+    border-radius: root.diameter / 2;
+    background: root.tint.with-alpha(0.92);
+    border-width: root.active ? 4px : 2px;
+    border-color: white;
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.letter;
+        color: white;
+        font-size: root.diameter * 0.45;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A translucent strip that gives the chips on top of the picture something to read on.
+component Strip inherits Rectangle {
+    height: 48px;
+    background: Theme.surface.with-alpha(0.66);
+
+    // Taps on the strip are not taps on the picture below.
+    TouchArea { }
+}
+
+export component DesignViewport inherits Rectangle {
+    background: Theme.surface-low;
+    clip: true;
+    accessible-role: AccessibleRole.image;
+    accessible-label: "Design viewport";
+
+    property <bool> camera-menu: false;
+    // A press is held: only then are moves worth forwarding.
+    property <bool> down: false;
+    // A view wide enough carries the Handles / Slice / Snap chips beside the Solid /
+    // Diagram switch; a narrower one (a phone) keeps them in the View menu.
+    property <bool> tools-inline: root.width >= 560px;
+    // The tool chips exist in the Solid view outside Slice mode (Slice mode has its own row).
+    property <bool> tools-shown: ViewportModel.view-mode == 0 && !ViewportModel.slice-mode;
+    // Whether the View menu has the tool row.
+    property <bool> menu-tools: !root.tools-inline && root.tools-shown;
+
+    function button-code(button: PointerEventButton) -> int {
+        if (button == PointerEventButton.left) {
+            return 0;
+        }
+        if (button == PointerEventButton.right) {
+            return 1;
+        }
+        return 2;
+    }
+
+    init => {
+        ViewportModel.view-resized(root.width, root.height);
+    }
+
+    changed width => {
+        ViewportModel.view-resized(root.width, root.height);
+    }
+
+    changed height => {
+        ViewportModel.view-resized(root.width, root.height);
+    }
+
+    // The picture.
+    Image {
+        visible: ViewportModel.has-frame && ViewportModel.view-mode != 2;
+        x: ViewportModel.image-x;
+        y: ViewportModel.image-y;
+        width: ViewportModel.image-width;
+        height: ViewportModel.image-height;
+        source: ViewportModel.frame;
+        image-fit: fill;
+    }
+
+    // The rendered picture of the Render mode (fills the viewport, below the gestures).
+    if ViewportModel.view-mode == 2: RenderPicture { }
+
+    // The gesture layer: Slint turns two fingers into pinch events and releases the
+    // first finger, so one handler plus one touch area see everything.
+    ScaleRotateGestureHandler {
+        started => {
+            ViewportModel.pinch(0, 1.0, self.center.x, self.center.y);
+        }
+
+        updated => {
+            ViewportModel.pinch(1, self.scale, self.center.x, self.center.y);
+        }
+
+        ended => {
+            ViewportModel.pinch(2, 1.0, 0px, 0px);
+        }
+
+        cancelled => {
+            ViewportModel.pinch(2, 1.0, 0px, 0px);
+        }
+
+        touch := TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.down = true;
+                    ViewportModel.pointer(0, root.button-code(event.button), event.touch-finger-id, self.mouse-x, self.mouse-y);
+                } else if (event.kind == PointerEventKind.up) {
+                    root.down = false;
+                    ViewportModel.pointer(1, root.button-code(event.button), event.touch-finger-id, self.mouse-x, self.mouse-y);
+                } else if (event.kind == PointerEventKind.move) {
+                    if (root.down) {
+                        ViewportModel.pointer(2, 0, event.touch-finger-id, self.mouse-x, self.mouse-y);
+                    }
+                } else if (event.kind == PointerEventKind.cancel) {
+                    root.down = false;
+                    ViewportModel.pointer(3, 0, 0, 0px, 0px);
+                }
+            }
+
+            scroll-event(event) => {
+                ViewportModel.scrolled(event.delta-y, self.mouse-x, self.mouse-y);
+                return accept;
+            }
+        }
+    }
+
+    // The handles of the selected facet (they draw only; the gesture layer grabs them).
+    if ViewportModel.handles-visible: Rectangle {
+        Stem {
+            x0: ViewportModel.anchor-x;
+            y0: ViewportModel.anchor-y;
+            len: ViewportModel.angle-len;
+            deg: ViewportModel.angle-deg;
+        }
+
+        Stem {
+            x0: ViewportModel.anchor-x;
+            y0: ViewportModel.anchor-y;
+            len: ViewportModel.depth-len;
+            deg: ViewportModel.depth-deg;
+        }
+
+        Stem {
+            visible: ViewportModel.index-visible;
+            x0: ViewportModel.anchor-x;
+            y0: ViewportModel.anchor-y;
+            len: ViewportModel.index-len;
+            deg: ViewportModel.index-deg;
+        }
+
+        HandleDot {
+            letter: "A";
+            tint: #d9822b;
+            cx: ViewportModel.angle-x;
+            cy: ViewportModel.angle-y;
+            active: ViewportModel.active-handle == 0;
+        }
+
+        HandleDot {
+            letter: "D";
+            tint: #2f9e63;
+            cx: ViewportModel.depth-x;
+            cy: ViewportModel.depth-y;
+            active: ViewportModel.active-handle == 1;
+        }
+
+        HandleDot {
+            visible: ViewportModel.index-visible;
+            letter: "I";
+            tint: #3a7bd5;
+            cx: ViewportModel.index-x;
+            cy: ViewportModel.index-y;
+            active: ViewportModel.active-handle == 2;
+        }
+    }
+
+    // The Slice line being drawn.
+    if ViewportModel.line-visible: Stem {
+        x0: ViewportModel.line-x;
+        y0: ViewportModel.line-y;
+        len: ViewportModel.line-len;
+        deg: ViewportModel.line-deg;
+        tint: Theme.primary;
+        thickness: 3px;
+    }
+
+    // The hint line.
+    if ViewportModel.hint-text != "": Rectangle {
+        x: Theme.space-sm;
+        y: root.height - self.height - Theme.space-sm;
+        width: root.width - 2 * Theme.space-sm;
+        height: hint.preferred-height + Theme.space-sm * 2;
+        background: Theme.inverse-surface.with-alpha(0.88);
+        border-radius: Theme.radius-md;
+
+        hint := Text {
+            x: Theme.space-md;
+            y: Theme.space-sm;
+            width: parent.width - 2 * Theme.space-md;
+            text: ViewportModel.hint-text;
+            color: Theme.on-inverse-surface;
+            font-size: Theme.text-label;
+            wrap: word-wrap;
+        }
+    }
+
+    // The long-press card.
+    if ViewportModel.info-visible: Rectangle {
+        x: Theme.space-sm;
+        y: (ViewportModel.slice-mode ? 96px : 48px) + Theme.space-sm;
+        width: min(root.width - 2 * Theme.space-sm, 360px);
+        height: max(info-text.preferred-height + Theme.space-md * 2, Theme.touch);
+        background: Theme.surface-high;
+        border-radius: Theme.radius-md;
+        drop-shadow-color: Theme.shadow;
+        drop-shadow-blur: Theme.shadow-blur-2;
+        drop-shadow-offset-y: Theme.shadow-offset-2;
+
+        TouchArea { }
+
+        info-text := Text {
+            x: Theme.space-md;
+            y: Theme.space-md;
+            width: parent.width - Theme.space-md - Theme.touch;
+            text: ViewportModel.info-text;
+            color: Theme.on-surface;
+            font-size: Theme.text-body;
+            wrap: word-wrap;
+        }
+
+        IconButton {
+            x: parent.width - self.width;
+            y: 0px;
+            icon: Icons.close;
+            label: "Close";
+            clicked => {
+                ViewportModel.info-closed();
+            }
+        }
+    }
+
+    // The top strip: Solid / Diagram, the tool chips (when the view is wide enough; else
+    // they are in the View menu) and the View menu.
+    Strip {
+        y: 0px;
+        width: root.width;
+
+        HorizontalLayout {
+            padding-left: Theme.space-sm;
+            padding-right: Theme.space-sm;
+            spacing: Theme.space-xs;
+
+            Segmented {
+                width: 252px;
+                options: ["Solid", "Diagram", "Render"];
+                current: ViewportModel.view-mode;
+                selected(index) => {
+                    ViewportModel.view-mode = index;
+                    root.camera-menu = false;
+                    ViewportModel.view-mode-chosen(index);
+                }
+            }
+
+            if root.tools-inline && root.tools-shown: Chip {
+                text: "Handles";
+                selected: ViewportModel.handles-on;
+                clicked => {
+                    ViewportModel.handles-toggled();
+                }
+            }
+
+            if root.tools-inline && root.tools-shown: Chip {
+                text: "Slice";
+                clicked => {
+                    ViewportModel.slice-toggled();
+                }
+            }
+
+            if root.tools-inline && root.tools-shown: Chip {
+                text: "Snap";
+                selected: Prefs.snap-to-gear;
+                clicked => {
+                    Prefs.set-snap-to-gear(!Prefs.snap-to-gear);
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Chip {
+                text: ViewportModel.view-mode == 1 ? "Reset" : "View";
+                selected: root.camera-menu;
+                clicked => {
+                    if (ViewportModel.view-mode != 1) {
+                        root.camera-menu = !root.camera-menu;
+                    } else {
+                        ViewportModel.camera-chosen(6);
+                    }
+                }
+            }
+        }
+    }
+
+    // The Slice row: the Slice tool's own chips, under the top strip while it is on.
+    if ViewportModel.slice-mode && ViewportModel.view-mode == 0: Strip {
+        y: 48px;
+        width: root.width;
+
+        HorizontalLayout {
+            padding-left: Theme.space-sm;
+            padding-right: Theme.space-sm;
+            spacing: Theme.space-xs;
+            alignment: start;
+
+            if !ViewportModel.slice-session: Chip {
+                text: "Slice";
+                selected: true;
+                clicked => {
+                    ViewportModel.slice-toggled();
+                }
+            }
+
+            if ViewportModel.slice-session: Chip {
+                text: "Keep";
+                selected: ViewportModel.slice-keep-ok;
+                clicked => {
+                    ViewportModel.slice-keep();
+                }
+            }
+
+            if ViewportModel.slice-session: Chip {
+                text: "Flip";
+                clicked => {
+                    ViewportModel.slice-flip();
+                }
+            }
+
+            if ViewportModel.slice-session: Chip {
+                text: "Discard";
+                clicked => {
+                    ViewportModel.slice-discard();
+                }
+            }
+
+            Chip {
+                text: "Symmetric";
+                selected: ViewportModel.slice-symmetric;
+                clicked => {
+                    ViewportModel.symmetric-toggled();
+                }
+            }
+        }
+    }
+
+    // The View menu: the camera pills and, on a narrow view, the tool chips.
+    if root.camera-menu && ViewportModel.view-mode != 1: Rectangle {
+        x: 0px;
+        y: 48px;
+        width: root.width;
+        height: (root.menu-tools ? 3 : 2) * Theme.touch + Theme.space-sm;
+        background: Theme.surface.with-alpha(0.88);
+
+        TouchArea { }
+
+        VerticalLayout {
+            padding-left: Theme.space-sm;
+            padding-right: Theme.space-sm;
+            padding-top: Theme.space-xs;
+
+            HorizontalLayout {
+                spacing: Theme.space-xs;
+                alignment: start;
+
+                Chip {
+                    text: "Front";
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.camera-chosen(0);
+                    }
+                }
+
+                Chip {
+                    text: "Top";
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.camera-chosen(1);
+                    }
+                }
+
+                Chip {
+                    text: "Bottom";
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.camera-chosen(2);
+                    }
+                }
+
+                Chip {
+                    text: "Left";
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.camera-chosen(3);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.space-xs;
+                alignment: start;
+
+                Chip {
+                    text: "Right";
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.camera-chosen(4);
+                    }
+                }
+
+                Chip {
+                    text: "Fit";
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.camera-chosen(5);
+                    }
+                }
+
+                Chip {
+                    text: "Reset";
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.camera-chosen(6);
+                    }
+                }
+            }
+
+            if root.menu-tools: HorizontalLayout {
+                spacing: Theme.space-xs;
+                alignment: start;
+
+                Chip {
+                    text: "Handles";
+                    selected: ViewportModel.handles-on;
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.handles-toggled();
+                    }
+                }
+
+                Chip {
+                    text: "Slice";
+                    clicked => {
+                        root.camera-menu = false;
+                        ViewportModel.slice-toggled();
+                    }
+                }
+
+                Chip {
+                    text: "Snap";
+                    selected: Prefs.snap-to-gear;
+                    clicked => {
+                        root.camera-menu = false;
+                        Prefs.set-snap-to-gear(!Prefs.snap-to-gear);
+                    }
+                }
+            }
+        }
+    }
+
+    // The Render mode's bar along the foot: progress, status and the chips.
+    if ViewportModel.view-mode == 2: RenderControls {
+        y: root.height - self.height;
+        width: root.width;
+    }
+
+    // A picture is being drawn.
+    if ViewportModel.busy && ViewportModel.view-mode != 2: Rectangle {
+        y: 0px;
+        width: root.width;
+        height: 4px;
+
+        ProgressIndicator {
+            indeterminate: true;
+        }
+    }
+}

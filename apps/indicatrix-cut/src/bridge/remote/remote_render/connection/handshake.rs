@@ -4,7 +4,11 @@
 use super::super::types::{RemoteError, RemoteStream, host_from_address};
 use crate::settings::WorkerSettings;
 use socket2::{SockRef, TcpKeepalive};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::{
+    collections::HashMap,
+    net::{TcpStream, ToSocketAddrs},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
+};
 
 /// # Known cost, measured, and what was done about it
 ///
@@ -12,7 +16,9 @@ use std::net::{TcpStream, ToSocketAddrs};
 /// connect, TLS 1.3 handshake, `HELLO`/`WELCOME`) measured end-to-end on loopback
 /// against a real worker: ~2.5ms median, ~2.6ms mean, dominated by the TCP connect (1
 /// RTT) and TLS handshake (1 more RTT) -- so on a link with `R` ms of RTT, expect
-/// roughly this total plus `~2R` ms.
+/// roughly this total plus `~2R` ms. The config is now built once per certificate
+/// directory ([`cached_client_config`]), so the file reads and the config build are no
+/// longer part of what each connection pays.
 ///
 /// On loopback/LAN this is noise next to the render itself and the 600ms
 /// `SETTLE_DEBOUNCE` gating every dispatch. But higher-latency links (a remote worker
@@ -88,16 +94,92 @@ fn open_tcp(address: &str) -> std::io::Result<TcpStream> {
 pub fn connect_and_handshake(
     worker: &WorkerSettings,
 ) -> Result<(RemoteStream, indicatrix_net::messages::Welcome), RemoteError> {
+    let config = cached_client_config(worker)?;
+    connect_and_handshake_with(worker, &config)
+}
+
+/// The modification times of the CA, client certificate and client key files, in that
+/// order; `None` for a file whose metadata cannot be read.
+type CertStamps = [Option<std::time::SystemTime>; 3];
+
+/// One cached `ClientConfig`, with the file stamps it was built from.
+struct CachedConfig {
+    stamps: CertStamps,
+    config: Arc<rustls::ClientConfig>,
+}
+
+/// The file stamps of `worker`'s three TLS files: three `stat` calls, against three file
+/// reads, three PEM parses and a config build for the uncached path.
+fn cert_stamps(worker: &WorkerSettings) -> CertStamps {
+    let stamp = |path: std::path::PathBuf| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+    };
+    [
+        stamp(worker.ca_path()),
+        stamp(worker.client_cert_path()),
+        stamp(worker.client_key_path()),
+    ]
+}
+
+/// The mutual-TLS `ClientConfig` for `worker`'s certificate directory, built once and
+/// shared by every connection afterwards (an export dispatches one connection per chunk,
+/// the batch and library clients several more): the three PEM files are read and the
+/// config built only when the directory has not been seen yet or one of the files'
+/// modification times changed (enrollment rewrites them). Keeping one config also keeps
+/// rustls'
+/// in-memory session cache, so a later connection to the same worker resumes the TLS
+/// session instead of running a full handshake.
+///
+/// # Errors
+///
+/// A missing or malformed CA, certificate or key file.
+pub fn cached_client_config(
+    worker: &WorkerSettings,
+) -> Result<Arc<rustls::ClientConfig>, RemoteError> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedConfig>>> = OnceLock::new();
+    let stamps = cert_stamps(worker);
+    let mut cache = CACHE
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(hit) = cache.get(&worker.cert_dir)
+        && hit.stamps == stamps
+    {
+        return Ok(Arc::clone(&hit.config));
+    }
     let ca = indicatrix_net::tls::load_ca(&worker.ca_path())?;
     let cert_chain = indicatrix_net::tls::load_certs(&worker.client_cert_path())?;
     let key = indicatrix_net::tls::load_private_key(&worker.client_key_path())?;
     let config = indicatrix_net::tls::client_config(ca, cert_chain, key)?;
+    cache.insert(
+        worker.cert_dir.clone(),
+        CachedConfig {
+            stamps,
+            config: Arc::clone(&config),
+        },
+    );
+    drop(cache);
+    Ok(config)
+}
 
+/// [`connect_and_handshake`] with the `ClientConfig` already prepared by
+/// [`cached_client_config`]; everything else (socket tuning, timeouts, `HELLO`/`WELCOME`)
+/// is identical.
+///
+/// # Errors
+///
+/// See [`RemoteError`]'s variants.
+pub fn connect_and_handshake_with(
+    worker: &WorkerSettings,
+    config: &Arc<rustls::ClientConfig>,
+) -> Result<(RemoteStream, indicatrix_net::messages::Welcome), RemoteError> {
     let tcp = open_tcp(&worker.address)?;
     let host = host_from_address(&worker.address);
     let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|_| RemoteError::InvalidServerName(host.to_string()))?;
-    let conn = rustls::ClientConnection::new(config, server_name)
+    let conn = rustls::ClientConnection::new(Arc::clone(config), server_name)
         .map_err(indicatrix_net::tls::TlsError::Rustls)?;
     let mut stream = rustls::StreamOwned::new(conn, tcp);
     // Bounds the TLS handshake below AND the HELLO/WELCOME read inside `handshake` --

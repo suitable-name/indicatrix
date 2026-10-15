@@ -1,5 +1,5 @@
-//! Tests of the import pipeline: the batch loop and its per-file panic guard, sidecar
-//! pairing, the recursive folder scan and the remembered save folder. The topic-specific
+//! Tests of the import pipeline: the batch loop and its per-file panic guard, design-file
+//! pairing (in `design_files`), the recursive folder scan and the remembered save folder. The topic-specific
 //! groups live in the submodules.
 
 mod collisions;
@@ -12,7 +12,7 @@ mod perf;
 use super::{
     folder_memory::last_save_folder,
     pipeline::{ImportOutcome, catch_file_panic, import_path},
-    scan::{MAX_RECURSE_DEPTH, collect_design_files_recursive, find_native_sidecar},
+    scan::{MAX_RECURSE_DEPTH, collect_design_files_recursive},
 };
 use crate::{
     gui::library::local::helpers::test_support::{
@@ -123,76 +123,6 @@ fn import_path_recurses_into_subfolders_only_when_requested() {
     let _ = std::fs::remove_file(&deep_db_path);
 }
 
-/// A `.asc` saved by an earlier build has a `<stem>.indicatrix.toml`
-/// sidecar sitting right beside it on disk. Importing that pair must attach the
-/// sidecar as a second file on the saved row, not just the bare `.asc`, so
-/// `gui::editor::loading::design_from_full_record`'s existing `load_paired`
-/// preference actually has a sidecar to find on Load Selected.
-#[test]
-fn import_path_attaches_a_sibling_older_sidecar_found_beside_the_asc() {
-    let dir = temp_dir_for_test("sidecar");
-    std::fs::write(dir.join("paired.asc"), VALID_ASC).expect("write paired.asc");
-    std::fs::write(dir.join("paired.indicatrix.toml"), "format_version = 1\n")
-        .expect("write paired.indicatrix.toml");
-    // A lone `.asc` with no sidecar must still import with just the one attachment.
-    std::fs::write(dir.join("lonely.asc"), VALID_ASC).expect("write lonely.asc");
-
-    let db_path = temp_db_path_for_test("sidecar");
-    let db = open_temp_db(&db_path);
-    let outcome = import_path(&db, &dir, false, |_, _| {});
-    assert!(
-        outcome.summary.contains("Imported 2"),
-        "summary was: {}",
-        outcome.summary
-    );
-
-    let conn = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut paired_files = None;
-    let mut lonely_files = None;
-    for id in &outcome.imported_ids {
-        let full = conn
-            .get_diagram_full(*id)
-            .expect("query must succeed")
-            .expect("row must exist");
-        if full.url.contains("paired.asc") {
-            paired_files = Some(full.attached_files.len());
-        } else if full.url.contains("lonely.asc") {
-            lonely_files = Some(full.attached_files.len());
-        }
-    }
-    assert_eq!(
-        paired_files,
-        Some(2),
-        "the .asc plus its older sidecar must both be attached"
-    );
-    assert_eq!(
-        lonely_files,
-        Some(1),
-        "a .asc with no sidecar on disk must attach only itself"
-    );
-    drop(conn);
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&db_path);
-}
-
-/// The legacy `.gemcut.toml` suffix must be found too, when there is no current
-/// `.indicatrix.toml` sidecar beside the `.asc`.
-#[test]
-fn find_native_sidecar_falls_back_to_the_legacy_suffix() {
-    let dir = temp_dir_for_test("sidecar_legacy");
-    std::fs::create_dir_all(&dir).expect("create dir");
-    let asc_path = dir.join("legacy.asc");
-    std::fs::write(&asc_path, VALID_ASC).expect("write legacy.asc");
-    std::fs::write(dir.join("legacy.gemcut.toml"), "format_version = 1\n")
-        .expect("write legacy.gemcut.toml");
-
-    let sidecar = find_native_sidecar(&asc_path).expect("legacy sidecar must be found");
-    assert_eq!(sidecar.0, "legacy.gemcut.toml");
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// The depth backstop in [`collect_design_files_recursive`], exercised directly with
 /// a small `max_depth` rather than building 32 real nested folders to hit
 /// [`MAX_RECURSE_DEPTH`].
@@ -288,11 +218,11 @@ fn last_save_folder_returns_none_when_nothing_recorded() {
 fn last_save_folder_returns_the_most_recent_entrys_parent_directory() {
     let store = temp_settings_store("some");
     let saved_dir = temp_dir_for_test("last_save_folder");
-    let saved_file = saved_dir.join("design.indicatrix.toml");
+    let saved_file = saved_dir.join("design.isdd");
     store.update(|s| {
         s.settings.recent_native_files = vec![
             saved_file.display().to_string(),
-            "/some/older/design.indicatrix.toml".to_string(),
+            "/some/older/design.isdd".to_string(),
         ];
     });
 

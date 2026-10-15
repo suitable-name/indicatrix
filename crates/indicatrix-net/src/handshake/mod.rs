@@ -126,11 +126,10 @@ pub fn local_hello() -> Hello {
     )
 }
 
-/// [`local_hello`] on a zoning build: the same `HELLO` with the zoning capability marker set.
+/// [`local_hello`] with the zoning capability marker set.
 ///
-/// The marker is `Hello::zoning`, written by `crate::messages::write_hello_message`. A default
-/// build never calls this and never sends the marker.
-#[cfg(all(feature = "render", feature = "zoning"))]
+/// The marker is `Hello::zoning`, written by `crate::messages::write_hello_message`.
+#[cfg(feature = "render")]
 #[must_use]
 pub fn local_hello_zoning() -> Hello {
     Hello {
@@ -207,16 +206,16 @@ pub fn decode_hello(bytes: &[u8]) -> Result<Hello, HelloReadError> {
 }
 
 /// The struct half of [`decode_hello`]: `postcard::from_bytes`, which ignores trailing bytes.
-#[cfg(not(feature = "zoning"))]
+#[cfg(not(feature = "render"))]
 fn decode_hello_body(bytes: &[u8]) -> Result<Hello, HelloReadError> {
     Ok(postcard::from_bytes::<Hello>(bytes).map_err(crate::messages::NetError::from)?)
 }
 
-/// The struct half of [`decode_hello`] on a zoning build.
+/// The struct half of [`decode_hello`] on a render build.
 ///
 /// The same decode, plus the zoning capability marker some peers append (`Hello::zoning`) --
 /// see `crate::messages::zoning`.
-#[cfg(feature = "zoning")]
+#[cfg(feature = "render")]
 fn decode_hello_body(bytes: &[u8]) -> Result<Hello, HelloReadError> {
     Ok(crate::messages::hello_from_bytes(bytes).map_err(crate::messages::NetError::from)?)
 }
@@ -525,6 +524,26 @@ mod tests {
             Err(HelloReadError::Net(_))
         ));
         assert!(matches!(decode_hello(&[]), Err(HelloReadError::Net(_))));
+    }
+
+    /// The zoning capability marker (`messages::zoning::ZONING_TAIL`) trails a `HELLO`; every
+    /// build's `decode_hello` must decode the struct and ignore it, so a worker never
+    /// refuses a zoning viewer. The bytes are written out here on purpose: this test exists in
+    /// builds without the `render` feature, where the constant is not compiled.
+    #[test]
+    fn a_hello_with_trailing_marker_bytes_decodes_in_every_build() {
+        let current = hello(crate::messages::PROTOCOL_VERSION, [3; 8]);
+        let mut bytes = postcard::to_allocvec(&current).unwrap();
+        bytes.extend_from_slice(&[0x5A, 0x4E, 0x01]);
+        let decoded = decode_hello(&bytes).unwrap();
+        assert_eq!(decoded.protocol_version, current.protocol_version);
+        assert_eq!(decoded.build_hash, current.build_hash);
+        assert_eq!(decoded.source_hash, current.source_hash);
+        // Through the framed reader too, as a server reads it.
+        let mut framed = Vec::new();
+        crate::framing::write_frame(&mut framed, &bytes).unwrap();
+        let read = read_hello(&mut std::io::Cursor::new(framed)).unwrap();
+        assert_eq!(read.build_hash, current.build_hash);
     }
 
     /// A hostile length prefix declaring 512 MiB must be refused from the 4-byte

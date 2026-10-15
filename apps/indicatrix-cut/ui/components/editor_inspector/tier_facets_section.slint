@@ -1,0 +1,343 @@
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { TierTableModel } from "../../models/tier_table.slint";
+import { WarningLine } from "../warning_line.slint";
+import { CompactIcon, TipButton } from "../compact_controls.slint";
+
+// The Tier tab's per-facet editing, cheater offset and note, split out of `TierFormTab`. Shown
+// only for a saved tier (`TierFormTab` instantiates it under `has_loaded_tier`). Everything here
+// applies immediately rather than being staged in the form: the facet chips, the position and
+// rotate boxes, the cheater offset (Advanced only) and the note.
+//
+// Keyboard: the facet chips are one Tab stop (a row of chips would otherwise be dozens of
+// stops): Left and Right move along them, Enter detaches or reattaches the chosen facet
+// (Advanced) and Delete removes it.
+export component TierFacetsSection inherits VerticalLayout {
+    // `false` while the worked-example guide locks the Tier tab; ANDed into every `enabled:`.
+    in property <bool> unlocked: true;
+    // Whether the Advanced controls show (`GuideModel.shows_advanced()` in `TierFormTab`).
+    in property <bool> advanced: false;
+    in property <int> loaded_tier_index: -1;
+    // Whether the selection-fed parts (the chips, the cheater offset and the note: Rust pushes
+    // them for `EditorModel.selected_tier_index`) describe the tier the form shows. False while a
+    // kept draft of one tier stays in the form after the table selection moved to another: those
+    // controls would then write the selected tier's facets or text onto the drafted tier, so they
+    // are disabled and a line above the chips says why.
+    in property <bool> selection_is_loaded: true;
+    // Per-facet scratch fields: typed position for "+ Add" and tooth count for "Rotate".
+    in-out property <string> new_facet_position;
+    in-out property <string> rotate_by_text;
+
+    // The chip the keyboard cursor is on (kept inside the strip as the number of chips changes).
+    property <int> chip_cursor: 0;
+    property <int> chip_count: EditorModel.selected_tier_chips.length;
+    property <int> chip_at: Math.max(0, Math.min(root.chip_cursor, root.chip_count - 1));
+    // The x offset that brings chip `idx` into the strip (60 px per chip: 56 wide, 4 apart).
+    function scrolled_to_chip(idx: int, content_x: length, visible_width: length) -> length {
+        if -content_x > idx * 60px {
+            return -(idx * 60px);
+        } else if (-content_x + visible_width) < (idx * 60px + 56px) {
+            return -max(0px, idx * 60px + 56px - visible_width);
+        }
+        return content_x;
+    }
+    // "+ Add" and Enter in the position box: the text is read in Rust (a plain number or a small
+    // calculation, with a plain message when it cannot be read) and the box clears once the facet
+    // is in.
+    function add_facet() {
+        if TierTableModel.add_facet(root.loaded_tier_index, root.new_facet_position) {
+            root.new_facet_position = "";
+        }
+    }
+
+    spacing: 8px;
+    // Per-facet editing with chips: one chip per facet, actions
+    // (toggle detach, remove, add). Only shown for saved tiers.
+    VerticalLayout {
+        spacing: 4px;
+        Text {
+            text: "Facets";
+            font-size: 10px;
+            color: Theme.text-muted;
+            accessible-role: AccessibleRole.text;
+        }
+        if !root.selection_is_loaded: WarningLine {
+            text: (EditorModel.selected_tier_index < 0
+                    ? "No tier is selected in the table, so the facets, cheater offset and note are not shown."
+                    : "These facets, the cheater offset and the note belong to Tier #" + (EditorModel.selected_tier_index + 1)
+                        + ", the tier selected in the table.")
+                + " Save or discard your draft of Tier #" + (root.loaded_tier_index + 1) + " to edit them.";
+        }
+        // `EditorModel.selected_tier_chips` -- NOT a field on
+        // `EditorModel.tiers[root.loaded_tier_index]` -- see that
+        // property's own doc comment (`ui/models/editor.slint`)
+        // for why: a per-row `[IndexChipItem]` field would be
+        // `ModelRc`-backed (`Rc`, not `Send`) and cannot cross the
+        // background thread `tiers` itself is sometimes built on.
+        //
+        // A real (if large) gear can carry many facets in one
+        // complete orbit -- `ScrollView` (already how the tier
+        // list's own wide rows fall back to horizontal scroll,
+        // see `editor_tier_table.slint`'s own doc comment) rather
+        // than letting the chip strip force the WHOLE inspector
+        // wider, or wrapping (Slint's layouts have no flow-wrap).
+        //
+        // The strip is one Tab stop; its keys are in `key-pressed` below.
+        chip_strip := FocusScope {
+            // The chips are 48px tall; the rest is the horizontal scrollbar,
+            // so the bar never sits on top of a chip's buttons.
+            height: 68px;
+            enabled: root.unlocked && root.selection_is_loaded && root.chip_count > 0;
+            // The cursor, mirrored so the strip can scroll it into view.
+            property <int> at: root.chip_at;
+            changed at => {
+                chip_scroll.content-x = root.scrolled_to_chip(self.at, chip_scroll.content-x, chip_scroll.visible-width);
+            }
+            accessible-role: AccessibleRole.list;
+            accessible-label: "Facets of This Tier";
+            accessible-description: root.advanced
+                ? "Left and Right choose a facet. Enter detaches or reattaches it. Delete removes it."
+                : "Left and Right choose a facet. Delete removes it.";
+            key-pressed(event) => {
+                if event.text == Key.RightArrow {
+                    root.chip_cursor = Math.min(root.chip_at + 1, root.chip_count - 1);
+                    return accept;
+                } else if event.text == Key.LeftArrow {
+                    root.chip_cursor = Math.max(root.chip_at - 1, 0);
+                    return accept;
+                } else if event.text == Key.Home {
+                    root.chip_cursor = 0;
+                    return accept;
+                } else if event.text == Key.End {
+                    root.chip_cursor = root.chip_count - 1;
+                    return accept;
+                } else if event.text == Key.Return && root.advanced && root.selection_is_loaded {
+                    EditorModel.facet_toggle_detach(root.loaded_tier_index, EditorModel.selected_tier_chips[root.chip_at].position);
+                    return accept;
+                } else if event.text == Key.Delete && root.selection_is_loaded {
+                    EditorModel.facet_remove(root.loaded_tier_index, EditorModel.selected_tier_chips[root.chip_at].position);
+                    return accept;
+                }
+                reject
+            }
+            chip_scroll := ScrollView {
+                width: parent.width;
+                height: parent.height;
+                HorizontalLayout {
+                    spacing: 4px;
+                    for chip[idx] in EditorModel.selected_tier_chips: Rectangle {
+                        width: 56px;
+                        height: 48px;
+                        // `@markdown(...)` needs a string literal, not an
+                        // arbitrary expression -- the ternary is computed
+                        // here first, then interpolated as a single value
+                        // below.
+                        property <string> chip_tooltip: chip.detached
+                            ? "Position " + chip.label + ", detached from its symmetric family."
+                            : "Position " + chip.label + ".";
+                        // The keyboard cursor, while the strip has focus.
+                        property <bool> ringed: chip_strip.has-focus && idx == root.chip_at;
+                        background: chip.detached ? Theme.bg-input : Theme.bg-card-hover;
+                        border-radius: Theme.radius-sm;
+                        border-width: self.ringed ? 2px : (chip.detached ? 1px : 0px);
+                        // Dashed-looking (via a muted, thin border) and
+                        // dimmed text is the "looks different" a
+                        // detached facet needs -- Slint has no native
+                        // dashed-stroke property, so a solid but
+                        // visually distinct treatment stands in for it.
+                        border-color: self.ringed ? Theme.accent-cyan-hover : Theme.text-muted;
+                        accessible-role: AccessibleRole.list-item;
+                        accessible-label: self.chip_tooltip;
+                        accessible-item-selectable: true;
+                        accessible-item-selected: self.ringed;
+                        VerticalLayout {
+                            padding: 3px;
+                            spacing: 2px;
+                            Text {
+                                text: chip.label;
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: chip.detached ? Theme.text-muted : Theme.text-primary;
+                                horizontal-alignment: center;
+                            }
+                            // Two 20x20 buttons (icons, not text glyphs: the UI font has no
+                            // scissors/cross symbols). The Simple interface keeps only
+                            // Remove. Tab does not stop on them -- the strip's keys do
+                            // the same.
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                if root.advanced: CompactIcon {
+                                    enabled: root.unlocked && root.selection_is_loaded;
+                                    reachable: false;
+                                    icon: chip.detached ? @image-url("../../icons/link.svg") : @image-url("../../icons/detach.svg");
+                                    hint: chip.detached
+                                        ? "Reattach the facet at position " + chip.label + " to its symmetric family."
+                                        : "Detach the facet at position " + chip.label + " from its symmetric family, so editing the tier no longer moves it. See the glossary.";
+                                    clicked => {
+                                        root.chip_cursor = idx;
+                                        EditorModel.facet_toggle_detach(root.loaded_tier_index, chip.position);
+                                    }
+                                }
+                                compact-icon-label := CompactIcon {
+                                    enabled: root.unlocked && root.selection_is_loaded;
+                                    reachable: false;
+                                    icon: @image-url("../../icons/close.svg");
+                                    glyph: 12px;
+                                    hover_tint: Theme.accent-ruby;
+                                    hint: "Remove the facet at position " + chip.label + " from the tier.";
+                                    clicked => {
+                                        root.chip_cursor = idx;
+                                        EditorModel.facet_remove(root.loaded_tier_index, chip.position);
+                                    }
+                                }
+                            }
+                        }
+                        Tooltip { text: @markdown("\{chip_tooltip}"); }
+                    }
+                }
+            }
+        }
+        // Row one: add one position, or mirror the whole tier.
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.new_facet_position;
+                placeholder-text: "position";
+                accessible-label: "Position of the Facet to Add";
+                horizontal-stretch: 1;
+                min-width: 90px;
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                accepted => {
+                    if root.new_facet_position != "" {
+                        root.add_facet();
+                    }
+                }
+            }
+            TipButton {
+                // Disabled while the position is empty: the add could only fail then.
+                enabled: root.unlocked && root.new_facet_position != "";
+                text: "+ Add";
+                reader_label: "Add Facet";
+                hint: "Add a facet at the index position you typed, together with the other facets that go with it in the stone's symmetry. You can type a number or a small calculation, for example 24 or 96/4.";
+                clicked => { root.add_facet(); }
+            }
+            TipButton {
+                enabled: root.unlocked;
+                text: "Mirror";
+                hint: "Reflect every facet of this tier to the other side of the stone: each index position becomes its mirror image about position 0. It takes effect at once.";
+                clicked => { EditorModel.tier_mirror_indices(root.loaded_tier_index); }
+            }
+        }
+        // Row two (Advanced): rotate every position of the tier by a number of teeth.
+        if root.advanced: HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.rotate_by_text;
+                placeholder-text: "teeth";
+                accessible-label: "Number of Teeth to Rotate By";
+                horizontal-stretch: 1;
+                min-width: 56px;
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            TipButton {
+                enabled: root.unlocked;
+                text: "Rotate";
+                reader_label: "Rotate Up";
+                icon: @image-url("../../icons/rotate-ccw.svg");
+                hint: "Move every facet of this tier up by that many teeth (to higher index numbers). You can type a number or a small calculation.";
+                clicked => { TierTableModel.rotate_tier(root.loaded_tier_index, root.rotate_by_text, 1); }
+            }
+            TipButton {
+                enabled: root.unlocked;
+                text: "Rotate";
+                reader_label: "Rotate Down";
+                icon: @image-url("../../icons/rotate-cw.svg");
+                hint: "Move every facet of this tier down by that many teeth (to lower index numbers). You can type a number or a small calculation.";
+                clicked => { TierTableModel.rotate_tier(root.loaded_tier_index, root.rotate_by_text, -1); }
+            }
+        }
+    }
+
+    // Cheater/azimuth offset (GCS style): applies immediately,
+    // not staged. Only shown for saved tiers, and only in Advanced.
+    if root.advanced: VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: cheater_lbl.preferred-height;
+            Tooltip { text: @markdown("Cheater/azimuth offset in degrees -- compensates cutting an off-tooth index or a known machine error. Positive moves the facet toward higher index numbers. Blank clears it. You can type arithmetic, for example 12+0.5. See the glossary."); }
+            cheater_lbl := Text { text: "Cheater Offset (deg)"; font-size: 10px; color: Theme.text-muted; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked && root.selection_is_loaded;
+                width: 70px;
+                text <=> EditorModel.selected_tier_cheater_offset_text;
+                placeholder-text: "none";
+                accessible-label: "Cheater Offset in Degrees";
+                accepted => { EditorModel.apply_cheater_offset(root.loaded_tier_index, EditorModel.selected_tier_cheater_offset_text); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            TipButton {
+                enabled: root.unlocked && root.selection_is_loaded;
+                text: "Set";
+                reader_label: "Set Cheater Offset";
+                hint: "Apply the cheater offset you typed to this tier. It takes effect at once.";
+                clicked => { EditorModel.apply_cheater_offset(root.loaded_tier_index, EditorModel.selected_tier_cheater_offset_text); }
+            }
+            TipButton {
+                enabled: root.unlocked && root.selection_is_loaded;
+                text: "Clear";
+                reader_label: "Clear Cheater Offset";
+                hint: "Remove the cheater offset from this tier.";
+                clicked => {
+                    EditorModel.selected_tier_cheater_offset_text = "";
+                    EditorModel.apply_cheater_offset(root.loaded_tier_index, "");
+                }
+            }
+        }
+    }
+
+    // Cutter-authored note for this tier: applies immediately,
+    // not staged. Only shown for saved tiers.
+    VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: note_lbl.preferred-height;
+            Tooltip { text: @markdown("A cutter-authored note for this tier, e.g. \"check meet here\" or \"grind slowly\". Blank clears it."); }
+            note_lbl := Text { text: "Note"; font-size: 10px; color: Theme.text-muted; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked && root.selection_is_loaded;
+                text <=> EditorModel.selected_tier_note_text;
+                placeholder-text: "none";
+                accessible-label: "Note for This Tier";
+                accepted => { EditorModel.apply_tier_note(root.loaded_tier_index, EditorModel.selected_tier_note_text); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            TipButton {
+                enabled: root.unlocked && root.selection_is_loaded;
+                text: "Set";
+                reader_label: "Set Note";
+                hint: "Save the note you typed on this tier. It takes effect at once.";
+                clicked => { EditorModel.apply_tier_note(root.loaded_tier_index, EditorModel.selected_tier_note_text); }
+            }
+            TipButton {
+                enabled: root.unlocked && root.selection_is_loaded;
+                text: "Clear";
+                reader_label: "Clear Note";
+                hint: "Remove the note from this tier.";
+                clicked => {
+                    EditorModel.selected_tier_note_text = "";
+                    EditorModel.apply_tier_note(root.loaded_tier_index, "");
+                }
+            }
+        }
+    }
+}

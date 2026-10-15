@@ -1,0 +1,264 @@
+// The filter sheet and the tag sheet of the Library page, both hosted in a `ModalSheet`.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "../shell/icon.slint";
+import { Chip } from "../shell/chips.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { Toggle } from "../shell/toggle.slint";
+import { TextButton, PrimaryButton } from "../shell/buttons.slint";
+import { LineEdit } from "std-widgets.slint";
+import { LibraryModel, TagChipData } from "library_model.slint";
+import { ModalSheet } from "modal_sheet.slint";
+
+component SectionLabel inherits Text {
+    color: Theme.on-surface-variant;
+    font-size: Theme.text-label-large;
+    font-weight: 500;
+}
+
+// A row of single-choice chips that scrolls sideways when it is too long.
+component ChoiceRow inherits Rectangle {
+    in property <[string]> options;
+    in property <int> current: 0;
+    callback picked(int);
+
+    height: Theme.touch;
+
+    Flickable {
+        content-width: lay.preferred-width;
+        content-height: root.height;
+
+        lay := HorizontalLayout {
+            x: 0px;
+            y: 0px;
+            height: root.height;
+            width: self.preferred-width;
+            spacing: Theme.space-sm;
+
+            for option[index] in root.options: Chip {
+                text: option;
+                selected: index == root.current;
+                clicked => {
+                    root.picked(index);
+                }
+            }
+        }
+    }
+}
+
+// A row of toggle chips (each can be on or off) that scrolls sideways.
+component ChoiceStrip inherits Rectangle {
+    in property <[TagChipData]> chips;
+    callback toggled(int);
+
+    height: Theme.touch;
+
+    Flickable {
+        content-width: lay.preferred-width;
+        content-height: root.height;
+
+        lay := HorizontalLayout {
+            x: 0px;
+            y: 0px;
+            height: root.height;
+            width: self.preferred-width;
+            spacing: Theme.space-sm;
+
+            for chip[index] in root.chips: Chip {
+                text: chip.text;
+                selected: chip.on;
+                clicked => {
+                    root.toggled(index);
+                }
+            }
+        }
+    }
+}
+
+// A switch row inside a sheet.
+component SwitchRow inherits Rectangle {
+    in property <string> title;
+    in property <bool> checked: false;
+    callback toggled(bool);
+
+    height: Theme.row-height;
+
+    HorizontalLayout {
+        spacing: Theme.space-lg;
+
+        Text {
+            text: root.title;
+            color: Theme.on-surface;
+            font-size: Theme.text-body-large;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+
+        Toggle {
+            checked: root.checked;
+            toggled(value) => {
+                root.toggled(value);
+            }
+        }
+    }
+}
+
+export component FilterSheet inherits ModalSheet {
+    title: "Filter Designs";
+
+    SectionLabel {
+        text: "Shape";
+    }
+
+    ChoiceRow {
+        options: LibraryModel.shape-options;
+        current: LibraryModel.shape-index;
+        picked(index) => {
+            LibraryModel.set-shape(index);
+        }
+    }
+
+    SectionLabel {
+        text: "Index Gear";
+    }
+
+    ChoiceRow {
+        options: LibraryModel.gear-options;
+        current: LibraryModel.gear-index;
+        picked(index) => {
+            LibraryModel.set-gear(index);
+        }
+    }
+
+    SectionLabel {
+        text: "Refractive Index";
+    }
+
+    ChoiceRow {
+        options: LibraryModel.ri-options;
+        current: LibraryModel.ri-index;
+        picked(index) => {
+            LibraryModel.set-ri(index);
+        }
+    }
+
+    SwitchRow {
+        title: "Only My Designs";
+        checked: LibraryModel.mine-only;
+        toggled(value) => {
+            LibraryModel.set-mine-only(value);
+        }
+    }
+
+    SwitchRow {
+        title: "Show Ignored Designs";
+        checked: LibraryModel.show-ignored;
+        toggled(value) => {
+            LibraryModel.set-show-ignored(value);
+        }
+    }
+
+    if LibraryModel.tag-options.length > 0: SectionLabel {
+        text: "Tag";
+    }
+
+    for tag[index] in LibraryModel.tag-options: ListRow {
+        title: tag;
+        clicked => {
+            LibraryModel.set-tag(index == LibraryModel.tag-index ? -1 : index);
+        }
+
+        if index == LibraryModel.tag-index: Icon {
+            source: Icons.check;
+            tint: Theme.primary;
+            glyph: 20px;
+        }
+    }
+
+    HorizontalLayout {
+        alignment: end;
+        spacing: Theme.space-sm;
+
+        TextButton {
+            text: "Clear All";
+            enabled: LibraryModel.filter-count > 0;
+            clicked => {
+                LibraryModel.clear-filters();
+            }
+        }
+
+        PrimaryButton {
+            text: "Done";
+            clicked => {
+                root.closed();
+            }
+        }
+    }
+}
+
+export component TagSheet inherits ModalSheet {
+    title: "Tag Designs";
+
+    SectionLabel {
+        text: "Add Tags";
+    }
+
+    HorizontalLayout {
+        spacing: Theme.space-sm;
+
+        LineEdit {
+            text <=> LibraryModel.tag-new-text;
+            placeholder-text: "New Tag";
+            accessible-label: "New Tag";
+            horizontal-stretch: 1;
+
+            accepted => {
+                LibraryModel.add-new-tag();
+            }
+        }
+
+        TextButton {
+            text: "Add";
+            clicked => {
+                LibraryModel.add-new-tag();
+            }
+        }
+    }
+
+    ChoiceStrip {
+        chips: LibraryModel.tag-add;
+        toggled(index) => {
+            LibraryModel.toggle-tag-add(index);
+        }
+    }
+
+    if LibraryModel.tag-remove.length > 0: SectionLabel {
+        text: "Remove Tags";
+    }
+
+    if LibraryModel.tag-remove.length > 0: ChoiceStrip {
+        chips: LibraryModel.tag-remove;
+        toggled(index) => {
+            LibraryModel.toggle-tag-remove(index);
+        }
+    }
+
+    HorizontalLayout {
+        alignment: end;
+        spacing: Theme.space-sm;
+
+        TextButton {
+            text: "Cancel";
+            clicked => {
+                root.closed();
+            }
+        }
+
+        PrimaryButton {
+            text: "Apply";
+            clicked => {
+                LibraryModel.apply-tags();
+            }
+        }
+    }
+}

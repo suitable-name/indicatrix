@@ -302,6 +302,33 @@ thread_local! {
     /// The timer armed by [`arm_bump_timer`]; kept here so it stays alive until it fires.
     /// UI-thread-only.
     static BUMP_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    /// The cache of the window built last, so [`release_window_state`] can stop its decoder
+    /// thread (which owns a clone of the design library handle) without waiting for the window
+    /// to drop. UI-thread-only.
+    static CURRENT: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
+}
+
+/// Closes the thumbnail cache of the previous main window, which ends its decoder thread and
+/// with it that thread's clone of the design library handle, and cancels the pending bump
+/// timer. Does nothing when no window was built. UI thread only (see
+/// `gui::window_release`).
+pub(in crate::gui) fn release_window_state() {
+    if let Some(shared) = CURRENT.with(|cell| cell.borrow_mut().take()) {
+        shared.close();
+    }
+    BUMP_TIMER.with(|cell| cell.borrow_mut().take());
+}
+
+/// Names this module's holders in `out` while they are still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui) fn note_holders(out: &mut Vec<&'static str>) {
+    if CURRENT.with(|cell| cell.borrow().is_some()) {
+        out.push("batch::preview_cache CURRENT (thumbnail decoder thread + vault)");
+    }
+    if BUMP_TIMER.with(|cell| cell.borrow().is_some()) {
+        out.push("batch::preview_cache BUMP_TIMER");
+    }
 }
 
 /// Forces every visible row's thumbnail lookup to re-evaluate. UI thread only.
@@ -373,6 +400,7 @@ pub fn setup_preview_thumbnail_callback(
 ) -> PreviewThumbnailCache {
     let shared = Arc::new(Shared::new());
     let handle = PreviewThumbnailCache(Arc::clone(&shared));
+    CURRENT.with(|cell| *cell.borrow_mut() = Some(Arc::clone(&shared)));
 
     let decoder_shared = Arc::clone(&shared);
     let db = Arc::clone(db);
@@ -457,7 +485,9 @@ mod tests {
     #[test]
     fn an_overflowing_queue_forgets_its_oldest_request() {
         let mut state = State::default();
-        for id in 0..=MAX_QUEUED_REQUESTS as i64 {
+        let max_queued =
+            i64::try_from(MAX_QUEUED_REQUESTS).expect("the queue bound is a small constant");
+        for id in 0..=max_queued {
             state.lookup_or_enqueue(id);
         }
         assert_eq!(state.queue.len(), MAX_QUEUED_REQUESTS);
@@ -469,15 +499,17 @@ mod tests {
     #[test]
     fn the_least_recently_looked_up_design_is_evicted() {
         let mut state = State::default();
-        for id in 0..MAX_CACHED_DESIGNS as i64 {
+        let max_cached =
+            i64::try_from(MAX_CACHED_DESIGNS).expect("the cache bound is a small constant");
+        for id in 0..max_cached {
             state.store_decoded(id, Some(pixels()), Some(pixels()));
         }
         // Looking design 0 up makes design 1 the oldest.
         assert!(matches!(state.lookup_or_enqueue(0), Lookup::Ready { .. }));
-        state.store_decoded(MAX_CACHED_DESIGNS as i64, Some(pixels()), None);
+        state.store_decoded(max_cached, Some(pixels()), None);
         assert!(is_ready(&state, 0));
         assert!(!state.entries.contains_key(&1));
-        assert!(is_ready(&state, MAX_CACHED_DESIGNS as i64));
+        assert!(is_ready(&state, max_cached));
         assert_eq!(state.entries.len(), MAX_CACHED_DESIGNS);
     }
 

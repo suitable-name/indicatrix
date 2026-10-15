@@ -56,7 +56,7 @@ export component CrystalAxisSection inherits VerticalLayout {
             Slider {
                 minimum: 0.0;
                 maximum: 90.0;
-                accessible-label: "Crystal axis tilt in degrees";
+                accessible-label: "Crystal Axis Tilt in Degrees";
                 value <=> SettingsModel.c_axis_tilt_deg;
                 changed(val) => { SettingsModel.c_axis_angles_changed(val, SettingsModel.c_axis_azimuth_deg); }
             }
@@ -75,7 +75,7 @@ export component CrystalAxisSection inherits VerticalLayout {
             Slider {
                 minimum: 0.0;
                 maximum: 360.0;
-                accessible-label: "Crystal axis azimuth in degrees";
+                accessible-label: "Crystal Axis Azimuth in Degrees";
                 value <=> SettingsModel.c_axis_azimuth_deg;
                 changed(val) => { SettingsModel.c_axis_angles_changed(SettingsModel.c_axis_tilt_deg, val); }
             }

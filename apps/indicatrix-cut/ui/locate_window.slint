@@ -140,19 +140,19 @@ export component LocateWindow inherits Window {
 
                 TipBox {
                     width: 220px;
-                    hint: "The camera rig the photos were taken on: the views, the stone's refractive index and the calibration. Edit rigs... creates and changes them.";
+                    hint: "The camera rig the photos were taken on: the views, the stone's refractive index and the calibration. Edit Rigs... creates and changes them.";
                     ComboBox {
                         min-width: 0px;
                         model: root.rig_names;
                         current-index <=> root.rig_index;
                         enabled: !root.busy && root.rig_names.length > 0;
-                        accessible-label: "Camera rig";
+                        accessible-label: "Camera Rig";
                         selected(value) => { root.rig_selected(root.rig_index); }
                     }
                 }
 
                 RoughPill {
-                    text: "Edit rigs...";
+                    text: "Edit Rigs...";
                     hint: "Create, edit or calibrate the camera rigs.";
                     clicked => { root.edit_rigs(); }
                 }
@@ -221,7 +221,7 @@ export component LocateWindow inherits Window {
                                     }
                                     VerticalLayout {
                                         alignment: center;
-                                        RoughPill {
+                                        rough-pill-loaded := RoughPill {
                                             text: slot.loaded ? "Replace..." : "Load...";
                                             hint: "Pick the photo of this view (PNG or JPEG).";
                                             enabled: !root.busy;
@@ -237,7 +237,7 @@ export component LocateWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 6px;
                                 Text {
-                                    text: "Mesh axis up:";
+                                    text: "Mesh Axis Up:";
                                     font-size: 10px;
                                     color: Theme.text-muted;
                                     vertical-alignment: center;
@@ -249,12 +249,12 @@ export component LocateWindow inherits Window {
                                         model: root.axis_names;
                                         current-index <=> root.axis_z_index;
                                         enabled: !root.busy;
-                                        accessible-label: "Mesh axis along rig Z";
+                                        accessible-label: "Mesh Axis Along Rig Z";
                                         selected(value) => { root.axes_changed(); }
                                     }
                                 }
                                 Text {
-                                    text: "to the right:";
+                                    text: "To the Right:";
                                     font-size: 10px;
                                     color: Theme.text-muted;
                                     vertical-alignment: center;
@@ -266,7 +266,7 @@ export component LocateWindow inherits Window {
                                         model: root.axis_names;
                                         current-index <=> root.axis_x_index;
                                         enabled: !root.busy;
-                                        accessible-label: "Mesh axis along rig X";
+                                        accessible-label: "Mesh Axis Along Rig X";
                                         selected(value) => { root.axes_changed(); }
                                     }
                                 }
@@ -283,7 +283,7 @@ export component LocateWindow inherits Window {
                                 TipBox {
                                     width: 80px;
                                     hint: "A fine adjustment of the starting position. The alignment refines it. Empty means 0.";
-                                    LineEdit {
+                                    line-edit-l286 := LineEdit {
                                         min-width: 0px;
                                         text: root.nudge_texts[i];
                                         enabled: !root.busy;
@@ -296,7 +296,7 @@ export component LocateWindow inherits Window {
                                 spacing: 6px;
                                 alignment: start;
                                 RoughPill {
-                                    text: "Align mesh to rig";
+                                    text: "Align Mesh to Rig";
                                     hint: "Fit the scan to the outlines drawn in the photos. Needs outlines in at least two views.";
                                     active: true;
                                     enabled: !root.busy;
@@ -361,7 +361,7 @@ export component LocateWindow inherits Window {
                                     text_color: Theme.text-secondary;
                                 }
                                 RoughPill {
-                                    text: "Re-open";
+                                    text: "Re-Open";
                                     hint: "Bring this inclusion's marks and rig back to solve them again.";
                                     enabled: !root.busy;
                                     clicked => { root.reopen_record(i); }
@@ -410,7 +410,7 @@ export component LocateWindow inherits Window {
                             clicked => { root.mode_index = 3; root.mode_changed(3); }
                         }
                         RoughPill {
-                            text: "Undo click";
+                            text: "Undo Click";
                             hint: "Take back the last click of the chosen tool in this view.";
                             clicked => { root.undo_click(); }
                         }

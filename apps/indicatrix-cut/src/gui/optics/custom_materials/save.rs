@@ -124,6 +124,26 @@ pub(super) struct CustomMaterialForm {
     pub(super) body_bands: Option<Vec<[f32; 3]>>,
 }
 
+/// The render context's trace selection before an explicit apply overwrote it: the material
+/// name, the design's colour override and the unresolved-material refusal.
+pub(super) struct PreviousTrace {
+    /// `RenderContext::material_name`.
+    name: String,
+    /// `RenderContext::material_override`.
+    material_override: Option<GemMaterial>,
+    /// `RenderContext::material_unresolved`.
+    unresolved: Option<String>,
+}
+
+/// Puts back the trace selection `previous` recorded (and marks the render dirty), so a
+/// refused apply leaves the picture tracing the material the design really has.
+pub(super) fn restore_trace(ctx: &mut RenderContext, previous: PreviousTrace) {
+    ctx.material_name = previous.name;
+    ctx.material_override = previous.material_override;
+    ctx.material_unresolved = previous.unresolved;
+    ctx.dirty = true;
+}
+
 /// A successfully applied "Save Custom Material": everything the callback needs
 /// to show the right toast and refresh the UI afterward.
 pub(super) struct SavedCustomMaterial {
@@ -141,11 +161,19 @@ pub(super) struct SavedCustomMaterial {
     /// Whether this save also switched the live render's material, for the
     /// toast wording below.
     pub(super) applied_to_live_render: bool,
+    /// What the render context traced before the apply overwrote it, set when
+    /// `applied_to_live_render`; restored with [`restore_trace`] when the design refuses the
+    /// apply as busy.
+    pub(super) previous_trace: Option<PreviousTrace>,
     /// The specific gravity now on file for this material, read back from
     /// `RenderContext::custom_material_specific_gravity` -- `None` when the
     /// dialog's SG slider was left at its "not recorded" sentinel, in which
     /// case the toast says nothing about it.
     pub(super) specific_gravity: Option<f64>,
+    /// The sentence for a zone update that failed after the material row and the
+    /// render context were saved and in step (always `None` without the feature). The save
+    /// still succeeded, so the callback refreshes the pickers and shows this as a warning.
+    pub(super) zones_warning: Option<String>,
 }
 
 /// The absorption color a saved material gets: the swatch preset for `color_idx`, or --
@@ -332,24 +360,35 @@ pub(super) fn apply_custom_material_save(
     if let Err(e) = save_result {
         return Err(format!("Could not save '{trimmed}': {e}"));
     }
-    // Zoning builds: a material that has stored zones (an adopted "<rough> colour") keeps them
+    // A material that has stored zones (an adopted "<plan> - <design> color") keeps them
     // through an edit of its other optics, because the in-memory material is rebuilt from the
     // dialog and carries none. Looked up before `render_ctx` is locked below.
-    #[cfg(feature = "zoning")]
+    // A failed zone update does not stop the save (the material row is written and the render
+    // context follows it below); it is reported as this save's error at the end.
+    let mut zones_error: Option<String> = None;
     let new_mat = {
+        use crate::gui::rough_colour::{material_zones, store::with_stored_zoning};
+        let stone_width_mm = RenderContext::lock(render_ctx).stone_width_mm;
         let guard = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        // An edited body colour goes into the stored BASE zone first, or the stored zone would
-        // silently override the edit (`with_stored_zoning` installs it as the absorption).
-        if let Some(rows) = band_rows.as_deref()
-            && let Err(error) = crate::gui::rough_colour::material_zones::write_back_base_colour(
-                &guard, &trimmed, rows,
-            )
-        {
-            tracing::warn!(
-                "Rough colour: the edited colour of '{trimmed}' was not stored in its zones: {error:#}"
-            );
+        // The zones of the material the dialog showed follow a save under a new name; an edited
+        // body colour goes into the stored BASE zone first, or the stored zone would silently
+        // override the edit (`with_stored_zoning` installs it as the absorption); and the
+        // "relative to stone" checkbox converts the geometry.
+        // What the dialog showed rides beside the form (`material_zones::stash_dialog_choice`,
+        // like the dispersion model): taken here, so a stale choice never reaches a later save.
+        let choice = material_zones::take_dialog_choice();
+        let zones = material_zones::SaveZones {
+            name: &trimmed,
+            source: choice.as_ref().map_or("", |c| c.source.as_str()),
+            bands: band_rows.as_deref(),
+            relative_to_stone: choice.as_ref().map(|c| c.relative_to_stone),
+            stone_width_mm,
+        };
+        if let Err(sentence) = material_zones::apply_on_save(&guard, zones) {
+            tracing::warn!("Rough colour: {sentence}");
+            zones_error = Some(sentence);
         }
-        crate::gui::rough_colour::store::with_stored_zoning(&guard, new_mat, 0.0)
+        with_stored_zoning(&guard, new_mat, f64::from(stone_width_mm))
     };
     // Only an "apply" save selects the material just saved (see
     // `ctx.material_name` below) -- a plain "Save" writes the database/
@@ -406,6 +445,20 @@ pub(super) fn apply_custom_material_save(
     // actually worked, the same lookup [`crate::gui::editor::material_lookup::
     // EditorMaterialLookup::specific_gravity`] uses for the carat-weight estimate.
     let saved_specific_gravity = ctx.custom_specific_gravity(&trimmed);
+    let previous_trace = apply_to_live_render.then(|| PreviousTrace {
+        name: ctx.material_name.clone(),
+        // A same-named override is the design's sync copy of THIS material: capture the fresh
+        // definition just written to the list, not the stale one, so a refused apply restores
+        // a trace that matches the list.
+        material_override: ctx.material_override.clone().map(|m| {
+            if m.name.eq_ignore_ascii_case(&trimmed) {
+                saved_mat.clone()
+            } else {
+                m
+            }
+        }),
+        unresolved: ctx.material_unresolved.clone(),
+    });
     if apply_to_live_render {
         ctx.material_name.clone_from(&trimmed);
         // Mirrors `gui::render::material_quality::setup_material_changed_callback`'s
@@ -435,12 +488,18 @@ pub(super) fn apply_custom_material_save(
     let custom_list = ctx.custom_materials.clone();
     drop(ctx);
 
+    // The material and the render context are saved and in step; only its zones were not updated,
+    // which is reported beside the success (the pickers must still list the saved material).
+    let zones_warning = zones_error;
+
     Ok(SavedCustomMaterial {
+        zones_warning,
         trimmed_name: trimmed,
         overwrote_existing,
         c_axis_available,
         custom_list,
         applied_to_live_render: apply_to_live_render,
+        previous_trace,
         specific_gravity: saved_specific_gravity,
     })
 }
@@ -483,9 +542,8 @@ pub(super) fn apply_custom_material_delete(
     if let Err(e) = delete_result {
         return Err(format!("Could not delete '{name}': {e}"));
     }
-    // Zoning builds: the material's zones go with it (a later material of the same name must not
+    // The material's zones go with it (a later material of the same name must not
     // inherit them). A failure here leaves a stale row that the startup prune removes.
-    #[cfg(feature = "zoning")]
     {
         let removed = crate::gui::rough_colour::store::delete_material_zoning(
             &db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),

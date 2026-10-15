@@ -1,5 +1,5 @@
 //! Browser build of `indicatrix`: open a faceting design (a self-contained
-//! `.indicatrix` file, `.asc`, an older `.asc` + `.indicatrix.toml` pair, `.gem`,
+//! `.isdd` file (or a legacy `.indicatrix`), `.asc`, `.gem`,
 //! `.gcs`), keep it in the shared `indicatrix_editor::EditorSession`, and save it
 //! back as a browser download. See `README.md` for what works today and what the
 //! later phases add.
@@ -41,6 +41,8 @@ mod io;
 mod metrics;
 #[cfg(target_arch = "wasm32")]
 mod render;
+#[cfg(target_arch = "wasm32")]
+mod storage;
 #[cfg(target_arch = "wasm32")]
 mod views;
 #[cfg(target_arch = "wasm32")]

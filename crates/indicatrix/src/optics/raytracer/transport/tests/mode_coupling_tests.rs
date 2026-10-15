@@ -56,9 +56,9 @@ fn internal_mode_coupling_draw_matches_exact_closed_form_split() {
     let c_axis = Vec3::new(0.4, 0.5, 0.767_2).normalize();
     let (_, _, frame) = frame_for(25.0, c_axis);
     let sol = uniaxial_fresnel::internal_solve(n_o, n_o, n_e, c_axis, &frame, true);
-    let ro_pow = sol.r_o.norm_sqr() * sol.flux_ro;
-    let re_pow = sol.r_e.norm_sqr() * sol.flux_re;
-    let p_o_exact = ro_pow / (ro_pow + re_pow).max(1e-12);
+    let ord_pow = sol.r_o.norm_sqr() * sol.flux_ro;
+    let ext_pow = sol.r_e.norm_sqr() * sol.flux_re;
+    let p_o_exact = ord_pow / (ord_pow + ext_pow).max(1e-12);
 
     let stokes = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
     let mut extraordinary_count = 0u32;
@@ -115,9 +115,9 @@ fn internal_mode_coupling_draw_is_strongly_biased_near_a_modes_own_critical_angl
         let ang = 20.0f32.mul_add(f32::from(i) / f32::from(steps), 20.0);
         let (_, _, frame) = frame_for(ang, c_axis);
         let sol = uniaxial_fresnel::internal_solve(n_o, n_o, n_e, c_axis, &frame, true);
-        let ro_pow = sol.r_o.norm_sqr() * sol.flux_ro;
-        let re_pow = sol.r_e.norm_sqr() * sol.flux_re;
-        let p_o = ro_pow / (ro_pow + re_pow).max(1e-12);
+        let ord_pow = sol.r_o.norm_sqr() * sol.flux_ro;
+        let ext_pow = sol.r_e.norm_sqr() * sol.flux_re;
+        let p_o = ord_pow / (ord_pow + ext_pow).max(1e-12);
         let skew = (p_o - 0.5).abs();
         if skew > best_skew {
             best_skew = skew;

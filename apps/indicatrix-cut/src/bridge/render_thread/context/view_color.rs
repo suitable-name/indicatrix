@@ -75,7 +75,25 @@ impl RenderContext {
     pub fn effective_view_body_color(&self) -> Option<[f32; 3]> {
         // Asked every frame: nothing else is computed while the setting is off.
         let view = self.view_body_color?;
-        effective_view_color(Some(view), self.color_target(), self.physics_color())
+        effective_view_color(
+            Some(view),
+            self.color_target(),
+            self.physics_color() || self.zoned_material(),
+        )
+    }
+
+    /// Whether the material being traced (the override when set, else the by-name lookup) has
+    /// colour zones. Its colour is its zones, so no view colour applies to it (like a physics
+    /// recipe, see [`effective_view_color`]).
+    #[must_use]
+    pub fn zoned_material(&self) -> bool {
+        resolve_material_with_override(
+            builtin_materials(),
+            &self.custom_materials,
+            self.material_override.as_ref(),
+            &self.material_name,
+        )
+        .is_some_and(|material| material.zoning.is_some())
     }
 
     /// [`Self::material_override`] with the view colour applied: the material every
@@ -229,6 +247,27 @@ mod tests {
         ctx.set_custom_material_physics("Physics Ruby", true);
         assert_eq!(ctx.effective_view_body_color(), None);
         assert_eq!(ctx.tinted_material_override(), None);
+    }
+
+    /// A zoned material's colour is its zones: a view colour must not recolour it (that would
+    /// swap its `PerMm` zones for a `ModelUnit` triple and change the zone path scale).
+    #[test]
+    fn a_zoned_material_is_not_recoloured() {
+        use indicatrix::optics::{
+            absorption::AbsorptionTensor,
+            zoning::{ZoneAbsorption, ZonedAbsorption},
+        };
+        let zoning = ZonedAbsorption::new(ZoneAbsorption::per_mm(AbsorptionTensor::isotropic(
+            Vec::new(),
+        )));
+        let mut custom = GemMaterial::diamond().with_zoning(zoning);
+        custom.name = "Zoned Rough".to_string();
+        let mut ctx = view_ctx("zoned rough", Some(YELLOW));
+        ctx.custom_materials = Arc::new(vec![custom]);
+        assert!(ctx.zoned_material());
+        assert_eq!(ctx.effective_view_body_color(), None);
+        assert_eq!(ctx.tinted_material_override(), None);
+        assert!(!view_ctx("Sapphire", Some(YELLOW)).zoned_material());
     }
 
     #[test]

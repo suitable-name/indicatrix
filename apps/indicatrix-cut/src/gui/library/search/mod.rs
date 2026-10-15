@@ -13,7 +13,8 @@ mod remote_search;
 mod tests;
 
 pub use dispatch::refresh_diagram_list;
-pub(in crate::gui) use dispatch::{bump_search_seq, is_current_search};
+pub(in crate::gui) use dispatch::{bump_search_seq, cancel_pending_searches, is_current_search};
+pub(in crate::gui) use fetch::fetch_list_and_ranges_with_own_connection;
 pub use fetch::{
     DiagramListRow, DisplaySearchOptions, FetchedDiagramList, apply_diagram_list_to_ui,
     fetch_diagram_list, fetch_diagram_list_with_options,
@@ -107,11 +108,11 @@ fn selected_shape_and_gear(ui: &MainWindow) -> (SharedString, SharedString) {
     let library = ui.global::<LibraryModel>();
     let shape = library
         .get_shape_options()
-        .row_data(library.get_selected_shape_index() as usize)
+        .row_data(usize::try_from(library.get_selected_shape_index()).unwrap_or(usize::MAX))
         .unwrap_or_default();
     let gear = library
         .get_gear_options()
-        .row_data(library.get_selected_gear_index() as usize)
+        .row_data(usize::try_from(library.get_selected_gear_index()).unwrap_or(usize::MAX))
         .unwrap_or_default();
     (shape, gear)
 }

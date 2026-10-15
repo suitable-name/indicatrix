@@ -208,7 +208,7 @@ mod tests {
         let bytes = b"#?RADIANCE fake payload".to_vec();
         let header = AssetHeader {
             content_hash: content_hash(&bytes),
-            len: bytes.len() as u32,
+            len: u32::try_from(bytes.len()).expect("the test payload is tiny"),
         };
         let mut wire = Vec::new();
         framing::write_frame(&mut wire, &bytes).unwrap();

@@ -102,7 +102,7 @@ type Row = (&'static str, f64, &'static [f64], f64);
 /// can be a `const` table -- the same "static data, not a builder object" shape
 /// [`crate::design::ConstraintTier::standard_round_brilliant`] already uses for
 /// the one template that predates this module.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TemplateSpec {
     /// Shown as the gallery card's title and the "Start From" selection text.
     pub name: &'static str,
@@ -149,13 +149,13 @@ impl TemplateSpec {
     /// The fresh-design spec for this template at its own gear, symmetry and mirror, on
     /// its default preform, started in `material`.
     #[must_use]
-    pub const fn fresh_spec(&self, material: MaterialSelection) -> FreshDesignSpec {
+    pub fn fresh_spec(&self, material: MaterialSelection) -> FreshDesignSpec {
         FreshDesignSpec {
             gear_teeth: self.gear_teeth,
             symmetry_order: self.symmetry_order,
             mirror: self.mirror,
             material,
-            preform: self.preform,
+            preform: self.preform.clone(),
         }
     }
 

@@ -1,0 +1,294 @@
+// The data and callbacks of the Stone, Light and Checks tabs.
+//
+// Direction rule (as everywhere): Rust -> Slint is properties, Slint -> Rust is callbacks.
+// A property is `in-out` only where the user types or drags it (the tab binds the control
+// to it two-way and Rust reads it back in the callback that follows); every other
+// property is `in`.
+//
+// The first three properties are the contract with the Design page: the material name, and
+// the verdict (text and level 0 good, 1 check, 2 problem) its peek bar shows.
+//
+// Not imported by `theme.slint`; it reads `Shell` from `models.slint` for the sheet detent.
+import { Shell } from "../../models.slint";
+
+// One line of the material or color picker. `detail` is the second line.
+export struct MaterialItem {
+    name: string,
+    detail: string,
+    custom: bool,
+    selected: bool,
+}
+
+// One lighting rig. `name` is the stable key Rust stores; `title` is what is shown.
+export struct LightingItem {
+    name: string,
+    title: string,
+    description: string,
+    selected: bool,
+}
+
+// One finding of the verdict. `tier` is -1 when it is not about one tier; an empty
+// `fix-label` means there is no fix; an empty `confirm` means the fix needs no question.
+export struct WarningItem {
+    text: string,
+    level: int,
+    tier: int,
+    fix-label: string,
+    fix-hint: string,
+    confirm: string,
+}
+
+// One line of the proportions table. `level` is 0 within the usual range, 1 near its
+// edge, 2 outside, -1 not judged.
+export struct ProportionItem {
+    label: string,
+    value: string,
+    level: int,
+    reason: string,
+}
+
+export global PropsModel {
+    // --- The Design page's contract ---------------------------------------------------
+    in property <string> material-name: "";
+    in property <string> verdict-text: "";
+    in property <int> verdict-level: 0;
+
+    // --- The Design page's tab switcher ---------------------------------------------------
+    // The selected tab: 0 Tiers, 1 Stone, 2 Light, 3 Checks. The page binds to it two-way;
+    // the desktop preview's `--tab` sets it.
+    in-out property <int> design-tab: 0;
+
+    // --- The number keypad ---------------------------------------------------------------
+    // Every number field of the Stone and Checks tabs opens one keypad sheet (and the
+    // New Design form shows the same keypad inline). Rust owns the typed text
+    // (`KeypadState`): `number-begin` resets it, `number-key` presses a key and rewrites
+    // `number-readout`, `number-typing` and `number-text`.
+    in-out property <bool> number-open: false;
+    // The id of the field the sheet was opened for; that field takes the result.
+    in-out property <string> number-key: "";
+    in-out property <string> number-title: "";
+    in-out property <string> number-unit: "";
+    in-out property <bool> number-clearable: false;
+    // What the readout shows: the field's value, or what is being typed.
+    in property <string> number-readout: "0";
+    in property <bool> number-typing: false;
+    // The text to commit: what was typed, empty when nothing was typed (or to clear).
+    in-out property <string> number-text: "";
+    // Counts commits; a field watches it and takes `number-text` when `number-key` is its own.
+    in-out property <int> number-serial: 0;
+    property <int> number-detent-before: 1;
+
+    callback number-begin(string);
+    callback number-key-pressed(string);
+
+    // Opens the keypad sheet for the field `key`, starting from its current text.
+    public function open-number(key: string, title: string, unit: string, current: string, clearable: bool) {
+        if (!number-open) {
+            number-detent-before = Shell.sheet-detent;
+        }
+        Shell.sheet-detent = 2;
+        number-key = key;
+        number-title = title;
+        number-unit = unit;
+        number-clearable = clearable;
+        number-open = true;
+        number-begin(current);
+    }
+
+    // Closes the sheet and gives the sheet back its old height.
+    public function close-number() {
+        if (number-open) {
+            number-open = false;
+            Shell.sheet-detent = number-detent-before;
+        }
+    }
+
+    // The page's sheet left full height (the Back key, a drag down): close without touching
+    // the detent again.
+    public function dismiss-number() {
+        number-open = false;
+    }
+
+    // OK: commits what was typed (nothing typed commits nothing) and closes.
+    public function accept-number() {
+        if (number-text != "") {
+            number-serial += 1;
+        }
+        close-number();
+    }
+
+    // Clear Value: commits an empty text and closes.
+    public function clear-number() {
+        number-text = "";
+        number-serial += 1;
+        close-number();
+    }
+
+    // --- Stone tab ---------------------------------------------------------------------
+    // Which page the tab shows: 0 the settings, 1 the material picker, 2 the color
+    // picker, 3 the custom-material form. Rust owns it (`open-page`).
+    in property <int> stone-page: 0;
+    in property <string> material-title: "";
+    in property <string> material-detail: "";
+    in property <string> effective-ri: "";
+    in property <string> color-label: "Material Default";
+    in property <bool> color-enabled: true;
+    in property <[MaterialItem]> materials;
+    in property <[MaterialItem]> colors;
+    // The picker's search text; Rust filters `materials` by it.
+    in-out property <string> material-query: "";
+    // The refractive-index override; empty means the material's own.
+    in-out property <string> ri-text: "";
+    // The stone width in millimetres; empty means not set.
+    in-out property <string> width-text: "";
+    in property <string> width-note: "";
+    // Inclusion haze as the slider position 0..1 (the coefficient is 2 * position^2).
+    in-out property <float> haze: 0;
+    in-out property <bool> frosted: false;
+    // Edge rounding radius, 0..0.03 model units.
+    in-out property <float> rounding: 0;
+    in property <bool> axis-available: true;
+    in-out property <bool> axis-on: false;
+    in-out property <float> axis-tilt: 0;
+    in-out property <float> axis-azimuth: 0;
+
+    // The custom-material form.
+    in-out property <string> custom-name: "";
+    in-out property <string> custom-ri: "";
+    in-out property <string> custom-dispersion: "";
+    in-out property <string> custom-birefringence: "";
+    in-out property <string> custom-sg: "";
+    in-out property <int> custom-color: 0;
+    in property <[string]> color-names;
+    in property <string> custom-error: "";
+
+    callback open-page(int);
+    callback material-query-changed(string);
+    callback pick-material(string);
+    callback pick-color(int);
+    // A number field was committed: the field's id (`ri`, `width`, `half-width`,
+    // `length-width`, `depth`, `girdle-mm`, `sg`) and the text.
+    callback field-committed(string, string);
+    // A slider was released or a switch flipped; Rust reads the values back from the
+    // properties above.
+    callback effects-released();
+    callback save-custom();
+
+    // --- Light tab ---------------------------------------------------------------------
+    in property <[LightingItem]> presets;
+    in-out property <float> exposure: 1;
+    in-out property <float> azimuth: 48;
+    in-out property <float> elevation: 72;
+    in-out property <float> head-shadow: 16;
+    in-out property <float> glare: 100;
+    // 0 as lit, 1 grey, 2 white.
+    in property <int> backdrop: 1;
+    in property <bool> uses-light-direction: true;
+    in property <bool> uses-head-shadow: true;
+
+    callback preset-picked(string);
+    callback light-released();
+    callback backdrop-picked(int);
+
+    // The HDR map: a Radiance panorama imported from a file. `hdr-selected` means it is
+    // the chosen lighting (no rig is then); picking a rig turns it off in Rust.
+    in property <bool> hdr-available: false;
+    in property <bool> hdr-selected: false;
+    in property <string> hdr-description: "";
+    // True while an imported file is being decoded.
+    in property <bool> hdr-busy: false;
+
+    callback hdr-import();
+    callback hdr-clear();
+    callback hdr-use(bool);
+
+    // --- Checks tab --------------------------------------------------------------------
+    // False while no solve matches the design; `checks-note` then says what is missing.
+    in property <bool> checks-ready: false;
+    in property <string> checks-note: "";
+    in property <[WarningItem]> warnings;
+    in property <[ProportionItem]> proportions;
+    in property <[string]> yield-lines;
+
+    // The preform and yield inputs (millimetre texts are read-only helpers).
+    in property <string> preform-shape: "";
+    in property <string> preform-note: "";
+    in property <bool> preform-editable: true;
+    in-out property <string> preform-half-width: "";
+    in-out property <string> preform-length-width: "";
+    in-out property <string> preform-depth: "";
+    in-out property <string> preform-girdle-mm: "";
+    in-out property <string> preform-sg: "";
+    in property <string> preform-half-width-mm: "";
+    in property <string> preform-depth-mm: "";
+
+    callback fix-warning(int);
+    callback show-warning(int);
+
+    // --- Metrics (Checks tab) ---------------------------------------------------------
+    // 0 needs a solve, 1 not computed, 2 busy, 3 stale (numbers from before the last
+    // change), 4 current, 5 failed.
+    in property <int> metrics-state: 0;
+    // One sentence under the rows (why they are missing or old, or what lit them).
+    in property <string> metrics-note: "";
+    // The five rows; empty until the first measurement.
+    in property <[string]> metric-labels;
+    in property <[string]> metric-values;
+    in property <[string]> metric-meanings;
+
+    callback metrics-compute();
+
+    // --- Tilt Curves sheet -------------------------------------------------------------
+    // The sheet fills the Checks tab; opening it raises the page's sheet to full height
+    // (as the keypad sheet does) and starts the sweep when the curves are not current.
+    in-out property <bool> tilt-open: false;
+    property <int> tilt-detent-before: 1;
+    // The same codes as `metrics-state`.
+    in property <int> tilt-state: 0;
+    in property <string> tilt-note: "";
+    // The running sweep's completion 0..1, -1 when idle.
+    in property <float> tilt-progress: -1;
+    in property <string> tilt-stage: "";
+    in property <bool> tilt-has-curves: false;
+    // The axis drawn: 0..3 (azimuth 0, 45, 90 and 135 degrees).
+    in-out property <int> tilt-axis: 0;
+    in property <[string]> tilt-axis-names;
+    // SVG path strings in a 100 x 100 box for the drawn axis (x spans -90 to +90 degrees
+    // of tilt, y is 100 minus the percentage), and the same curves as 181 values each.
+    in property <string> tilt-brilliance-path: "";
+    in property <string> tilt-extinction-path: "";
+    in property <string> tilt-windowing-path: "";
+    in property <[float]> tilt-brilliance;
+    in property <[float]> tilt-extinction;
+    in property <[float]> tilt-windowing;
+
+    callback tilt-opened();
+    callback tilt-run();
+    callback tilt-cancel();
+    callback tilt-axis-picked(int);
+    callback tilt-copy();
+
+    // Opens the sheet over the Checks tab at full page height.
+    public function open-tilt() {
+        if (!tilt-open) {
+            tilt-detent-before = Shell.sheet-detent;
+        }
+        Shell.sheet-detent = 2;
+        tilt-open = true;
+        tilt-opened();
+    }
+
+    // Closes the sheet and gives the page's sheet back its old height.
+    public function close-tilt() {
+        if (tilt-open) {
+            tilt-open = false;
+            Shell.sheet-detent = tilt-detent-before;
+        }
+    }
+
+    // The page's sheet left full height (the Back key, a drag down): close without
+    // touching the detent again.
+    public function dismiss-tilt() {
+        tilt-open = false;
+    }
+}

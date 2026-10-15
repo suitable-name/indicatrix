@@ -128,7 +128,7 @@ pub fn linear_from_raw(raw: &RawImage) -> Result<LinearImage, PhotometryError> {
             let cfa = &config.cfa;
             if cfa.width != 2 || cfa.height != 2 {
                 return Err(PhotometryError::Unsupported(format!(
-                    "a {}x{} colour filter array ({}); only 2x2 Bayer is supported",
+                    "a {}x{} color filter array ({}); only 2x2 Bayer is supported",
                     cfa.width, cfa.height, cfa.name
                 )));
             }
@@ -138,7 +138,7 @@ pub fn linear_from_raw(raw: &RawImage) -> Result<LinearImage, PhotometryError> {
             ];
             if colours.iter().flatten().any(|&c| c > 2) {
                 return Err(PhotometryError::Unsupported(
-                    "a four-colour sensor".to_owned(),
+                    "a four-color sensor".to_owned(),
                 ));
             }
             let black = raw.blacklevel.as_bayer_array();

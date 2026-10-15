@@ -1,4 +1,4 @@
-//! GPU encoding of zoned absorption (`zoning` feature only): the zone table appended to
+//! GPU encoding of zoned absorption: the zone table appended to
 //! [`GpuGemMaterial`](super::GpuGemMaterial), and the predicate that decides which zoned
 //! materials the GPU kernels can render at all.
 //!
@@ -58,6 +58,10 @@ use crate::optics::{
 /// for speed, lower it (8, then 4) and re-run the soft-boundary GPU-vs-CPU comparisons
 /// (`estimator_check::run_image_comparison_zoned` with `ZonedImageCase::SoftBicolour` and
 /// `SoftWatermelon`, reported by the GPU harness group `zoned_absorption`) after each step.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "const context cannot use try_from; SOFT_SUBDIV is a small subdivision count (16)"
+)]
 pub const GPU_SOFT_SUBDIV: u32 = SOFT_SUBDIV as u32;
 
 /// `GpuZoneShape::flags` bit: sector span above pi.
@@ -239,6 +243,9 @@ impl GpuZoneTable {
     /// # Errors
     ///
     /// [`GpuZoneDecline`] if the GPU cannot render these zones.
+    ///
+    /// # Panics
+    /// Panics if the zone count exceeds `u32::MAX`, which the capped GPU table never allows.
     pub fn encode(zoning: &ZonedAbsorption) -> Result<Self, GpuZoneDecline> {
         if zoning
             .zones
@@ -263,7 +270,7 @@ impl GpuZoneTable {
 
         let mut table = Self::zeroed();
         table.header = GpuZoneHeader {
-            zone_count: ex.count as u32,
+            zone_count: u32::try_from(ex.count).expect("the zone count is capped by the table"),
             softness: ex.softness,
             soft_subdiv: GPU_SOFT_SUBDIV,
             _pad: 0,

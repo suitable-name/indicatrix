@@ -1,4 +1,4 @@
-//! The 3D handles of a colour zone in the Rough Planner's rough view (`zoning` feature only).
+//! The 3D handles of a colour zone in the Rough Planner's rough view.
 //!
 //! Window-free: this module knows zones, a camera and pixels, nothing about Slint. The planner's
 //! view (`gui::rough_plan::zoning_hooks`) draws what [`overlay`] returns, hit-tests with
@@ -587,6 +587,11 @@ pub fn overlay(view: &ViewMap<'_>, handles: &[Handle], lit: Option<usize>) -> Ov
 /// ones).
 ///
 /// Pixels outside the buffer are skipped.
+///
+/// # Panics
+///
+/// Never in practice: a pixel's coordinates are checked to lie inside the buffer before they
+/// are converted to an index.
 pub fn draw_overlay(
     rgba: &mut [u8],
     width: u32,
@@ -599,7 +604,11 @@ pub fn draw_overlay(
         if x < 0 || y < 0 || x >= i64::from(width) || y >= i64::from(height) {
             return;
         }
-        let at = (y as usize * width as usize + x as usize) * 4;
+        let (px, py) = (
+            usize::try_from(x).expect("x checked non-negative above"),
+            usize::try_from(y).expect("y checked non-negative above"),
+        );
+        let at = (py * width as usize + px) * 4;
         if let Some(pixel) = rgba.get_mut(at..at + 4) {
             pixel[..3].copy_from_slice(&rgb);
             pixel[3] = 0xff;
@@ -607,6 +616,10 @@ pub fn draw_overlay(
     };
     for segment in &overlay.segments {
         let (from, to) = (scaled(segment.from, scale), scaled(segment.to, scale));
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a step count of at least 1, bounded by the overlay's pixel extent"
+        )]
         let steps = (to.0 - from.0)
             .abs()
             .max((to.1 - from.1).abs())
@@ -614,8 +627,14 @@ pub fn draw_overlay(
             .max(1.0) as i64;
         for step in 0..=steps {
             let t = step as f32 / steps as f32;
-            let x = (to.0 - from.0).mul_add(t, from.0).round() as i64;
-            let y = (to.1 - from.1).mul_add(t, from.1).round() as i64;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "rounded pixel coordinate within the overlay's extent; out-of-buffer pixels are skipped"
+            )]
+            let (x, y) = (
+                (to.0 - from.0).mul_add(t, from.0).round() as i64,
+                (to.1 - from.1).mul_add(t, from.1).round() as i64,
+            );
             put(x, y, colour);
         }
     }
@@ -623,12 +642,21 @@ pub fn draw_overlay(
     for marker in &overlay.markers {
         let centre = scaled(marker.at, scale);
         let fill = if marker.lit { [255, 255, 255] } else { colour };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "marker radius is a few pixels"
+        )]
         let reach = radius.ceil() as i64 + 1;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "rounded pixel coordinate within the overlay's extent; out-of-buffer pixels are skipped"
+        )]
+        let (centre_x, centre_y) = (centre.0.round() as i64, centre.1.round() as i64);
         for dy in -reach..=reach {
             for dx in -reach..=reach {
                 let distance = (dx as f32).hypot(dy as f32);
-                let x = centre.0.round() as i64 + dx;
-                let y = centre.1.round() as i64 + dy;
+                let x = centre_x + dx;
+                let y = centre_y + dy;
                 if distance <= radius - 1.0 {
                     put(x, y, fill);
                 } else if distance <= radius {

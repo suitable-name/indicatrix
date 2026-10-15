@@ -16,6 +16,15 @@ use indicatrix_vault::{
 use slint::{ComponentHandle, Model};
 use std::sync::{Arc, Mutex};
 
+/// Rounds a facet-count slider bound to whole facets.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "slider bounds are facet counts (tens to hundreds), far inside i64; `as` saturates anyway"
+)]
+const fn round_to_i64(value: f64) -> i64 {
+    value.round() as i64
+}
+
 /// A slider value that sits exactly on its data-bounds edge means "not filtering on
 /// this side" -- returns `None` so `search_diagrams` skips the predicate entirely
 /// (which also means rows with no value at all for that attribute stay visible, same
@@ -63,12 +72,12 @@ pub fn read_range_filter(ui: &MainWindow) -> RangeFilter {
             ui.global::<LibraryModel>().get_facets_filter_min(),
             ui.global::<LibraryModel>().get_facets_bounds_min(),
         )
-        .map(|v| v.round() as i64),
+        .map(round_to_i64),
         facets_max: active_bound(
             ui.global::<LibraryModel>().get_facets_filter_max(),
             ui.global::<LibraryModel>().get_facets_bounds_max(),
         )
-        .map(|v| v.round() as i64),
+        .map(round_to_i64),
         // A separate RI band, `[center - tolerance, center + tolerance]`, composing
         // with `ri_min`/`ri_max` above by intersection -- see
         // `RangeFilter::ri_tolerance`'s doc comment. `None` whenever the panel's
@@ -215,13 +224,15 @@ pub fn current_filtered_entry_ids(
     db_mutex: &Arc<Mutex<Database>>,
 ) -> Result<Vec<i64>> {
     let search = ui.global::<LibraryModel>().get_search_text();
-    let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
+    let shape_idx = usize::try_from(ui.global::<LibraryModel>().get_selected_shape_index())
+        .unwrap_or(usize::MAX);
     let shape = ui
         .global::<LibraryModel>()
         .get_shape_options()
         .row_data(shape_idx)
         .unwrap_or_default();
-    let gear_idx = ui.global::<LibraryModel>().get_selected_gear_index() as usize;
+    let gear_idx = usize::try_from(ui.global::<LibraryModel>().get_selected_gear_index())
+        .unwrap_or(usize::MAX);
     let gear = ui
         .global::<LibraryModel>()
         .get_gear_options()

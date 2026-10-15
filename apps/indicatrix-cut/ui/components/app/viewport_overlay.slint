@@ -22,9 +22,17 @@ export component EditorViewportOverlay inherits Rectangle {
     in property <[string]> recent_native_files: [];
     callback open_recent(string);
 
+    // The viewport toolbar's pill rows (`SolidViewportToolbar.top_height`: 28px in one row at
+    // >= 1500px, 62px at >= 980px, else 96px with no cut slider) plus its 10px padding and a
+    // 6px gap. The card grid starts below them, so the pills stay visible and never sit under
+    // a card.
+    property <length> toolbar_inset: (root.width >= 1500px ? 28px : (root.width >= 980px ? 62px : 96px)) + 16px;
+
     if EditorModel.enabled && !EditorModel.has_design: EmptyState {
+        x: 0px;
+        y: root.toolbar_inset;
         width: 100%;
-        height: 100%;
+        height: max(0px, root.height - root.toolbar_inset);
         recent_native_files: root.recent_native_files;
         open_recent(path) => { root.open_recent(path); }
     }
@@ -42,7 +50,7 @@ export component EditorViewportOverlay inherits Rectangle {
         drop-shadow-color: Theme.modal-shadow;
         clip: true;
         accessible-role: AccessibleRole.groupbox;
-        accessible-label: "New design with no tiers yet";
+        accessible-label: "New Design with No Tiers Yet";
 
         hint_row := HorizontalLayout {
             padding-left: 12px;

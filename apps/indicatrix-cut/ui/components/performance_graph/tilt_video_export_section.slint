@@ -3,8 +3,11 @@ import { Theme } from "../../theme.slint";
 import { TiltModel, TiltVideoExportModel } from "../../models/tilt.slint";
 import { ExportRunModel } from "../../models/export_run.slint";
 import { GuideModel } from "../../models/guide.slint";
+import { SettingsModel } from "../../models/settings.slint";
+import { RemoteWorkerModel } from "../../models/remote_worker.slint";
 import { SegmentPill } from "../pill_button.slint";
 import { ToggleRow } from "../toggle_switch.slint";
+import { MaterialLine } from "../material_chip.slint";
 import { ChipToggle, ActionButton } from "../chip_toggle.slint";
 // Read-only reuse of the still-image export's own output folder (`ExportModel.directory`)
 // -- see `video_export::resolve_export_directory`'s own doc comment on why the video
@@ -39,6 +42,11 @@ export component TiltVideoExportSection inherits Rectangle {
     // The three frame-rate pills' actual fps values, by index -- shared by this
     // section's clip-length/estimate readout and its fps pill row.
     property <[int]> video_fps_choices: [24, 30, 60];
+
+    // Whether a remote is set up: the `configured` half of the one remote-availability value
+    // (`RemoteWorkerModel.availability`). The pills here only need a target to exist; the
+    // video does not probe before it starts.
+    property <bool> remote_configured: RemoteWorkerModel.availability.configured;
 
     border-radius: Theme.radius-md;
     background: Theme.surface-sunken;
@@ -131,6 +139,9 @@ export component TiltVideoExportSection inherits Rectangle {
             property <float> estimated_seconds: video_content.computed_frame_count * TiltVideoExportModel.last_frame_seconds;
             property <bool> needs_confirmation: video_content.computed_frame_count > 2000 && !root.confirmed_large_run;
 
+            // The material the video will use (read-only; the Stone tab changes it).
+            MaterialLine {}
+
             // Sweep
             VerticalLayout {
                 spacing: 6px;
@@ -148,7 +159,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         SpinBox {
                             minimum: -90;
                             maximum: 90;
-                            accessible-label: "Start angle in degrees";
+                            accessible-label: "Start Angle in Degrees";
                             value <=> TiltVideoExportModel.start_angle_deg;
                         }
                     }
@@ -158,7 +169,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         SpinBox {
                             minimum: -90;
                             maximum: 90;
-                            accessible-label: "End angle in degrees";
+                            accessible-label: "End Angle in Degrees";
                             value <=> TiltVideoExportModel.end_angle_deg;
                         }
                     }
@@ -175,7 +186,7 @@ export component TiltVideoExportSection inherits Rectangle {
                             LineEdit {
                                 width: 100%;
                                 height: 100%;
-                                accessible-label: "Step between frames in degrees";
+                                accessible-label: "Step Between Frames in Degrees";
                                 text: "" + TiltVideoExportModel.step_deg;
                                 edited(text) => { TiltVideoExportModel.step_deg = TiltVideoExportModel.parse_step_deg(text); }
                             }
@@ -235,7 +246,7 @@ export component TiltVideoExportSection inherits Rectangle {
                 spacing: 6px;
                 Text { text: "Resolution"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                 ComboBox {
-                    accessible-label: "Video resolution";
+                    accessible-label: "Video Resolution";
                     model: [
                         "128 x 128", "256 x 256", "512 x 512", "1024 x 1024", "2048 x 2048", "4096 x 4096", "8192 x 8192",
                         "1280 x 720 (720p)", "1920 x 1080 (1080p)", "2560 x 1440 (1440p)", "3840 x 2160 (4K)", "7680 x 4320 (8K)",
@@ -252,7 +263,7 @@ export component TiltVideoExportSection inherits Rectangle {
                             minimum: 128;
                             maximum: 8192;
                             step-size: 8;
-                            accessible-label: "Video width in pixels";
+                            accessible-label: "Video Width in Pixels";
                             value <=> TiltVideoExportModel.custom_width;
                         }
                     }
@@ -263,7 +274,7 @@ export component TiltVideoExportSection inherits Rectangle {
                             minimum: 128;
                             maximum: 8192;
                             step-size: 8;
-                            accessible-label: "Video height in pixels";
+                            accessible-label: "Video Height in Pixels";
                             value <=> TiltVideoExportModel.custom_height;
                         }
                     }
@@ -281,14 +292,14 @@ export component TiltVideoExportSection inherits Rectangle {
                 Text { text: "Quality"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                 HorizontalLayout {
                     alignment: space-between;
-                    Text { text: "Samples per pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: "Samples per Pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
                     Text { text: Math.round(Math.pow(2.0, Math.round(TiltVideoExportModel.sample_exponent_raw))); font-size: 12px; font-weight: 700; color: Theme.accent-cyan; }
                 }
                 Slider {
-                    minimum: 3;
-                    maximum: 15;
+                    minimum: SettingsModel.export_samples_min_exponent;
+                    maximum: SettingsModel.export_samples_max_exponent;
                     step: 1;
-                    accessible-label: "Samples per pixel, as a power of two";
+                    accessible-label: "Samples per Pixel, as a Power of Two";
                     value <=> TiltVideoExportModel.sample_exponent_raw;
                 }
 
@@ -296,10 +307,10 @@ export component TiltVideoExportSection inherits Rectangle {
                 if GuideModel.shows_advanced(): Text { text: "Max Ray Bounces"; font-size: 10px; color: Theme.text-muted; }
                 if GuideModel.shows_advanced(): HorizontalLayout {
                     spacing: 4px;
-                    for label[idx] in ["4", "8", "12", "24", "64", "128"]: SegmentPill {
+                    for cap[idx] in SettingsModel.bounce_ladder: SegmentPill {
                         height: 24px;
-                        text: label;
-                        hint: "Stop a light path after " + label + " bounces.";
+                        text: "" + cap;
+                        hint: "Stop a light path after " + cap + " bounces.";
                         selected: TiltVideoExportModel.selected_bounce_index == idx;
                         picked => { TiltVideoExportModel.selected_bounce_index = idx; }
                     }
@@ -313,10 +324,10 @@ export component TiltVideoExportSection inherits Rectangle {
                         height: 24px;
                         text: label;
                         hint: idx == 0
-                            ? "Standard screen colours. The safe choice."
+                            ? "Standard screen colors. The safe choice."
                             : (idx == 1
-                                ? "Wider colours, for modern screens and phones."
-                                : "Very wide colours for HDR video. Only some screens show them.");
+                                ? "Wider colors, for modern screens and phones."
+                                : "Very wide colors for HDR video. Only some screens show them.");
                         selected: TiltVideoExportModel.selected_color_space_index == idx;
                         picked => { TiltVideoExportModel.selected_color_space_index = idx; }
                     }
@@ -325,10 +336,10 @@ export component TiltVideoExportSection inherits Rectangle {
                 // Compute -- only with a remote configured, the same three pills as the
                 // still-image export's. Not gated on Advanced: "Remote only" is how a long
                 // video is sent away without taking this computer's CPU and GPU.
-                if TiltVideoExportModel.remote_configured: Text { text: "Compute"; font-size: 10px; color: Theme.text-muted; }
-                if TiltVideoExportModel.remote_configured: HorizontalLayout {
+                if root.remote_configured: Text { text: "Compute"; font-size: 10px; color: Theme.text-muted; }
+                if root.remote_configured: HorizontalLayout {
                     spacing: 4px;
-                    for label[idx] in ["Local only", "Remote only", "Local + Remote"]: SegmentPill {
+                    for label[idx] in ["Local Only", "Remote Only", "Local + Remote"]: SegmentPill {
                         height: 24px;
                         text: label;
                         hint: idx == 0
@@ -343,14 +354,14 @@ export component TiltVideoExportSection inherits Rectangle {
                         }
                     }
                 }
-                if !TiltVideoExportModel.remote_configured: Text {
+                if !root.remote_configured: Text {
                     text: "No remote configured. Rendering locally only.";
                     font-size: 10px;
                     color: Theme.text-muted;
                     wrap: word-wrap;
                 }
-                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.compute_target_index == 1: Text {
-                    text: "Remote only keeps this computer free: nothing is traced here, it only receives and saves the frames. If the remote stops answering, the video stops with a message instead of continuing here.";
+                if root.remote_configured && TiltVideoExportModel.compute_target_index == 1: Text {
+                    text: "Remote Only keeps this computer free: nothing is traced here, it only receives and saves the frames. If the remote stops answering, the video stops with a message instead of continuing here.";
                     font-size: 10px;
                     color: Theme.text-muted;
                     wrap: word-wrap;
@@ -358,10 +369,10 @@ export component TiltVideoExportSection inherits Rectangle {
 
                 // Transfer -- only with a remote configured and a Compute choice that uses
                 // it (with "Local only" there is nothing to transfer). Advanced.
-                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced(): Text { text: "Transfer"; font-size: 10px; color: Theme.text-muted; }
-                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced(): HorizontalLayout {
+                if root.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced(): Text { text: "Transfer"; font-size: 10px; color: Theme.text-muted; }
+                if root.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced(): HorizontalLayout {
                     spacing: 4px;
-                    for label[idx] in ["Full data", "Final picture only"]: SegmentPill {
+                    for label[idx] in ["Full Data", "Final Picture Only"]: SegmentPill {
                         height: 24px;
                         text: label;
                         hint: idx == 0
@@ -371,7 +382,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         picked => { TiltVideoExportModel.transfer_index = idx; }
                     }
                 }
-                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced() && TiltVideoExportModel.transfer_index == 1: Text {
+                if root.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced() && TiltVideoExportModel.transfer_index == 1: Text {
                     text: "One finished PNG per frame from the remote -- far less data, but your own CPU/GPU do not help. A plain worker falls back to full data.";
                     font-size: 10px;
                     color: Theme.text-muted;
@@ -395,7 +406,7 @@ export component TiltVideoExportSection inherits Rectangle {
                     wrap: word-wrap;
                 }
                 // Advanced: the folder-name template and its field list.
-                if GuideModel.shows_advanced(): Text { text: "Folder name template:"; font-size: 10px; color: Theme.text-muted; }
+                if GuideModel.shows_advanced(): Text { text: "Folder Name Template:"; font-size: 10px; color: Theme.text-muted; }
                 if GuideModel.shows_advanced(): Rectangle {
                     height: 26px;
                     background: Theme.surface-chip;
@@ -405,7 +416,7 @@ export component TiltVideoExportSection inherits Rectangle {
                     LineEdit {
                         width: 100%;
                         height: 100%;
-                        accessible-label: "Video folder name template";
+                        accessible-label: "Video Folder Name Template";
                         text <=> TiltVideoExportModel.filename_template;
                     }
                 }
@@ -546,7 +557,7 @@ export component TiltVideoExportSection inherits Rectangle {
                     border-color: Theme.border-dialog;
                     clip: true;
                     accessible-role: AccessibleRole.progress-indicator;
-                    accessible-label: "Video export progress";
+                    accessible-label: "Video Export Progress";
                     accessible-value: Math.round(TiltVideoExportModel.progress * 100) + " percent";
                     Rectangle {
                         x: 0;

@@ -627,13 +627,17 @@ fn the_original_snapshot_solve_prefers_the_cached_one_then_solves_never_a_wrong_
     let design = session.design;
     let solved = design.solve().expect("the fresh template solves");
     // A matching cached solve is used as is.
-    let kept = original_solve_for_snapshot(Some(solved.clone()), &design).expect("cached");
+    let kept = original_solve_for_snapshot(Some(solved.clone()), &design, true).expect("cached");
     assert_eq!(kept.len(), design.tiers.len());
     // A cached solve of another design (wrong tier count) is dropped and the design solved.
     let mut wrong = solved;
     wrong.pop();
-    let fresh = original_solve_for_snapshot(Some(wrong), &design).expect("solved on the spot");
+    let fresh = original_solve_for_snapshot(Some(wrong.clone()), &design, true)
+        .expect("solved on the spot");
     assert_eq!(fresh.len(), design.tiers.len());
-    // No cache: solved on the spot.
-    assert!(original_solve_for_snapshot(None, &design).is_some());
+    // No cache: solved on the spot when the policy allows it ...
+    assert!(original_solve_for_snapshot(None, &design, true).is_some());
+    // ... and never on the UI thread when it does not (the masts are filled in later).
+    assert!(original_solve_for_snapshot(None, &design, false).is_none());
+    assert!(original_solve_for_snapshot(Some(wrong), &design, false).is_none());
 }

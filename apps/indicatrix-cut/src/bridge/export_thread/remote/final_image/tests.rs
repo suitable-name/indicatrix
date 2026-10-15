@@ -151,7 +151,7 @@ fn accumulator_with_final_image(width: u32, height: u32, png: &[u8]) -> Accumula
         height,
         samples_done: 16,
         encoding: DisplayEncoding::Png,
-        payload_len: png.len() as u32,
+        payload_len: u32::try_from(png.len()).expect("test PNG fits in u32"),
     };
     acc.apply(&StreamEvent::FinalImage(header), Some(png))
         .expect("a well-formed picture applies");
@@ -207,12 +207,12 @@ fn a_preview_update_becomes_a_progress_preview() {
 
     let radiance_buf = accumulation(width, height);
     let mut encoder = PayloadEncoder::new(PayloadEncoding::Raw);
-    let encoded = encoder.encode(radiance::as_bytes(&radiance_buf));
-    let header = PreviewHeader::for_encoded(1, width, height, 7, &encoded);
+    let wire_payload = encoder.encode(radiance::as_bytes(&radiance_buf));
+    let header = PreviewHeader::for_encoded(1, width, height, 7, &wire_payload);
     accumulator
         .lock()
         .unwrap()
-        .apply(&StreamEvent::Preview(header), Some(encoded.bytes))
+        .apply(&StreamEvent::Preview(header), Some(wire_payload.bytes))
         .expect("a well-formed PREVIEW applies");
 
     let mut seen: Option<(u32, u32, Option<SharedPixelBuffer<Rgba8Pixel>>)> = None;
@@ -368,7 +368,7 @@ fn a_missing_or_mis_sized_picture_is_refused() {
         height: 2,
         samples_done: 1,
         encoding: DisplayEncoding::Png,
-        payload_len: png.len() as u32,
+        payload_len: u32::try_from(png.len()).expect("test PNG fits in u32"),
     };
     acc.apply(&StreamEvent::FinalImage(header), Some(&png))
         .unwrap();

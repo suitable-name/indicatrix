@@ -78,11 +78,11 @@ fn the_combo_lists_the_seven_presets_then_custom() {
         vec![
             "Balanced",
             "Brilliance",
-            "Low windowing",
-            "Low extinction",
-            "Keep weight",
-            "Lighten dark rough",
-            "Intensify pale rough",
+            "Low Windowing",
+            "Low Extinction",
+            "Keep Weight",
+            "Lighten Dark Rough",
+            "Intensify Pale Rough",
             "Custom"
         ]
     );

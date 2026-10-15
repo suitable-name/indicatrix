@@ -1,0 +1,348 @@
+// Cutting Mode: the full-screen page a cutter follows at the faceting machine. White on
+// black in every theme. One step at a time: the facet code, the angle and the index
+// numerals as large as the screen allows, a 72 px "Done" toggle, and previous / next
+// buttons in the bottom corners (swiping left or right also moves).
+//
+// Medium and expanded windows, and any landscape window, put the numerals in the left
+// half and the highlighted diagram in the right half.
+//
+// The host (`app.slint`) shows this over everything while `CutModel.mode-open` and sends
+// Back to `CutModel.mode-close()`. All data comes from `CutModel`; `mode-step` counts
+// from 0.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell } from "../models.slint";
+import { Icon } from "../shell/icon.slint";
+import { CutModel } from "cut_model.slint";
+import { ModeColors, Numeral, ModeArrow, DoneButton, StepBar } from "cutting_mode_parts.slint";
+
+// The facet code in accent color, then its name.
+component FacetLine inherits HorizontalLayout {
+    in property <string> code;
+    in property <string> name;
+    in property <length> code-size: 44px;
+
+    spacing: 12px;
+    alignment: start;
+    cross-axis-alignment: center;
+
+    Text {
+        text: root.code;
+        color: ModeColors.accent;
+        font-size: root.code-size;
+        font-weight: 800;
+        vertical-alignment: center;
+    }
+
+    Text {
+        text: root.name;
+        color: ModeColors.ink;
+        font-size: Theme.text-title-large;
+        vertical-alignment: center;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+}
+
+// The close button, 64 x 64.
+component CloseKey inherits Rectangle {
+    callback clicked();
+
+    width: 64px;
+    height: 64px;
+    border-radius: 32px;
+    background: touch.pressed ? ModeColors.key-pressed : transparent;
+    accessible-role: AccessibleRole.button;
+    accessible-label: "Close Cutting Mode";
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    Icon {
+        source: Icons.close;
+        tint: ModeColors.ink;
+        glyph: 32px;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component CuttingModeScreen inherits Rectangle {
+    background: ModeColors.background;
+
+    // Side by side when the window is landscape or at least medium wide.
+    property <bool> wide: root.width > root.height || Shell.window-class != 0;
+    property <length> content-width: root.width - Shell.inset-left - Shell.inset-right;
+    property <length> content-height: root.height - Shell.inset-top - Shell.inset-bottom;
+    property <int> step-count: max(CutModel.mode-step-count, 1);
+    property <bool> has-previous: CutModel.mode-step > 0;
+    property <bool> has-next: CutModel.mode-step + 1 < CutModel.mode-step-count;
+
+    // The largest numeral height the free vertical space allows (two numerals share it).
+    // The fixed chrome is the header, bar, facet line, captions, controls and gaps.
+    property <length> chrome: root.wide ? 250px : 420px;
+    property <length> numeral-cap: max(32px, min(96px, (root.content-height - root.chrome) / 2.4));
+    // The width a numeral may use: the whole line, or the left half when side by side.
+    property <length> numeral-width: root.wide ? (root.content-width - 64px) / 2 : root.content-width - 48px;
+
+    SwipeGestureHandler {
+        handle-swipe-left: root.has-next;
+        handle-swipe-right: root.has-previous;
+
+        swiped => {
+            if (self.current-position.x - self.pressed-position.x < -48px) {
+                CutModel.mode-next();
+            } else if (self.current-position.x - self.pressed-position.x > 48px) {
+                CutModel.mode-previous();
+            }
+        }
+
+        VerticalLayout {
+            width: root.width;
+            height: root.height;
+            padding-top: Shell.inset-top;
+            padding-bottom: Shell.inset-bottom;
+            padding-left: Shell.inset-left;
+            padding-right: Shell.inset-right;
+            spacing: 0px;
+
+            // Header: close, "Step 12 of 57", the design title and the section.
+            HorizontalLayout {
+                height: root.wide ? 52px : 64px;
+                padding-left: 4px;
+                padding-right: 16px;
+                spacing: 8px;
+                cross-axis-alignment: center;
+
+                CloseKey {
+                    clicked => {
+                        CutModel.mode-close();
+                    }
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+
+                    Text {
+                        text: "Step \{CutModel.mode-step + 1} of \{CutModel.mode-step-count}";
+                        color: ModeColors.ink;
+                        font-size: Theme.text-title;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: Shell.design-title;
+                        color: ModeColors.dim;
+                        font-size: Theme.text-label;
+                        overflow: elide;
+                    }
+                }
+
+                Text {
+                    text: CutModel.mode-section;
+                    color: ModeColors.accent;
+                    font-size: Theme.text-title;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+
+            StepBar {
+                fraction: (CutModel.mode-step + 1) / root.step-count;
+            }
+
+            // Portrait body: the numerals stacked, the notes under them.
+            if !root.wide: VerticalLayout {
+                vertical-stretch: 1;
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 12px;
+                spacing: 8px;
+
+                FacetLine {
+                    code: CutModel.mode-code;
+                    name: CutModel.mode-name;
+                }
+
+                Numeral {
+                    caption: "ANGLE";
+                    value: CutModel.mode-angle;
+                    avail-width: root.numeral-width;
+                    size-cap: root.numeral-cap;
+                }
+
+                Numeral {
+                    caption: "INDEX";
+                    value: CutModel.mode-index;
+                    avail-width: root.numeral-width;
+                    size-cap: root.numeral-cap;
+                }
+
+                Text {
+                    text: CutModel.mode-notes;
+                    color: ModeColors.dim;
+                    font-size: Theme.text-body-large;
+                    wrap: word-wrap;
+                    vertical-alignment: top;
+                    vertical-stretch: 1;
+                    overflow: elide;
+                }
+            }
+
+            // Wide body: numerals left, diagram and notes right.
+            if root.wide: HorizontalLayout {
+                vertical-stretch: 1;
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 8px;
+                spacing: 16px;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+
+                    FacetLine {
+                        code: CutModel.mode-code;
+                        name: CutModel.mode-name;
+                        code-size: 36px;
+                    }
+
+                    Numeral {
+                        caption: "ANGLE";
+                        value: CutModel.mode-angle;
+                        avail-width: root.numeral-width;
+                        size-cap: root.numeral-cap;
+                    }
+
+                    Numeral {
+                        caption: "INDEX";
+                        value: CutModel.mode-index;
+                        avail-width: root.numeral-width;
+                        size-cap: root.numeral-cap;
+                    }
+
+                    Rectangle {
+                        vertical-stretch: 1;
+                    }
+                }
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 8px;
+
+                    // A plain rectangle takes the free space; the picture fits inside it.
+                    Rectangle {
+                        vertical-stretch: 1;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: ModeColors.track;
+                        clip: true;
+
+                        Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: CutModel.mode-diagram;
+                            image-fit: contain;
+                            visible: CutModel.mode-diagram.width > 0;
+                        }
+                    }
+
+                    Text {
+                        text: CutModel.mode-notes;
+                        color: ModeColors.dim;
+                        font-size: Theme.text-body;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        visible: CutModel.mode-notes != "";
+                        max-height: CutModel.mode-notes != "" ? 72px : 0px;
+                    }
+                }
+            }
+
+            // Portrait controls: the Done toggle across, the arrows in the corners.
+            if !root.wide: VerticalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 8px;
+                padding-bottom: 12px;
+                spacing: 12px;
+
+                DoneButton {
+                    done: CutModel.mode-done;
+                    clicked => {
+                        CutModel.mode-toggle-done();
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 64px;
+
+                    ModeArrow {
+                        icon: Icons.chevron-left;
+                        label: "Previous Step";
+                        enabled: root.has-previous;
+                        clicked => {
+                            CutModel.mode-previous();
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    ModeArrow {
+                        icon: Icons.chevron-right;
+                        label: "Next Step";
+                        enabled: root.has-next;
+                        clicked => {
+                            CutModel.mode-next();
+                        }
+                    }
+                }
+            }
+
+            // Wide controls: previous, Done, next in one row.
+            if root.wide: HorizontalLayout {
+                height: 84px;
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                spacing: 16px;
+                cross-axis-alignment: center;
+
+                ModeArrow {
+                    icon: Icons.chevron-left;
+                    label: "Previous Step";
+                    enabled: root.has-previous;
+                    clicked => {
+                        CutModel.mode-previous();
+                    }
+                }
+
+                DoneButton {
+                    horizontal-stretch: 1;
+                    done: CutModel.mode-done;
+                    clicked => {
+                        CutModel.mode-toggle-done();
+                    }
+                }
+
+                ModeArrow {
+                    icon: Icons.chevron-right;
+                    label: "Next Step";
+                    enabled: root.has-next;
+                    clicked => {
+                        CutModel.mode-next();
+                    }
+                }
+            }
+        }
+    }
+}

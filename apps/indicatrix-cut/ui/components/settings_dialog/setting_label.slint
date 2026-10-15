@@ -1,10 +1,10 @@
 import { Theme } from "../../theme.slint";
 
-// The name of one setting in the render settings dialog, with the tooltip that says what the
+// The name of one setting in the Parameters panel, with the tooltip that says what the
 // setting does. Hovering the name shows `hint`; a screen reader reads the name, then `note`,
 // then `hint`.
 //
-//     SettingLabel { text: "Stone Size"; note: "(from design)"; hint: "The width of the stone ..."; }
+//     SettingLabel { text: "Girdle Diameter"; note: "(saved in the design)"; hint: "The width of the stone ..."; }
 //
 // `note` is a short remark after the name ("(not used with an HDR map)"), drawn dimmer. `icon`
 // is optional. The label takes the room a row has left over (`horizontal-stretch`), so a value
@@ -34,12 +34,16 @@ export component SettingLabel inherits Rectangle {
         alignment: start;
         spacing: 6px;
 
-        if root.icon.width > 0: Image {
-            source: root.icon;
-            colorize: root.label_color;
-            width: 12px;
-            height: 12px;
-            vertical-alignment: center;
+        // Centred by a layout of its own: a fixed-size Image in the row sits at the top of
+        // its cell (`vertical-alignment` only places the picture inside the Image).
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: root.label_color;
+                width: 12px;
+                height: 12px;
+            }
         }
         Text {
             text: root.text;

@@ -1,15 +1,15 @@
-//! The "Some advanced settings are in use" note of the render settings dialog.
+//! The "Some advanced settings are in use" note of the Parameters panel's Render & Output tab.
 //!
 //! Simple mode hides the render settings most designs never touch: the catalogue preview size
-//! and samples, the motion-preview scale, the live and local compute choices, the live
-//! transfer, the switch that lets this machine share a final-picture render, and the
-//! ray-bounce cap. A hidden control keeps its value and still applies, so while Simple mode is
-//! on the dialog says so when any of them is off its default ("Switch to Advanced to see
+//! and samples, the motion-preview scale, the live and local compute choices, the switch that
+//! lets this machine share a final-picture render, and the ray-bounce cap. (The live transfer
+//! is per remote and lives in the Remote dialog, which has its own note.) A hidden control
+//! keeps its value and still applies, so while Simple mode is on the tab says so when any of them is off its default ("Switch to Advanced to see
 //! them"), instead of leaving a render slower, or a remote unused, for a reason nobody can
 //! see.
 //!
-//! The decision is [`HiddenRenderSettings::in_use`], a pure comparison with the dialog's own
-//! "Reset to Defaults" values. The dialog (`settings_dialog.slint`) asks for it through the
+//! The decision is [`HiddenRenderSettings::in_use`], a pure comparison with the built-in default
+//! values (the ones "Reset this tab" puts back, `settings::model::reset_tab`). The tab asks for it through the
 //! pure callback `SettingsModel.advanced_in_use`, which [`setup_advanced_in_use_callback`]
 //! answers; the tests keep the default values equal to the persisted ones
 //! (`AppSettings::default()`), so a changed default cannot leave the note wrong.
@@ -29,24 +29,21 @@ pub struct HiddenRenderSettings {
     pub motion_preview_index: i32,
     /// Live Compute pill: 0 local only, 1 remote only, 2 local plus remote.
     pub live_compute_index: i32,
-    /// Live Transfer pill: 0 full data, 1 final picture.
-    pub live_transfer_index: i32,
     /// Whether this machine renders a share of a final-picture export.
     pub contribute_to_final_picture: bool,
     /// Local Compute pill: 0 CPU, 1 CPU and GPU, 2 GPU only.
     pub local_compute_index: i32,
-    /// Max Ray Bounces pill: 0 to 5 for 4, 8, 12, 24, 64 and 128 bounces.
+    /// Max Ray Bounces pill: index 0 to 5 for 4, 8, 12, 24, 64 and 128 bounces.
     pub bounce_index: i32,
 }
 
 impl HiddenRenderSettings {
-    /// The values the dialog's "Reset to Defaults" puts back.
+    /// The values the Render & Output tab's "Reset this tab" puts back.
     pub const DEFAULT: Self = Self {
         preview_size: 160,
         preview_spp: 256,
         motion_preview_index: 0,
         live_compute_index: 2,
-        live_transfer_index: 0,
         contribute_to_final_picture: true,
         local_compute_index: 1,
         bounce_index: 2,
@@ -66,7 +63,6 @@ pub(in crate::gui) fn setup_advanced_in_use_callback(ui: &MainWindow) {
          preview_spp,
          motion_preview_index,
          live_compute_index,
-         live_transfer_index,
          contribute_to_final_picture,
          local_compute_index,
          bounce_index| {
@@ -75,7 +71,6 @@ pub(in crate::gui) fn setup_advanced_in_use_callback(ui: &MainWindow) {
                 preview_spp,
                 motion_preview_index,
                 live_compute_index,
-                live_transfer_index,
                 contribute_to_final_picture,
                 local_compute_index,
                 bounce_index,
@@ -93,13 +88,12 @@ mod tests {
             local_compute_target_from_index, local_preview_scale_from_index,
             remote::live_compute_target_from_index,
         },
-        settings::model::{AppSettings, LiveTransfer},
+        // The ray-bounce caps of the pill ladder, by pill index: the one Rust copy, which
+        // every picker (`bounces_picker.slint` and the others) reads through Slint.
+        settings::model::{AppSettings, BOUNCE_LADDER},
     };
 
     const DEFAULT: HiddenRenderSettings = HiddenRenderSettings::DEFAULT;
-
-    /// The ray-bounce caps of the dialog's pill ladder, by pill index (`bounces_picker.slint`).
-    const BOUNCE_LADDER: [u32; 6] = [4, 8, 12, 24, 64, 128];
 
     #[test]
     fn the_default_settings_are_not_advanced() {
@@ -123,10 +117,6 @@ mod tests {
             },
             HiddenRenderSettings {
                 live_compute_index: 0,
-                ..DEFAULT
-            },
-            HiddenRenderSettings {
-                live_transfer_index: 1,
                 ..DEFAULT
             },
             HiddenRenderSettings {
@@ -175,10 +165,6 @@ mod tests {
         assert_eq!(
             DEFAULT.contribute_to_final_picture,
             persisted.contribute_to_final_picture
-        );
-        assert_eq!(
-            LiveTransfer::from_index(DEFAULT.live_transfer_index),
-            LiveTransfer::default()
         );
         let bounces = usize::try_from(DEFAULT.bounce_index)
             .ok()

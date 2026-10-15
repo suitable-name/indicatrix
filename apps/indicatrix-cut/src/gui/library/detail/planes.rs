@@ -2,9 +2,17 @@
 //! by the local and remote detail-load paths so both can never drift apart.
 
 use crate::{
-    AngleItem, MainWindow, TiltModel, ViewportModel,
+    AngleItem, MainWindow, SettingsModel, TiltModel, ViewportModel,
     bridge::render_thread::{PlanesOwner, RenderContext},
-    gui::editor::material_lookup::{MATERIAL_MATCH_TOLERANCE, material_for_refractive_index},
+    gui::{
+        batch::catalogue_material::design_file_material,
+        editor::{
+            CataloguePlanes,
+            material_lookup::{MATERIAL_MATCH_TOLERANCE, material_for_refractive_index},
+        },
+        is_c_axis_override_available,
+        render::stone_effects,
+    },
 };
 use indicatrix::{
     geometry::{
@@ -13,18 +21,68 @@ use indicatrix::{
     },
     optics::materials::GemMaterial,
 };
-use indicatrix_cut_core::material::{BuiltinMaterials, MaterialLookup};
+use indicatrix_cut_core::{
+    StoneRenderEffects,
+    material::{BuiltinMaterials, MaterialLookup, MaterialSelection},
+    native::CustomMaterialSnapshot,
+};
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
+/// What a catalogue design's own file says about the stone's material and size, carried
+/// from the planes resolution to [`apply_catalogue_material`] so the library detail view
+/// draws the stone as the editor's viewport and the exports do
+/// (`gui::batch::catalogue_material` is the rule the preview and tilt batches apply to the
+/// same three facts).
+///
+/// The remote route has no design file to read: it passes the [`Default`] -- no selection,
+/// no snapshot, no size -- and so keeps the persisted-material and refractive-index rules.
+#[derive(Debug, Clone, Default)]
+pub(super) struct DesignFileMaterial {
+    /// The design file's material selection: the species name, and the refractive-index and
+    /// body-color overrides applied on top of it. `None` when there is no design file.
+    pub(super) selection: Option<MaterialSelection>,
+    /// The design file's own snapshot of a custom material the vault may lack.
+    pub(super) custom_snapshot: Option<CustomMaterialSnapshot>,
+    /// The design file's girdle diameter in millimetres; `None` is "not set".
+    pub(super) girdle_mm: Option<f64>,
+}
+
+impl DesignFileMaterial {
+    /// The stone width the viewport draws the design at, in millimetres: the file's girdle
+    /// diameter, or `0.0` -- "not set", the 7 mm the built-in colors are tuned for.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a girdle diameter in millimetres is a small positive value; f32 is the viewport precision"
+    )]
+    pub(super) fn stone_width_mm(&self) -> f32 {
+        self.girdle_mm
+            .filter(|mm| mm.is_finite() && *mm > 0.0)
+            .map_or(0.0, |mm| mm as f32)
+    }
+}
+
+impl From<&CataloguePlanes> for DesignFileMaterial {
+    /// The material facts of a resolved catalogue design; the angle-table path has none, so
+    /// it converts to the default.
+    fn from(resolved: &CataloguePlanes) -> Self {
+        Self {
+            selection: resolved.material.clone(),
+            custom_snapshot: resolved.custom_material.clone(),
+            girdle_mm: resolved.girdle_diameter_mm,
+        }
+    }
+}
+
 /// Everything [`apply_reconstructed_planes`] needs for one design.
 ///
 /// `real_design` is [`crate::gui::editor::resolve_catalogue_planes`]'
-/// planes/gear-teeth/reference-angle for `entry_id` (`resolve_catalogue_planes_for_entry`,
-/// `None` on the remote route -- see that function's own call site): the design
-/// file's geometry when the record has a usable one, the angle table's otherwise. See
-/// [`planes_gear_and_reference_angle`] for exactly when each path is taken.
+/// planes/gear-teeth/reference-angle for `entry_id` (`None` on the remote route -- see the
+/// call site in `local_load`): the design file's geometry when the record has a usable one,
+/// the angle table's otherwise. See [`planes_gear_and_reference_angle`] for exactly when each
+/// path is taken. `design_material` is what the same resolution found about the design's
+/// material and size ([`DesignFileMaterial`]).
 ///
 /// Bundled into [`ReconstructedPlanesInput`] purely to keep this function's argument
 /// count under clippy's `too_many_arguments` limit -- the `real_design` field is what
@@ -48,6 +106,7 @@ pub(super) struct ReconstructedPlanesInput<'a> {
     /// -- tried by [`apply_catalogue_material`] ahead of the refractive-index guess.
     pub(super) preview_material: Option<&'a str>,
     pub(super) real_design: Option<(Vec<GpuFacetPlane>, u32, f32)>,
+    pub(super) design_material: DesignFileMaterial,
 }
 
 /// Falls back to [`reconstruct_planes`] (gear reference angle `0.0`, matching this
@@ -107,6 +166,7 @@ pub(super) fn apply_reconstructed_planes(
         refractive_index,
         preview_material,
         real_design,
+        design_material,
     } = input;
     let (planes, gear_teeth, gear_reference_angle) =
         planes_gear_and_reference_angle(real_design, shape, index_gear, angle_items);
@@ -125,17 +185,49 @@ pub(super) fn apply_reconstructed_planes(
         Some((gear_teeth, gear_reference_angle)),
         PlanesOwner::Catalogue { entry_id },
     );
-    let resolved_material = if claimed {
-        let resolved = apply_catalogue_material(&mut ctx, refractive_index, preview_material);
+    let (resolved_material, c_axis_available, stone_width_mm) = if claimed {
+        let resolved = apply_catalogue_material(
+            &mut ctx,
+            refractive_index,
+            preview_material,
+            &design_material,
+        );
+        // A library design is not editable and carries no stone effects of its own: the
+        // Stone tab's effects are view-only session values that start from the defaults
+        // for every library row (the editor design's values must not leak onto it). Its
+        // stone width is the design file's girdle diameter when the file has one
+        // (`apply_catalogue_material` set it, as the editor's viewport and the exports
+        // draw the stone), otherwise the default 7 mm. The editor's next load or edit
+        // claims the viewport back and its design's own values apply again.
+        stone_effects::clear_live_edit_pending();
+        stone_effects::apply_effects_to_context(&mut ctx, &StoneRenderEffects::default());
         ctx.dirty = true;
+        // The crystal-axis control follows the material this row is traced as.
+        let c_axis_available = ctx
+            .material_override
+            .as_ref()
+            .is_some_and(is_c_axis_override_available);
         // The viewport now shows a Library row, drawn whole: Live Render drops its
         // "Cut: ..." pill (the Cut slider belongs to the editor's design).
         crate::gui::editor::push_viewport_owner(ui, ctx.planes_owner);
-        resolved
+        (resolved, c_axis_available, ctx.stone_width_mm)
     } else {
-        None
+        (None, false, 0.0)
     };
     drop(ctx);
+    if claimed {
+        // Relative-to-stone zones follow the width this row shows, not the
+        // previous design's.
+        crate::gui::rough_colour::material_zones::stone_width_applied(render_ctx, stone_width_mm);
+        stone_effects::push_effects_to_controls(ui, &StoneRenderEffects::default());
+        ui.global::<SettingsModel>()
+            .set_stone_width_mm(stone_width_mm);
+        ui.global::<SettingsModel>()
+            .set_c_axis_override_available(c_axis_available);
+        // The colour readouts show the colour at this size, and the colour control now
+        // targets the view (a library design is never edited).
+        ui.global::<ViewportModel>().invoke_render_color_refresh();
+    }
     // The dropdown's own displayed selection, not just the material being traced: the
     // two are separate pieces of state, and writing only `RenderContext` left the
     // toolbar reading (say) "Quartz" while the stone on screen was already the newly
@@ -178,15 +270,54 @@ fn lookup_named_material(ctx: &RenderContext, name: &str) -> Option<GemMaterial>
         .or_else(|| BuiltinMaterials.lookup(name))
 }
 
-/// Points the viewport's material at whichever built-in this catalogue row's own
-/// refractive index names -- the material half of a catalogue selection. Without it the
-/// preview would keep whatever the last editor refresh, the last Render Material pick or
+/// The material `design`'s file names, resolved as the editor's viewport resolves it
+/// (`gui::batch::catalogue_material::design_file_material`: the render context's custom
+/// materials over the built-ins, the file's refractive-index and body-color overrides on top,
+/// the file's own custom-material snapshot when nothing answers to the name), written to
+/// both halves of the context's material -- `material_override` BEATS `material_name`.
+///
+/// `None`, with the context untouched, when the design has no file, the file names no
+/// material, or the name resolves nowhere (the viewport would refuse such a design; this view
+/// goes on to the persisted material and the refractive-index guess).
+fn apply_design_file_material(
+    ctx: &mut RenderContext,
+    design: &DesignFileMaterial,
+) -> Option<String> {
+    let selection = design.selection.as_ref()?;
+    let (name, material) = design_file_material(
+        selection,
+        design.custom_snapshot.as_ref(),
+        &ctx.custom_materials,
+    )?;
+    ctx.material_unresolved = None;
+    ctx.material_name.clone_from(&name);
+    ctx.material_override = Some(material);
+    Some(name)
+}
+
+/// Points the viewport's material at the stone this catalogue row is -- the material half
+/// of a catalogue selection, and the size it is drawn at. Without it the
+/// preview would keep whatever the last editor refresh, the last material pick or
 /// the PREVIOUS catalogue row left behind, so clicking through the library would change
 /// the shape on screen and never the stone.
 ///
-/// Both halves are written, not just the name: `material_override` BEATS `material_name`
-/// in `render_thread::context::resolve_material_with_override`, so leaving a stale
-/// override in place would make the name below purely decorative.
+/// The material is the first of these that answers, the order the library batches use
+/// for the thumbnails and tilt curves of the same design
+/// (`gui::batch::catalogue_material`):
+///
+/// 1. the design file's own material ([`apply_design_file_material`]) -- what the editor and
+///    the exports show;
+/// 2. the persisted `preview_material`;
+/// 3. the built-in the row's refractive index names.
+///
+/// The stone width follows the design file as well: `ctx.stone_width_mm` becomes the file's
+/// girdle diameter ([`DesignFileMaterial::stone_width_mm`]; `0.0`, the 7 mm the built-in
+/// colors are tuned for, when the file has none or there is no file), set whichever of the
+/// three answers, so a thumbnail, a tilt curve and this view agree on the stone.
+///
+/// Both halves of the material are written, not just the name: `material_override` BEATS
+/// `material_name` in `render_thread::context::resolve_material_with_override`, so leaving a
+/// stale override in place would make the name below purely decorative.
 ///
 /// A row whose refractive index is absent, unparsable, or within
 /// [`MATERIAL_MATCH_TOLERANCE`] of no built-in at all sets `material_unresolved` instead:
@@ -194,8 +325,8 @@ fn lookup_named_material(ctx: &RenderContext, name: &str) -> Option<GemMaterial>
 /// design's optics.
 ///
 /// `preview_material` -- this design's own persisted preview/tilt-curve
-/// material, when one is on file -- is tried FIRST, via [`lookup_named_material`],
-/// ahead of the refractive-index nearest-match below. It is a recorded FACT (the exact
+/// material, when one is on file -- is tried before the refractive-index nearest-match below,
+/// via [`lookup_named_material`]. It is a recorded FACT (the exact
 /// material the cached thumbnail and tilt curves were actually rendered under), not a
 /// ±[`MATERIAL_MATCH_TOLERANCE`] nearest-preset GUESS that can tie-break two different
 /// ways in two different code paths (`gui::editor::material_lookup::
@@ -204,14 +335,19 @@ fn lookup_named_material(ctx: &RenderContext, name: &str) -> Option<GemMaterial>
 /// actually IS) -- preferring the fact closes the "unresolved in the viewport while the
 /// thumbnail was rendered as a real preset" seam that let those two rules disagree.
 ///
-/// Returns the material's name on success, so the caller can point the Render Material
-/// dropdown at it once the `RenderContext` lock is released; `None` on either refusal,
+/// Returns the material's name on success, so the caller can point the viewport's material
+/// list at it once the `RenderContext` lock is released; `None` on either refusal,
 /// where there is no name to show.
-fn apply_catalogue_material(
+pub(super) fn apply_catalogue_material(
     ctx: &mut RenderContext,
     refractive_index: Option<&str>,
     preview_material: Option<&str>,
+    design: &DesignFileMaterial,
 ) -> Option<String> {
+    ctx.stone_width_mm = design.stone_width_mm();
+    if let Some(name) = apply_design_file_material(ctx, design) {
+        return Some(name);
+    }
     if let Some(name) = preview_material.map(str::trim).filter(|s| !s.is_empty()) {
         return if let Some(gem) = lookup_named_material(ctx, name) {
             ctx.material_unresolved = None;
@@ -235,7 +371,7 @@ fn apply_catalogue_material(
             ctx.material_unresolved = Some(format!(
                 "This design's material '{name}' is not a built-in preset or a saved \
                  custom material, so there is nothing to trace -- pick a material in \
-                 the Render Material dropdown above, or re-save the missing custom \
+                 the Material list in the Stone tab, or re-save the missing custom \
                  material."
             ));
             None
@@ -251,7 +387,7 @@ fn apply_catalogue_material(
         ctx.material_override = None;
         ctx.material_unresolved = Some(
             "This design records no usable refractive index, so there is no honest \
-             material to render it in. Pick one in the Render Material dropdown above."
+             material to render it in. Pick one in the Material list of the Stone tab."
                 .to_string(),
         );
         return None;
@@ -261,8 +397,8 @@ fn apply_catalogue_material(
         ctx.material_override = None;
         ctx.material_unresolved = Some(format!(
             "This design's refractive index ({n_d:.4}) matches no built-in preset within \
-             {MATERIAL_MATCH_TOLERANCE:.2}. Pick a material in the Render Material dropdown \
-             above -- rendering it as something else would give you the optics of a \
+             {MATERIAL_MATCH_TOLERANCE:.2}. Pick a material in the Material list of the \
+             Stone tab -- rendering it as something else would give you the optics of a \
              different stone."
         ));
         return None;

@@ -13,7 +13,7 @@ import { TipBox } from "tip_box.slint";
 // should_open_anchor_explainer`). "Don't show again" persists through
 // `AppSettings.suppressed_confirmations` (key `"anchor_explainer"`) --
 // `EditorModel.anchor_explainer_dismiss`'s own doc comment. Mounted once in
-// `app.slint`, the same way `mismatch_dialog`/`write_confirm` are.
+// `app.slint`, the same way `write_confirm` is.
 //
 // The last paragraph depends on the interface mode: "Exact scale value" in the Meets box is an
 // Advanced control (Simple mode only lists it for a tier that already uses it), so a Simple
@@ -70,7 +70,7 @@ export component AnchorExplainer inherits Rectangle {
                     spacing: 8px;
                     Text {
                         horizontal-stretch: 1;
-                        text: "Why this design needs an anchor";
+                        text: "Why This Design Needs an Anchor";
                         font-size: 13px;
                         font-weight: 700;
                         color: Theme.text-primary;
@@ -102,8 +102,8 @@ export component AnchorExplainer inherits Rectangle {
                 }
                 Text {
                     text: GuideModel.shows_advanced()
-                        ? "Click \"Add Anchor\" on the flagged row, or use the Girdle Facet Preset (90\u{b0}, scale = 1), or set any tier's Meets to \"Exact scale value\" yourself."
-                        : "Click \"Add Anchor\" on the flagged row, or use the Girdle Facet Preset (90\u{b0}, scale = 1). To set a tier's depth by hand, switch to Advanced: the Meets box then offers \"Exact scale value\".";
+                        ? "Click \"Add Anchor\" on the flagged row, or use the Girdle Facet Preset (90\u{b0}, scale = 1), or set any tier's Meets to \"Exact Scale Value\" yourself."
+                        : "Click \"Add Anchor\" on the flagged row, or use the Girdle Facet Preset (90\u{b0}, scale = 1). To set a tier's depth by hand, switch to Advanced: the Meets box then offers \"Exact Scale Value\".";
                     font-size: 10px;
                     color: Theme.text-secondary;
                     wrap: word-wrap;
@@ -114,7 +114,7 @@ export component AnchorExplainer inherits Rectangle {
                     TipBox {
                         hint: "Tick to stop showing this card. It does not come back.";
                         CheckBox {
-                            text: "Don't show again";
+                            text: "Don't Show Again";
                             checked <=> root.dont_show_again;
                         }
                     }
@@ -122,7 +122,7 @@ export component AnchorExplainer inherits Rectangle {
                 HorizontalLayout {
                     alignment: end;
                     TipButton {
-                        text: "Got it";
+                        text: "Got It";
                         hint: "Close this card and go on editing.";
                         primary: true;
                         clicked => { root.dismiss(); }

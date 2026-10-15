@@ -108,6 +108,18 @@ pub(in crate::gui::editor) fn pick_pixels_to_logical(
     ((pick.0 + margin.0) / scale, (pick.1 + margin.1) / scale)
 }
 
+/// A pixel position as an unsigned pixel index: a negative or NaN position saturates to
+/// `0` and an oversized one to `u32::MAX`, which is the contract the pick-buffer lookups
+/// rely on (`PickBuffer::facet_at` bounds-checks against the frame's size).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "saturating float-to-int cast is the intent: negative or NaN maps to 0, the pick buffer bounds-checks"
+)]
+const fn pixel_coordinate(position: f32) -> u32 {
+    position as u32
+}
+
 /// The PHYSICAL-pixel letterbox margin [`map_to_pick_coordinates`] subtracts: `(0, 0)`
 /// in Solid/Diagram mode and before `auto_solve::render_ctx` is stashed, half the bars'
 /// width/height in Path-traced/Both mode (see [`map_to_pick_coordinates`]'s doc).
@@ -116,10 +128,10 @@ pub(in crate::gui::editor) fn pick_margin(ui: &MainWindow) -> (f32, f32) {
     let Some(render_ctx) = auto_solve::render_ctx() else {
         return (0.0, 0.0);
     };
-    let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
+    let view_mode = u8::try_from(ui.global::<SolidPreviewModel>().get_view_mode()).unwrap_or(0);
     let viewport_physical = (
-        (ui.global::<SolidPreviewModel>().get_viewport_width() * scale) as u32,
-        (ui.global::<SolidPreviewModel>().get_viewport_height() * scale) as u32,
+        pixel_coordinate(ui.global::<SolidPreviewModel>().get_viewport_width() * scale),
+        pixel_coordinate(ui.global::<SolidPreviewModel>().get_viewport_height() * scale),
     );
     let render_size = {
         let ctx = render_ctx
@@ -210,7 +222,7 @@ pub(in crate::gui::editor) fn setup_solid_facet_hover_callback(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
-                .and_then(|pick| pick.facet_at(px.max(0.0) as u32, py.max(0.0) as u32));
+                .and_then(|pick| pick.facet_at(pixel_coordinate(px), pixel_coordinate(py)));
             let Some(facet_id) = facet_id else {
                 // Falls back to the last CLICKED facet's own
                 // label (if any) instead of blanking the tooltip outright, so the
@@ -276,7 +288,7 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
-                .and_then(|pick| pick.facet_at(px.max(0.0) as u32, py.max(0.0) as u32))
+                .and_then(|pick| pick.facet_at(pixel_coordinate(px), pixel_coordinate(py)))
             else {
                 // A click that misses the silhouette clears
                 // the tier selection instead of leaving it alone -- matching what
@@ -310,8 +322,9 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
                 facet_selection::clicked_tier_row(&ui, &owners, facet_id)
             };
             if let Some(tier_row) = tier_row {
-                ui.global::<EditorModel>()
-                    .set_selected_tier_index(tier_row as i32);
+                ui.global::<EditorModel>().set_selected_tier_index(
+                    i32::try_from(tier_row).expect("tier row index fits in i32"),
+                );
                 // A tutorial step may wait for a facet of a tier to be picked.
                 raise(&ui, events::FACET_PICKED);
             }

@@ -69,7 +69,7 @@ const SOLVER_STONE: usize = 1;
 fn meets_named_facets() -> Guide {
     Guide::new(
         "tiers-meets-named-facets",
-        "Meets: named facets",
+        "Meets: Named Facets",
         "Choose how a tier finds its depth: an unspecified vertex, named facets, or an exact scale value.",
         GuideCategory::Tiers,
     )
@@ -80,9 +80,9 @@ fn meets_named_facets() -> Guide {
             "The Meets setting of a tier decides how its depth is found.",
         )
         .actions([
-            "Unspecified vertex: the tier closes against whatever vertex the solver finds.",
-            "Named facet(s): the tier closes against the facets you name.",
-            "Exact scale value: you state the depth outright.",
+            "Unspecified Vertex: the tier closes against whatever vertex the solver finds.",
+            "Named Facet(s): the tier closes against the facets you name.",
+            "Exact Scale Value: you state the depth outright.",
         ])
         .why("To solve, each block of the stone (the crown, the pavilion and the girdle) needs one tier with an exact scale value. The other tiers of that block can then meet facets or a vertex instead.")
         .highlight("inspector_tier")
@@ -95,8 +95,8 @@ fn meets_named_facets() -> Guide {
         )
         .actions([
             "Click the Upper Girdle row.",
-            "Set Meets to Named facet(s).",
-            "Facet names: Lower Girdle",
+            "Set Meets to Named Facet(s).",
+            "Facet Names: Lower Girdle",
             "Click Save Tier.",
         ])
         .check("Upper Girdle's Meets column reads meets Lower Girdle.")
@@ -117,7 +117,7 @@ fn meets_named_facets() -> Guide {
         )
         .actions([
             "Click the Table row.",
-            "Set Meets to Unspecified vertex.",
+            "Set Meets to Unspecified Vertex.",
             "Click Save Tier.",
         ])
         .check("the Table row's Meets column reads meet.")
@@ -167,7 +167,7 @@ fn meets_named_facets() -> Guide {
 fn meets_in_millimetres() -> Guide {
     Guide::new(
         "tiers-meets-mm-targets",
-        "Meets in millimetres",
+        "Meets in Millimetres",
         "State a depth, a girdle thickness or a table width in millimetres instead of scale units.",
         GuideCategory::Tiers,
     )
@@ -270,7 +270,7 @@ fn meets_in_millimetres() -> Guide {
         )
         .actions([
             "If the status strip says a target could not be bracketed, widen or remove it.",
-            "Choose Exact scale value or Named facet(s) again in Meets to remove a target; saving does it for you.",
+            "Choose Exact Scale Value or Named Facet(s) again in Meets to remove a target; saving does it for you.",
         ])
         .why("Every control is unlocked again."),
     )
@@ -279,7 +279,7 @@ fn meets_in_millimetres() -> Guide {
 fn adopt_imported_meets() -> Guide {
     Guide::new(
         "tiers-adopt-imported-meets",
-        "Adopt imported meets",
+        "Adopt Imported Meets",
         "Switch the tiers of an imported design from pinned depths to the meets its file stated.",
         GuideCategory::Tiers,
     )
@@ -325,11 +325,11 @@ fn adopt_imported_meets() -> Guide {
     .step(
         GuideStep::new(
             "Adopt the rest at once",
-            "Adopt all does every remaining tier in one go.",
+            "Adopt All does every remaining tier in one go.",
         )
-        .actions(["Click Adopt all above the tier table."])
+        .actions(["Click Adopt All above the tier table."])
         .check("no Adopt button is left in the tier table.")
-        .why("Adopt all is one Undo step, so a single Ctrl+Z brings every pinned value back.")
+        .why("Adopt All is one Undo step, so a single Ctrl+Z brings every pinned value back.")
         .goal(
             check("every imported meet is adopted", all_adopted),
             "every imported meet adopted",
@@ -343,8 +343,8 @@ fn adopt_imported_meets() -> Guide {
             "Adopt and Pin are opposites: Adopt trades a pinned depth for a meet, Pin trades a meet for a pinned depth.",
         )
         .actions([
-            "Adopt sel. in the multi-select bar adopts only the ticked tiers.",
-            "Continue with Pin to mast.",
+            "Adopt Sel. in the multi-select bar adopts only the ticked tiers.",
+            "Continue with Pin to Mast.",
         ])
         .why("Every control is unlocked again."),
     )
@@ -353,7 +353,7 @@ fn adopt_imported_meets() -> Guide {
 fn pin_to_mast() -> Guide {
     Guide::new(
         "tiers-pin-to-mast",
-        "Pin to mast",
+        "Pin to Mast",
         "Freeze the depth the solver found for a tier as an exact scale value.",
         GuideCategory::Tiers,
     )
@@ -365,8 +365,8 @@ fn pin_to_mast() -> Guide {
         )
         .actions([
             "Click the Upper Girdle row.",
-            "Set Meets to Named facet(s).",
-            "Facet names: Lower Girdle",
+            "Set Meets to Named Facet(s).",
+            "Facet Names: Lower Girdle",
             "Click Save Tier.",
         ])
         .check("the Upper Girdle row's Meets column reads meets Lower Girdle.")

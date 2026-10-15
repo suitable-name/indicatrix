@@ -208,6 +208,10 @@ impl ColorMode {
     /// A fantasy payload still at its default (no color) is seeded from the physics color
     /// through the legacy solver (spec 5); a fantasy color that was ever set is never
     /// overwritten, and the recipe is always kept.
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact comparison with the all-zero default marks a never-set fantasy color"
+    )]
     pub fn switch_to_fantasy(&mut self) {
         self.active = ActiveColor::Fantasy;
         if self.fantasy_rgb == [0.0; 3]

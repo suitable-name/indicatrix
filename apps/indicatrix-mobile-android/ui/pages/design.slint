@@ -1,0 +1,489 @@
+// Design destination: the viewport with the tier, stone, light and check tabs around it.
+//
+//   compact (phone)   the viewport on top (what the sheet leaves at the half detent, which
+//                     covers about 55 % of the page; the page minus the peek bar at peek,
+//                     a 120 px strip at full), a bottom sheet
+//                     below with the tab switcher right under the header row; the header
+//                     row is the drag handle, the solve status chip, the verdict and Solve
+//   medium/expanded   the viewport on the left, a collapsible side pane on the right with
+//                     the same status row, switcher and tab
+//
+// Without a design the page offers to start one. The tab components, their globals and
+// `DocumentModel` belong to the other Design lanes (`ui/design/**`); this page only
+// places them.
+import { ProgressIndicator } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell } from "../models.slint";
+import { EmptyState } from "../shell/empty_state.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { Sheet } from "../shell/sheet.slint";
+import { SidePane } from "../shell/side_pane.slint";
+import { Icon } from "../shell/icon.slint";
+import { StateLayer } from "../shell/state_layer.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { DocumentModel } from "../design/document_model.slint";
+import { RenderModel } from "../design/render/render_model.slint";
+import { ExportSheet } from "../design/render/export_sheet.slint";
+import { TiersModel } from "../design/tiers/tiers_model.slint";
+import { PropsModel } from "../design/props/props_model.slint";
+import { ViewportIcons } from "../design/viewport/viewport_icons.slint";
+import { DesignViewport } from "../design/viewport/design_viewport.slint";
+import { TiersTab } from "../design/tiers/tiers_tab.slint";
+import { StoneTab } from "../design/props/stone_tab.slint";
+import { LightTab } from "../design/props/light_tab.slint";
+import { ChecksTab } from "../design/props/checks_tab.slint";
+
+// The verdict of the design as a small colored pill (good / check / problem).
+component VerdictChip inherits Rectangle {
+    property <color> tint: Theme.verdict-mark(PropsModel.verdict-level);
+
+    width: pill.width;
+    height: Theme.touch;
+    accessible-role: AccessibleRole.text;
+    accessible-label: "Verdict: " + PropsModel.verdict-text;
+
+    pill := Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: min(label.preferred-width + 20px, Shell.window-class == 0 ? 104px : 132px);
+        height: 28px;
+        border-radius: 14px;
+        background: Theme.verdict-container(PropsModel.verdict-level);
+        border-width: 1px;
+        border-color: root.tint;
+
+        label := Text {
+            x: 10px;
+            width: parent.width - 20px;
+            height: parent.height;
+            text: PropsModel.verdict-text;
+            color: Theme.verdict-content(PropsModel.verdict-level);
+            font-size: Theme.text-label;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// The Solve button: a 36 px pill inside a 48 px touch target; a progress bar replaces
+// the label while a solve runs.
+component SolveButton inherits Rectangle {
+    width: 84px;
+    height: Theme.touch;
+    accessible-role: AccessibleRole.button;
+    accessible-label: TiersModel.solving ? "Solving" : "Solve";
+    accessible-enabled: !TiersModel.solving;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 36px;
+        border-radius: 18px;
+        background: TiersModel.solving ? Theme.secondary-container : Theme.primary;
+
+        if !TiersModel.solving: Text {
+            width: parent.width;
+            height: parent.height;
+            text: "Solve";
+            color: Theme.on-primary;
+            font-size: Theme.text-label-large;
+            font-weight: 500;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if TiersModel.solving: Rectangle {
+            x: 14px;
+            y: (parent.height - self.height) / 2;
+            width: parent.width - 28px;
+            height: 4px;
+
+            ProgressIndicator {
+                indeterminate: true;
+            }
+        }
+    }
+
+    TouchArea {
+        enabled: !TiersModel.solving;
+        clicked => {
+            TiersModel.solve();
+        }
+    }
+}
+
+// The row at the top of the sheet / side pane: the solve status chip (a tap shows the
+// whole status line), the verdict, Solve.
+component StatusRow inherits Rectangle {
+    height: Theme.touch;
+
+    HorizontalLayout {
+        padding-left: Theme.space-md;
+        padding-right: Theme.space-sm;
+        spacing: Theme.space-sm;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            accessible-role: AccessibleRole.button;
+            accessible-label: "Solve status: " + TiersModel.status-text;
+            accessible-action-default => {
+                Shell.show-info("Solve Status", TiersModel.status-text);
+            }
+
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                height: 32px;
+                border-radius: 16px;
+                background: TiersModel.status-problem ? Theme.error-container : Theme.surface-high;
+
+                Text {
+                    x: Theme.space-md;
+                    width: parent.width - 2 * Theme.space-md;
+                    height: parent.height;
+                    text: TiersModel.status-text;
+                    color: TiersModel.status-problem ? Theme.on-error-container : Theme.on-surface-variant;
+                    font-size: Theme.text-label;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            TouchArea {
+                enabled: TiersModel.status-text != "";
+                clicked => {
+                    Shell.show-info("Solve Status", TiersModel.status-text);
+                }
+            }
+        }
+
+        if PropsModel.verdict-text != "": VerdictChip { }
+
+        SolveButton { }
+    }
+}
+
+// The four tab components, all kept alive so scroll positions and edits survive a switch.
+component TabHost inherits Rectangle {
+    in property <int> tab: 0;
+
+    Rectangle {
+        visible: root.tab == 0;
+        TiersTab { }
+    }
+
+    Rectangle {
+        visible: root.tab == 1;
+        StoneTab { }
+    }
+
+    Rectangle {
+        visible: root.tab == 2;
+        LightTab { }
+    }
+
+    Rectangle {
+        visible: root.tab == 3;
+        ChecksTab { }
+    }
+}
+
+// The Tiers / Stone / Light / Checks switcher: a segmented control whose four segments
+// are equally wide and always exactly as wide as the space it is given (the shared
+// `Segmented` sizes its segments by their labels, which overflowed the tablet's side
+// pane), with the label elided when a segment is too narrow for it.
+component TabSwitcher inherits Rectangle {
+    in property <int> current: 0;
+    callback selected(int);
+
+    property <[string]> options: ["Tiers", "Stone", "Light", "Checks"];
+    property <length> cell: root.width / 4;
+
+    height: Theme.touch;
+    border-radius: Theme.touch / 2;
+    border-width: 1px;
+    border-color: Theme.outline;
+    clip: true;
+
+    for option[index] in root.options: Rectangle {
+        x: index * root.cell;
+        width: root.cell;
+        background: index == root.current ? Theme.secondary-container : transparent;
+        accessible-role: AccessibleRole.button;
+        accessible-label: option;
+        accessible-checkable: true;
+        accessible-checked: index == root.current;
+
+        StateLayer {
+            pressed: segment-touch.pressed;
+            hovered: segment-touch.has-hover;
+        }
+
+        // The divider between this segment and the previous one.
+        Rectangle {
+            x: 0px;
+            width: 1px;
+            background: index > 0 ? Theme.outline : transparent;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: Theme.space-xs;
+            padding-left: Theme.space-xs;
+            padding-right: Theme.space-xs;
+
+            // The check mark only when the segment is wide enough to keep its label.
+            if index == root.current && root.cell >= 100px: Rectangle {
+                width: 18px;
+
+                Icon {
+                    source: Icons.check;
+                    tint: Theme.on-secondary-container;
+                    glyph: 18px;
+                }
+            }
+
+            Text {
+                text: option;
+                color: index == root.current ? Theme.on-secondary-container : Theme.on-surface;
+                font-size: Theme.text-label-large;
+                font-weight: 500;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        segment-touch := TouchArea {
+            clicked => {
+                root.selected(index);
+            }
+        }
+    }
+}
+
+// The compact layout: the viewport above, the sheet over the lower part of the page.
+component CompactBody inherits Rectangle {
+    in-out property <int> tab: 0;
+    // The height of the whole Design page (this body and the top bar above it).
+    in property <length> page-height: 0px;
+
+    // The half detent: the sheet covers about 55 % of the page, so a tier list shows as
+    // many rows as the page allows, while the viewport keeps about 40 % of this body (at
+    // least 35 % of the page). The two limits meet at 55 % on a typical phone.
+    property <length> sheet-half: min(max(root.page-height * 0.55, Theme.sheet-peek + 96px), max(root.height - root.page-height * 0.35, Theme.sheet-peek + 96px));
+    // The same as the share of this body the Sheet takes.
+    property <float> sheet-share: root.height > 0px ? root.sheet-half / root.height : 0.55;
+
+    // The viewport takes what the sheet leaves at the half detent, everything above the
+    // peek bar while the sheet is folded down, and a 120 px strip while the sheet is full.
+    property <length> viewport-height: Shell.sheet-detent == 0 ? root.height - Theme.sheet-peek - Shell.page-inset-bottom : (Shell.sheet-detent == 1 ? root.height - root.sheet-half : 120px);
+
+    DesignViewport {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.viewport-height;
+    }
+
+    sheet := Sheet {
+        title: "";
+        half-fraction: root.sheet-share;
+        bottom-inset: Shell.page-inset-bottom;
+        detent <=> Shell.sheet-detent;
+
+        VerticalLayout {
+            padding-left: Theme.space-md;
+            padding-right: Theme.space-md;
+            spacing: Theme.space-xs;
+
+            TabSwitcher {
+                current: root.tab;
+                selected(index) => {
+                    PropsModel.close-number();
+                    root.tab = index;
+                }
+            }
+
+            TabHost {
+                tab: root.tab;
+                vertical-stretch: 1;
+            }
+        }
+    }
+
+    // The peek row rides on the sheet's header, so it follows the sheet up and down.
+    StatusRow {
+        x: 0px;
+        y: root.height - sheet.content-height - Theme.sheet-peek - Shell.page-inset-bottom + Theme.space-sm;
+        width: root.width;
+    }
+}
+
+// The medium and expanded layout: the viewport left, the side pane right.
+component WideBody inherits Rectangle {
+    in-out property <int> tab: 0;
+    in-out property <bool> collapsed: false;
+
+    HorizontalLayout {
+        DesignViewport {
+            horizontal-stretch: 1;
+        }
+
+        SidePane {
+            title: "Design";
+            collapsed <=> root.collapsed;
+
+            VerticalLayout {
+                StatusRow { }
+
+                // Inset like the status row above, so the switcher sits inside the pane.
+                HorizontalLayout {
+                    padding-left: Theme.space-md;
+                    padding-right: Theme.space-md;
+
+                    TabSwitcher {
+                        current: root.tab;
+                        selected(index) => {
+                            PropsModel.close-number();
+                            root.tab = index;
+                        }
+                    }
+                }
+
+                TabHost {
+                    tab: root.tab;
+                    vertical-stretch: 1;
+                }
+            }
+        }
+    }
+}
+
+export component DesignPage inherits Rectangle {
+    property <bool> menu-open: false;
+    // The selected tab lives in `PropsModel` so the preview's `--tab` flag can set it.
+    property <int> tab <=> PropsModel.design-tab;
+    property <bool> pane-collapsed: false;
+
+    VerticalLayout {
+        if DocumentModel.has-design: TopBar {
+            title: DocumentModel.dirty ? DocumentModel.title + " \u{2022}" : DocumentModel.title;
+            show-overflow: true;
+            actions: [
+                { icon: ViewportIcons.undo, label: "Undo", enabled: TiersModel.can-undo },
+                { icon: ViewportIcons.redo, label: "Redo", enabled: TiersModel.can-redo }
+            ];
+            action-clicked(index) => {
+                if (index == 0) {
+                    TiersModel.undo();
+                } else {
+                    TiersModel.redo();
+                }
+            }
+            overflow-clicked => {
+                root.menu-open = true;
+            }
+        }
+
+        if !DocumentModel.has-design: TopBar {
+            title: "Design";
+        }
+
+        if !DocumentModel.has-design: EmptyState {
+            vertical-stretch: 1;
+            icon: Icons.design;
+            title: "Start a Design";
+            body: "Create a new faceting design, or open one from a file.";
+            primary-text: "New Design";
+            primary-icon: Icons.add;
+            secondary-text: "Open";
+            secondary-icon: Icons.open;
+            primary-clicked => {
+                DocumentModel.new-design();
+            }
+            secondary-clicked => {
+                DocumentModel.open();
+            }
+        }
+
+        if DocumentModel.has-design && Shell.window-class == 0: CompactBody {
+            vertical-stretch: 1;
+            tab <=> root.tab;
+            page-height: root.height;
+        }
+
+        if DocumentModel.has-design && Shell.window-class != 0: WideBody {
+            vertical-stretch: 1;
+            tab <=> root.tab;
+            collapsed <=> root.pane-collapsed;
+        }
+    }
+
+    // The overflow menu: a scrim and a card under the top bar.
+    if root.menu-open && DocumentModel.has-design: Rectangle {
+        TouchArea {
+            clicked => {
+                root.menu-open = false;
+            }
+        }
+
+        Rectangle {
+            x: parent.width - self.width - Theme.space-sm;
+            y: Theme.top-bar-height - Theme.space-sm;
+            width: min(parent.width - 2 * Theme.space-sm, 280px);
+            height: menu-rows.preferred-height;
+            background: Theme.surface-high;
+            border-radius: Theme.radius-md;
+            clip: true;
+            drop-shadow-color: Theme.shadow;
+            drop-shadow-blur: Theme.shadow-blur-3;
+            drop-shadow-offset-y: Theme.shadow-offset-3;
+
+            TouchArea { }
+
+            menu-rows := VerticalLayout {
+                ListRow {
+                    title: "Save";
+                    clicked => {
+                        root.menu-open = false;
+                        DocumentModel.save();
+                    }
+                }
+
+                ListRow {
+                    title: "Save As";
+                    clicked => {
+                        root.menu-open = false;
+                        DocumentModel.save-as();
+                    }
+                }
+
+                ListRow {
+                    title: "Share";
+                    clicked => {
+                        root.menu-open = false;
+                        DocumentModel.share();
+                    }
+                }
+
+                ListRow {
+                    title: "New Design";
+                    clicked => {
+                        root.menu-open = false;
+                        DocumentModel.new-design();
+                    }
+                }
+
+                ListRow {
+                    title: "Open";
+                    clicked => {
+                        root.menu-open = false;
+                        DocumentModel.open();
+                    }
+                }
+            }
+        }
+    }
+
+    // The export sheet of the Render view covers the whole page, the menu included.
+    if RenderModel.export-open && DocumentModel.has-design: ExportSheet { }
+}

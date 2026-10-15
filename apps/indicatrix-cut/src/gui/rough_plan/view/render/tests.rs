@@ -256,10 +256,13 @@ fn only_the_hover_marker_differs_and_the_raster_is_reused() {
         48,
     )
     .expect("in front");
-    assert_eq!(
-        pixel(&with_marker, at.0.round() as usize, at.1.round() as usize),
-        HOVER_MARK
-    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the projected marker lies inside the 64x48 image, so the rounded coordinates are small and non-negative"
+    )]
+    let (px, py) = (at.0.round() as usize, at.1.round() as usize);
+    assert_eq!(pixel(&with_marker, px, py), HOVER_MARK);
 }
 
 #[test]

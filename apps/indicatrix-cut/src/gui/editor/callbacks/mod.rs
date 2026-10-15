@@ -16,7 +16,7 @@ mod tier_actions;
 
 pub(in crate::gui::editor) use retarget_actions::{
     RetargetCompareInputs, RetargetKeepGuard, current_retarget_guard, discard_retarget_preview,
-    hold_reference_snapshot, original_for_compare, retarget_compare_inputs,
+    hold_reference_snapshot, original_for_compare, release_snapshot, retarget_compare_inputs,
     setup_retarget_apply_callback, setup_retarget_close_callback, setup_retarget_open_callback,
     setup_retarget_proposal_changed_callback, setup_snapshot_callbacks, snapshot_for_compare,
 };
@@ -30,6 +30,8 @@ pub(in crate::gui::editor) use solve_actions::{
 pub(in crate::gui::editor) use tier_actions::{
     FIXED_CYLINDER_PREFORM_SIDES, letterbox_margin, logical_to_pick_pixels,
 };
+// A stone the Rough Planner hands to the editor (`gui::editor::planned_stone`).
+pub(in crate::gui) use tier_actions::planned_stone;
 pub(in crate::gui::editor) use tier_actions::{
     HistoryMove, map_to_pick_coordinates, pick_margin, pick_pixels_to_logical,
     refresh_after_history_move, refresh_after_renumbering_move, resubmit_facet_overlay,
@@ -42,10 +44,10 @@ pub(in crate::gui::editor) use tier_actions::{
     setup_gear_remap_confirm_callback, setup_inline_set_angle_callback,
     setup_load_selected_callback, setup_material_guess_set_callback,
     setup_material_suggestion_accept_callback, setup_material_suggestion_dismiss_callback,
-    setup_new_design_create_callback, setup_nudge_angle_callback, setup_redo_callback,
-    setup_remove_tier_callback, setup_save_tier_callback, setup_solid_facet_click_callback,
-    setup_solid_facet_hover_callback, setup_solid_selected_tier_changed_callback,
-    setup_solve_callback, setup_tier_filter_callback, setup_toggle_detach_callback,
-    setup_toggle_multi_select_callback, setup_undo_callback,
-    setup_viewport_material_linked_changed_callback,
+    setup_new_design_create_callback, setup_nudge_angle_callback,
+    setup_printed_proportions_callback, setup_redo_callback, setup_remove_tier_callback,
+    setup_save_tier_callback, setup_solid_facet_click_callback, setup_solid_facet_hover_callback,
+    setup_solid_selected_tier_changed_callback, setup_solve_callback, setup_stone_tab_callbacks,
+    setup_tier_filter_callback, setup_toggle_detach_callback, setup_toggle_multi_select_callback,
+    setup_undo_callback,
 };

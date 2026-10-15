@@ -149,6 +149,10 @@ impl ChunkPlanner {
 
     /// Passes defined so far.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "const fn cannot use try_from; a plan holds a few dozen passes, far below u32::MAX"
+    )]
     pub const fn planned_passes(&self) -> u32 {
         self.passes.len() as u32
     }
@@ -238,6 +242,11 @@ impl ChunkPlanner {
         };
         let pixels = self.pixel_count.div_ceil(self.partitions);
         let ms_per_spp = slowest * f64::from(pixels);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the value is floored and clamped to 1.0..=MAX_CHUNK_SPP before the cast"
+        )]
         let sized = if ms_per_spp > 0.0 {
             (TARGET_CHUNK_MS / ms_per_spp)
                 .floor()

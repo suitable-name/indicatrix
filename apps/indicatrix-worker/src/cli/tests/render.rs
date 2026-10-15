@@ -52,10 +52,10 @@ fn render_threads_defaults_to_zero_meaning_auto() {
         "4",
     ]
     .map(String::from);
-    let Command::Render(args) = parse(&argv).unwrap() else {
+    let Command::Render(parsed) = parse(&argv).unwrap() else {
         panic!("expected Render")
     };
-    assert_eq!(args.threads, 0);
+    assert_eq!(parsed.threads, 0);
 }
 
 /// Base argv for `render`'s required flags, shared by the `--only-*`/`compute_mode` tests.
@@ -89,10 +89,10 @@ fn render_compute_mode_defaults_to_hybrid_when_neither_only_flag_is_given() {
 fn render_only_cpu_flag_parses_to_only_cpu() {
     let mut argv = render_argv_base();
     argv.push("--only-cpu".to_string());
-    let Command::Render(args) = parse(&argv).unwrap() else {
+    let Command::Render(parsed) = parse(&argv).unwrap() else {
         panic!("expected Render")
     };
-    assert_eq!(args.compute_mode, ComputeMode::OnlyCpu);
+    assert_eq!(parsed.compute_mode, ComputeMode::OnlyCpu);
 }
 
 #[cfg(feature = "gpu")]
@@ -100,10 +100,10 @@ fn render_only_cpu_flag_parses_to_only_cpu() {
 fn render_only_gpu_flag_parses_to_only_gpu_on_a_gpu_build() {
     let mut argv = render_argv_base();
     argv.push("--only-gpu".to_string());
-    let Command::Render(args) = parse(&argv).unwrap() else {
+    let Command::Render(parsed) = parse(&argv).unwrap() else {
         panic!("expected Render")
     };
-    assert_eq!(args.compute_mode, ComputeMode::OnlyGpu);
+    assert_eq!(parsed.compute_mode, ComputeMode::OnlyGpu);
 }
 
 /// Without the `gpu` feature there's no GPU path to satisfy `--only-gpu`, so it must
@@ -140,10 +140,10 @@ fn render_repeating_the_same_only_flag_is_not_an_error() {
     let mut argv = render_argv_base();
     argv.push("--only-cpu".to_string());
     argv.push("--only-cpu".to_string());
-    let Command::Render(args) = parse(&argv).unwrap() else {
+    let Command::Render(parsed) = parse(&argv).unwrap() else {
         panic!("expected Render")
     };
-    assert_eq!(args.compute_mode, ComputeMode::OnlyCpu);
+    assert_eq!(parsed.compute_mode, ComputeMode::OnlyCpu);
 }
 
 #[test]

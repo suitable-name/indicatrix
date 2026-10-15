@@ -846,7 +846,12 @@ fn soft_half_space_matches_the_closed_form_integral() {
         normal: DVec3::Z,
         offset: 0.0,
     });
-    zoning.boundary_softness_mm = width as f32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the softness width is stored as f32, like the production field"
+    )]
+    let softness = width as f32;
+    zoning.boundary_softness_mm = softness;
     let band = f64::from(zoning.boundary_softness_mm);
     let prim = |t: f64| (0.5 * t * t * t).mul_add(-t, t * t * t);
 

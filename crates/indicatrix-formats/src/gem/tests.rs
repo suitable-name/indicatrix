@@ -79,7 +79,7 @@ fn encode_gem(design: &GemDesign) -> Vec<u8> {
 fn facet(angle: f64, distance: f64, index: f64, gear: i32, offset: f64) -> GemFacet {
     let phi = (90.0 - 360.0 * (index - offset) / f64::from(gear)).to_radians();
     let theta = angle.abs().to_radians();
-    let nz = if angle.abs() == 90.0 {
+    let nz = if (angle.abs() - 90.0).abs() < 1e-9 {
         if angle.is_sign_negative() { -0.0 } else { 0.0 }
     } else if angle.is_sign_negative() {
         -theta.cos()

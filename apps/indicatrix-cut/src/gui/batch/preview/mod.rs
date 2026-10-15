@@ -48,8 +48,10 @@
 //! [`engine::resolve_design`] resolves per ITEM, not once per design behind a shared
 //! cache: since a design's two views may be claimed by different lanes, there is no
 //! single thread to naturally own a per-design resolve, and the duplicated
-//! `get_diagram_full`/`ensure_preview_material` cost (~1ms) is negligible next to a
-//! ~1-2s render -- not worth a lock-guarded cache to save it.
+//! `get_diagram_full`/`catalogue_material` cost (~1ms) is negligible next to a
+//! ~1-2s render -- not worth a lock-guarded cache to save it. The material a design is
+//! drawn in, and the stone size it is drawn at, are the design file's own (else the
+//! refractive-index pick): see `gui::batch::catalogue_material`.
 //!
 //! Progress is reported as a COMPLETED COUNT (`preview_batch_design_index`), not a
 //! current index, since local and remote lanes may each be mid-item on different
@@ -68,6 +70,9 @@ mod wiring;
 
 pub use engine::{RI_MATCH_TOLERANCE, target_ri_for_design};
 pub use import_choice::offer_import_previews;
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui) use wiring::note_holders;
+pub(in crate::gui) use wiring::release_window_state;
 pub use wiring::{offer_regeneration, setup_preview_batch_callbacks};
 
 #[cfg(test)]
@@ -93,13 +98,14 @@ mod tests {
         let ctx = BatchContext {
             db: &db,
             material_candidates: &[],
+            custom_materials: &[],
             preview_size: 1,
             preview_spp: 1,
             solid: false,
             gpu_retired: &gpu_retired,
             angle_table_entries: &angle_table_entries,
         };
-        let planes = record_planes(&ctx, full);
+        let planes = record_planes(&ctx, full).map(|resolved| resolved.planes);
         let fallbacks = angle_table_entries
             .into_inner()
             .expect("the fallback set is never poisoned in a test");

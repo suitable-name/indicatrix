@@ -318,7 +318,7 @@ fn the_preform_lesson_can_be_played() {
             act(|sim| sim.open_tab(1)),
             read(),
             act(|sim| {
-                let mut preform = sim.session.design.preform;
+                let mut preform = sim.session.design.preform.clone();
                 assert!(
                     (preform.half_width - 1.5).abs() < 1e-9,
                     "the lesson says the rough starts at 1.5"

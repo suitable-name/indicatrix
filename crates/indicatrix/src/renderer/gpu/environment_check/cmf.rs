@@ -55,6 +55,11 @@ pub const CMF_ABS_FLOOR: f32 = 1e-6;
 #[must_use]
 pub fn build_cmf_lambdas() -> Vec<f32> {
     let mut lambdas = Vec::new();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the constant (850 - 300) / 0.5 = 1100 is positive and far below u32::MAX"
+    )]
     let steps = ((850.0 - 300.0) / 0.5) as u32;
     for step in 0..=steps {
         lambdas.push((step as f32).mul_add(0.5, 300.0));
@@ -110,7 +115,9 @@ pub fn run_cmf(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<f32> {
         &pipeline,
         &[(0, &in_buf), (1, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("a check case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

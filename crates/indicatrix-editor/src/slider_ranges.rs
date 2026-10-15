@@ -413,7 +413,7 @@ pub fn angle_slider_state(
 fn material_label(material_name: &str) -> String {
     let name = material_name.trim();
     if name.is_empty() || name == "(none)" {
-        "this stone".to_owned()
+        "This Stone".to_owned()
     } else {
         name.to_owned()
     }
@@ -462,14 +462,14 @@ fn pavilion_presets(n_d: f64, material_name: &str) -> Vec<AnglePreset> {
         ));
     }
     presets.push(preset(
-        "Critical angle + 2\u{b0} (bright, safe)".to_owned(),
+        "Critical Angle + 2\u{b0} (Bright, Safe)".to_owned(),
         angle_over_critical(critical, SAFE_MARGIN_DEG),
         format!(
             "The lowest angle the margin bar calls Safe: the critical angle ({critical:.1}\u{b0}) plus 2\u{b0}."
         ),
     ));
     presets.push(preset(
-        "Critical angle + 4\u{b0} (extra margin)".to_owned(),
+        "Critical Angle + 4\u{b0} (Extra Margin)".to_owned(),
         angle_over_critical(critical, 2.0 * SAFE_MARGIN_DEG),
         "More room for a cutting error or a change of stone.".to_owned(),
     ));
@@ -496,17 +496,17 @@ fn crown_presets(n_d: f64, material_name: &str) -> Vec<AnglePreset> {
         ));
     }
     presets.push(preset(
-        "Low crown".to_owned(),
+        "Low Crown".to_owned(),
         25.0,
         "A flat crown: a large table and little height.".to_owned(),
     ));
     presets.push(preset(
-        "Medium crown".to_owned(),
+        "Medium Crown".to_owned(),
         32.0,
         "A balanced crown.".to_owned(),
     ));
     presets.push(preset(
-        "High crown".to_owned(),
+        "High Crown".to_owned(),
         40.0,
         "A steep crown: a small table and more height.".to_owned(),
     ));

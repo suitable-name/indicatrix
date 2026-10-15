@@ -3,7 +3,7 @@
 
 use super::{
     CUSTOM_KEEP_COLOR_INDEX, CustomMaterialForm, absorption_rgb_for_color_index,
-    apply_custom_material_save,
+    apply_custom_material_save, restore_trace,
 };
 use crate::{bridge::render_thread::RenderContext, gui::optics::physics_state::PhysicsState};
 use indicatrix::optics::{
@@ -93,6 +93,71 @@ fn stored(
         .into_iter()
         .find(|r| r.name == name)
         .expect("row saved")
+}
+
+#[test]
+fn a_refused_apply_puts_the_previous_trace_back() {
+    let (db, ctx) = setup();
+    {
+        let mut c = ctx.lock().unwrap();
+        c.material_name = "Diamond".to_owned();
+        c.material_unresolved = Some("Mystery".to_owned());
+        c.dirty = false;
+    }
+    let outcome = apply_custom_material_save(
+        &db,
+        &ctx,
+        CustomMaterialForm {
+            apply_to_live_render: true,
+            ..form("Restore Probe", 3, "")
+        },
+    )
+    .expect("the save succeeds");
+    assert_eq!(ctx.lock().unwrap().material_name, "Restore Probe");
+    let previous = outcome.previous_trace.expect("an apply records the trace");
+    let mut c = ctx.lock().unwrap();
+    restore_trace(&mut c, previous);
+    assert_eq!(c.material_name, "Diamond");
+    assert!(c.material_override.is_none());
+    assert_eq!(c.material_unresolved.as_deref(), Some("Mystery"));
+    assert!(c.dirty);
+    drop(c);
+}
+
+#[test]
+fn a_refused_re_save_restores_the_fresh_copy_of_a_same_named_override() {
+    let (db, ctx) = setup();
+    apply_custom_material_save(&db, &ctx, form("Restore Probe", 3, "")).expect("first save");
+    let old_copy = live(&ctx, "Restore Probe");
+    {
+        let mut c = ctx.lock().unwrap();
+        c.material_override = Some(old_copy.clone());
+        drop(c);
+    }
+    let outcome = apply_custom_material_save(
+        &db,
+        &ctx,
+        CustomMaterialForm {
+            apply_to_live_render: true,
+            ri: 1.9,
+            ..form("Restore Probe", 3, "")
+        },
+    )
+    .expect("the re-save succeeds");
+    let fresh_copy = live(&ctx, "Restore Probe");
+    assert_ne!(
+        fresh_copy.dispersion, old_copy.dispersion,
+        "the second save changed the optics"
+    );
+    let previous = outcome.previous_trace.expect("an apply records the trace");
+    let mut c = ctx.lock().unwrap();
+    restore_trace(&mut c, previous);
+    let restored = c.material_override.clone().expect("the override is back");
+    drop(c);
+    assert_eq!(
+        restored.dispersion, fresh_copy.dispersion,
+        "the restored override carries the NEW optics"
+    );
 }
 
 #[test]

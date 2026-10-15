@@ -88,6 +88,18 @@ pub const WEB_WORDING: &[(&str, &str)] = &[
         "Read the status strip at the bottom of the window.",
     ),
     (
+        "Open the Stone tab of the Parameters dock (View > Stone Properties, or Ctrl+Alt+1).",
+        "In Design Settings, set Material: Diamond.",
+    ),
+    (
+        "Set Material: Diamond. It applies at once.",
+        "Click Apply Material.",
+    ),
+    (
+        "The carat estimate uses the specific gravity of the material set in the Stone tab unless you type an override. The Girdle Diameter is the same value as the Stone tab's Stone Width; it only changes how deep a colored stone's color looks, so a colorless Diamond looks the same. Click Skip Step if you do not need real units.",
+        "The carat estimate uses the specific gravity of the material set in Design Settings unless you type an override; neither changes the render. Click Skip Step if you do not need real units.",
+    ),
+    (
         "Switch to Live Render to see the stone rendered in Diamond.",
         "Switch to the Render tab to see the stone rendered in Diamond.",
     ),

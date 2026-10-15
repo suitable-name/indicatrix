@@ -7,6 +7,7 @@
 use super::Database;
 use crate::model::{
     performance::{Extreme, all_global_extreme_columns, global_extreme_column_name},
+    preview::PreviewMaterialState,
     tilt_curves::TiltPerformanceCurves,
 };
 use anyhow::{Context, Result, ensure};
@@ -223,20 +224,21 @@ impl Database {
     /// A design needs a sweep when `diagram_tilt_curves` has no row for it, the row's
     /// `generated_at` is `NULL`, or the row's `params_fingerprint` differs from
     /// `current_fingerprint(material)` -- the fingerprint a sweep made NOW would store.
-    /// `material` is the design's persisted `preview_material` (`None` when it has none
-    /// yet): the sweep is done in that material, and it lives in `diagram_previews`, not
-    /// in this table. A row written before fingerprints existed carries `NULL` there
-    /// and counts as outdated.
+    /// `material` is the design's persisted material state (name, stone size and source;
+    /// `PreviewMaterialState::default()` when it has none yet): the sweep is done in that
+    /// material at that size, and it lives in `diagram_previews`, not in this table. A row
+    /// written before fingerprints existed carries `NULL` there and counts as outdated.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying query fails.
     pub fn entry_ids_missing_tilt_curves(
         &self,
-        current_fingerprint: impl Fn(Option<&str>) -> String,
+        current_fingerprint: impl Fn(&PreviewMaterialState) -> String,
     ) -> Result<Vec<i64>> {
         self.outdated_entry_ids(
-            "SELECT de.id, tc.generated_at, tc.params_fingerprint, p.preview_material
+            "SELECT de.id, tc.generated_at, tc.params_fingerprint, p.preview_material,
+                    p.preview_girdle_mm, p.preview_material_source
              FROM diagram_entries de
              LEFT JOIN diagram_tilt_curves tc ON tc.entry_id = de.id
              LEFT JOIN diagram_previews p ON p.entry_id = de.id
@@ -536,11 +538,34 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            db.entry_ids_missing_tilt_curves(|material| {
-                format!("material={}", material.unwrap_or("none"))
+            db.entry_ids_missing_tilt_curves(|state| {
+                format!("material={}", state.name.as_deref().unwrap_or("none"))
             })
             .unwrap(),
             Vec::<i64>::new()
+        );
+
+        // The size and the source of the persisted state reach the function too.
+        db.set_preview_material(
+            entry_id,
+            "Sapphire",
+            Some(9.0),
+            crate::model::preview::PreviewMaterialSource::DesignFile,
+        )
+        .unwrap();
+        assert_eq!(
+            db.entry_ids_missing_tilt_curves(|state| {
+                format!(
+                    "material={}{}",
+                    state.name.as_deref().unwrap_or("none"),
+                    state
+                        .girdle_mm
+                        .map_or_else(String::new, |mm| format!(";size={mm}"))
+                )
+            })
+            .unwrap(),
+            vec![entry_id],
+            "a sweep stored without the design's size is outdated"
         );
 
         drop(db);

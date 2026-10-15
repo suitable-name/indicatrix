@@ -109,6 +109,10 @@ RELEASE NOTE: `serve` no longer renders by default -- add --render (or
 
 Run `indicatrix-worker <command> --help` for that command's own flags (and
 `indicatrix-worker cert <sub-command> --help` for one of cert's five).
+
+At start the worker asks GitHub (at most 2 s) whether a newer Indicatrix release
+exists and, only then, logs one info line naming it. --no-update-check (with any
+command) or the environment variable INDICATRIX_NO_UPDATE_CHECK skips the request.
 ";
 
 /// `indicatrix-worker render --help`.

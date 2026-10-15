@@ -1,0 +1,78 @@
+// One template tile of the New Design page: the design's name, its one-line shape
+// description and its facet count. The parent sets the size and position.
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { Icon } from "../../shell/icon.slint";
+import { StateLayer } from "../../shell/state_layer.slint";
+
+export component TemplateCardTile inherits Rectangle {
+    in property <string> name;
+    in property <string> description;
+    // The full sentence, used only for the screen reader.
+    in property <string> detail;
+    in property <int> facets;
+    callback clicked();
+
+    background: Theme.surface-container;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.outline-variant;
+    clip: true;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.name + ", " + root.description + ", " + root.facets + " facets. " + root.detail;
+
+    StateLayer {
+        pressed: touch.pressed;
+        hovered: touch.has-hover;
+        border-radius: root.border-radius;
+    }
+
+    VerticalLayout {
+        padding: Theme.space-lg;
+        spacing: Theme.space-xs;
+
+        HorizontalLayout {
+            alignment: start;
+
+            Icon {
+                source: Icons.design;
+                tint: Theme.primary;
+                glyph: 28px;
+            }
+        }
+
+        Text {
+            text: root.name;
+            color: Theme.on-surface;
+            font-size: Theme.text-title;
+            font-weight: 500;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+
+        Text {
+            text: root.description;
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-body;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
+        Text {
+            text: root.facets + " facets";
+            color: Theme.primary;
+            font-size: Theme.text-label;
+            font-weight: 500;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}

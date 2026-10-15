@@ -232,6 +232,11 @@ pub(in crate::bridge::export_thread) fn viewer_share(
         }
         _ => DEFAULT_VIEWER_SHARE,
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "fraction is in 0..=1 and clamped to >= 0 here, so the rounded product is within 0..=samples"
+    )]
     let share = (f64::from(samples) * fraction).round().max(0.0) as u32;
     share.min(half)
 }

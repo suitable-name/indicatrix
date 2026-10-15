@@ -254,6 +254,10 @@ pub(super) fn update_accumulation_state(
 /// A named struct rather than four positional `bool`s: transposing any two at a call
 /// site would compile and silently suspend for the wrong reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "five independent suspension reasons, deliberately named fields instead of positional bools"
+)]
 pub(super) struct SuspensionFlags {
     pub(super) paused: bool,
     pub(super) tab_visible: bool,

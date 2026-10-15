@@ -11,7 +11,7 @@ use crate::{
         env_map_status_text, show_toast,
         solid_preview::preview_state::{CameraPose, SolidPreviewState},
     },
-    settings::SettingsPersister,
+    settings::{SettingsPersister, model::LightingValues},
 };
 use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{ComponentHandle, SharedString};
@@ -19,6 +19,25 @@ use std::{
     f32::consts::FRAC_PI_2,
     sync::{Arc, Mutex},
 };
+
+/// Converts a Slint `view-mode` model value (a small enum index stored as `i32`) to the
+/// `u8` the preview state takes; an out-of-range value falls back to 0 (the live view).
+pub fn view_mode_index(raw: i32) -> u8 {
+    u8::try_from(raw).unwrap_or(0)
+}
+
+/// Converts a logical-times-scale viewport extent to whole device pixels. `as` saturates
+/// (negative and NaN become 0), which is the wanted behaviour for a not-yet-laid-out
+/// viewport that reports a zero or negative size.
+pub const fn device_pixels(extent: f32) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "saturating float to pixel count: negative or NaN extents map to 0 by design"
+    )]
+    let pixels = extent as u32;
+    pixels
+}
 
 /// Re-issues `ctx`'s current `active_planes` at its (just-updated) camera pose to
 /// `preview_state`, sized to the Solid viewport's own logical size --
@@ -78,19 +97,19 @@ pub(in crate::gui) fn resubmit_at_current_pose(
     let view_mode = if on_live_tab {
         0
     } else {
-        ui.global::<SolidPreviewModel>().get_view_mode() as u8
+        view_mode_index(ui.global::<SolidPreviewModel>().get_view_mode())
     };
     let stone = active_stone(ctx);
     let scale = ui.window().scale_factor();
     let size = if on_live_tab {
         (
-            (ui.global::<SolidPreviewModel>().get_live_viewport_width() * scale) as u32,
-            (ui.global::<SolidPreviewModel>().get_live_viewport_height() * scale) as u32,
+            device_pixels(ui.global::<SolidPreviewModel>().get_live_viewport_width() * scale),
+            device_pixels(ui.global::<SolidPreviewModel>().get_live_viewport_height() * scale),
         )
     } else {
         let viewport_size = (
-            (ui.global::<SolidPreviewModel>().get_viewport_width() * scale) as u32,
-            (ui.global::<SolidPreviewModel>().get_viewport_height() * scale) as u32,
+            device_pixels(ui.global::<SolidPreviewModel>().get_viewport_width() * scale),
+            device_pixels(ui.global::<SolidPreviewModel>().get_viewport_height() * scale),
         );
         // Path-traced/Both letterbox the traced image to `ctx.width`/
         // `ctx.height`'s own aspect ratio (`solid_viewport.slint`'s
@@ -124,7 +143,7 @@ pub(in crate::gui) fn resubmit_at_current_pose(
 /// The planes go through the same `(normal, -d)` flip the preview has always used, so a
 /// planar stone is the request it always was; the tools ride along unchanged, which is
 /// what stops a camera drag from redrawing a concave design as its flat hull.
-fn active_stone(ctx: &RenderContext) -> StoneGeometryBuf {
+pub(super) fn active_stone(ctx: &RenderContext) -> StoneGeometryBuf {
     StoneGeometryBuf {
         planes: ctx.active_planes.as_ref().clone(),
         tools: ctx.active_tools.as_ref().clone(),
@@ -184,14 +203,14 @@ pub(in crate::gui) fn contained_request_size(
     if render_aspect > viewport_aspect {
         // The traced image is wider than the viewport -- `contain` fits its
         // width and shrinks its height.
-        let height = (viewport_width as f32 / render_aspect).round().max(1.0) as u32;
+        let height = device_pixels((viewport_width as f32 / render_aspect).round().max(1.0));
         (viewport_width, height)
     } else {
         // The traced image is taller/narrower than the viewport -- `contain`
         // fits its height and shrinks its width. Already the on-screen size
         // whenever `render_aspect <= viewport_aspect`, so this branch is a near
         // no-op in that case beyond rounding.
-        let width = (viewport_height as f32 * render_aspect).round().max(1.0) as u32;
+        let width = device_pixels((viewport_height as f32 * render_aspect).round().max(1.0));
         (width, viewport_height)
     }
 }
@@ -238,8 +257,8 @@ pub(in crate::gui) fn resubmit_live_solid(
     let stone = active_stone(ctx);
     let scale = ui.window().scale_factor();
     let size = (
-        (ui.global::<SolidPreviewModel>().get_live_viewport_width() * scale) as u32,
-        (ui.global::<SolidPreviewModel>().get_live_viewport_height() * scale) as u32,
+        device_pixels(ui.global::<SolidPreviewModel>().get_live_viewport_width() * scale),
+        device_pixels(ui.global::<SolidPreviewModel>().get_live_viewport_height() * scale),
     );
     // Committed planes only: the Slice tool's provisional tier is an Edit-tab preview.
     preview_state.request_redraw_committed_geometry(
@@ -305,8 +324,8 @@ fn setup_light_callbacks(
 /// viewer), `1` = Top (straight down onto the table, the batch previews' own top
 /// pose), `2` = Bottom, `3` = Left, `4` = Right (the commonest inspection for
 /// windowing), and `5` = Fit, which uniquely leaves the CURRENT
-/// orbit angle alone and only recomputes `distance` from the live mesh's own
-/// bounding radius (`mesh_bounding_radius`) via [`fit_distance_for_radius`], so a
+/// orbit angle alone and only recomputes `distance` so the whole stone is in the
+/// picture (`fit_view::fit_distance`), so a
 /// cutter who has orbited to an awkward angle can recover a usable framing
 /// without also losing the angle they were inspecting. Every other kind resets
 /// yaw to a canonical angle; distance and lighting stay untouched for those.
@@ -327,11 +346,11 @@ fn setup_set_view_callback(
         let Some(ui) = ui_weak.upgrade() else {
             return;
         };
+        let fitted = (kind == 5)
+            .then(|| super::fit_view::fit_distance(&ui, &render_ctx, &mesh_bounding_radius));
         let mut ctx = RenderContext::lock(&render_ctx);
-        if kind == 5 {
-            let radius = *mesh_bounding_radius.lock().unwrap();
-            let (min, max) = orbit_distance_bounds(radius);
-            ctx.distance = fit_distance_for_radius(radius).clamp(min, max);
+        if let Some(distance) = fitted {
+            ctx.distance = distance;
         } else {
             let (yaw, pitch) = match kind {
                 1 => (0.0, FRAC_PI_2),  // Top
@@ -448,7 +467,7 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
             ctx.yaw = 0.60;
             ctx.pitch = 0.45;
             ctx.distance = 2.4;
-            ctx.light_yaw = 0.85;
+            ctx.light_yaw = crate::settings::model::DEFAULT_LIGHT_YAW_DEG.to_radians();
             ctx.light_pitch = crate::settings::model::DEFAULT_LIGHT_PITCH_DEG.to_radians();
             ctx.dirty = true;
             // Immediately resubmits at the new pose so both viewports (the Edit
@@ -466,9 +485,55 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
             s.settings.camera_yaw = 0.60;
             s.settings.camera_pitch = 0.45;
             s.settings.camera_distance = 2.4;
-            s.settings.light_yaw_deg = 0.85_f32.to_degrees();
-            s.settings.light_pitch_deg = 0.95_f32.to_degrees();
+            s.settings.light_yaw_deg = crate::settings::model::DEFAULT_LIGHT_YAW_DEG;
+            s.settings.light_pitch_deg = crate::settings::model::DEFAULT_LIGHT_PITCH_DEG;
         });
+        // The Lighting tab's direction sliders show the light the reset just moved.
+        let settings = ui.global::<SettingsModel>();
+        settings.set_light_yaw_deg(crate::settings::model::DEFAULT_LIGHT_YAW_DEG);
+        settings.set_light_pitch_deg(crate::settings::model::DEFAULT_LIGHT_PITCH_DEG);
+    });
+
+    setup_reset_lighting_tab_callback(ui, render_ctx, settings_store);
+}
+
+/// `ViewportModel.reset_lighting_tab`: the Lighting & Environment tab's "Reset this tab". Puts
+/// every lighting field back to [`LightingValues::default`] -- the rig, light direction,
+/// exposure, surface glare, backdrop, head shadow and the HDR map (cleared: the lighting rig
+/// comes back) -- in the render context, the settings file and the controls. The camera pose is
+/// not lighting and stays. Like applying a saved lighting, it is a choice of the cutter's normal
+/// lighting, so a design's own remembered lighting that was showing is let go (it stays saved).
+fn setup_reset_lighting_tab_callback(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
+) {
+    let render_ctx = render_ctx.clone();
+    let settings_store = settings_store.clone();
+    let ui_weak = ui.as_weak();
+    ui.global::<ViewportModel>().on_reset_lighting_tab(move || {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        let values = LightingValues::default();
+        let rig = crate::gui::optics::offered_lighting::offered_from_label(&values.lighting_rig);
+        {
+            let mut ctx = RenderContext::lock(&render_ctx);
+            super::lighting_presets::apply_values_to_context(&mut ctx, &values, rig);
+            ctx.env_map = None;
+            ctx.dirty = true;
+        }
+        settings_store.update(|s| values.write_into(&mut s.settings));
+        // The newest word on the lighting is the cutter's: nothing still on its way for the
+        // open design (a lookup, an HDR decode) may land over the reset.
+        super::design_lighting::normal_lighting_chosen();
+        super::design_lighting::env_map_chosen();
+
+        super::lighting_presets::push_lighting_values_to_controls(&ui, &values, rig);
+        let settings = ui.global::<SettingsModel>();
+        settings.set_env_map_status(String::new().into());
+        settings.set_env_map_loaded(false);
+        show_toast(&ui, "Lighting reset to the defaults.", "info");
     });
 }
 
@@ -492,7 +557,7 @@ pub(in crate::gui) fn setup_camera_drag_callbacks(
 }
 
 /// Wires up the HDR environment-map load/clear callbacks. Path is a plain typed text
-/// field (`settings_dialog.slint`'s "Environment Map (HDR)" section) with no native
+/// field (the Parameters panel's "Environment Map (HDR)" section) with no native
 /// picker of its own -- unlike `gui::library::setup_import_callback`'s `.asc`
 /// pickers, which go through `gui::pickers`. Split out of
 /// `run_gui` purely to keep that function under clippy's function-length lint.
@@ -571,14 +636,14 @@ pub(in crate::gui) fn setup_environment_map_callbacks(
     });
 
     // Native file-open picker for `env_map_path` ("Browse..." in
-    // `settings_dialog.slint`) -- fills the field, doesn't load anything itself;
+    // the Parameters panel) -- fills the field, doesn't load anything itself;
     // `on_load_env_map` above still does that, unchanged, whichever way the path got
     // typed in. Filtered to exactly `.hdr`: the only format `EnvironmentMap::from_hdr_file`
     // (crates/indicatrix/src/renderer/env_map.rs) decodes, via `image::ImageFormat::Hdr`.
     // `env_map_path` is simply left unchanged when the user cancels.
     //
     // `pick_hdr_file` is void (`ui/models/settings.slint`): Slint has no way to
-    // await a value-returning callback, so `settings_dialog.slint`'s click handler
+    // await a value-returning callback, so the Parameters panel's click handler
     // just fires it, the dialog itself runs off the UI thread through
     // `gui::pickers::pick`, and this closure pushes the chosen path into
     // `env_map_path` from the completion continuation once the picker returns.

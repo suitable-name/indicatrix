@@ -54,7 +54,7 @@ impl FacetMap {
                 continue;
             }
             if let Some(orbit) = info.tier_index.and_then(|tier| orbits.get_mut(tier)) {
-                orbit.push(facets.len() as u32);
+                orbit.push(u32::try_from(facets.len()).expect("a facet count fits u32"));
             }
             facets.push(info.clone());
         }

@@ -6,11 +6,10 @@ import { SettingLabel } from "setting_label.slint";
 
 // Performance Curve over Tilt Angles (Extinction & Brilliance Graph), plus the
 // button that opens the full `PerformanceGraphDialog`. Advanced: Simple mode hides it
-// (`settings_dialog.slint`).
+// (the Parameters panel).
 export component PerformanceCurvePanel inherits VerticalLayout {
-    // Forwarded to `SettingsDialog.open_performance_graph()` -- see that
-    // callback's own doc comment for why it must go through `TiltModel.
-    // toggle_dialog()` rather than being handled locally here.
+    // Forwarded to `TiltModel.toggle_dialog()` by the Render & Output tab (`render_output_tab.slint`):
+    // the shared open/close plus stale-curve check, not a local `dialog_open = true`.
     callback open_performance_graph();
 
     property <[string]> graph_angles: ["0", "5", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60", "65", "70", "75", "80", "85", "90"];

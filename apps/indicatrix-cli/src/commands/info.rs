@@ -108,9 +108,10 @@ const PREFORM_DECIMALS: usize = 4;
 /// length/width ratio is a plain ratio and is named after them, outside the unit note.
 fn preform_text(design: &Design) -> String {
     let preform = &design.preform;
-    let shape = match preform.shape {
+    let shape = match &preform.shape {
         PreformShape::Block => "block".to_string(),
         PreformShape::Cylinder { sides } => format!("cylinder ({sides} sides)"),
+        PreformShape::Planes(set) => format!("planned piece ({} planes)", set.planes.len()),
     };
     format!(
         "{shape}, half width {}, depth {}, offset {} (mast units), length/width {}",
@@ -124,9 +125,10 @@ fn preform_text(design: &Design) -> String {
 /// The preform, as JSON.
 fn preform_json(design: &Design) -> Value {
     let preform = &design.preform;
-    let (shape, sides) = match preform.shape {
+    let (shape, sides) = match &preform.shape {
         PreformShape::Block => ("block", None),
-        PreformShape::Cylinder { sides } => ("cylinder", Some(sides)),
+        PreformShape::Cylinder { sides } => ("cylinder", Some(*sides)),
+        PreformShape::Planes(_) => ("planes", None),
     };
     json!({
         "shape": shape,
@@ -324,7 +326,7 @@ mod tests {
     use indicatrix_cut_core::PreformSpec;
 
     fn template_loaded() -> Loaded {
-        Loaded::in_memory(testing::template(), "round.indicatrix")
+        Loaded::in_memory(testing::template(), "round.isdd")
     }
 
     #[test]
@@ -410,7 +412,7 @@ mod tests {
             "block, half width 2.0000, depth 4.0000, offset 0.2500 (mast units), \
              length/width 1.5000"
         );
-        let loaded = Loaded::in_memory(design.clone(), "block.indicatrix");
+        let loaded = Loaded::in_memory(design.clone(), "block.isdd");
         let report = text_report(&loaded, &Catalogue::default());
         assert!(
             report.contains("Preform:   block, half width 2.0000"),
@@ -432,11 +434,29 @@ mod tests {
             "{}",
             preform_text(&design)
         );
-        let loaded = Loaded::in_memory(design, "round.indicatrix");
+        let loaded = Loaded::in_memory(design, "round.isdd");
         let value: Value =
             serde_json::from_str(&json_report(&loaded, &Catalogue::default())).expect("valid JSON");
         assert_eq!(value["preform"]["shape"], "cylinder");
         assert_eq!(value["preform"]["sides"], 96);
+    }
+
+    #[test]
+    fn a_plane_set_preform_is_reported_as_a_planned_piece() {
+        let mut design = testing::template();
+        design.preform = PreformSpec::from_planes(
+            PreformSpec::block(2.0, 1.5, 4.0).planes(),
+            "plan 'x'".to_string(),
+        )
+        .expect("a block's planes close");
+        assert!(
+            preform_text(&design).starts_with("planned piece (6 planes), half width 2.0000"),
+            "{}",
+            preform_text(&design)
+        );
+        let value = preform_json(&design);
+        assert_eq!(value["shape"], "planes");
+        assert!(value["sides"].is_null());
     }
 
     /// The row of the tier table that starts with row number `number`.
@@ -457,7 +477,7 @@ mod tests {
         design.tiers[pavilion].angle_deg = -41.0;
         let labels = compute_tier_labels(&design.tiers);
         let code = labels[pavilion].code.clone();
-        let loaded = Loaded::in_memory(design, "round.indicatrix");
+        let loaded = Loaded::in_memory(design, "round.isdd");
         let report = text_report(&loaded, &Catalogue::default());
 
         let header = report
@@ -504,7 +524,7 @@ mod tests {
             .expect("the standard brilliant has a Pavilion Main");
         design.tiers[pavilion].angle_deg = -41.0;
         let code = compute_tier_labels(&design.tiers)[pavilion].code.clone();
-        let loaded = Loaded::in_memory(design, "round.indicatrix");
+        let loaded = Loaded::in_memory(design, "round.isdd");
         let value: Value =
             serde_json::from_str(&json_report(&loaded, &Catalogue::default())).expect("valid JSON");
         let tier = &value["tiers"][pavilion];
@@ -548,7 +568,7 @@ mod tests {
 
     #[test]
     fn end_to_end_info_prints_text_and_json_and_can_write_a_file() {
-        let path = testing::write_design("info-e2e.indicatrix", &testing::template());
+        let path = testing::write_design("info-e2e.isdd", &testing::template());
         let text = testing::run(&["info", &path]);
         assert_eq!(text.exit, 0, "{}", text.stderr);
         assert!(text.stdout.contains("Tiers:"), "{}", text.stdout);
@@ -556,7 +576,7 @@ mod tests {
         let json = testing::run(&["info", &path, "--json"]);
         assert_eq!(json.exit, 0, "{}", json.stderr);
         let value: Value = serde_json::from_str(&json.stdout).expect("valid JSON");
-        assert_eq!(value["format"], ".indicatrix");
+        assert_eq!(value["format"], ".isdd");
 
         let target = testing::temp_path("info-e2e-report.txt");
         let target = target.to_string_lossy().into_owned();
@@ -571,7 +591,7 @@ mod tests {
 
     #[test]
     fn end_to_end_info_on_a_missing_file_is_an_io_error() {
-        let missing = testing::temp_path("info-missing.indicatrix");
+        let missing = testing::temp_path("info-missing.isdd");
         let outcome = testing::run(&["info", &missing.to_string_lossy()]);
         assert_eq!(outcome.exit, crate::outcome::EXIT_IO);
         assert!(

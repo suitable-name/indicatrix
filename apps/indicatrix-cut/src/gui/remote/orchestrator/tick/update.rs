@@ -182,7 +182,6 @@ fn apply_update(c: &UpdateCtx<'_>, update: RemoteUpdate) {
                 let mut s = lock(state);
                 s.worker_label = backend_label(info.render.as_ref());
                 s.remote_hdr = Some(info.render.as_ref().is_some_and(|r| r.hdr));
-                #[cfg(feature = "zoning")]
                 {
                     s.remote_zoning = Some(info.zoning);
                 }
@@ -259,7 +258,6 @@ fn apply_update(c: &UpdateCtx<'_>, update: RemoteUpdate) {
                 s.remote_hdr = Some(render.as_ref().is_some_and(|r| r.hdr));
                 // Only a coordinator re-advertises capacity, and a coordinator never
                 // advertises the zoning capability.
-                #[cfg(feature = "zoning")]
                 {
                     s.remote_zoning = Some(false);
                 }
@@ -712,7 +710,7 @@ mod tests {
             width,
             height,
             encoding: DisplayEncoding::Png,
-            payload_len: png.len() as u32,
+            payload_len: u32::try_from(png.len()).expect("a test PNG fits u32"),
         };
         acc.apply(&StreamEvent::DisplayFrame(header), Some(&png))
             .expect("applies");
@@ -721,7 +719,9 @@ mod tests {
 
     #[test]
     fn a_display_frame_decodes_to_exactly_the_pixels_the_remote_sent() {
-        let rgba: Vec<u8> = (0..3 * 2 * 4).map(|i| (i * 7 % 256) as u8).collect();
+        let rgba: Vec<u8> = (0..3 * 2 * 4)
+            .map(|i| u8::try_from(i * 7 % 256).expect("i * 7 % 256 is in 0..=255"))
+            .collect();
         let acc = with_display_frame(3, 2, &rgba);
         assert_eq!(display_frame_rgba(&acc, 3, 2), Ok(Some(rgba)));
     }

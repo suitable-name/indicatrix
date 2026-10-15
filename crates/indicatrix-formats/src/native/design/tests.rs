@@ -1,7 +1,7 @@
 use super::*;
 use crate::native::{
     ConcaveTierTable, MaterialTable, NativeMeetConstraint, NativePreformShape, PreformTable,
-    TierTable, to_toml_string,
+    TierTable,
 };
 use std::path::Path;
 
@@ -62,13 +62,13 @@ fn reserializing_a_parsed_file_is_byte_identical() {
 #[test]
 fn a_too_new_version_is_refused_before_the_body_is_read() {
     // The body is garbage a v1 reader could not parse; the version error wins.
-    let text = "format = \"indicatrix-design\"\nversion = 4\n[preform]\nshape = 7\n";
+    let text = "format = \"indicatrix-design\"\nversion = 5\n[preform]\nshape = 7\n";
     match parse(text) {
         Err(DesignFileError::UnsupportedVersion {
-            found: 4,
+            found: 5,
             supported,
         }) => {
-            assert_eq!(supported, DESIGN_VERSION_RELATIONS);
+            assert_eq!(supported, DESIGN_VERSION_PLANES);
         }
         other => panic!("expected UnsupportedVersion, got {other:?}"),
     }
@@ -151,29 +151,17 @@ fn an_absurd_gear_is_refused() {
 }
 
 #[test]
-fn detects_a_design_file_and_an_old_overlay_sidecar() {
+fn detects_a_design_file_and_refuses_an_old_overlay_sidecar() {
     let design_text = to_string(&sample()).expect("serializes");
     assert_eq!(detect_kind(design_text.as_bytes()), FileKind::Design);
 
-    let overlay = crate::native::NativeDesignFile::new(
-        "design.asc",
-        "00",
-        PreformTable::new(NativePreformShape::Block, 1.0, 1.0, 2.0),
-        None,
-        MaterialTable::new(None, None, None),
-        vec![TierTable::new(
-            "T",
-            NativeMeetConstraint::MeetExisting,
-            Vec::new(),
-        )],
-    );
-    let overlay_text = to_toml_string(&overlay).expect("serializes");
-    assert_eq!(
-        detect_kind(overlay_text.as_bytes()),
-        FileKind::OverlaySidecar
-    );
+    // The removed overlay sidecar (no `format` key) is no design file any more.
+    let overlay_text = "format_version = 1\nasc_filename = \"design.asc\"\nasc_sha256 = \"00\"\n\n\
+                        [preform]\nshape = { kind = \"block\" }\nhalf_width = 1.0\n\
+                        length_over_width = 1.0\ndepth = 2.0\n";
+    assert_eq!(detect_kind(overlay_text.as_bytes()), FileKind::Unknown);
     assert!(matches!(
-        parse(&overlay_text),
+        parse(overlay_text),
         Err(DesignFileError::NotADesignFile { found: None })
     ));
 
@@ -183,28 +171,51 @@ fn detects_a_design_file_and_an_old_overlay_sidecar() {
 
 #[test]
 fn path_helpers_tell_the_formats_apart() {
-    assert_eq!(DESIGN_EXTENSION, "indicatrix");
+    assert_eq!(DESIGN_EXTENSION, "isdd");
+    assert_eq!(DESIGN_EXTENSION_DOTTED, ".isdd");
+    assert_eq!(LEGACY_DESIGN_EXTENSION, "indicatrix");
+    assert_eq!(LEGACY_DESIGN_EXTENSION_DOTTED, ".indicatrix");
+    assert_eq!(DESIGN_READ_EXTENSIONS, ["isdd", "indicatrix"]);
+    assert!(DESIGN_ACCEPT.contains(".isdd"));
+    assert!(DESIGN_ACCEPT.contains(".indicatrix"));
+    assert!(DESIGN_ACCEPT.contains(DESIGN_MIME_TYPE));
+    // Both extensions are design files, in any case.
+    assert!(is_design_path(Path::new("a/b.isdd")));
+    assert!(is_design_path(Path::new("B.ISDD")));
     assert!(is_design_path(Path::new("a/b.indicatrix")));
     assert!(is_design_path(Path::new("B.INDICATRIX")));
+    // The removed sidecar names, and other files, are not.
     assert!(!is_design_path(Path::new("b.indicatrix.toml")));
+    assert!(!is_design_path(Path::new("b.gemcut.toml")));
     assert!(!is_design_path(Path::new("b.asc")));
-    assert_eq!(design_path_for("stone"), Path::new("stone.indicatrix"));
+    assert!(!is_design_path(Path::new("isdd")));
+    // Only the old extension is legacy.
+    assert!(is_legacy_design_path(Path::new("b.indicatrix")));
+    assert!(is_legacy_design_path(Path::new("B.INDICATRIX")));
+    assert!(!is_legacy_design_path(Path::new("b.isdd")));
+    // Every name a save proposes ends `.isdd`.
+    assert_eq!(design_path_for("stone"), Path::new("stone.isdd"));
     assert_eq!(
-        design_path_for_sibling(Path::new("d/foo.indicatrix.toml")),
-        Some(Path::new("d/foo.indicatrix").to_path_buf())
+        design_path_for_sibling(Path::new("d/foo.indicatrix")),
+        Some(Path::new("d/foo.isdd").to_path_buf())
     );
     assert_eq!(
         design_path_for_sibling(Path::new("d/foo.asc")),
-        Some(Path::new("d/foo.indicatrix").to_path_buf())
+        Some(Path::new("d/foo.isdd").to_path_buf())
     );
     assert_eq!(
         detect_kind_of_path(Path::new("x.gemcut.toml")),
-        FileKind::OverlaySidecar
+        FileKind::Unknown
+    );
+    assert_eq!(
+        detect_kind_of_path(Path::new("x.indicatrix.toml")),
+        FileKind::Unknown
     );
     assert_eq!(
         detect_kind_of_path(Path::new("x.indicatrix")),
         FileKind::Design
     );
+    assert_eq!(detect_kind_of_path(Path::new("x.isdd")), FileKind::Design);
     assert_eq!(detect_kind_of_path(Path::new("x.asc")), FileKind::Unknown);
 }
 
@@ -343,18 +354,69 @@ fn relations_and_concave_tiers_share_version_3() {
 }
 
 #[test]
-fn versions_1_to_3_are_all_accepted_and_4_is_not() {
-    for version in 1..=DESIGN_VERSION_RELATIONS {
+fn versions_1_to_4_are_all_accepted_and_5_is_not() {
+    for version in 1..=DESIGN_VERSION_PLANES {
         let text = to_string(&sample()).expect("serializes");
         let other = text.replacen("version = 1", &format!("version = {version}"), 1);
         assert!(parse(&other).is_ok(), "version {version}");
     }
     let text = to_string(&sample()).expect("serializes");
-    let newer = text.replacen("version = 1", "version = 4", 1);
+    let newer = text.replacen("version = 1", "version = 5", 1);
     assert!(matches!(
         parse(&newer),
-        Err(DesignFileError::UnsupportedVersion { found: 4, .. })
+        Err(DesignFileError::UnsupportedVersion { found: 5, .. })
     ));
+}
+
+/// `sample()` whose rough is a six-plane box given as a plane set.
+fn planes_sample() -> DesignFile {
+    let rows = vec![
+        [1.0, 0.0, 0.0, 1.2],
+        [-1.0, 0.0, 0.0, 1.2],
+        [0.0, 1.0, 0.0, 0.9],
+        [0.0, -1.0, 0.0, 0.9],
+        [0.0, 0.0, 1.0, 1.5],
+        [0.0, 0.0, -1.0, 1.5],
+    ];
+    let mut file = sample();
+    file.preform = PreformTable::new(
+        NativePreformShape::Planes {
+            planes: rows,
+            source: "plan 'Aqua'".to_string(),
+        },
+        1.2,
+        1.25,
+        1.8,
+    );
+    file.version = file.needed_version();
+    file
+}
+
+#[test]
+fn a_plane_set_preform_makes_the_file_version_4_and_round_trips() {
+    let file = planes_sample();
+    assert_eq!(file.version, DESIGN_VERSION_PLANES);
+    let text = to_string(&file).expect("serializes");
+    assert!(text.starts_with("format = \"indicatrix-design\"\nversion = 4\n"));
+    assert!(text.contains("kind = \"planes\""));
+    assert!(text.contains("source = \"plan 'Aqua'\""));
+    let parsed = parse(&text).expect("parses own output");
+    assert_eq!(parsed, file);
+    assert_eq!(to_string(&parsed).expect("serializes"), text);
+}
+
+#[test]
+fn a_plane_set_preform_keeps_the_highest_version_with_concave_tiers_and_relations() {
+    let file = planes_sample().with_concave_tiers(vec![concave_tier("P8")]);
+    assert_eq!(file.version, DESIGN_VERSION_PLANES);
+    let mut related = planes_sample();
+    related.tiers[1] = related.tiers[1]
+        .clone()
+        .with_angle_relation(Some("@0 - 2".to_string()));
+    assert_eq!(related.needed_version(), DESIGN_VERSION_PLANES);
+    // Without the plane set the same document drops back to the relations' version.
+    related.preform = sample().preform;
+    assert_eq!(related.needed_version(), DESIGN_VERSION_RELATIONS);
 }
 
 #[test]

@@ -258,19 +258,19 @@ fn anchored_candidate_with(
         .collect();
     order.sort_by(|a, b| anchor_order(a.1, b.1));
 
-    let mut moved = BTreeMap::new();
+    let mut placed = BTreeMap::new();
     let mut anchors = Vec::new();
     for ((tier_index, new_angle), hinge) in order {
         let Some(old_mast) = scale_reference_mast(design, tier_index) else {
             continue;
         };
-        let pivot = follow_neighbours(hinge, tier_index, original, &moved);
+        let pivot = follow_neighbours(hinge, tier_index, original, &placed);
         let new_mast = mast_through(new_angle, hinge.azimuth_rad, hinge.side, pivot);
         if !new_mast.is_finite() || new_mast < MIN_ANCHORED_MAST {
             continue;
         }
         candidate.tiers[tier_index].constraint = MeetConstraint::ScaleReference(new_mast);
-        moved.insert(
+        placed.insert(
             tier_index,
             MovedPlane {
                 angle_deg: new_angle,

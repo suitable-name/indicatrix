@@ -27,9 +27,15 @@ fn main() {
     // system theme is. The `-dark` suffix makes the Slint compiler fix the style's colour scheme
     // to dark for every window, from the first frame; without it the widgets followed the
     // system theme at start-up and only a change of the high-contrast switch could pin them.
+    // The UI harness (`--features ui-harness`, tests/ui_harness) finds elements through
+    // Slint's testing API, which sees nothing unless the UI carries its debug info; every
+    // other build leaves it out.
+    let ui_harness = std::env::var_os("CARGO_FEATURE_UI_HARNESS").is_some();
     slint_build::compile_with_config(
         "ui/app.slint",
-        slint_build::CompilerConfiguration::new().with_style("fluent-dark".to_string()),
+        slint_build::CompilerConfiguration::new()
+            .with_style("fluent-dark".to_string())
+            .with_debug_info(ui_harness),
     )
     .unwrap();
 

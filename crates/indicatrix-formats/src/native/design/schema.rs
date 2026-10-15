@@ -1,5 +1,7 @@
-//! The self-contained design file: one text file, extension `.indicatrix`, carrying a
-//! WHOLE faceting design with no paired `.asc` and no machine-local reference.
+//! The self-contained design file: one text file, extension `.isdd` (Indicatrix Suite
+//! Design Document; files saved as `.indicatrix` before are read the same way),
+//! carrying a WHOLE faceting design with no paired `.asc` and no machine-local
+//! reference.
 //!
 //! # Format
 //!
@@ -23,11 +25,12 @@
 //! | `girdle_diameter_mm` | Real-world girdle diameter, when anchored. |
 //! | `draft` | `true` when the design did not solve at save time; informational. |
 //! | `[meta]` | Descriptive facts that cannot be recomputed: id, title, designer, source, notes, tags, rights, dates ([`DesignMetadata`]). |
-//! | `[preform]` | Rough shape and size ([`PreformTable`]). |
+//! | `[preform]` | Rough shape and size ([`PreformTable`]); a plane-set rough (`kind = "planes"`, the Rough Planner's piece) makes the file `version = 4`. |
 //! | `[material]` | Material name, SG/RI overrides, custom snapshot, body color ([`MaterialTable`]). |
 //! | `[schedule]` | Gear, symmetry, mirror, version banner, authored RI, headers, footnotes ([`ScheduleTable`]). |
 //! | `[source]` | Printed Vol/W^3, L/W, C/W, P/W, H/W of a catalogue row ([`SourceTable`]). |
 //! | `[history]` | Bounded trail of edit descriptions ([`HistoryTable`]). |
+//! | `[render_effects]` | Per-design stone render effects, only when one is on ([`RenderEffectsTable`]). |
 //! | `[[tiers]]` | Every tier in full, in cutting order ([`TierTable`]). |
 //! | `[[concave_tiers]]` | Concave (fantasy-cut) tiers with their tool lines, only when present; the file is then `version = 2` and carries `concave_frame = "v0"`; each record may carry a stable `concave_tier_id` ([`ConcaveTierTable`]). |
 //! | `[[attachments]]` | Files that cannot be recomputed, as base64 with size and SHA-256 ([`AttachmentTable`]). |
@@ -47,7 +50,8 @@
 //! that expression over other tiers' angle magnitudes, named by `tier_id`. The text
 //! is interpreted by `indicatrix-cut-core`; this crate stores it. `angle_deg` still
 //! holds the resulting angle. A file in which any tier has an `angle_relation` is
-//! `version = 3` ([`DESIGN_VERSION_RELATIONS`]); every other file keeps its version.
+//! `version = 3` ([`DESIGN_VERSION_RELATIONS`]); a file whose `[preform]` shape is a plane
+//! set is `version = 4` ([`DESIGN_VERSION_PLANES`]); every other file keeps its version.
 //!
 //! # Metadata and attachments: what is stored, what is recomputed
 //!
@@ -174,7 +178,8 @@
 
 use super::{DesignMetadata, attachment::AttachmentTable};
 use crate::native::{
-    ConcaveTierTable, HistoryTable, MaterialTable, PreformTable, SourceTable, TierTable,
+    ConcaveTierTable, HistoryTable, MaterialTable, NativePreformShape, PreformTable, SourceTable,
+    TierTable,
 };
 
 /// The value of the `format` header key.
@@ -204,6 +209,18 @@ pub const DESIGN_VERSION_CONCAVE: u32 = 2;
 /// save. A version 3 file may also hold concave tiers (and then carries
 /// `concave_frame` as usual).
 pub const DESIGN_VERSION_RELATIONS: u32 = 3;
+
+/// The schema version of a file whose `[preform]` is a plane set
+/// (`shape = { kind = "planes", planes = [...], source = "..." }`), the piece of rough
+/// the Rough Planner hands the editor.
+///
+/// Written only when the preform is a plane set, exactly like [`DESIGN_VERSION_CONCAVE`]
+/// and [`DESIGN_VERSION_RELATIONS`]: every block or cylinder file keeps its version and
+/// stays byte-identical, and a build that predates plane-set preforms refuses a version 4
+/// file with `UnsupportedVersion` instead of failing on an unknown shape kind (or opening
+/// the stone without its rough). A version 4 file may also hold concave tiers and
+/// relations.
+pub const DESIGN_VERSION_PLANES: u32 = 4;
 
 /// The concave-tier frame convention this build writes and reads (plan §11a).
 ///
@@ -257,6 +274,52 @@ pub struct ScheduleTable {
     pub unknown: toml::Table,
 }
 
+/// The optional `[render_effects]` table: the per-design stone effects of the render
+/// (inclusion haze, crystal-axis orientation, frosted girdle, edge rounding).
+///
+/// Written only when at least one effect is on (`DesignFile::render_effects` is `None`
+/// otherwise), so every file without effects stays byte-identical to what earlier builds
+/// wrote, and a file without the table reads as "all effects off". Every key has a serde
+/// default, so a table written by an older or newer revision still loads.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RenderEffectsTable {
+    /// Inclusion / subsurface scattering `sigma_s` per model unit; `0.0` is off.
+    #[serde(default)]
+    pub inclusion_sigma_s: f64,
+    /// Whether the crystal-axis orientation override is on.
+    #[serde(default)]
+    pub c_axis_override_enabled: bool,
+    /// Tilt of the override axis from the table normal, degrees (`0..=90`).
+    #[serde(default)]
+    pub c_axis_tilt_deg: f64,
+    /// Azimuth of the override axis around the table normal, degrees (`0..=360`).
+    #[serde(default)]
+    pub c_axis_azimuth_deg: f64,
+    /// Bruted (frosted) girdle finish.
+    #[serde(default)]
+    pub girdle_frosted: bool,
+    /// Facet-edge rounding radius in model units (`0.0..=0.03`); `0.0` is off.
+    #[serde(default)]
+    pub edge_rounding_radius: f64,
+    /// Keys a newer build wrote that this build does not claim; written back as read.
+    #[serde(flatten, default)]
+    pub unknown: toml::Table,
+}
+
+impl RenderEffectsTable {
+    /// Whether every effect is off (the table is then not written at all).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inclusion_sigma_s == 0.0
+            && !self.c_axis_override_enabled
+            && self.c_axis_tilt_deg == 0.0
+            && self.c_axis_azimuth_deg == 0.0
+            && !self.girdle_frosted
+            && self.edge_rounding_radius == 0.0
+            && self.unknown.is_empty()
+    }
+}
+
 /// The whole self-contained design document -- see the module documentation.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DesignFile {
@@ -264,8 +327,9 @@ pub struct DesignFile {
     #[serde(default = "default_format")]
     pub format: String,
     /// The major schema version: [`DESIGN_VERSION`], [`DESIGN_VERSION_CONCAVE`] for a
-    /// file with concave tiers (see [`DesignFile::with_concave_tiers`]), or
-    /// [`DESIGN_VERSION_RELATIONS`] for a file in which a tier has an `angle_relation`
+    /// file with concave tiers (see [`DesignFile::with_concave_tiers`]),
+    /// [`DESIGN_VERSION_RELATIONS`] for a file in which a tier has an `angle_relation`,
+    /// or [`DESIGN_VERSION_PLANES`] for a file whose preform is a plane set
     /// (see [`DesignFile::needed_version`]).
     #[serde(default = "default_version")]
     pub version: u32,
@@ -297,6 +361,9 @@ pub struct DesignFile {
     /// Bounded trail of edit descriptions, oldest first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistoryTable>,
+    /// Per-design stone render effects; absent (and not written) when all are off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_effects: Option<RenderEffectsTable>,
     /// Every tier in full, in cutting order.
     #[serde(default)]
     pub tiers: Vec<TierTable>,
@@ -334,6 +401,7 @@ impl DesignFile {
             schedule,
             source: None,
             history: None,
+            render_effects: None,
             tiers,
             concave_tiers: Vec::new(),
             concave_frame: String::new(),
@@ -344,13 +412,16 @@ impl DesignFile {
         file
     }
 
-    /// The lowest version that can hold this document: [`DESIGN_VERSION_RELATIONS`]
-    /// when any tier has an `angle_relation`, else [`DESIGN_VERSION_CONCAVE`] when
-    /// there are concave tiers, else [`DESIGN_VERSION`]. A planar document without
-    /// relations is therefore always version 1.
+    /// The lowest version that can hold this document: [`DESIGN_VERSION_PLANES`] when
+    /// the preform is a plane set, else [`DESIGN_VERSION_RELATIONS`] when any tier has
+    /// an `angle_relation`, else [`DESIGN_VERSION_CONCAVE`] when there are concave
+    /// tiers, else [`DESIGN_VERSION`]. A planar document without relations and with a
+    /// block or cylinder preform is therefore always version 1.
     #[must_use]
     pub fn needed_version(&self) -> u32 {
-        if self.tiers.iter().any(|tier| tier.angle_relation.is_some()) {
+        if matches!(self.preform.shape, NativePreformShape::Planes { .. }) {
+            DESIGN_VERSION_PLANES
+        } else if self.tiers.iter().any(|tier| tier.angle_relation.is_some()) {
             DESIGN_VERSION_RELATIONS
         } else if self.concave_tiers.is_empty() {
             DESIGN_VERSION
@@ -385,6 +456,13 @@ impl DesignFile {
     #[must_use]
     pub fn with_history(mut self, history: HistoryTable) -> Self {
         self.history = (!history.is_empty()).then_some(history);
+        self
+    }
+
+    /// Attaches [`Self::render_effects`]; `None` when every effect is off.
+    #[must_use]
+    pub fn with_render_effects(mut self, effects: RenderEffectsTable) -> Self {
+        self.render_effects = (!effects.is_empty()).then_some(effects);
         self
     }
 

@@ -58,6 +58,10 @@ impl ContributionHeader {
     /// Builds a header for an already-encoded payload (see
     /// [`PayloadEncoder::encode`]), the same pattern as `FrameHeader::for_encoded`.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a payload is one frame, bounded by MAX_FRAME_LEN (below 4 GiB); the receiver refuses any larger payload_len"
+    )]
     pub const fn for_encoded(
         request_id: u32,
         first_sample: u32,
@@ -151,11 +155,11 @@ pub fn write_contribution_message<W: std::io::Write>(
 ) -> Result<(), NetError> {
     let (first_sample, samples) = range;
     let raw = radiance::as_bytes(sum);
-    let encoded = encoder.encode(raw);
+    let packed = encoder.encode(raw);
     let header =
-        ContributionHeader::for_encoded(request_id, first_sample, samples, width, height, &encoded);
+        ContributionHeader::for_encoded(request_id, first_sample, samples, width, height, &packed);
     codec::write_message(w, &super::ClientMessage::Contribution(header))?;
-    framing::write_frame(w, encoded.bytes)?;
+    framing::write_frame(w, packed.bytes)?;
     Ok(())
 }
 
@@ -317,10 +321,10 @@ mod tests {
                 panic!("expected ClientMessage::Contribution, got {msg:?}");
             };
             let mut decoder = PayloadDecoder::new();
-            let decoded =
+            let round_trip =
                 read_contribution_payload(&mut cursor, &header, expect_for(&header), &mut decoder)
                     .unwrap();
-            assert_eq!(decoded, values, "{encoding:?}");
+            assert_eq!(round_trip, values, "{encoding:?}");
         }
     }
 
@@ -375,7 +379,10 @@ mod tests {
         assert!(matches!(err, ContributionError::Mismatch(_)), "{err:?}");
         // The frame was consumed: nothing left to read, and the stream stayed usable
         // (proven by reaching EOF cleanly rather than desyncing mid-frame).
-        assert_eq!(cursor.position() as usize, cursor.get_ref().len());
+        assert_eq!(
+            usize::try_from(cursor.position()).expect("a test buffer is tiny"),
+            cursor.get_ref().len()
+        );
     }
 
     #[test]

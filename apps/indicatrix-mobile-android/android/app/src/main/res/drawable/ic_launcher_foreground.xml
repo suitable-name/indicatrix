@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A faceted gem in side view: outline, girdle, and the main crown and pavilion facets.
+     The adaptive-icon safe zone is the centered 66 x 66 of the 108 x 108 canvas. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outline: table, crown, pavilion. -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M38,36 L70,36 L84,50 L54,84 L24,50 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.6" />
+    <!-- Girdle. -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M24,50 L84,50"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.6" />
+    <!-- Crown facets. -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M45,36 L38,50 M63,36 L70,50 M45,36 L54,50 L63,36"
+        android:strokeColor="#FF7FD6E8"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+    <!-- Pavilion facets. -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M38,50 L54,84 M70,50 L54,84 M54,50 L54,84"
+        android:strokeColor="#FF7FD6E8"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+</vector>

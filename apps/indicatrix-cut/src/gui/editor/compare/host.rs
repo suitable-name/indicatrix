@@ -66,6 +66,17 @@ thread_local! {
     static COMPARE: RefCell<Host> = const { RefCell::new(Host::new()) };
 }
 
+/// The pop-out window when it was created (it may be hidden). UI harness only.
+#[cfg(feature = "ui-harness")]
+pub fn harness_window() -> Option<CompareWindow> {
+    COMPARE.with(|cell| {
+        cell.borrow()
+            .window
+            .as_ref()
+            .map(ComponentHandle::clone_strong)
+    })
+}
+
 /// Where a comparison is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Surface {
@@ -251,6 +262,25 @@ pub(super) fn window() -> Option<CompareWindow> {
             .window
             .as_ref()
             .map(ComponentHandle::clone_strong)
+    })
+}
+
+/// Drops the pop-out window, the main-window handle and the live session (workers and timer end
+/// with it). The cell is released before anything is dropped.
+pub(super) fn release() {
+    let old = COMPARE.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), Host::new()));
+    if let Some(window) = &old.window {
+        let _ = window.hide();
+    }
+    drop(old);
+}
+
+/// Whether the pop-out window, the main-window handle or a live session is still kept.
+#[cfg(feature = "ui-harness")]
+pub(super) fn holds_state() -> bool {
+    COMPARE.with(|cell| {
+        let host = cell.borrow();
+        host.window.is_some() || host.ui.is_some() || host.live.is_some()
     })
 }
 

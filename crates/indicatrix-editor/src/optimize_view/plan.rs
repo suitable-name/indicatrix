@@ -103,6 +103,11 @@ pub fn default_vary_anchored(design: &Design) -> bool {
 /// # Errors
 ///
 /// A message when the text is not a number, is below 1, or is above 100000.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value is finite, at least 0.5 and at most MAX_BUDGET (checked above), so the rounded value fits"
+)]
 pub fn parse_budget(text: &str) -> Result<usize, String> {
     if text.trim().is_empty() {
         return Ok(DEFAULT_BUDGET);
@@ -123,6 +128,11 @@ pub fn parse_budget(text: &str) -> Result<usize, String> {
 /// # Errors
 ///
 /// A message when the text is not a number, is not whole, or is outside 1 to 32.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value is finite, at least 0.5 and at most MAX_STARTS + 0.5 (checked above), so the rounded value fits"
+)]
 pub fn parse_starts(text: &str) -> Result<usize, String> {
     if text.trim().is_empty() {
         return Ok(DEFAULT_STARTS);
@@ -143,6 +153,11 @@ pub fn parse_starts(text: &str) -> Result<usize, String> {
 /// # Errors
 ///
 /// A message when the text is not a number or not a whole number of 0 or more.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value is finite, a whole number in 0.0..=9.0e15 (checked above), so it fits u64 exactly"
+)]
 pub fn parse_seed(text: &str) -> Result<u64, String> {
     if text.trim().is_empty() {
         return Ok(0);

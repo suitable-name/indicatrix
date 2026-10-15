@@ -255,7 +255,7 @@ fn the_compare_boxes_offer_the_current_design_then_the_variants_newest_first() {
         choices,
         vec![Choice::Current, Choice::Variant(2), Choice::Variant(1)]
     );
-    assert_eq!(labels, vec!["Current design", "New", "Old"]);
+    assert_eq!(labels, vec!["Current Design", "New", "Old"]);
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn equal_variant_names_are_told_apart_in_the_boxes() {
     let list = vec![
         summary(1, "Same", 100, None, None),
         summary(2, "Same", 200, None, None),
-        summary(3, "Current design", 300, None, None),
+        summary(3, "Current Design", 300, None, None),
     ];
     let (_, labels) = rows::build_choices(&list);
     let distinct: std::collections::BTreeSet<&String> = labels.iter().collect();
@@ -272,7 +272,7 @@ fn equal_variant_names_are_told_apart_in_the_boxes() {
         labels[2].contains("saved 1970-01-01 00:03:20 UTC"),
         "{labels:?}"
     );
-    assert!(labels[1].contains("Current design"), "{labels:?}");
+    assert!(labels[1].contains("Current Design"), "{labels:?}");
 }
 
 #[test]

@@ -1,0 +1,58 @@
+import { Button } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { UiState } from "../state.slint";
+import { Section } from "../components/section.slint";
+
+export component CheckpointSection inherits Section {
+    callback load-requested();
+    callback import-requested();
+    title: "CHECKPOINTS";
+
+    if TrainingController.weights_dirty: Text {
+        text: "● Unsaved weights";
+        color: TrainerTheme.sev-warning;
+        font-size: 12px;
+        font-weight: 700;
+        accessible-role: text;
+    }
+    if !TrainingController.weights_dirty: Text {
+        text: "No unsaved changes";
+        color: TrainerTheme.text-muted;
+        font-size: 12px;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Button {
+            text: "Save Weights";
+            enabled: UiState.can_command;
+            accessible-label: "Save the weights";
+            clicked => { TrainingController.save_weights(); }
+            Tooltip { text: @markdown("Save the network weights to a file you choose. Shortcut: Ctrl+S."); }
+        }
+        Button {
+            text: "Load Weights";
+            enabled: UiState.can_command;
+            accessible-label: "Load weights";
+            clicked => { root.load-requested(); }
+            Tooltip { text: @markdown("Replace the weights from a checkpoint of the same mode and size. Shortcut: Ctrl+O."); }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Button {
+            text: "Import Run";
+            enabled: TrainingController.worker_alive && !UiState.busy;
+            accessible-label: "Import a run";
+            clicked => { root.import-requested(); }
+            Tooltip { text: @markdown("View a training run exported earlier. The live run keeps going; Return to Live brings it back."); }
+        }
+        Button {
+            text: "Export Run";
+            enabled: UiState.can_command;
+            accessible-label: "Export the run";
+            clicked => { TrainingController.export_run(); }
+            Tooltip { text: @markdown("Write the run statistics and console log to a file you choose."); }
+        }
+    }
+}

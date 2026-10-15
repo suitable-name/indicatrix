@@ -1,0 +1,436 @@
+// The Stone tab: the design's material, refractive index, body color, stone width and the
+// four material effects (inclusion haze, frosted girdle, edge rounding, crystal axis).
+//
+// The tab fills its parent (the sheet or side pane of the Design page) and holds its own
+// sub-pages, so no overlay is needed: 0 the settings, 1 the material picker (with a
+// search field), 2 the body-color picker, 3 the custom-material form. Rust owns the page
+// (`PropsModel.stone-page`, changed through `PropsModel.open-page`).
+//
+// Every value is a design edit and can be undone; the sliders apply when released.
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { Icon } from "../../shell/icon.slint";
+import { TopBar } from "../../shell/top_bar.slint";
+import { PageScroll } from "../../shell/page_scroll.slint";
+import { ListRow } from "../../shell/list_row.slint";
+import { Toggle } from "../../shell/toggle.slint";
+import { Chip } from "../../shell/chips.slint";
+import { PrimaryButton, TextButton } from "../../shell/buttons.slint";
+import { InfoButton } from "../../shell/info.slint";
+import { MaterialItem, PropsModel } from "props_model.slint";
+import { SectionHeader, SettingBlock, NumberField, SliderBlock, PickerRow } from "props_parts.slint";
+import { NumberSheet } from "number_sheet.slint";
+
+// The settings page.
+component StoneSettings inherits PageScroll {
+    SectionHeader {
+        text: "Material";
+    }
+
+    ListRow {
+        title: PropsModel.material-title;
+        supporting: PropsModel.material-detail;
+        clicked => {
+            PropsModel.open-page(1);
+        }
+
+        Icon {
+            source: Icons.chevron-right;
+            tint: Theme.on-surface-variant;
+        }
+    }
+
+    ListRow {
+        icon: Icons.add;
+        title: "New Custom Material";
+        supporting: "Your own refractive index, dispersion and color";
+        clicked => {
+            PropsModel.open-page(3);
+        }
+    }
+
+    SettingBlock {
+        title: "RI Override";
+        info-body: "Refractive index (RI): how strongly the stone bends light. Leave this blank to use the material's own value, or type your own (above 1, for example 1.76). It moves the critical angle. Changing it is one step you can undo.";
+
+        NumberField {
+            key: "stone-ri";
+            caption: "RI Override";
+            text <=> PropsModel.ri-text;
+            placeholder: "auto";
+            committed(value) => {
+                PropsModel.field-committed("ri", value);
+            }
+        }
+
+        if PropsModel.effective-ri != "": Text {
+            text: PropsModel.effective-ri;
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-body;
+            wrap: word-wrap;
+        }
+    }
+
+    ListRow {
+        title: "Body Color";
+        supporting: PropsModel.color-label;
+        enabled: PropsModel.color-enabled;
+        clicked => {
+            PropsModel.open-page(2);
+        }
+
+        InfoButton {
+            info-title: "Body Color";
+            info-body: "Show this design in a different color of the same material, for example a yellow instead of a blue sapphire, without making a custom material. The color depends on the size of the stone. The material's own color shading by direction (pleochroism) is not modelled while a color is set. Changing it is one step you can undo.";
+        }
+
+        Icon {
+            source: Icons.chevron-right;
+            tint: Theme.on-surface-variant;
+        }
+    }
+
+    SectionHeader {
+        text: "Size";
+    }
+
+    SettingBlock {
+        title: "Stone Width";
+        info-body: "The width of the stone across the girdle in millimetres. A bigger stone is physically deeper in color (twice the width, twice the optical density); the built-in colors are tuned for about 7 mm. It is saved in the design, you can undo it, and it is the same value as the Girdle Diameter on the Checks tab. Use Clear Value to leave it unset.";
+
+        NumberField {
+            key: "stone-width";
+            caption: "Stone Width";
+            text <=> PropsModel.width-text;
+            placeholder: "not set";
+            unit: "mm";
+            committed(value) => {
+                PropsModel.field-committed("width", value);
+            }
+        }
+
+        Text {
+            text: PropsModel.width-note;
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-body;
+            wrap: word-wrap;
+        }
+    }
+
+    SectionHeader {
+        text: "Material Effects";
+    }
+
+    SliderBlock {
+        title: "Inclusion Haze";
+        value-text: PropsModel.haze <= 0 ? "Off" : Math.round(2 * PropsModel.haze * PropsModel.haze * 100.0) / 100.0 + "";
+        info-body: "Inclusion Haze: a milky veil inside the stone, from 0 (clean) to 2 (milky), as tiny inclusions scatter the light. The slider is finer at the clean end: a quarter of the way is a light silk. Saved in the design.";
+        value <=> PropsModel.haze;
+        minimum: 0;
+        maximum: 1;
+        step: 0.01;
+        released => {
+            PropsModel.effects-released();
+        }
+    }
+
+    ListRow {
+        title: "Frosted Girdle";
+        supporting: "Ground (matt) instead of polished";
+        clicked => {
+            PropsModel.frosted = !PropsModel.frosted;
+            PropsModel.effects-released();
+        }
+
+        InfoButton {
+            info-title: "Frosted Girdle";
+            info-body: "Frosted Girdle: draw the girdle band ground (matt) instead of polished. Saved in the design.";
+        }
+
+        Toggle {
+            checked: PropsModel.frosted;
+            toggled(value) => {
+                PropsModel.frosted = value;
+                PropsModel.effects-released();
+            }
+        }
+    }
+
+    SliderBlock {
+        title: "Edge Rounding";
+        value-text: PropsModel.rounding <= 0 ? "Off" : Math.round(PropsModel.rounding * 1000.0) / 1000.0 + "";
+        info-body: "Edge Rounding: soften the edges between facets from perfectly sharp toward a faint rounded glint, as on a real polished stone. Saved in the design.";
+        value <=> PropsModel.rounding;
+        minimum: 0;
+        maximum: 0.03;
+        step: 0.001;
+        released => {
+            PropsModel.effects-released();
+        }
+    }
+
+    ListRow {
+        title: "Crystal Axis";
+        supporting: PropsModel.axis-available ? (PropsModel.axis-on ? "Orientation override on" : "As cut") : "Not used: this material has no crystal axis";
+        enabled: PropsModel.axis-available;
+        clicked => {
+            PropsModel.axis-on = !PropsModel.axis-on;
+            PropsModel.effects-released();
+        }
+
+        InfoButton {
+            info-title: "Crystal Axis Orientation";
+            info-body: "Off renders the material's axis as cut. On: tilt 0 to 90 degrees from the table normal, azimuth 0 to 360 degrees around it. Tilt is how far the optic axis leans away from straight up through the table; azimuth is the direction it leans toward, and has no effect while the tilt is 0. Saved in the design.";
+        }
+
+        Toggle {
+            checked: PropsModel.axis-on;
+            enabled: PropsModel.axis-available;
+            toggled(value) => {
+                PropsModel.axis-on = value;
+                PropsModel.effects-released();
+            }
+        }
+    }
+
+    if PropsModel.axis-on && PropsModel.axis-available: SliderBlock {
+        title: "Axis Tilt";
+        value-text: Math.round(PropsModel.axis-tilt) + "°";
+        value <=> PropsModel.axis-tilt;
+        minimum: 0;
+        maximum: 90;
+        step: 1;
+        released => {
+            PropsModel.effects-released();
+        }
+    }
+
+    if PropsModel.axis-on && PropsModel.axis-available: SliderBlock {
+        title: "Axis Azimuth";
+        value-text: Math.round(PropsModel.axis-azimuth) + "°";
+        value <=> PropsModel.axis-azimuth;
+        minimum: 0;
+        maximum: 360;
+        step: 1;
+        released => {
+            PropsModel.effects-released();
+        }
+    }
+
+    Rectangle {
+        height: Theme.space-xl;
+    }
+}
+
+// A list of choices with a back arrow, and a search field when `searchable`.
+component PickerPage inherits Rectangle {
+    in property <string> title;
+    in property <[MaterialItem]> items;
+    in property <bool> searchable: false;
+    callback picked(int, string);
+    callback back();
+
+    VerticalLayout {
+        TopBar {
+            title: root.title;
+            show-back: true;
+            background: transparent;
+            back-clicked => {
+                root.back();
+            }
+        }
+
+        if root.searchable: HorizontalLayout {
+            padding-left: Theme.space-lg;
+            padding-right: Theme.space-lg;
+            padding-bottom: Theme.space-sm;
+
+            LineEdit {
+                text <=> PropsModel.material-query;
+                placeholder-text: "Search Materials";
+                accessible-label: "Search Materials";
+
+                edited(value) => {
+                    PropsModel.material-query-changed(value);
+                }
+            }
+        }
+
+        ListView {
+            vertical-stretch: 1;
+
+            for item[index] in root.items: PickerRow {
+                title: item.name;
+                detail: item.detail;
+                selected: item.selected;
+                clicked => {
+                    root.picked(index, item.name);
+                }
+            }
+        }
+    }
+}
+
+// The compact custom-material form: the fields that decide the optics, and a color.
+component CustomForm inherits Rectangle {
+    VerticalLayout {
+        TopBar {
+            title: "New Custom Material";
+            show-back: true;
+            background: transparent;
+            back-clicked => {
+                PropsModel.open-page(0);
+            }
+        }
+
+        PageScroll {
+            SettingBlock {
+                title: "Name";
+
+                LineEdit {
+                    text <=> PropsModel.custom-name;
+                    placeholder-text: "Material name";
+                    accessible-label: "Material name";
+                }
+            }
+
+            SettingBlock {
+                title: "Refractive Index";
+                info-body: "How strongly the material bends light, at the sodium D line. From 1.30 to 3.20 (diamond is 2.42).";
+
+                NumberField {
+                    key: "custom-ri";
+                    caption: "Refractive Index";
+                    clearable: false;
+                    text <=> PropsModel.custom-ri;
+                    placeholder: "for example 1.76";
+                }
+            }
+
+            SettingBlock {
+                title: "Dispersion";
+                info-body: "The spread of the index between blue and red light (n_F minus n_C), which makes the fire of a stone. From 0 to 0.12; blank is 0 (diamond is 0.044).";
+
+                NumberField {
+                    key: "custom-dispersion";
+                    caption: "Dispersion";
+                    text <=> PropsModel.custom-dispersion;
+                    placeholder: "blank is 0";
+                }
+            }
+
+            SettingBlock {
+                title: "Birefringence";
+                info-body: "How much the index differs between the two crystal directions. From -0.05 to 0.10; blank is 0 (single refracting, like glass or diamond).";
+
+                NumberField {
+                    key: "custom-birefringence";
+                    caption: "Birefringence";
+                    text <=> PropsModel.custom-birefringence;
+                    placeholder: "blank is 0";
+                }
+            }
+
+            SettingBlock {
+                title: "Specific Gravity";
+                info-body: "Used only for the carat weight estimate. Blank means not recorded.";
+
+                NumberField {
+                    key: "custom-sg";
+                    caption: "Specific Gravity";
+                    text <=> PropsModel.custom-sg;
+                    placeholder: "blank is not recorded";
+                }
+            }
+
+            SettingBlock {
+                title: "Color";
+
+                Flickable {
+                    height: Theme.touch;
+                    content-width: chips.preferred-width;
+
+                    chips := HorizontalLayout {
+                        x: 0px;
+                        y: 0px;
+                        width: self.preferred-width;
+                        height: parent.height;
+                        spacing: Theme.space-xs;
+
+                        for name[index] in PropsModel.color-names: Chip {
+                            text: name;
+                            selected: index == PropsModel.custom-color;
+                            clicked => {
+                                PropsModel.custom-color = index;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if PropsModel.custom-error != "": HorizontalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+
+                Text {
+                    text: PropsModel.custom-error;
+                    color: Theme.error;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+            }
+
+            HorizontalLayout {
+                padding: Theme.space-lg;
+                spacing: Theme.space-sm;
+                alignment: end;
+
+                TextButton {
+                    text: "Cancel";
+                    clicked => {
+                        PropsModel.open-page(0);
+                    }
+                }
+
+                PrimaryButton {
+                    text: "Save and Use";
+                    clicked => {
+                        PropsModel.save-custom();
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component StoneTab inherits Rectangle {
+    if PropsModel.stone-page == 0: StoneSettings { }
+
+    if PropsModel.stone-page == 1: PickerPage {
+        title: "Material";
+        items: PropsModel.materials;
+        searchable: true;
+        picked(index, name) => {
+            PropsModel.pick-material(name);
+        }
+        back => {
+            PropsModel.open-page(0);
+        }
+    }
+
+    if PropsModel.stone-page == 2: PickerPage {
+        title: "Body Color";
+        items: PropsModel.colors;
+        picked(index, name) => {
+            PropsModel.pick-color(index);
+        }
+        back => {
+            PropsModel.open-page(0);
+        }
+    }
+
+    if PropsModel.stone-page == 3: CustomForm { }
+
+    NumberSheet { }
+}

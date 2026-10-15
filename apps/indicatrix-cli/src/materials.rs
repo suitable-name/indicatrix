@@ -2,7 +2,7 @@
 //! scores a design in.
 //!
 //! The catalogue is the built-in presets plus, when `--db` names a design library, its custom
-//! materials (opened read-only) and the one custom material a `.indicatrix` file may carry as
+//! materials (opened read-only) and the one custom material a `.isdd` file may carry as
 //! its own snapshot. A design names its material by name; `--material` and `--ri` replace it.
 //!
 //! # Library rows are read as the desktop reads them
@@ -17,7 +17,7 @@
 //! # Library materials are saved as the desktop saves them
 //!
 //! The catalogue also keeps each library row's [`CustomMaterialSnapshot`], built with
-//! `LibraryMaterial::snapshot`, the code the desktop's Save runs. A `.indicatrix` file that names
+//! `LibraryMaterial::snapshot`, the code the desktop's Save runs. A `.isdd` file that names
 //! a library material embeds it ([`Catalogue::library_snapshot`]), so the file opens on a machine
 //! without the library, and without `--db`.
 
@@ -378,14 +378,12 @@ mod tests {
     fn a_library_material_is_embedded_so_the_file_opens_without_the_library() {
         let catalogue = catalogue_with("My Spinel");
         let design = design_on("My Spinel");
-        let original = Loaded::in_memory(testing::template(), "round.indicatrix");
-        let text = original
-            .indicatrix_text(&design, &catalogue)
-            .expect("writes");
+        let original = Loaded::in_memory(testing::template(), "round.isdd");
+        let text = original.design_text(&design, &catalogue).expect("writes");
         assert!(text.contains("[material.custom]"), "{text}");
 
         // Reopened with no library at all: the file's own snapshot answers.
-        let again = from_bytes("spinel.indicatrix", text.as_bytes()).expect("opens");
+        let again = from_bytes("spinel.isdd", text.as_bytes()).expect("opens");
         let bare = again.catalogue(None).expect("no library to fail");
         let without = resolve_scoring(&again.design, &bare, None).expect("resolves without --db");
         let with = resolve_scoring(&design, &catalogue, None).expect("resolves with the library");
@@ -400,7 +398,7 @@ mod tests {
 
         // Saving the reopened file again, still without a library, keeps the snapshot.
         let resaved = again
-            .indicatrix_text(&again.design, &bare)
+            .design_text(&again.design, &bare)
             .expect("writes again");
         assert_eq!(resaved, text);
     }
@@ -419,9 +417,9 @@ mod tests {
                 .is_none()
         );
 
-        let loaded = Loaded::in_memory(testing::template(), "round.indicatrix");
+        let loaded = Loaded::in_memory(testing::template(), "round.isdd");
         let text = loaded
-            .indicatrix_text(&design_on("Sapphire"), &catalogue)
+            .design_text(&design_on("Sapphire"), &catalogue)
             .expect("writes");
         assert!(!text.contains("[material.custom]"), "{text}");
     }

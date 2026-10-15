@@ -144,7 +144,9 @@ pub fn run_hdr_env_radiance(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckR
             (11, &hdr_env.dims),
         ],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("a check case count fits u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

@@ -13,6 +13,12 @@ use crate::{MainWindow, RemoteWorkerModel, settings::SettingsPersister};
 use slint::ComponentHandle;
 use std::sync::Arc;
 
+/// A stored `u32` setting as the `int` of a spin box, saturating (the stored values are
+/// limited to small counts, so this never actually saturates).
+fn spin_box_value(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 /// Shows the saved lane count in the spin box and persists every change the user makes.
 ///
 /// The count is limited to `1..=32` by `AppSettings::set_remote_batch_lanes`; the stored
@@ -20,18 +26,23 @@ use std::sync::Arc;
 /// not use. Called once, at startup.
 pub fn setup_remote_batch_lanes(ui: &MainWindow, settings_store: &Arc<SettingsPersister>) {
     ui.global::<RemoteWorkerModel>()
-        .set_remote_batch_lanes(settings_store.snapshot().settings.remote_batch_lanes as i32);
+        .set_remote_batch_lanes(spin_box_value(
+            settings_store.snapshot().settings.remote_batch_lanes,
+        ));
 
     ui.global::<RemoteWorkerModel>()
-        .set_remote_preview_batch_size(
-            settings_store.snapshot().settings.remote_preview_batch_size as i32,
-        );
+        .set_remote_preview_batch_size(spin_box_value(
+            settings_store.snapshot().settings.remote_preview_batch_size,
+        ));
     let size_store = Arc::clone(settings_store);
     let size_ui_weak = ui.as_weak();
     ui.global::<RemoteWorkerModel>()
         .on_remote_preview_batch_size_changed(move |size: i32| {
-            size_store.update(|s| s.settings.set_remote_preview_batch_size(size.max(1) as u32));
-            let stored = size_store.snapshot().settings.remote_preview_batch_size as i32;
+            size_store.update(|s| {
+                s.settings
+                    .set_remote_preview_batch_size(size.max(1).cast_unsigned());
+            });
+            let stored = spin_box_value(size_store.snapshot().settings.remote_preview_batch_size);
             if let Some(ui) = size_ui_weak.upgrade()
                 && ui
                     .global::<RemoteWorkerModel>()
@@ -49,8 +60,11 @@ pub fn setup_remote_batch_lanes(ui: &MainWindow, settings_store: &Arc<SettingsPe
         .on_remote_batch_lanes_changed(move |lanes: i32| {
             // A spin box never goes below its own minimum; `max(1)` keeps a stray
             // negative from wrapping into a huge unsigned count before the limit runs.
-            settings_store.update(|s| s.settings.set_remote_batch_lanes(lanes.max(1) as u32));
-            let stored = settings_store.snapshot().settings.remote_batch_lanes as i32;
+            settings_store.update(|s| {
+                s.settings
+                    .set_remote_batch_lanes(lanes.max(1).cast_unsigned());
+            });
+            let stored = spin_box_value(settings_store.snapshot().settings.remote_batch_lanes);
             if let Some(ui) = ui_weak.upgrade()
                 && ui.global::<RemoteWorkerModel>().get_remote_batch_lanes() != stored
             {

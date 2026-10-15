@@ -419,6 +419,104 @@ fn fractions_keep_their_sum_when_one_is_dragged() {
     assert!((row.fraction - 0.7).abs() < 0.02, "{}", row.fraction);
 }
 
+/// A physics state on the catalogue host `host_id`, opened the way the editor opens one.
+fn state_for(host_id: &str) -> PhysicsState {
+    let mut s = PhysicsState::open("", [0.0; 3], "x", 0.0, cat(), 0);
+    s.set_mode(true, None, cat());
+    s.solving = false;
+    assert!(
+        s.select_host(host_id, cat()),
+        "{host_id} is a catalogue host"
+    );
+    s
+}
+
+#[test]
+fn the_dragged_slider_stops_where_its_partner_elements_fill_the_shared_range() {
+    // Andalusite's "V3+ / Cr3+" chromophore has one `conc_max` (0.5 wt% V2O3) for V + Cr.
+    let mut s = state_for("andalusite");
+    assert!(s.add_item("V", cat()));
+    s.recipe_mut(cat()).set_amount("V", 0.4);
+    refresh(s.recipe_mut(cat()), cat());
+    // Cr dragged to the end of its slider stops where V + Cr reach the bound.
+    s.set_amount_pos("Cr", 1.0, cat());
+    s.release();
+    let cr = s.recipe().unwrap().amount("Cr");
+    assert!(
+        (cr - 0.1).abs() < 1e-9,
+        "Cr stops at the room V leaves: {cr}"
+    );
+    // With V at the whole range, Cr has no room: it is greyed out with a reason.
+    s.remove_item("Cr", cat());
+    s.recipe_mut(cat()).set_amount("V", 0.5);
+    refresh(s.recipe_mut(cat()), cat());
+    let host = cat().host("andalusite").expect("andalusite is a host");
+    let reason = impossible_reason(host, s.recipe().unwrap(), "Cr").expect("Cr has no room");
+    assert!(reason.contains("partner"), "{reason}");
+    let view = s.view(cat());
+    let option = view
+        .add_options
+        .iter()
+        .find(|o| o.id == "Cr")
+        .expect("Cr is offered");
+    assert!(!option.enabled, "no room left");
+    assert!(option.reason.contains("partner"), "{}", option.reason);
+    assert!(!s.add_item("Cr", cat()));
+    // Both entered above the shared bound: the refresh scales them down together.
+    s.recipe_mut(cat()).set_amount("V", 0.4);
+    s.recipe_mut(cat()).set_amount("Cr", 0.4);
+    refresh(s.recipe_mut(cat()), cat());
+    let recipe = s.recipe().unwrap();
+    assert!(
+        (recipe.amount("V") - 0.25).abs() < 1e-9,
+        "{}",
+        recipe.amount("V")
+    );
+    assert!(
+        (recipe.amount("Cr") - 0.25).abs() < 1e-9,
+        "{}",
+        recipe.amount("Cr")
+    );
+}
+
+#[test]
+fn a_treatment_narrows_the_slider_range_to_the_treated_state() {
+    let mut s = state_for("glass_silicate");
+    assert!(s.add_item("Cu", cat()));
+    s.recipe_mut(cat()).set_amount("Cu", 5.0);
+    refresh(s.recipe_mut(cat()), cat());
+    assert!(
+        (s.recipe().unwrap().amount("Cu") - 5.0).abs() < 1e-9,
+        "the untreated bound is 8 wt% CuO"
+    );
+    // The copper-ruby colloid: 10000 ppm of sites, in the wt% CuO the copper is entered in.
+    let host = cat().host("glass_silicate").expect("glass is a host");
+    let colloid =
+        10_000.0 * host.n_site_for_unit("ppm_site") / host.n_site_for_unit("wt_pct_oxide:CuO");
+    assert!(
+        colloid < 5.0,
+        "the colloid bound is below the amount: {colloid}"
+    );
+    s.toggle_treatment("reducing_strike", true, cat());
+    assert!(
+        (s.max_for("Cu", cat()) - colloid).abs() < 1e-9,
+        "{}",
+        s.max_for("Cu", cat())
+    );
+    assert!(
+        (s.recipe().unwrap().amount("Cu") - colloid).abs() < 1e-9,
+        "the struck glass holds at most the colloid: {}",
+        s.recipe().unwrap().amount("Cu")
+    );
+    // The row's slider is on the treated range: the colloid bound is its right end.
+    let view = s.view(cat());
+    let row = view.rows.iter().find(|r| r.id == "Cu").expect("Cu row");
+    assert!((row.slider - 1.0).abs() < 1e-9, "{}", row.slider);
+    // Without the strike the untreated bound is back (the amount stays clamped).
+    s.toggle_treatment("reducing_strike", false, cat());
+    assert!((s.max_for("Cu", cat()) - 8.0).abs() < 1e-9);
+}
+
 #[test]
 fn rows_carry_confidence_and_sources() {
     let mut s = ruby_state();

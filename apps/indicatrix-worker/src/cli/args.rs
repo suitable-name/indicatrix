@@ -52,6 +52,10 @@ pub struct RenderArgs {
 
 /// Arguments of `indicatrix-worker serve`.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the `serve` command-line flags; the fields are independent switches"
+)]
 pub struct ServeArgs {
     /// Listen address (`host:port`).
     pub bind: String,

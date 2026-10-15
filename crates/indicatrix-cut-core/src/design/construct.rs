@@ -61,6 +61,7 @@ impl Design {
             concave_tiers: Vec::new(),
             concave_tier_ids: Vec::new(),
             tier_relations: BTreeMap::new(),
+            render_effects: super::render_effects::StoneRenderEffects::default(),
             file_extras: None,
         }
     }
@@ -96,6 +97,7 @@ impl Design {
             concave_tiers: Vec::new(),
             concave_tier_ids: Vec::new(),
             tier_relations: BTreeMap::new(),
+            render_effects: super::render_effects::StoneRenderEffects::default(),
             file_extras: None,
         }
     }
@@ -218,6 +220,7 @@ impl Design {
             concave_tiers: Vec::new(),
             concave_tier_ids: Vec::new(),
             tier_relations: BTreeMap::new(),
+            render_effects: super::render_effects::StoneRenderEffects::default(),
             file_extras: None,
         }
     }

@@ -66,6 +66,10 @@ pub struct LateFindings {
 
 /// One finished worker-thread render -- everything `super::render::render_request`
 /// produces. See [`PreviewSink`]'s doc comment for what each field means.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the finished-render message mirrors the render result; has_solid, stale, has_diagram and the rest are independent flags"
+)]
 pub struct PreviewFrame {
     pub image: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     pub has_solid: bool,

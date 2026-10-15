@@ -38,7 +38,7 @@ pub fn guides() -> Vec<Guide> {
 fn cutting_mode() -> Guide {
     Guide::new(
         "output-cutting-mode",
-        "Cutting mode",
+        "Cutting Mode",
         "Walk through the cutting steps one page at a time at the machine, and tick off what you have cut.",
         GuideCategory::Output,
     )
@@ -46,26 +46,26 @@ fn cutting_mode() -> Guide {
     .step(
         GuideStep::new(
             "One step per page",
-            "Cutting mode is the cutting instructions made for the bench: one step on each page, large enough to read from your lap.",
+            "Cutting Mode is the cutting instructions made for the bench: one step on each page, large enough to read from your lap.",
         )
         .actions([
             "Each page shows the tier, its angle in large figures, the indices to cut as chips, and a picture of the stone after the step beside the index wheel.",
             "Right arrow or Page Down goes to the next step, left arrow or Page Up to the one before. Looking never marks anything.",
             "Space or D marks the step done and goes on. Esc closes cutting mode.",
         ])
-        .why("The cutting sheet and the Schedule tab hold the same numbers in one long list. Cutting mode is for the moment you are cutting, with the next step always in front of you.")
+        .why("The cutting sheet and the Schedule tab hold the same numbers in one long list. Cutting Mode is for the moment you are cutting, with the next step always in front of you.")
         .highlight("cutting_mode_button")
         .allow(ADVANCED),
     )
     .step(
         GuideStep::new(
             "Open it and mark a step",
-            "Cutting mode covers the whole window, so this step carries everything you need to do in it.",
+            "Cutting Mode covers the whole window, so this step carries everything you need to do in it.",
         )
         .actions([
             "Click the Edit tab, then Cut Mode in the command bar (or choose Edit, Cutting Mode..., or press Ctrl+K and type cutting).",
             "Read the first page.",
-            "Press Space or D, or click Mark step done, to mark the step done.",
+            "Press Space or D, or click Mark Step Done, to mark the step done.",
             "Press Esc to close cutting mode and come back to this panel.",
         ])
         .check("The progress line at the bottom of the page reads 1 of 4 steps done.")
@@ -83,7 +83,7 @@ fn cutting_mode() -> Guide {
             "Click an index chip to tick that one index; click it again to take the tick back. Ticks help when a step has many indices that you cut over several sittings.",
             "Ticking the last index of a step marks the step done. Taking the done mark back from a step clears its ticks.",
             "If you change a step's angle, indices, depth or cheater offset after marking it, the page shows Changed since you marked it and the step no longer counts as done. Names, notes and Meets wording do not change the cut, so they do not count.",
-            "Reset progress, at the bottom of the screen, removes every mark of this design after asking.",
+            "Reset Progress, at the bottom of the screen, removes every mark of this design after asking.",
         ])
         .why("Every control is unlocked again."),
     )
@@ -92,7 +92,7 @@ fn cutting_mode() -> Guide {
 fn export_asc() -> Guide {
     Guide::new(
         "output-export-asc",
-        "Export the cutting instructions (.asc)",
+        "Export the Cutting Instructions (.asc)",
         "Write the design as a plain .asc schedule to hand to another cutter or program.",
         GuideCategory::Output,
     )
@@ -104,7 +104,7 @@ fn export_asc() -> Guide {
         )
         .actions([
             "Export .asc in the command bar writes the design as you edited it in this tab, wherever you choose.",
-            "It does not add anything to your library. Save writes the whole .indicatrix design file instead.",
+            "It does not add anything to your library. Save writes the whole .isdd design file instead.",
         ])
         .why("Use .asc to hand a schedule to another cutter or program. Use Save to keep working on the design later.")
         .highlight("export_asc_button")
@@ -133,7 +133,7 @@ fn export_asc() -> Guide {
         .actions([
             "Tier names are written with every run of spaces turned into an underscore, so Crown Main reads Crown_Main.",
             "A cheater offset has no field of its own, so the tier's indices are shifted by a fraction of a tooth instead.",
-            "A tier whose angle follows another tier's through a relation is written as a plain angle; the relation stays in the .indicatrix file.",
+            "A tier whose angle follows another tier's through a relation is written as a plain angle; the relation stays in the .isdd file.",
         ])
         .why("Every control is unlocked again."),
     )
@@ -190,7 +190,7 @@ fn export_gcs() -> Guide {
 fn cutting_sheet() -> Guide {
     Guide::new(
         "output-cutting-sheet",
-        "The cutting sheet",
+        "The Cutting Sheet",
         "Write a printable HTML cutting sheet: facet counts, size ratios, four views and every tier in cutting order.",
         GuideCategory::Output,
     )
@@ -236,7 +236,7 @@ fn cutting_sheet() -> Guide {
 fn diagram_png() -> Guide {
     Guide::new(
         "output-diagram-png",
-        "Export the diagram (PNG)",
+        "Export the Diagram (PNG)",
         "Write the crown, pavilion and profile drawing as an image.",
         GuideCategory::Output,
     )
@@ -280,8 +280,8 @@ fn diagram_png() -> Guide {
 fn save() -> Guide {
     Guide::new(
         "output-save",
-        "Save a design",
-        "Save the whole design to its own .indicatrix file, and know what happens if the program closes first.",
+        "Save a Design",
+        "Save the whole design to its own .isdd file, and know what happens if the program closes first.",
         GuideCategory::Output,
     )
     .starting(StartingState::Template(5))
@@ -303,7 +303,7 @@ fn save() -> Guide {
     .step(
         GuideStep::new(
             "Save the design",
-            "Save writes the whole design into one .indicatrix file.",
+            "Save writes the whole design into one .isdd file.",
         )
         .actions([
             "Click Save in the command bar (or press Ctrl+S).",
@@ -334,7 +334,7 @@ fn save() -> Guide {
         )
         .actions([
             "While there are unsaved changes the program writes an autosave every two minutes, to its own folder, never over your design.",
-            "After an unclean exit, the next start asks Recover unsaved work? with Recover, Not now and Delete.",
+            "After an unclean exit, the next start asks Recover Unsaved Work? with Recover, Not Now and Delete.",
             "A recovered design is never written back by Save: the first Save asks for a file name.",
         ])
         .why("Every control is unlocked again."),
@@ -344,8 +344,8 @@ fn save() -> Guide {
 fn open() -> Guide {
     Guide::new(
         "output-open",
-        "Open a design",
-        "Open a saved .indicatrix file, and see what else Open accepts.",
+        "Open a Design",
+        "Open a saved .isdd file, and see what else Open accepts.",
         GuideCategory::Output,
     )
     .starting(StartingState::Template(5))
@@ -370,7 +370,7 @@ fn open() -> Guide {
         )
         .actions([
             "Click Open in the command bar (or press Ctrl+O).",
-            "Choose the .indicatrix file you just saved.",
+            "Choose the .isdd file you just saved.",
         ])
         .check("The window title names the file, and the design is as you saved it.")
         .why("Open looks at what the file holds, not at its name. If the design on screen has unsaved changes you are asked first.")
@@ -381,12 +381,12 @@ fn open() -> Guide {
     .step(
         GuideStep::new(
             "More ways to open",
-            "Open is not only for .indicatrix files.",
+            "Open is not only for .isdd files.",
         )
         .actions([
             "File, Open Recent lists the designs you opened or saved lately.",
-            "Open also takes a plain .asc file, a GemCAD .gem file or a Gem Cut Studio .gcs file; the design is converted to .asc cutting instructions, and Save writes a new .indicatrix beside it, never over your file.",
-            "Older .indicatrix.toml files still open.",
+            "Open also takes a plain .asc file, a GemCAD .gem file or a Gem Cut Studio .gcs file; the design is converted to .asc cutting instructions, and Save writes a new .isdd beside it, never over your file.",
+            "Files saved with the earlier .indicatrix extension still open.",
         ])
         .why("Every control is unlocked again."),
     )

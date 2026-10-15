@@ -327,47 +327,256 @@ fn tangential_components(fields: ModeFieldsW, that: vec3<f32>, s_axis: vec3<f32>
     return out;
 }
 
+// BEGIN GENERATED solve4 (tools/unroll_solve4.py)
+// Constant-index unrolled Gauss-Jordan: same arithmetic, same order, same pivoting as
+// the rolled form (strict `>`, ascending rows, whole-row conditional swap, `!= 0.0`
+// factor skip). DO NOT EDIT BY HAND: regenerate with
+//     python crates/indicatrix/tools/unroll_solve4.py
+// (`--check` verifies this region is current.)
+
 // optics::raytracer::uniaxial_fresnel::solve4 -- Gauss-Jordan, single RHS.
 fn solve4_single(a_in: array<array<Cplx, 4>, 4>, b_in: array<Cplx, 4>) -> array<Cplx, 4> {
     var a = a_in;
     var b = b_in;
-    for (var col: u32 = 0u; col < 4u; col = col + 1u) {
-        var piv = col;
-        var piv_mag = cplx_norm_sqr(a[col][col]);
-        for (var row: u32 = col + 1u; row < 4u; row = row + 1u) {
-            let mag = cplx_norm_sqr(a[row][col]);
-            if (mag > piv_mag) {
-                piv = row;
-                piv_mag = mag;
-            }
-        }
-        for (var j: u32 = 0u; j < 4u; j = j + 1u) {
-            let tmp = a[col][j];
-            a[col][j] = a[piv][j];
-            a[piv][j] = tmp;
-        }
-        let tmpb = b[col];
-        b[col] = b[piv];
-        b[piv] = tmpb;
-
-        let pivot = a[col][col];
-        for (var j: u32 = col; j < 4u; j = j + 1u) {
-            a[col][j] = cplx_div(a[col][j], pivot);
-        }
-        b[col] = cplx_div(b[col], pivot);
-        for (var row: u32 = 0u; row < 4u; row = row + 1u) {
-            if (row == col) {
-                continue;
-            }
-            let factor = a[row][col];
-            if (cplx_norm_sqr(factor) == 0.0) {
-                continue;
-            }
-            for (var j: u32 = col; j < 4u; j = j + 1u) {
-                a[row][j] = cplx_sub(a[row][j], cplx_mul(factor, a[col][j]));
-            }
-            b[row] = cplx_sub(b[row], cplx_mul(factor, b[col]));
-        }
+    // column 0: pivot search
+    var piv0: u32 = 0u;
+    var piv_mag0: f32 = cplx_norm_sqr(a[0][0]);
+    let mag0_1 = cplx_norm_sqr(a[1][0]);
+    if (mag0_1 > piv_mag0) {
+        piv0 = 1u;
+        piv_mag0 = mag0_1;
+    }
+    let mag0_2 = cplx_norm_sqr(a[2][0]);
+    if (mag0_2 > piv_mag0) {
+        piv0 = 2u;
+        piv_mag0 = mag0_2;
+    }
+    let mag0_3 = cplx_norm_sqr(a[3][0]);
+    if (mag0_3 > piv_mag0) {
+        piv0 = 3u;
+        piv_mag0 = mag0_3;
+    }
+    if (piv0 == 1u) {
+        let t0_1_0 = a[0][0];
+        a[0][0] = a[1][0];
+        a[1][0] = t0_1_0;
+        let t0_1_1 = a[0][1];
+        a[0][1] = a[1][1];
+        a[1][1] = t0_1_1;
+        let t0_1_2 = a[0][2];
+        a[0][2] = a[1][2];
+        a[1][2] = t0_1_2;
+        let t0_1_3 = a[0][3];
+        a[0][3] = a[1][3];
+        a[1][3] = t0_1_3;
+        let tb0_1_b = b[0];
+        b[0] = b[1];
+        b[1] = tb0_1_b;
+    }
+    if (piv0 == 2u) {
+        let t0_2_0 = a[0][0];
+        a[0][0] = a[2][0];
+        a[2][0] = t0_2_0;
+        let t0_2_1 = a[0][1];
+        a[0][1] = a[2][1];
+        a[2][1] = t0_2_1;
+        let t0_2_2 = a[0][2];
+        a[0][2] = a[2][2];
+        a[2][2] = t0_2_2;
+        let t0_2_3 = a[0][3];
+        a[0][3] = a[2][3];
+        a[2][3] = t0_2_3;
+        let tb0_2_b = b[0];
+        b[0] = b[2];
+        b[2] = tb0_2_b;
+    }
+    if (piv0 == 3u) {
+        let t0_3_0 = a[0][0];
+        a[0][0] = a[3][0];
+        a[3][0] = t0_3_0;
+        let t0_3_1 = a[0][1];
+        a[0][1] = a[3][1];
+        a[3][1] = t0_3_1;
+        let t0_3_2 = a[0][2];
+        a[0][2] = a[3][2];
+        a[3][2] = t0_3_2;
+        let t0_3_3 = a[0][3];
+        a[0][3] = a[3][3];
+        a[3][3] = t0_3_3;
+        let tb0_3_b = b[0];
+        b[0] = b[3];
+        b[3] = tb0_3_b;
+    }
+    let pivot0 = a[0][0];
+    a[0][0] = cplx_div(a[0][0], pivot0);
+    a[0][1] = cplx_div(a[0][1], pivot0);
+    a[0][2] = cplx_div(a[0][2], pivot0);
+    a[0][3] = cplx_div(a[0][3], pivot0);
+    b[0] = cplx_div(b[0], pivot0);
+    let factor0_1 = a[1][0];
+    if (cplx_norm_sqr(factor0_1) != 0.0) {
+        a[1][0] = cplx_sub(a[1][0], cplx_mul(factor0_1, a[0][0]));
+        a[1][1] = cplx_sub(a[1][1], cplx_mul(factor0_1, a[0][1]));
+        a[1][2] = cplx_sub(a[1][2], cplx_mul(factor0_1, a[0][2]));
+        a[1][3] = cplx_sub(a[1][3], cplx_mul(factor0_1, a[0][3]));
+        b[1] = cplx_sub(b[1], cplx_mul(factor0_1, b[0]));
+    }
+    let factor0_2 = a[2][0];
+    if (cplx_norm_sqr(factor0_2) != 0.0) {
+        a[2][0] = cplx_sub(a[2][0], cplx_mul(factor0_2, a[0][0]));
+        a[2][1] = cplx_sub(a[2][1], cplx_mul(factor0_2, a[0][1]));
+        a[2][2] = cplx_sub(a[2][2], cplx_mul(factor0_2, a[0][2]));
+        a[2][3] = cplx_sub(a[2][3], cplx_mul(factor0_2, a[0][3]));
+        b[2] = cplx_sub(b[2], cplx_mul(factor0_2, b[0]));
+    }
+    let factor0_3 = a[3][0];
+    if (cplx_norm_sqr(factor0_3) != 0.0) {
+        a[3][0] = cplx_sub(a[3][0], cplx_mul(factor0_3, a[0][0]));
+        a[3][1] = cplx_sub(a[3][1], cplx_mul(factor0_3, a[0][1]));
+        a[3][2] = cplx_sub(a[3][2], cplx_mul(factor0_3, a[0][2]));
+        a[3][3] = cplx_sub(a[3][3], cplx_mul(factor0_3, a[0][3]));
+        b[3] = cplx_sub(b[3], cplx_mul(factor0_3, b[0]));
+    }
+    // column 1: pivot search
+    var piv1: u32 = 1u;
+    var piv_mag1: f32 = cplx_norm_sqr(a[1][1]);
+    let mag1_2 = cplx_norm_sqr(a[2][1]);
+    if (mag1_2 > piv_mag1) {
+        piv1 = 2u;
+        piv_mag1 = mag1_2;
+    }
+    let mag1_3 = cplx_norm_sqr(a[3][1]);
+    if (mag1_3 > piv_mag1) {
+        piv1 = 3u;
+        piv_mag1 = mag1_3;
+    }
+    if (piv1 == 2u) {
+        let t1_2_0 = a[1][0];
+        a[1][0] = a[2][0];
+        a[2][0] = t1_2_0;
+        let t1_2_1 = a[1][1];
+        a[1][1] = a[2][1];
+        a[2][1] = t1_2_1;
+        let t1_2_2 = a[1][2];
+        a[1][2] = a[2][2];
+        a[2][2] = t1_2_2;
+        let t1_2_3 = a[1][3];
+        a[1][3] = a[2][3];
+        a[2][3] = t1_2_3;
+        let tb1_2_b = b[1];
+        b[1] = b[2];
+        b[2] = tb1_2_b;
+    }
+    if (piv1 == 3u) {
+        let t1_3_0 = a[1][0];
+        a[1][0] = a[3][0];
+        a[3][0] = t1_3_0;
+        let t1_3_1 = a[1][1];
+        a[1][1] = a[3][1];
+        a[3][1] = t1_3_1;
+        let t1_3_2 = a[1][2];
+        a[1][2] = a[3][2];
+        a[3][2] = t1_3_2;
+        let t1_3_3 = a[1][3];
+        a[1][3] = a[3][3];
+        a[3][3] = t1_3_3;
+        let tb1_3_b = b[1];
+        b[1] = b[3];
+        b[3] = tb1_3_b;
+    }
+    let pivot1 = a[1][1];
+    a[1][1] = cplx_div(a[1][1], pivot1);
+    a[1][2] = cplx_div(a[1][2], pivot1);
+    a[1][3] = cplx_div(a[1][3], pivot1);
+    b[1] = cplx_div(b[1], pivot1);
+    let factor1_0 = a[0][1];
+    if (cplx_norm_sqr(factor1_0) != 0.0) {
+        a[0][1] = cplx_sub(a[0][1], cplx_mul(factor1_0, a[1][1]));
+        a[0][2] = cplx_sub(a[0][2], cplx_mul(factor1_0, a[1][2]));
+        a[0][3] = cplx_sub(a[0][3], cplx_mul(factor1_0, a[1][3]));
+        b[0] = cplx_sub(b[0], cplx_mul(factor1_0, b[1]));
+    }
+    let factor1_2 = a[2][1];
+    if (cplx_norm_sqr(factor1_2) != 0.0) {
+        a[2][1] = cplx_sub(a[2][1], cplx_mul(factor1_2, a[1][1]));
+        a[2][2] = cplx_sub(a[2][2], cplx_mul(factor1_2, a[1][2]));
+        a[2][3] = cplx_sub(a[2][3], cplx_mul(factor1_2, a[1][3]));
+        b[2] = cplx_sub(b[2], cplx_mul(factor1_2, b[1]));
+    }
+    let factor1_3 = a[3][1];
+    if (cplx_norm_sqr(factor1_3) != 0.0) {
+        a[3][1] = cplx_sub(a[3][1], cplx_mul(factor1_3, a[1][1]));
+        a[3][2] = cplx_sub(a[3][2], cplx_mul(factor1_3, a[1][2]));
+        a[3][3] = cplx_sub(a[3][3], cplx_mul(factor1_3, a[1][3]));
+        b[3] = cplx_sub(b[3], cplx_mul(factor1_3, b[1]));
+    }
+    // column 2: pivot search
+    var piv2: u32 = 2u;
+    var piv_mag2: f32 = cplx_norm_sqr(a[2][2]);
+    let mag2_3 = cplx_norm_sqr(a[3][2]);
+    if (mag2_3 > piv_mag2) {
+        piv2 = 3u;
+        piv_mag2 = mag2_3;
+    }
+    if (piv2 == 3u) {
+        let t2_3_0 = a[2][0];
+        a[2][0] = a[3][0];
+        a[3][0] = t2_3_0;
+        let t2_3_1 = a[2][1];
+        a[2][1] = a[3][1];
+        a[3][1] = t2_3_1;
+        let t2_3_2 = a[2][2];
+        a[2][2] = a[3][2];
+        a[3][2] = t2_3_2;
+        let t2_3_3 = a[2][3];
+        a[2][3] = a[3][3];
+        a[3][3] = t2_3_3;
+        let tb2_3_b = b[2];
+        b[2] = b[3];
+        b[3] = tb2_3_b;
+    }
+    let pivot2 = a[2][2];
+    a[2][2] = cplx_div(a[2][2], pivot2);
+    a[2][3] = cplx_div(a[2][3], pivot2);
+    b[2] = cplx_div(b[2], pivot2);
+    let factor2_0 = a[0][2];
+    if (cplx_norm_sqr(factor2_0) != 0.0) {
+        a[0][2] = cplx_sub(a[0][2], cplx_mul(factor2_0, a[2][2]));
+        a[0][3] = cplx_sub(a[0][3], cplx_mul(factor2_0, a[2][3]));
+        b[0] = cplx_sub(b[0], cplx_mul(factor2_0, b[2]));
+    }
+    let factor2_1 = a[1][2];
+    if (cplx_norm_sqr(factor2_1) != 0.0) {
+        a[1][2] = cplx_sub(a[1][2], cplx_mul(factor2_1, a[2][2]));
+        a[1][3] = cplx_sub(a[1][3], cplx_mul(factor2_1, a[2][3]));
+        b[1] = cplx_sub(b[1], cplx_mul(factor2_1, b[2]));
+    }
+    let factor2_3 = a[3][2];
+    if (cplx_norm_sqr(factor2_3) != 0.0) {
+        a[3][2] = cplx_sub(a[3][2], cplx_mul(factor2_3, a[2][2]));
+        a[3][3] = cplx_sub(a[3][3], cplx_mul(factor2_3, a[2][3]));
+        b[3] = cplx_sub(b[3], cplx_mul(factor2_3, b[2]));
+    }
+    // column 3: pivot search
+    var piv3: u32 = 3u;
+    var piv_mag3: f32 = cplx_norm_sqr(a[3][3]);
+    let pivot3 = a[3][3];
+    a[3][3] = cplx_div(a[3][3], pivot3);
+    b[3] = cplx_div(b[3], pivot3);
+    let factor3_0 = a[0][3];
+    if (cplx_norm_sqr(factor3_0) != 0.0) {
+        a[0][3] = cplx_sub(a[0][3], cplx_mul(factor3_0, a[3][3]));
+        b[0] = cplx_sub(b[0], cplx_mul(factor3_0, b[3]));
+    }
+    let factor3_1 = a[1][3];
+    if (cplx_norm_sqr(factor3_1) != 0.0) {
+        a[1][3] = cplx_sub(a[1][3], cplx_mul(factor3_1, a[3][3]));
+        b[1] = cplx_sub(b[1], cplx_mul(factor3_1, b[3]));
+    }
+    let factor3_2 = a[2][3];
+    if (cplx_norm_sqr(factor3_2) != 0.0) {
+        a[2][3] = cplx_sub(a[2][3], cplx_mul(factor3_2, a[3][3]));
+        b[2] = cplx_sub(b[2], cplx_mul(factor3_2, b[3]));
     }
     return b;
 }
@@ -382,52 +591,284 @@ fn solve4_two_rhs(a_in: array<array<Cplx, 4>, 4>, b1_in: array<Cplx, 4>, b2_in: 
     var a = a_in;
     var b1 = b1_in;
     var b2 = b2_in;
-    for (var col: u32 = 0u; col < 4u; col = col + 1u) {
-        var piv = col;
-        var piv_mag = cplx_norm_sqr(a[col][col]);
-        for (var row: u32 = col + 1u; row < 4u; row = row + 1u) {
-            let mag = cplx_norm_sqr(a[row][col]);
-            if (mag > piv_mag) {
-                piv = row;
-                piv_mag = mag;
-            }
-        }
-        for (var j: u32 = 0u; j < 4u; j = j + 1u) {
-            let tmp = a[col][j];
-            a[col][j] = a[piv][j];
-            a[piv][j] = tmp;
-        }
-        let tmpb1 = b1[col];
-        b1[col] = b1[piv];
-        b1[piv] = tmpb1;
-        let tmpb2 = b2[col];
-        b2[col] = b2[piv];
-        b2[piv] = tmpb2;
-
-        let pivot = a[col][col];
-        for (var j: u32 = col; j < 4u; j = j + 1u) {
-            a[col][j] = cplx_div(a[col][j], pivot);
-        }
-        b1[col] = cplx_div(b1[col], pivot);
-        b2[col] = cplx_div(b2[col], pivot);
-        for (var row: u32 = 0u; row < 4u; row = row + 1u) {
-            if (row == col) {
-                continue;
-            }
-            let factor = a[row][col];
-            if (cplx_norm_sqr(factor) == 0.0) {
-                continue;
-            }
-            for (var j: u32 = col; j < 4u; j = j + 1u) {
-                a[row][j] = cplx_sub(a[row][j], cplx_mul(factor, a[col][j]));
-            }
-            b1[row] = cplx_sub(b1[row], cplx_mul(factor, b1[col]));
-            b2[row] = cplx_sub(b2[row], cplx_mul(factor, b2[col]));
-        }
+    // column 0: pivot search
+    var piv0: u32 = 0u;
+    var piv_mag0: f32 = cplx_norm_sqr(a[0][0]);
+    let mag0_1 = cplx_norm_sqr(a[1][0]);
+    if (mag0_1 > piv_mag0) {
+        piv0 = 1u;
+        piv_mag0 = mag0_1;
+    }
+    let mag0_2 = cplx_norm_sqr(a[2][0]);
+    if (mag0_2 > piv_mag0) {
+        piv0 = 2u;
+        piv_mag0 = mag0_2;
+    }
+    let mag0_3 = cplx_norm_sqr(a[3][0]);
+    if (mag0_3 > piv_mag0) {
+        piv0 = 3u;
+        piv_mag0 = mag0_3;
+    }
+    if (piv0 == 1u) {
+        let t0_1_0 = a[0][0];
+        a[0][0] = a[1][0];
+        a[1][0] = t0_1_0;
+        let t0_1_1 = a[0][1];
+        a[0][1] = a[1][1];
+        a[1][1] = t0_1_1;
+        let t0_1_2 = a[0][2];
+        a[0][2] = a[1][2];
+        a[1][2] = t0_1_2;
+        let t0_1_3 = a[0][3];
+        a[0][3] = a[1][3];
+        a[1][3] = t0_1_3;
+        let tb0_1_b1 = b1[0];
+        b1[0] = b1[1];
+        b1[1] = tb0_1_b1;
+        let tb0_1_b2 = b2[0];
+        b2[0] = b2[1];
+        b2[1] = tb0_1_b2;
+    }
+    if (piv0 == 2u) {
+        let t0_2_0 = a[0][0];
+        a[0][0] = a[2][0];
+        a[2][0] = t0_2_0;
+        let t0_2_1 = a[0][1];
+        a[0][1] = a[2][1];
+        a[2][1] = t0_2_1;
+        let t0_2_2 = a[0][2];
+        a[0][2] = a[2][2];
+        a[2][2] = t0_2_2;
+        let t0_2_3 = a[0][3];
+        a[0][3] = a[2][3];
+        a[2][3] = t0_2_3;
+        let tb0_2_b1 = b1[0];
+        b1[0] = b1[2];
+        b1[2] = tb0_2_b1;
+        let tb0_2_b2 = b2[0];
+        b2[0] = b2[2];
+        b2[2] = tb0_2_b2;
+    }
+    if (piv0 == 3u) {
+        let t0_3_0 = a[0][0];
+        a[0][0] = a[3][0];
+        a[3][0] = t0_3_0;
+        let t0_3_1 = a[0][1];
+        a[0][1] = a[3][1];
+        a[3][1] = t0_3_1;
+        let t0_3_2 = a[0][2];
+        a[0][2] = a[3][2];
+        a[3][2] = t0_3_2;
+        let t0_3_3 = a[0][3];
+        a[0][3] = a[3][3];
+        a[3][3] = t0_3_3;
+        let tb0_3_b1 = b1[0];
+        b1[0] = b1[3];
+        b1[3] = tb0_3_b1;
+        let tb0_3_b2 = b2[0];
+        b2[0] = b2[3];
+        b2[3] = tb0_3_b2;
+    }
+    let pivot0 = a[0][0];
+    a[0][0] = cplx_div(a[0][0], pivot0);
+    a[0][1] = cplx_div(a[0][1], pivot0);
+    a[0][2] = cplx_div(a[0][2], pivot0);
+    a[0][3] = cplx_div(a[0][3], pivot0);
+    b1[0] = cplx_div(b1[0], pivot0);
+    b2[0] = cplx_div(b2[0], pivot0);
+    let factor0_1 = a[1][0];
+    if (cplx_norm_sqr(factor0_1) != 0.0) {
+        a[1][0] = cplx_sub(a[1][0], cplx_mul(factor0_1, a[0][0]));
+        a[1][1] = cplx_sub(a[1][1], cplx_mul(factor0_1, a[0][1]));
+        a[1][2] = cplx_sub(a[1][2], cplx_mul(factor0_1, a[0][2]));
+        a[1][3] = cplx_sub(a[1][3], cplx_mul(factor0_1, a[0][3]));
+        b1[1] = cplx_sub(b1[1], cplx_mul(factor0_1, b1[0]));
+        b2[1] = cplx_sub(b2[1], cplx_mul(factor0_1, b2[0]));
+    }
+    let factor0_2 = a[2][0];
+    if (cplx_norm_sqr(factor0_2) != 0.0) {
+        a[2][0] = cplx_sub(a[2][0], cplx_mul(factor0_2, a[0][0]));
+        a[2][1] = cplx_sub(a[2][1], cplx_mul(factor0_2, a[0][1]));
+        a[2][2] = cplx_sub(a[2][2], cplx_mul(factor0_2, a[0][2]));
+        a[2][3] = cplx_sub(a[2][3], cplx_mul(factor0_2, a[0][3]));
+        b1[2] = cplx_sub(b1[2], cplx_mul(factor0_2, b1[0]));
+        b2[2] = cplx_sub(b2[2], cplx_mul(factor0_2, b2[0]));
+    }
+    let factor0_3 = a[3][0];
+    if (cplx_norm_sqr(factor0_3) != 0.0) {
+        a[3][0] = cplx_sub(a[3][0], cplx_mul(factor0_3, a[0][0]));
+        a[3][1] = cplx_sub(a[3][1], cplx_mul(factor0_3, a[0][1]));
+        a[3][2] = cplx_sub(a[3][2], cplx_mul(factor0_3, a[0][2]));
+        a[3][3] = cplx_sub(a[3][3], cplx_mul(factor0_3, a[0][3]));
+        b1[3] = cplx_sub(b1[3], cplx_mul(factor0_3, b1[0]));
+        b2[3] = cplx_sub(b2[3], cplx_mul(factor0_3, b2[0]));
+    }
+    // column 1: pivot search
+    var piv1: u32 = 1u;
+    var piv_mag1: f32 = cplx_norm_sqr(a[1][1]);
+    let mag1_2 = cplx_norm_sqr(a[2][1]);
+    if (mag1_2 > piv_mag1) {
+        piv1 = 2u;
+        piv_mag1 = mag1_2;
+    }
+    let mag1_3 = cplx_norm_sqr(a[3][1]);
+    if (mag1_3 > piv_mag1) {
+        piv1 = 3u;
+        piv_mag1 = mag1_3;
+    }
+    if (piv1 == 2u) {
+        let t1_2_0 = a[1][0];
+        a[1][0] = a[2][0];
+        a[2][0] = t1_2_0;
+        let t1_2_1 = a[1][1];
+        a[1][1] = a[2][1];
+        a[2][1] = t1_2_1;
+        let t1_2_2 = a[1][2];
+        a[1][2] = a[2][2];
+        a[2][2] = t1_2_2;
+        let t1_2_3 = a[1][3];
+        a[1][3] = a[2][3];
+        a[2][3] = t1_2_3;
+        let tb1_2_b1 = b1[1];
+        b1[1] = b1[2];
+        b1[2] = tb1_2_b1;
+        let tb1_2_b2 = b2[1];
+        b2[1] = b2[2];
+        b2[2] = tb1_2_b2;
+    }
+    if (piv1 == 3u) {
+        let t1_3_0 = a[1][0];
+        a[1][0] = a[3][0];
+        a[3][0] = t1_3_0;
+        let t1_3_1 = a[1][1];
+        a[1][1] = a[3][1];
+        a[3][1] = t1_3_1;
+        let t1_3_2 = a[1][2];
+        a[1][2] = a[3][2];
+        a[3][2] = t1_3_2;
+        let t1_3_3 = a[1][3];
+        a[1][3] = a[3][3];
+        a[3][3] = t1_3_3;
+        let tb1_3_b1 = b1[1];
+        b1[1] = b1[3];
+        b1[3] = tb1_3_b1;
+        let tb1_3_b2 = b2[1];
+        b2[1] = b2[3];
+        b2[3] = tb1_3_b2;
+    }
+    let pivot1 = a[1][1];
+    a[1][1] = cplx_div(a[1][1], pivot1);
+    a[1][2] = cplx_div(a[1][2], pivot1);
+    a[1][3] = cplx_div(a[1][3], pivot1);
+    b1[1] = cplx_div(b1[1], pivot1);
+    b2[1] = cplx_div(b2[1], pivot1);
+    let factor1_0 = a[0][1];
+    if (cplx_norm_sqr(factor1_0) != 0.0) {
+        a[0][1] = cplx_sub(a[0][1], cplx_mul(factor1_0, a[1][1]));
+        a[0][2] = cplx_sub(a[0][2], cplx_mul(factor1_0, a[1][2]));
+        a[0][3] = cplx_sub(a[0][3], cplx_mul(factor1_0, a[1][3]));
+        b1[0] = cplx_sub(b1[0], cplx_mul(factor1_0, b1[1]));
+        b2[0] = cplx_sub(b2[0], cplx_mul(factor1_0, b2[1]));
+    }
+    let factor1_2 = a[2][1];
+    if (cplx_norm_sqr(factor1_2) != 0.0) {
+        a[2][1] = cplx_sub(a[2][1], cplx_mul(factor1_2, a[1][1]));
+        a[2][2] = cplx_sub(a[2][2], cplx_mul(factor1_2, a[1][2]));
+        a[2][3] = cplx_sub(a[2][3], cplx_mul(factor1_2, a[1][3]));
+        b1[2] = cplx_sub(b1[2], cplx_mul(factor1_2, b1[1]));
+        b2[2] = cplx_sub(b2[2], cplx_mul(factor1_2, b2[1]));
+    }
+    let factor1_3 = a[3][1];
+    if (cplx_norm_sqr(factor1_3) != 0.0) {
+        a[3][1] = cplx_sub(a[3][1], cplx_mul(factor1_3, a[1][1]));
+        a[3][2] = cplx_sub(a[3][2], cplx_mul(factor1_3, a[1][2]));
+        a[3][3] = cplx_sub(a[3][3], cplx_mul(factor1_3, a[1][3]));
+        b1[3] = cplx_sub(b1[3], cplx_mul(factor1_3, b1[1]));
+        b2[3] = cplx_sub(b2[3], cplx_mul(factor1_3, b2[1]));
+    }
+    // column 2: pivot search
+    var piv2: u32 = 2u;
+    var piv_mag2: f32 = cplx_norm_sqr(a[2][2]);
+    let mag2_3 = cplx_norm_sqr(a[3][2]);
+    if (mag2_3 > piv_mag2) {
+        piv2 = 3u;
+        piv_mag2 = mag2_3;
+    }
+    if (piv2 == 3u) {
+        let t2_3_0 = a[2][0];
+        a[2][0] = a[3][0];
+        a[3][0] = t2_3_0;
+        let t2_3_1 = a[2][1];
+        a[2][1] = a[3][1];
+        a[3][1] = t2_3_1;
+        let t2_3_2 = a[2][2];
+        a[2][2] = a[3][2];
+        a[3][2] = t2_3_2;
+        let t2_3_3 = a[2][3];
+        a[2][3] = a[3][3];
+        a[3][3] = t2_3_3;
+        let tb2_3_b1 = b1[2];
+        b1[2] = b1[3];
+        b1[3] = tb2_3_b1;
+        let tb2_3_b2 = b2[2];
+        b2[2] = b2[3];
+        b2[3] = tb2_3_b2;
+    }
+    let pivot2 = a[2][2];
+    a[2][2] = cplx_div(a[2][2], pivot2);
+    a[2][3] = cplx_div(a[2][3], pivot2);
+    b1[2] = cplx_div(b1[2], pivot2);
+    b2[2] = cplx_div(b2[2], pivot2);
+    let factor2_0 = a[0][2];
+    if (cplx_norm_sqr(factor2_0) != 0.0) {
+        a[0][2] = cplx_sub(a[0][2], cplx_mul(factor2_0, a[2][2]));
+        a[0][3] = cplx_sub(a[0][3], cplx_mul(factor2_0, a[2][3]));
+        b1[0] = cplx_sub(b1[0], cplx_mul(factor2_0, b1[2]));
+        b2[0] = cplx_sub(b2[0], cplx_mul(factor2_0, b2[2]));
+    }
+    let factor2_1 = a[1][2];
+    if (cplx_norm_sqr(factor2_1) != 0.0) {
+        a[1][2] = cplx_sub(a[1][2], cplx_mul(factor2_1, a[2][2]));
+        a[1][3] = cplx_sub(a[1][3], cplx_mul(factor2_1, a[2][3]));
+        b1[1] = cplx_sub(b1[1], cplx_mul(factor2_1, b1[2]));
+        b2[1] = cplx_sub(b2[1], cplx_mul(factor2_1, b2[2]));
+    }
+    let factor2_3 = a[3][2];
+    if (cplx_norm_sqr(factor2_3) != 0.0) {
+        a[3][2] = cplx_sub(a[3][2], cplx_mul(factor2_3, a[2][2]));
+        a[3][3] = cplx_sub(a[3][3], cplx_mul(factor2_3, a[2][3]));
+        b1[3] = cplx_sub(b1[3], cplx_mul(factor2_3, b1[2]));
+        b2[3] = cplx_sub(b2[3], cplx_mul(factor2_3, b2[2]));
+    }
+    // column 3: pivot search
+    var piv3: u32 = 3u;
+    var piv_mag3: f32 = cplx_norm_sqr(a[3][3]);
+    let pivot3 = a[3][3];
+    a[3][3] = cplx_div(a[3][3], pivot3);
+    b1[3] = cplx_div(b1[3], pivot3);
+    b2[3] = cplx_div(b2[3], pivot3);
+    let factor3_0 = a[0][3];
+    if (cplx_norm_sqr(factor3_0) != 0.0) {
+        a[0][3] = cplx_sub(a[0][3], cplx_mul(factor3_0, a[3][3]));
+        b1[0] = cplx_sub(b1[0], cplx_mul(factor3_0, b1[3]));
+        b2[0] = cplx_sub(b2[0], cplx_mul(factor3_0, b2[3]));
+    }
+    let factor3_1 = a[1][3];
+    if (cplx_norm_sqr(factor3_1) != 0.0) {
+        a[1][3] = cplx_sub(a[1][3], cplx_mul(factor3_1, a[3][3]));
+        b1[1] = cplx_sub(b1[1], cplx_mul(factor3_1, b1[3]));
+        b2[1] = cplx_sub(b2[1], cplx_mul(factor3_1, b2[3]));
+    }
+    let factor3_2 = a[2][3];
+    if (cplx_norm_sqr(factor3_2) != 0.0) {
+        a[2][3] = cplx_sub(a[2][3], cplx_mul(factor3_2, a[3][3]));
+        b1[2] = cplx_sub(b1[2], cplx_mul(factor3_2, b1[3]));
+        b2[2] = cplx_sub(b2[2], cplx_mul(factor3_2, b2[3]));
     }
     var result: Solve4TwoRhsResult;
     result.b1 = b1;
     result.b2 = b2;
     return result;
 }
+// END GENERATED solve4
 

@@ -56,7 +56,7 @@ use indicatrix::{
 use indicatrix_cut_core::{
     AngleChange, ConstraintTier, Design, Edit, MaterialSelection, ObjectiveComponents,
     OptimizeOutcome, PreformSpec, RemapRounding,
-    native::{SaveExtras, save_native_only_toml},
+    native::{DesignExtras, design_to_string},
     templates::TEMPLATES,
 };
 use std::{collections::BTreeSet, fmt::Write as _};
@@ -429,7 +429,7 @@ fn preform_and_material_dump() -> String {
         let _ = writeln!(
             out,
             "{:?}",
-            parse_new_design_form(80, preform, symmetry, true, material)
+            parse_new_design_form(80, preform.clone(), symmetry, true, material)
         );
     }
     let current = MaterialSelection {
@@ -524,11 +524,12 @@ fn form_parsing_is_pinned() {
         fnv1a(preform_and_material_dump().as_bytes()),
         fnv1a(material_search_dump().as_bytes()),
     );
+    // The material dump lists every built-in by name and index, including the zoned Ametrine.
     assert_eq!(
         got,
         (
             1_545_794_316_997_941_305,
-            4_028_051_594_554_530_473,
+            2_500_900_854_920_659_536,
             4_662_660_901_061_571_820
         )
     );
@@ -597,7 +598,7 @@ fn scripted_sequence() -> (String, String) {
             .and_then(|edit| state.apply(edit));
         let _ = writeln!(log, "orbit {position} {outcome:?}");
     }
-    let toml = save_native_only_toml(&state.design, "pin.asc", None, &SaveExtras::default())
+    let toml = design_to_string(&state.design, None, &DesignExtras::default())
         .unwrap_or_else(|e| e.to_string());
     let generation = state.generation.load(std::sync::atomic::Ordering::Relaxed);
     let _ = writeln!(log, "generation {generation} dirty {}", state.is_dirty());
@@ -609,7 +610,7 @@ fn scripted_sequence() -> (String, String) {
     while matches!(state.redo(), Ok(true)) {
         redo_depth += 1;
     }
-    let replayed = save_native_only_toml(&state.design, "pin.asc", None, &SaveExtras::default())
+    let replayed = design_to_string(&state.design, None, &DesignExtras::default())
         .unwrap_or_else(|e| e.to_string());
     let _ = writeln!(
         log,
@@ -630,8 +631,10 @@ fn scripted_edit_sequence_is_pinned() {
             log.as_str()
         ),
         (
-            8_529_034_122_875_928_046,
-            1078,
+            // The pinned text is the `.isdd` design file text (`design_to_string`); re-pinned
+            // 2026-10-13 when it replaced the removed sidecar's TOML.
+            7_541_738_181_950_530_119,
+            945,
             6_969_999_423_672_735_711,
             "add Ok(())\nadd Ok(())\nadd Ok(())\nnudge Ok(())\nnudge Ok(())\nnudge Ok(())\n\
              undo Ok(true)\nredo Ok(true)\nmirror Ok(())\norbit -0 Ok(())\n\
@@ -727,16 +730,8 @@ fn resolved(
 
 #[test]
 #[cfg_attr(
-    all(not(windows), feature = "zoning"),
-    ignore = "pinned to the Windows math library's rounding in the proposal angles and the Optimize scoring; zoning re-pin: owner (GemMaterial Debug dump gained `zoning: None`)"
-)]
-#[cfg_attr(
-    all(not(windows), not(feature = "zoning")),
+    not(windows),
     ignore = "pinned to the Windows math library's rounding in the proposal angles and the Optimize scoring"
-)]
-#[cfg_attr(
-    all(windows, feature = "zoning"),
-    ignore = "zoning re-pin: owner (GemMaterial Debug dump gained `zoning: None`)"
 )]
 fn retarget_output_is_pinned() {
     let customs = custom_materials();
@@ -814,7 +809,7 @@ fn retarget_output_is_pinned() {
             );
             let _ = writeln!(dump, "{:?}", optimize.err());
         }
-        got.push(fnv1a(dump.as_bytes()));
+        got.push(fnv1a(without_zoning_field(&dump).as_bytes()));
     }
     // Re-recorded 2026-10-06 (Windows), three causes. Lane W1-RT (2026-10-05, deliberate
     // behaviour change): the Shift proposal no longer carries the table or the culet (a
@@ -843,19 +838,18 @@ fn retarget_output_is_pinned() {
     assert_eq!(got, RETARGET_DUMP_HASHES);
 }
 
-/// The default-build hashes of `retarget_output_is_pinned`.
-#[cfg(not(feature = "zoning"))]
-const RETARGET_DUMP_HASHES: [u64; 3] = [
-    9_969_878_645_811_091_819,
-    12_262_411_588_369_304_583,
-    14_798_593_155_583_401_097,
-];
+/// The dump with `GemMaterial`'s `zoning` field projected out.
+///
+/// The proposal's `target: ResolvedMaterial` holds a `GemMaterial`, which derives `Debug` with
+/// `zoning` as its LAST field, so each material prints a trailing `, zoning: None }` that the
+/// pinned constants predate. No other dumped type has a field of that name. Removing exactly
+/// that text yields the pinned bytes. A material that really carries zones prints
+/// `zoning: Some(..)`, stays in the dump and fails the comparison.
+fn without_zoning_field(dump: &str) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Owned(dump.replace(", zoning: None", ""))
+}
 
-/// The `zoning`-build twin: the proposal's `target: ResolvedMaterial` holds a `GemMaterial`, whose
-/// Debug dump gains `zoning: None` with the feature, so the hashes move. These are still the
-/// DEFAULT-build values (they cannot be computed without running the test); the test is
-/// `#[ignore]`d under `zoning` until the owner pastes the printed values.
-#[cfg(feature = "zoning")]
+/// The hashes of `retarget_output_is_pinned` (through [`without_zoning_field`]).
 const RETARGET_DUMP_HASHES: [u64; 3] = [
     9_969_878_645_811_091_819,
     12_262_411_588_369_304_583,

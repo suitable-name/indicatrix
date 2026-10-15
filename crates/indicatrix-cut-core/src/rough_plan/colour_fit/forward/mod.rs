@@ -31,21 +31,89 @@
 //!
 //! # Memory
 //!
-//! Per view: `pixels * (1 + 2 + 4 + 4 + 16 + 4 * traced_bins)` bytes of per-pixel data plus 24
-//! bytes per record (`[f32; 5]` lengths and an `f32` weight). The number of records is at most
-//! `pixels * traced_bins * max_records`; polished pixels need 1 to 3 records per bin, frosted
-//! ones use the budget. For 8 views of 60 000 pixels, 8 bins, 16 records, that is at most
-//! 1.5 GB (worst case, all pixels frosted and wide); a polished rough or immersion stays below
-//! 100 MB, and `traced_bins = 1` (no dispersion) divides everything by 8. Records are kept per
-//! view, so a caller short of memory traces a subset of views per call and keeps what it needs.
+//! Per view: `pixels * (1 + 2 + 4 * 4 + 16 + 4 * traced_bins)` bytes of per-pixel data plus
+//! `4 * (n_zones + 1)` bytes per record (the lengths of the zones in use and the weight, stored
+//! flat: 8 bytes for a uniform stone, 12 for a bicolour one, 24 for four shaped zones), plus
+//! 3 bytes per record of colour codes when the panel is not grey (see "Light model"; a view with a
+//! grey light stores none). The number
+//! of records is at most `pixels * traced_bins * max_records`; polished pixels need 1 to 3
+//! records per bin, frosted ones use the budget. Dispersion is **not** traced by default
+//! ([`ForwardOptions::trace_dispersion`]): corundum's index changes by 0.018 over the visible,
+//! which moves a 10 mm leg by 0.02 mm, far below the compression tolerance, so one bin at the
+//! d-line index is the right default and divides records and trace time by `bins`. For 8 views
+//! of 60 000 pixels, 16 records and a uniform stone, one bin, that is at most 61 MB of records
+//! with a grey light and 84 MB with a coloured one (11 bytes per record);
+//! tracing 8 bins with four zones is the 1.5 GB worst case (1.7 GB coloured). The assembly of a view holds the
+//! views' chunk outputs and the view's record store at the same time (about twice the view's
+//! records at the peak), views being assembled one after the other. Records are kept per view, so
+//! a caller short of memory traces a subset of views per call and keeps what it needs.
+//!
+//! # Spectral quadrature
+//!
+//! The spectral integral is a composite midpoint rule over `bins * spectral_sub` evaluation
+//! points, `h` nm apart (ZC-2, ZC-21). Its error has two parts, neither of which is the
+//! `h^2 * integral |f''|` of the textbook bound:
+//!
+//! - the Euler-Maclaurin end term `(h^2 / 24) [f'(b) - f'(a)]`, which depends on the slope of the
+//!   integrand at the two ends of the range only. It vanishes for a band that lies inside the
+//!   range (the slope is zero there), and for a band cut by a range edge it is tiny: a 390 nm
+//!   absorber of optical depth 1.6 and width 23 nm at the 400 nm edge, whose transmittance slope
+//!   there is 0.0063 per nm, gives `(h^2 / 24) * 0.0063 / 300` = 0.009 percent at `h` = 10 nm;
+//! - the aliasing of the integrand's spectrum, `2 exp(-2 pi^2 sigma_nm^2 / h^2)` times the depth
+//!   of the dip, for a Gaussian band of width `sigma_nm`. It falls off faster than any power of
+//!   `h`: a 10 nm band at 18.75 nm spacing (the old 2 points per bin) is 0.7 percent of a dip
+//!   that is itself about 6 percent of the camera value, i.e. 0.04 percent of it; at 10 nm
+//!   spacing a 23 nm band is `2 e^-104` and at the default 4.7 nm spacing a 10 nm band is
+//!   `2 e^-90`: nil.
+//!
+//! So any smooth absorption band is integrated exactly at the default 8 points per bin, and the
+//! earlier figures (3 percent at 18.75 nm, 1.3 percent at 10 nm) were far too pessimistic. The
+//! default stays at 8 because the camera and backlight curves are not band-limited and the
+//! records are shared by all evaluation points of a traced bin, so a finer quadrature costs
+//! nothing in the trace (4 times in `evaluate`). The quadrature is **not** a candidate for
+//! a bias seen between the tracer and a second implementation; look at the transport instead.
+//!
+//! # Light model
+//!
+//! The exit-light ratio is kept per colour channel (ZC-13): the white frame stores three levels
+//! per cell ([`WhiteFrame::from_corrected`] divides channel by channel), and an exit ray's light
+//! is `level_c(exit point) / level_c(own pixel)` for each channel `c`, as the transmittance images
+//! divide. An edge-lit LED panel is bluer at its edges, which a grey ratio would turn into a
+//! per-channel bias of the order of its chromaticity gradient.
+//!
+//! Carrying three ratios per record would cost 12 more bytes in `f32`. A record instead stores
+//! its weight as before, the channel mean of the light ratio, and **three one-byte codes** for the
+//! factor by which each channel departs from that mean (`PathRecord::chroma`):
+//!
+//! - The factors are log-spaced over `1 / 1.5 ..= 1.5` in 255 codes, `1.5^((code - 127) / 127)`;
+//!   code 127 is exactly 1. Neighbouring factors differ by 0.32 percent, so a stored factor is
+//!   within **0.16 percent** of the traced one (`CHROMA_MAX_REL_ERROR`). The quantisation is a
+//!   pure function of the record, so the result is bitwise the same for any thread count.
+//! - A channel outside that range (the exit light more than 1.5 times, or less than 1/1.5 of
+//!   the channel mean, as the own pixel's colour) is clamped to it and the exit is **flagged**
+//!   like light from a place the camera never saw, so such pixels are counted towards
+//!   `flagged_limit` instead of being silently biased. A real panel varies by tens of percent
+//!   at most.
+//! - Compression keeps the weight of every channel: a cluster's factors are the
+//!   weight-averaged factors of its members.
+//! - A view whose codes are all 127 (a grey panel, the uniform surround, a frame whose colour
+//!   varies by less than the quantisation) stores none and evaluates with exactly the arithmetic
+//!   of the grey model: a grey panel costs nothing and gives the results it gave before. A
+//!   coloured one costs 3 bytes per record, 8 to 11 for a uniform stone (ZC-8 budget above).
+//!
+//! The Monte-Carlo statistics (`mc_mean`, `mc_mean_clear` and their variances) and the
+//! convergence test are about the scalar weight, i.e. the channel mean of the light: for a
+//! coloured panel the clear prediction of channel `c` is `mc_mean_clear` times the record-weighted
+//! mean factor of that channel, which differs from 1 by the panel's colour change (a few percent
+//! at most); the solver uses them only to weight pixels.
 //!
 //! # Cost estimate (not measured)
 //!
 //! About `views * pixels * samples * traced_bins` paths, each 2 to 6 BVH queries (about 0.3 to
 //! 1 microsecond each on a mesh of some 10 000 triangles) plus the Fresnel and microfacet
 //! arithmetic: 8 views x 60 000 pixels x 256 samples x 8 bins is 1e9 paths, about 15 to 45
-//! core-minutes, i.e. 1 to 3 minutes on 16 cores for a frosted rough; polished or with a constant
-//! index (`traced_bins = 1`) 8 times less. Compression adds roughly 10 to 30 percent.
+//! core-minutes, i.e. 1 to 3 minutes on 16 cores for a frosted rough with `trace_dispersion`;
+//! by default (one bin) 8 times less. Compression adds roughly 10 to 30 percent.
 
 pub mod cache;
 mod compress;
@@ -72,12 +140,13 @@ use indicatrix::optics::{
 
 pub use evaluate::{
     JacobianEvaluation, PixelJacobian, SpectralModel, ViewJacobian, ViewPrediction, evaluate,
-    evaluate_with_jacobian, for_each_pixel_jacobian,
+    evaluate_with_jacobian, fold_pixel_jacobian, for_each_pixel_jacobian,
 };
 pub use lighting::{ExitLight, LightModel, PanelGeom, RigLighting, WhiteFrame};
 pub use records::{
-    CacheStatus, EvalPoint, ForwardRecords, ForwardStats, LENGTHS, PathRecord, PixelLoss,
-    SpectralSetup, ViewRecords, status,
+    CHROMA_LIMIT, CHROMA_MAX_CODE, CHROMA_MAX_REL_ERROR, CHROMA_NEUTRAL, CacheStatus, EvalPoint,
+    ForwardRecords, ForwardStats, LENGTHS, PathRecord, PixelLoss, RecordSlice, SpectralSetup,
+    ViewRecords, chroma_decode, chroma_encode, chroma_in_range, status,
 };
 pub use surface::{MIN_ROUGHNESS, SurfaceClass, SurfaceMap};
 
@@ -115,6 +184,9 @@ pub enum ForwardError {
     BadSpectrum(String),
     /// A photometry error while building a white frame.
     Photometry(String),
+    /// The assembled records broke an invariant (a bug, not bad input): the message names the
+    /// view (index into the request) and the invariant.
+    Internal(String),
 }
 
 impl fmt::Display for ForwardError {
@@ -134,6 +206,7 @@ impl fmt::Display for ForwardError {
             Self::BadLighting(what) | Self::BadSpectrum(what) | Self::Photometry(what) => {
                 write!(f, "{what}")
             }
+            Self::Internal(what) => write!(f, "internal error in the forward trace: {what}"),
         }
     }
 }
@@ -148,8 +221,9 @@ pub enum StoneIndex {
     Rig,
     /// This constant index (the `n_d` option, for previews).
     Constant(f64),
-    /// A dispersion curve, traced at every wavelength bin: the rough's chosen host material
-    /// (see [`StoneIndex::from_material`]). The ordinary index of a birefringent host.
+    /// A dispersion curve: the rough's chosen host material (see [`StoneIndex::from_material`]).
+    /// The ordinary index of a birefringent host. Traced at the d-line index in one shared bin,
+    /// or at every wavelength bin with [`ForwardOptions::trace_dispersion`].
     Dispersion(DispersionModel),
 }
 
@@ -168,6 +242,10 @@ impl StoneIndex {
 
     /// The index at `lambda_nm`; `rig_n` is the profile's stone index.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the dispersion model takes f32 wavelengths; 380..780 nm is exact enough"
+    )]
     pub fn n_at(&self, rig_n: f64, lambda_nm: f64) -> f64 {
         match self {
             Self::Rig => rig_n,
@@ -186,9 +264,18 @@ pub struct ForwardOptions {
     pub bins: usize,
     /// The wavelength range the bins cover, nm (default 400 to 700).
     pub lambda_range_nm: [f64; 2],
-    /// Wavelengths per bin where the absorption is evaluated (default 2): the paths are traced
-    /// per bin, the spectral integral is finer.
+    /// Wavelengths per bin where the absorption is evaluated (default 8, 4.7 nm over 400 to
+    /// 700 nm with 8 bins): the paths are traced per bin, the spectral integral is finer. The
+    /// midpoint rule's error for a Gaussian band of width `sigma_nm` inside the range is its
+    /// aliasing term, `2 exp(-2 pi^2 sigma_nm^2 / h^2)` of the dip (`h` the point spacing, nm):
+    /// nil at the default spacing for any band wider than about 4 nm; a band cut by the range
+    /// edge adds `(h^2 / 24)` times the slope of the transmittance there (see the module notes).
     pub spectral_sub: usize,
+    /// Trace a dispersive stone in every wavelength bin (default false). Off, the paths of a
+    /// stone with [`StoneIndex::Dispersion`] are traced once at the d-line index and shared by
+    /// all bins; the path-length error is negligible for gems (0.02 mm per 10 mm leg for
+    /// corundum) and the records, trace time and cache shrink by `bins`.
+    pub trace_dispersion: bool,
     /// The record budget per (pixel, bin) (default 16, at most 255).
     pub max_records: usize,
     /// Surface events per path (default 16).
@@ -200,9 +287,12 @@ pub struct ForwardOptions {
     /// [`ViewTraceInput`] override it.
     pub target_rel_error: f64,
     /// A pixel whose standard error is below this absolute value is converged (default 1e-4).
+    /// Both error targets are judged on the clear-stone transmittance (absorption 0).
     pub abs_error: f64,
-    /// The absorption (1/mm) at which the Monte-Carlo error is judged, and which sets the
-    /// compression tolerance `0.1 / alpha` mm (default 0.3).
+    /// The absorption (1/mm) that sets the compression tolerance `0.1 / alpha` mm (default 0.3)
+    /// and stands in as the reference absorption of a pixel without any exit path. The
+    /// Monte-Carlo variance itself is stored at absorption 0 and at each pixel's own reference
+    /// absorption (optical depth 1 at its mean path), see [`ViewRecords::mc_variance`].
     pub reference_alpha_per_mm: f64,
     /// A pixel is dropped when more than this share of its exit light is the Lambertian mean
     /// (default 0.05).
@@ -227,7 +317,8 @@ impl Default for ForwardOptions {
             samples: 256,
             bins: 8,
             lambda_range_nm: [400.0, 700.0],
-            spectral_sub: 2,
+            spectral_sub: 8,
+            trace_dispersion: false,
             max_records: 16,
             max_depth: 16,
             max_sample_factor: 4,
@@ -364,6 +455,11 @@ fn interpolate(values: &[f64; GRID_LEN], lambda_nm: f64) -> f64 {
     if !(0.0..=(GRID_LEN - 1) as f64).contains(&position) {
         return 0.0;
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "position is within 0..=(GRID_LEN - 1) by the range check above"
+    )]
     let lo = (position.floor() as usize).min(GRID_LEN - 2);
     let t = position - lo as f64;
     (values[lo + 1] - values[lo]).mul_add(t, values[lo])
@@ -371,7 +467,7 @@ fn interpolate(values: &[f64; GRID_LEN], lambda_nm: f64) -> f64 {
 
 fn build_spectral(input: &ForwardInput<'_>) -> Result<SpectralSetup, ForwardError> {
     let opts = input.options;
-    let traced_bins = if input.index.is_dispersive() {
+    let traced_bins = if input.index.is_dispersive() && opts.trace_dispersion {
         opts.bins
     } else {
         1
@@ -472,9 +568,15 @@ struct ChunkOut {
     samples: Vec<u16>,
     mc_mean: Vec<f32>,
     mc_variance: Vec<f32>,
+    mc_mean_clear: Vec<f32>,
+    mc_variance_clear: Vec<f32>,
     loss: Vec<PixelLoss>,
     counts: Vec<u8>,
-    records: Vec<PathRecord>,
+    /// The flat records: `n_zones + 1` floats each.
+    records: Vec<f32>,
+    /// Three chroma codes per record (always stored here; a view of grey records drops them when
+    /// it is assembled).
+    chroma: Vec<u8>,
     total_samples: u64,
     max_range_mm: f32,
 }
@@ -493,7 +595,7 @@ fn plan_chunks(input: &ForwardInput<'_>) -> (Vec<Vec<u32>>, Vec<Chunk>) {
                 v.mask
                     .is_none_or(|m| m.get(p % w, p / w) & opts.skip_flags == 0)
             })
-            .map(|p| p as u32)
+            .map(|p| u32::try_from(p).expect("a view has fewer than 2^32 pixels"))
             .collect();
         for first in (0..list.len()).step_by(chunk_pixels) {
             chunks.push(Chunk {
@@ -512,8 +614,8 @@ fn trace_chunk(ctx: &TraceCtx<'_>, view: &ViewTraceInput<'_>, pixels: &[u32]) ->
     let width = view.grid.width;
     let mut scratch = PixelScratch::new(ctx.traced_bins);
     let mut out = ChunkOut::default();
-    for &p in pixels {
-        let p = p as usize;
+    for &pixel_id in pixels {
+        let p = pixel_id as usize;
         let target = view
             .rel_error_targets
             .and_then(|t| t.get(p))
@@ -529,13 +631,16 @@ fn trace_chunk(ctx: &TraceCtx<'_>, view: &ViewTraceInput<'_>, pixels: &[u32]) ->
             target,
             &mut scratch,
             &mut out.records,
+            &mut out.chroma,
             &mut out.counts,
         );
-        out.pixels.push(p as u32);
+        out.pixels.push(pixel_id);
         out.status.push(px.status);
         out.samples.push(px.samples);
         out.mc_mean.push(px.mc_mean);
         out.mc_variance.push(px.mc_variance);
+        out.mc_mean_clear.push(px.mc_mean_clear);
+        out.mc_variance_clear.push(px.mc_variance_clear);
         out.loss.push(px.loss);
         out.total_samples += u64::from(px.samples);
         out.max_range_mm = out.max_range_mm.max(px.max_range_mm);
@@ -544,18 +649,27 @@ fn trace_chunk(ctx: &TraceCtx<'_>, view: &ViewTraceInput<'_>, pixels: &[u32]) ->
 }
 
 /// Assembles the task outputs in view, then pixel order: the records of every view, the total
-/// sample count and the largest cluster range.
+/// sample count and the largest cluster range. Every view's store is allocated once at its final
+/// size, each chunk's buffer is freed as soon as it is moved, and the CSR invariants of the result
+/// are checked before it is returned (ZC-9).
 fn assemble_views(
     input: &ForwardInput<'_>,
     chunks: &[Chunk],
     outputs: &mut [Option<ChunkOut>],
     traced_bins: usize,
+    n_zones: usize,
 ) -> Result<(Vec<ViewRecords>, u64, f32), ForwardError> {
     let mut views = Vec::with_capacity(input.views.len());
     let mut total_samples = 0_u64;
     let mut max_range = 0.0_f32;
     for (slot, v) in input.views.iter().enumerate() {
         let n = v.grid.width * v.grid.height;
+        let floats: usize = chunks
+            .iter()
+            .zip(outputs.iter())
+            .filter(|(chunk, _)| chunk.slot == slot)
+            .map(|(_, out)| out.as_ref().map_or(0, |o| o.records.len()))
+            .sum();
         let mut view = ViewRecords {
             view: v.view,
             grid: v.grid,
@@ -563,9 +677,13 @@ fn assemble_views(
             samples: vec![0; n],
             mc_mean: vec![0.0; n],
             mc_variance: vec![0.0; n],
+            mc_mean_clear: vec![0.0; n],
+            mc_variance_clear: vec![0.0; n],
             loss: vec![PixelLoss::default(); n],
             offsets: Vec::with_capacity(n * traced_bins + 1),
-            records: Vec::new(),
+            stride: n_zones + 1,
+            records: Vec::with_capacity(floats),
+            chroma: Vec::with_capacity(floats / (n_zones + 1) * 3),
         };
         view.offsets.push(0);
         let mut running = 0_u32;
@@ -574,7 +692,7 @@ fn assemble_views(
             if chunk.slot != slot {
                 continue;
             }
-            let Some(out) = outputs[task].take() else {
+            let Some(mut out) = outputs[task].take() else {
                 return Err(ForwardError::Cancelled);
             };
             for (k, &p) in out.pixels.iter().enumerate() {
@@ -589,6 +707,8 @@ fn assemble_views(
                 view.samples[p] = out.samples[k];
                 view.mc_mean[p] = out.mc_mean[k];
                 view.mc_variance[p] = out.mc_variance[k];
+                view.mc_mean_clear[p] = out.mc_mean_clear[k];
+                view.mc_variance_clear[p] = out.mc_variance_clear[k];
                 view.loss[p] = out.loss[k];
                 for b in 0..traced_bins {
                     running = running
@@ -598,7 +718,8 @@ fn assemble_views(
                 }
                 next_pixel = p + 1;
             }
-            view.records.extend_from_slice(&out.records);
+            view.records.append(&mut out.records);
+            view.chroma.append(&mut out.chroma);
             total_samples += out.total_samples;
             max_range = max_range.max(out.max_range_mm);
         }
@@ -608,6 +729,12 @@ fn assemble_views(
             }
             next_pixel += 1;
         }
+        // A view whose light is grey keeps no codes: the evaluator then runs the grey arithmetic.
+        if view.chroma.iter().all(|&code| code == CHROMA_NEUTRAL) {
+            view.chroma = Vec::new();
+        }
+        view.check_offsets(traced_bins, input.options.max_records)
+            .map_err(|what| ForwardError::Internal(format!("view {}: {what}", slot + 1)))?;
         views.push(view);
     }
     Ok((views, total_samples, max_range))
@@ -680,7 +807,7 @@ pub fn trace_rig(
     }
 
     let (views, total_samples, max_range) =
-        assemble_views(input, &chunks, &mut outputs, traced_bins)?;
+        assemble_views(input, &chunks, &mut outputs, traced_bins, n_zones)?;
 
     let mut result = ForwardRecords {
         spectral,

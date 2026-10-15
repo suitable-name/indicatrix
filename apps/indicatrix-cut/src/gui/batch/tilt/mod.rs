@@ -13,18 +13,19 @@
 //! `gui::batch::preview`'s `RI_MATCH_TOLERANCE`/`target_ri_for_design`
 //! and `gui::batch::material_choice` rather than re-deriving them.
 //!
-//! `evaluate_full_axis_profile_at_azimuth` measures ~340ms/axis x4 = ~1.36s/design
-//! single-threaded, roughly 72 minutes for the real ~3,187-design catalogue on one
+//! `evaluate_full_axis_profile_at_azimuth` measured ~340ms/axis x4 = ~1.36s/design
+//! single-threaded (before the Fire-less fast path), roughly 72 minutes for the real ~3,187-design catalogue on one
 //! core -- an order of magnitude longer than the preview batch's own ~2h for the whole
 //! catalogue at 16 cores, so remote distribution matters more here.
 //!
 //! Lane distribution follows `gui::batch::batch_queue`'s shared-`WorkQueue` design
 //! exactly as `gui::batch::preview` does (see that module's doc comment for the
 //! `LiveComputeTarget`/`RemoteOnly`/`Both` mechanics); the queue's unit here is one
-//! whole design, since a design's sweep is otherwise single-threaded
-//! (`evaluate_full_axis_profile_at_azimuth` doesn't parallelise), so running N local
-//! lanes -- rather than splitting work within one design's 4 axes -- is what actually
-//! uses more than one core across the run.
+//! whole design. A single sweep is itself threaded now
+//! (`evaluate_full_axis_profile_at_azimuth_geom_threaded`), so the local lanes cap each
+//! sweep at `available_parallelism / local_lane_count` threads (at least 1): lanes x inner
+//! threads never exceeds the cores, and the lanes -- not the inner threads -- stay what
+//! spreads a whole-catalogue run across the machine.
 //!
 //! Cancellation is checked before each design any lane claims, and (local path only)
 //! between each design's 4 axis sweeps inside
@@ -65,6 +66,9 @@ mod scan;
 mod wiring;
 
 pub use engine::{save_tilt_curves_for_entry, tilt_curves_for_planes};
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui) use wiring::note_holders;
+pub(in crate::gui) use wiring::release_window_state;
 pub use wiring::{offer_regeneration, setup_tilt_batch_callbacks};
 
 #[cfg(test)]
@@ -98,9 +102,10 @@ mod tests {
         let ctx = engine::BatchContext {
             db: &db,
             material_candidates: &[],
+            custom_materials: &[],
             angle_table_entries: &angle_table_entries,
         };
-        let planes = engine::record_planes(&ctx, full);
+        let planes = engine::record_planes(&ctx, full).map(|resolved| resolved.planes);
         let fallbacks = angle_table_entries
             .into_inner()
             .expect("the fallback set is never poisoned in a test");

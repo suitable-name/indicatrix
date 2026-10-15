@@ -1,4 +1,4 @@
-//! Zoned-absorption helpers of [`GemMaterial`] (`zoning` feature only): the builder that installs
+//! Zoned-absorption helpers of [`GemMaterial`]: the builder that installs
 //! zones and the per-zone swatches the inspector shows.
 
 use super::{AbsorptionUnit, GemMaterial};

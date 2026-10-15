@@ -1,5 +1,5 @@
 //! File > Open: `rfd`'s async picker (on wasm32 a hidden
-//! `<input type="file" multiple>`), so an older `.asc` + sidecar pair can be selected together.
+//! `<input type="file" multiple>`), so several files can be selected together.
 
 use super::{IncomingFile, open_files, oversize_message};
 use crate::app::{
@@ -8,9 +8,8 @@ use crate::app::{
 };
 use indicatrix_web_core::open_route::OPEN_EXTENSIONS;
 
-/// The filter label: the design file first, then the older formats still read.
-const FILTER_LABEL: &str =
-    "Designs (.indicatrix, .asc, .indicatrix.toml, .gem, .gcs) and .hdr maps";
+/// The filter label: the design file first, then the other formats still read.
+const FILTER_LABEL: &str = "Designs (.isdd, .indicatrix, .asc, .gem, .gcs) and .hdr Maps";
 
 /// Shows the picker and opens whatever the user chose; a dismissed picker is not
 /// an error and says nothing. Each file's `File.size` is checked against the page's
@@ -19,9 +18,8 @@ pub fn pick_and_open(ctx: &Ctx) {
     let ctx = ctx.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let Some(handles) = rfd::AsyncFileDialog::new()
-            // One combined filter (`OPEN_EXTENSIONS` lists `.indicatrix` first). The
-            // browser's `accept` list matches the last extension only, so the older
-            // `.indicatrix.toml` is offered as `.toml`.
+            // One combined filter (`OPEN_EXTENSIONS` lists `.isdd` first, then the
+            // legacy `.indicatrix`).
             .add_filter(FILTER_LABEL, &OPEN_EXTENSIONS)
             .pick_files()
             .await

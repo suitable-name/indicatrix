@@ -1,4 +1,4 @@
-//! What a `.indicatrix` design file carries besides the design itself, kept for the
+//! What a `.isdd` design file carries besides the design itself, kept for the
 //! open design so the next Save writes it back unchanged: the `[meta]` table (with its
 //! unknown keys) and the byte-exact `[[attachments]]`.
 

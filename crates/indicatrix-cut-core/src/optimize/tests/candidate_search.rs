@@ -76,6 +76,7 @@ fn evaluate_survivors_with_no_survivors_needs_no_thread_scope_and_matches_the_ol
         space: &space,
         guard: None,
         shape_target: None,
+        preform_volume: None,
     };
     let result = candidate::evaluate_survivors(Vec::new(), &ctx, f32::MAX);
     assert_eq!(result.best, None);
@@ -106,6 +107,7 @@ fn evaluate_survivors_with_one_survivor_evaluates_it_inline() {
         space: &space,
         guard: None,
         shape_target: None,
+        preform_volume: candidate::preform_volume(&design),
     };
     let result = candidate::evaluate_survivors(survivors, &ctx, f32::MAX);
     assert_eq!(result.evaluations, 1);
@@ -136,6 +138,7 @@ fn evaluate_survivors_with_two_survivors_evaluates_both() {
         space: &space,
         guard: None,
         shape_target: None,
+        preform_volume: candidate::preform_volume(&design),
     };
     let result = candidate::evaluate_survivors(survivors, &ctx, f32::MAX);
     assert_eq!(result.evaluations, 2);
@@ -183,7 +186,14 @@ fn the_configured_lighting_preset_reaches_the_candidate_score() {
     assert_eq!(canonical, explicit);
 
     let score_under = |lighting: LightingPreset| match candidate::evaluate_candidate(
-        &design, &material, &weights, &baseline, lighting, None, None,
+        &design,
+        &material,
+        &weights,
+        &baseline,
+        lighting,
+        None,
+        None,
+        candidate::preform_volume(&design),
     ) {
         candidate::CandidateOutcome::Accepted { score } => score,
         candidate::CandidateOutcome::Rejected => {

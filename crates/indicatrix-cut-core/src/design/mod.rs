@@ -45,6 +45,7 @@ pub mod hinge;
 pub mod labelling;
 mod missing_anchor;
 mod relation;
+pub mod render_effects;
 mod solve;
 mod solve_error;
 mod targets;
@@ -57,11 +58,11 @@ pub use concave::{
     ConcaveTier, ConcaveTierError, ConcaveTool, TierRef, ToolMotion, UnknownToolCode,
 };
 pub use construct::FreshDesignSpec;
+pub(crate) use export::meet_name_is_asc_safe;
 pub use export::{
     CONCAVE_FOOTNOTE_MARKER, ConcaveResolveError, FlatAndTools, ToolPlacements,
     concave_facet_footnote, concave_frame, concave_tool_footnote,
 };
-pub(crate) use export::{meet_name_is_asc_safe, strip_generated_concave_footnotes};
 pub use girdle_band::{GirdleBand, KNIFE_EDGE_GAP, girdle_band_in};
 pub use hinge::{
     FacetSide, SolidFacets, TierFacets, TierHinge, mast_through, solid_facets_in,
@@ -76,6 +77,7 @@ pub use relation::{
     Expr, ExprError, MAX_RELATION_CHARS, RawName, RelationError, RelationExpr, TierRelation,
     TierRelationMap, snap_noise,
 };
+pub use render_effects::StoneRenderEffects;
 pub use solve_error::{DesignSolveError, SolveMismatch};
 pub use targets::{TargetResolveError, TierTarget};
 pub use tier::{ConstraintTier, ScheduleMeta};
@@ -95,7 +97,9 @@ use targets::TierTargetMap;
 /// the reverse direction, for loading one.
 #[derive(Debug, Clone)]
 pub struct Design {
-    /// Rough (preform) the design is cut from.
+    /// Rough (preform) the design is cut from: a block, a cylinder, or the Rough
+    /// Planner's planned piece of rough as a plane set
+    /// ([`crate::preform::PreformShape::Planes`]).
     pub preform: PreformSpec,
     /// Schedule metadata carried through `.asc` import and export.
     pub meta: ScheduleMeta,
@@ -145,9 +149,9 @@ pub struct Design {
     /// # Round-tripping through the native format
     ///
     /// Carried as `indicatrix_formats::native::PreformTable::y_offset` (a
-    /// `#[serde(default)]` field, so an older sidecar with no such column loads as
+    /// `#[serde(default)]` field, so an older file with no such column loads as
     /// `0.0` -- the same always-centred span it actually had); `crate::native`'s
-    /// `to_native_file`/`load_paired` mirror it alongside `girdle_diameter_mm`. Like
+    /// `design_to_file`/`design_from_file` mirror it alongside `girdle_diameter_mm`. Like
     /// `girdle_diameter_mm`, it still has no `.asc` counterpart at all -- every
     /// number in a `.asc` file is a dimensionless mast, so exporting to `.asc`
     /// drops this silently and re-importing never populates it.
@@ -186,7 +190,7 @@ pub struct Design {
     /// measured solid, not just display/export text. It is NOT folded into the
     /// exported `.asc` schedule as a real rotation, since `.asc` has no field for
     /// one; instead [`Design::to_asc_schedule_from_solved_with_cheater_offsets`]
-    /// (the one [`crate::native::save_paired`] actually writes to disk) bakes an
+    /// (the one [`crate::native::catalogue_asc`] actually writes to disk) bakes an
     /// authored offset into that tier's own exported index-wheel positions
     /// instead (`offset_deg / 360 * gear_teeth`, added to every index and rounded
     /// to 3 decimals), so a real `GemCAD` file that has never heard of this field
@@ -195,19 +199,11 @@ pub struct Design {
     /// # Round-tripping through the native format
     ///
     /// Carried as `indicatrix_formats::native::TierTable::cheater_offset_deg`, per
-    /// tier, by array position -- see `crate::native::to_native_file` and
-    /// [`crate::native::load_paired`]. Unlike [`Self::tier_notes`], an offset DOES
-    /// change geometry (see above), so -- like `constraint`/`detached` -- it is
-    /// only restored on load when [`crate::native::TierOverlay`]'s own
-    /// fingerprint-gated condition holds, never merely because the tier counts
-    /// agree: restoring it against a `.asc` that changed underneath the sidecar
-    /// would silently re-shift the wrong facet's indices, and restoring it a
-    /// second time on top of a `.asc` that was ALREADY exported with this same
-    /// offset baked into its indices would double the rotation. The sidecar also
-    /// always carries the tier's own true, UNSHIFTED `indices` (not just this
-    /// offset), and [`crate::native::load_paired`] restores those too under the
-    /// same gate, so the shift from a previous export is never re-applied on top
-    /// of itself.
+    /// tier, inside the tier's own record -- see `crate::native::design_to_file` and
+    /// [`crate::native::design_from_file`]. Unlike [`Self::tier_notes`], an offset DOES
+    /// change geometry (see above). The file always carries the tier's own true,
+    /// UNSHIFTED `indices` (not just this offset), so the shift baked into a
+    /// previously exported `.asc` is never re-applied on top of itself.
     pub cheater_offsets_deg: BTreeMap<usize, f64>,
     /// A per-tier cutter-authored free-text note (e.g. "check meet here", "grind
     /// slowly"), keyed by the tier's CURRENT position in [`Self::tiers`] -- the
@@ -230,11 +226,9 @@ pub struct Design {
     /// # Round-tripping through the native format
     ///
     /// Carried as `indicatrix_formats::native::TierTable::note`, per tier, by
-    /// array position -- see `crate::native::to_native_file` and
-    /// [`crate::native::load_paired`]. Unlike `cheater_offsets_deg`, a note
-    /// changes no geometry at all, so it is applied on load whenever the tier
-    /// overlay itself is (see [`crate::native::TierOverlay`]) rather than
-    /// gated on anything additional.
+    /// inside the tier's own record -- see `crate::native::design_to_file` and
+    /// [`crate::native::design_from_file`]. Unlike `cheater_offsets_deg`, a note
+    /// changes no geometry at all.
     pub tier_notes: BTreeMap<usize, String>,
     /// Which material's specific gravity to estimate this design's carat weight
     /// from, plus any per-design override -- see
@@ -290,6 +284,12 @@ pub struct Design {
     /// stored on the tiers; a session keeps them equal to what the relations give
     /// (see `indicatrix_editor::session`).
     pub tier_relations: TierRelationMap,
+    /// The per-design stone render effects (inclusion haze, crystal-axis orientation,
+    /// frosted girdle, edge rounding) -- see [`StoneRenderEffects`]. Authored content,
+    /// so it participates in `PartialEq`; changed only through
+    /// [`crate::edit::Edit::SetRenderEffects`]. Carried by the native design file's
+    /// optional `[render_effects]` table; `.asc` has no field for it.
+    pub render_effects: StoneRenderEffects,
     /// Keys of a design file this build does not claim (written by a newer build),
     /// kept so an Open followed by a Save does not drop them. `None` for a design
     /// that did not come from a file or whose file had none. Opaque bookkeeping:
@@ -389,6 +389,7 @@ impl PartialEq for Design {
             && self.tiers == other.tiers
             && self.concave_tiers == other.concave_tiers
             && self.girdle_diameter_mm == other.girdle_diameter_mm
+            && self.render_effects == other.render_effects
             && self.preform_y_offset == other.preform_y_offset
             && self.cheater_offsets_deg == other.cheater_offsets_deg
             && self.tier_notes == other.tier_notes

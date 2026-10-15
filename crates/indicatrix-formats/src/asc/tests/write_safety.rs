@@ -55,7 +55,7 @@ fn asc_safe_tier_name_leaves_already_safe_names_untouched() {
 /// reach [`super::super::parse_asc`] as-is (silently truncated, or worse, misread
 /// as a marker) -- but per the corrected decision it is sanitised, not rejected,
 /// since every built-in template names tiers with spaces (e.g. `"Crown Main"`) and
-/// the native `.indicatrix.toml` sidecar is what preserves the true name.
+/// the native `.isdd` design file is what preserves the true name.
 #[test]
 fn to_asc_string_sanitises_a_tier_name_with_embedded_whitespace() {
     let mut schedule = one_tier_schedule();

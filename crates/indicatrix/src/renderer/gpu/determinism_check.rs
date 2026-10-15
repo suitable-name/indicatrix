@@ -120,7 +120,7 @@ pub fn run(
             // THIS check, since `NaN != NaN` under `==` would otherwise flag a
             // perfectly reproducible result as a mismatch).
             (a.to_bits() != b.to_bits()).then_some(DeterminismMismatch {
-                pixel: pixel as u32,
+                pixel: u32::try_from(pixel).expect("the pixel count is a u32"),
                 run1: a,
                 run2: b,
             })

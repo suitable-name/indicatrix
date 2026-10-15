@@ -542,7 +542,7 @@ impl Controller {
             .unwrap_or_default();
         let request = PickerRequest {
             kind: PickerKind::SaveFile,
-            title: Some("Save the angle sweep as CSV".to_owned()),
+            title: Some("Save the Angle Sweep as CSV".to_owned()),
             filters: vec![PickerFilter::single("csv")],
             default_file_name: Some(present::csv_file_name(&design_title, &tier_name)),
             starting_dir: None,

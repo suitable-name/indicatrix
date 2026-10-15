@@ -168,6 +168,10 @@ impl SweepMetric {
 
 /// Which figures of one row are the best of the sweep.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per result column of a sweep row; the flags are independent"
+)]
 pub struct BestFlags {
     /// The row has the best brilliance.
     pub brilliance: bool,

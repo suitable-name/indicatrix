@@ -40,11 +40,11 @@ fn entry_solve_matches_existing_scalar_fresnel_at_zero_birefringence() {
             let sol = entry_solve(1.0, n, n, Vec3::X, &frame, incident_s);
             let cos_t = (1.0 - frame.sin_i * frame.sin_i / (n * n)).max(0.0).sqrt();
             let r_s_expected = n.mul_add(-cos_t, frame.cos_i) / n.mul_add(cos_t, frame.cos_i);
-            let r_p_expected = n.mul_add(frame.cos_i, -cos_t) / n.mul_add(frame.cos_i, cos_t);
+            let expected_r_p = n.mul_add(frame.cos_i, -cos_t) / n.mul_add(frame.cos_i, cos_t);
             let (got, expected) = if incident_s {
                 (sol.r_s.re, r_s_expected)
             } else {
-                (sol.r_p.re, r_p_expected)
+                (sol.r_p.re, expected_r_p)
             };
             assert!(
                 (got - expected).abs() < 1e-4,
@@ -172,8 +172,8 @@ fn internal_exit_energy_conservation_holds_including_tir() {
                     // comment, added after this exact test caught the bug).
                     let inc_flux = sol.flux_inc;
                     let sz_ro = sol.r_o.norm_sqr() * sol.flux_ro;
-                    let sz_re = sol.r_e.norm_sqr() * sol.flux_re;
-                    let r_total = (sz_ro + sz_re) / inc_flux;
+                    let sz_ext = sol.r_e.norm_sqr() * sol.flux_re;
+                    let r_total = (sz_ro + sz_ext) / inc_flux;
                     let t_total = sol
                         .t_p
                         .norm_sqr()
@@ -208,10 +208,10 @@ fn normal_incidence_inplane_axis_gives_pure_ordinary_extraordinary_fresnel() {
     let sol_s = entry_solve(1.0, n_o, n_e, Vec3::X, &frame, true);
     let sol_p = entry_solve(1.0, n_o, n_e, Vec3::X, &frame, false);
     let r_o_expected = (1.0 - n_o) / (1.0 + n_o);
-    let r_e_expected = (n_e - 1.0) / (n_e + 1.0);
+    let expected_r_e = (n_e - 1.0) / (n_e + 1.0);
     assert!((sol_s.r_s.re - r_o_expected).abs() < 1e-4);
     assert!(sol_s.r_p.norm_sqr().sqrt() < 1e-4);
-    assert!((sol_p.r_p.re - r_e_expected).abs() < 1e-4);
+    assert!((sol_p.r_p.re - expected_r_e).abs() < 1e-4);
     assert!(sol_p.r_s.norm_sqr().sqrt() < 1e-4);
 }
 

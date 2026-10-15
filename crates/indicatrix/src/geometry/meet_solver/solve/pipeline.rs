@@ -17,6 +17,12 @@ use super::{
     context::SolveContext,
 };
 
+/// A block or sweep count for [`SolveProgress`], saturating (the counts are tiny; the
+/// saturation only keeps the conversion total).
+fn progress_count(count: usize) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
 // NOTE: tried an annihilation guard ("a pick must not erase any other facet's
 // corners", physically justified since every tier has positive final-stone area):
 // it presumes the surrounding facets are already near-correct, so from a wrong
@@ -186,13 +192,13 @@ impl SolveContext<'_> {
             if control.is_cancelled() {
                 return Err(SolveError::Cancelled);
             }
-            last_constructive_sweep = (pass_idx + 1) as u32;
+            last_constructive_sweep = progress_count(pass_idx + 1);
             control.report(SolveProgress {
                 phase: SolvePhase::Constructive,
                 sweep: last_constructive_sweep,
-                max_sweeps: MAX_CONSTRUCTIVE_SWEEPS as u32,
-                blocks_done: settled.iter().filter(|&&s| s).count() as u32,
-                blocks_total: n as u32,
+                max_sweeps: progress_count(MAX_CONSTRUCTIVE_SWEEPS),
+                blocks_done: progress_count(settled.iter().filter(|&&s| s).count()),
+                blocks_total: progress_count(n),
             });
             let mut progress = false;
             for i in 0..n {
@@ -313,9 +319,9 @@ impl SolveContext<'_> {
         control.report(SolveProgress {
             phase: SolvePhase::Constructive,
             sweep: last_constructive_sweep,
-            max_sweeps: MAX_CONSTRUCTIVE_SWEEPS as u32,
-            blocks_done: settled.iter().filter(|&&s| s).count() as u32,
-            blocks_total: n as u32,
+            max_sweeps: progress_count(MAX_CONSTRUCTIVE_SWEEPS),
+            blocks_done: progress_count(settled.iter().filter(|&&s| s).count()),
+            blocks_total: progress_count(n),
         });
 
         // ---- Phase 2: per-block estimates for everything still unsettled. ----
@@ -327,7 +333,7 @@ impl SolveContext<'_> {
             sweep: 1,
             max_sweeps: 1,
             blocks_done: 0,
-            blocks_total: n as u32,
+            blocks_total: progress_count(n),
         });
         for i in 0..n {
             if settled[i] {
@@ -354,10 +360,10 @@ impl SolveContext<'_> {
             }
             control.report(SolveProgress {
                 phase: SolvePhase::Refine,
-                sweep: (sweep_idx + 1) as u32,
-                max_sweeps: MAX_REFINE_SWEEPS as u32,
+                sweep: progress_count(sweep_idx + 1),
+                max_sweeps: progress_count(MAX_REFINE_SWEEPS),
                 blocks_done: 0,
-                blocks_total: n as u32,
+                blocks_total: progress_count(n),
             });
             refine_sweeps += 1;
             // Re-enumerated from scratch every sweep: caching the triples (either
@@ -462,10 +468,10 @@ impl SolveContext<'_> {
             }
             control.report(SolveProgress {
                 phase: SolvePhase::Refine,
-                sweep: (sweep_idx + 1) as u32,
-                max_sweeps: MAX_REFINE_SWEEPS as u32,
-                blocks_done: n as u32,
-                blocks_total: n as u32,
+                sweep: progress_count(sweep_idx + 1),
+                max_sweeps: progress_count(MAX_REFINE_SWEEPS),
+                blocks_done: progress_count(n),
+                blocks_total: progress_count(n),
             });
 
             // NaN-propagating fold, not a plain `.fold(0.0, f64::max)`: IEEE 754

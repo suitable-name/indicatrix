@@ -193,11 +193,11 @@ pub(in super::super) fn sample_environment_for_nee(
 /// `StudioRig::new`'s `key_dir` (bit-identical, pinned by a test) but without building the
 /// whole rig (~40 sin/cos and 16 normalizes), which the per-event NEE entry points do not need.
 fn key_dir_only(light_yaw: f32, light_pitch: f32) -> Vec3 {
-    let cos_lp = light_pitch.cos();
-    let sin_lp = light_pitch.sin();
-    let cos_ly = light_yaw.cos();
-    let sin_ly = light_yaw.sin();
-    Vec3::new(cos_lp * sin_ly, sin_lp, cos_lp * cos_ly).normalize()
+    let cos_pitch = light_pitch.cos();
+    let sin_pitch = light_pitch.sin();
+    let cos_yaw = light_yaw.cos();
+    let sin_yaw = light_yaw.sin();
+    Vec3::new(cos_pitch * sin_yaw, sin_pitch, cos_pitch * cos_yaw).normalize()
 }
 
 /// Test hook: [`key_dir_only`] for the bit-identity test against `StudioRig`.
@@ -549,13 +549,13 @@ fn studio_rig_lighting(
     let fill = (fill_dot > 0.0).then(|| fill_dot.powi(18) * 4.5 * exposure);
 
     // 4. Circular Ring Scintillation Lights (16 sparkling pinpoint sources rotating with lighting rig)
-    let mut ring = [0.0f32; RING_LIGHT_COUNT];
+    let mut sparks = [0.0f32; RING_LIGHT_COUNT];
     let mut ring_len = 0;
     for ring_dir in rig.ring_dirs {
         let ring_dot = d.dot(ring_dir).max(0.0);
         if ring_dot > 0.96 {
             let spark = (ring_dot - 0.96) / 0.04;
-            ring[ring_len] = spark.powi(6) * 22.0 * spot_mult * exposure;
+            sparks[ring_len] = spark.powi(6) * 22.0 * spot_mult * exposure;
             ring_len += 1;
         }
     }
@@ -564,7 +564,7 @@ fn studio_rig_lighting(
         bg_val,
         softbox,
         fill,
-        ring,
+        ring: sparks,
         ring_len,
     }
 }
@@ -696,14 +696,49 @@ pub fn sample_studio_environment_with_rig_shadow(
     observer: Vec3,
     shadow: [f32; 2],
 ) -> f32 {
-    direction_lighting(dir, lighting_preset, exposure, rig, observer, shadow).radiance(
-        if lighting_preset == LightingPreset::Aset {
-            aset_spec_input(lambda_nm)
-        } else {
-            lighting_preset.spectral_power(lambda_nm)
-        },
+    direction_lighting(dir, lighting_preset, exposure, rig, observer, shadow)
+        .radiance(studio_spec_power(lighting_preset, lambda_nm), exposure)
+}
+
+/// The `spec_power` input [`sample_studio_environment_with_rig_shadow`] feeds the radiance
+/// at wavelength `lambda_nm`: the wavelength itself for the ASET view, the preset's
+/// spectral power otherwise.
+///
+/// A pure function of `(lighting_preset, lambda_nm)` -- for a Planckian preset two `exp`
+/// and a `powi` -- so a caller probing many directions at one wavelength computes it once
+/// and passes it to [`sample_studio_environment_with_rig_spec_power`].
+#[must_use]
+pub fn studio_spec_power(lighting_preset: LightingPreset, lambda_nm: f32) -> f32 {
+    if lighting_preset == LightingPreset::Aset {
+        aset_spec_input(lambda_nm)
+    } else {
+        lighting_preset.spectral_power(lambda_nm)
+    }
+}
+
+/// [`sample_studio_environment_with_rig`] with the wavelength's `spec_power` already evaluated.
+///
+/// `spec_power` is [`studio_spec_power`]'s value; the result is bit-identical to the wrapper when
+/// `spec_power == studio_spec_power(lighting_preset, lambda_nm)`, since the radiance only
+/// ever reads the wavelength through that one value.
+#[must_use]
+pub fn sample_studio_environment_with_rig_spec_power(
+    dir: Vec3,
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
+    spec_power: f32,
+) -> f32 {
+    direction_lighting(
+        dir,
+        lighting_preset,
         exposure,
+        rig,
+        observer,
+        DEFAULT_HEAD_SHADOW_COSINES,
     )
+    .radiance(spec_power, exposure)
 }
 
 /// [`sample_studio_environment_with_rig`] for every wavelength in `lambdas` looking along
@@ -764,6 +799,14 @@ pub(in super::super) fn sample_environment_channels<const N: usize>(
                 head_shadow_cosines(head_shadow_deg),
             )
         }
-        EnvironmentSource::HdrMap(map) => std::array::from_fn(|k| map.radiance_at(dir, lambdas[k])),
+        EnvironmentSource::HdrMap(map) => {
+            // The direction -> (u, v) -> bilinear RGB part is channel-invariant: evaluate it once
+            // and convert per channel. Exactly `radiance_at`'s two steps, so each element stays
+            // bit-identical to `map.radiance_at(dir, lambdas[k])`.
+            let rgb = map.radiance_rgb(dir);
+            std::array::from_fn(|k| {
+                crate::renderer::env_map::rgb_to_spectral_radiance(rgb, lambdas[k])
+            })
+        }
     }
 }

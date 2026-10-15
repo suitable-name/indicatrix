@@ -10,6 +10,11 @@ pub fn print_dist(label: &str, vals: &[f64]) {
         println!("{label}: no data");
         return;
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "p is a percentile in 0..=1 and the index is clamped to the last element"
+    )]
     let at = |p: f64| v[((v.len() as f64 * p) as usize).min(v.len() - 1)];
     println!(
         "{label}: n={} (+{inf} non-finite) p10={:.4} p25={:.4} med={:.4} p75={:.4} p90={:.4}",

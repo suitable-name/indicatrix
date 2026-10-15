@@ -380,7 +380,7 @@ export component EditorTierTable inherits Rectangle {
         tier_scroll := ScrollView {
             VerticalLayout {
                 spacing: 2px;
-                for row in EditorModel.tiers: TierTableRow {
+                for row in EditorModel.tiers: tier-table-row-l383 := TierTableRow {
                     item: row;
                     keyboard_focus_index <=> root.keyboard_focus_index;
                     table_focused: root.table_focused;

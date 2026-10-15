@@ -249,31 +249,40 @@ fn apply_shape_gear_options(ui: &MainWindow, shapes: &[String], gears: &[String]
     ui.global::<LibraryModel>().set_selected_gear_index(0);
 }
 
+/// A catalogue range bound (stored as `f64`) as the `f32` a Slint slider property takes.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Slint slider properties are f32; catalogue bounds are small values in the normal float range"
+)]
+const fn to_f32(value: f64) -> f32 {
+    value as f32
+}
+
 fn apply_range_wire_to_ui(ui: &MainWindow, ranges: &AttributeRangesWire) {
     ui.global::<LibraryModel>()
-        .set_ri_bounds_min(ranges.ri.0 as f32);
+        .set_ri_bounds_min(to_f32(ranges.ri.0));
     ui.global::<LibraryModel>()
-        .set_ri_bounds_max(ranges.ri.1 as f32);
+        .set_ri_bounds_max(to_f32(ranges.ri.1));
     ui.global::<LibraryModel>()
-        .set_ri_filter_min(ranges.ri.0 as f32);
+        .set_ri_filter_min(to_f32(ranges.ri.0));
     ui.global::<LibraryModel>()
-        .set_ri_filter_max(ranges.ri.1 as f32);
+        .set_ri_filter_max(to_f32(ranges.ri.1));
     ui.global::<LibraryModel>()
-        .set_lw_bounds_min(ranges.lw_ratio.0 as f32);
+        .set_lw_bounds_min(to_f32(ranges.lw_ratio.0));
     ui.global::<LibraryModel>()
-        .set_lw_bounds_max(ranges.lw_ratio.1 as f32);
+        .set_lw_bounds_max(to_f32(ranges.lw_ratio.1));
     ui.global::<LibraryModel>()
-        .set_lw_filter_min(ranges.lw_ratio.0 as f32);
+        .set_lw_filter_min(to_f32(ranges.lw_ratio.0));
     ui.global::<LibraryModel>()
-        .set_lw_filter_max(ranges.lw_ratio.1 as f32);
+        .set_lw_filter_max(to_f32(ranges.lw_ratio.1));
     ui.global::<LibraryModel>()
-        .set_volume_bounds_min(ranges.volume.0 as f32);
+        .set_volume_bounds_min(to_f32(ranges.volume.0));
     ui.global::<LibraryModel>()
-        .set_volume_bounds_max(ranges.volume.1 as f32);
+        .set_volume_bounds_max(to_f32(ranges.volume.1));
     ui.global::<LibraryModel>()
-        .set_volume_filter_min(ranges.volume.0 as f32);
+        .set_volume_filter_min(to_f32(ranges.volume.0));
     ui.global::<LibraryModel>()
-        .set_volume_filter_max(ranges.volume.1 as f32);
+        .set_volume_filter_max(to_f32(ranges.volume.1));
     ui.global::<LibraryModel>()
         .set_facets_bounds_min(ranges.facets.0 as f32);
     ui.global::<LibraryModel>()
@@ -434,7 +443,7 @@ fn on_mirror_done(ui: &MainWindow, outcome: &MirrorOutcome) {
 pub struct RemoteDesignSource {
     /// The attachment's own bare file name (e.g. `"round-brilliant.asc"`) -- feeds
     /// `EditorState::asc_filename` exactly like the local load path's own
-    /// `LoadedDesign::asc_filename`, for `save_paired`-style "Save"
+    /// `LoadedDesign::asc_filename`, for `catalogue_asc`-style "Save"
     /// round-tripping later.
     pub file_name: String,
     /// The attachment's exact original text -- feeds both

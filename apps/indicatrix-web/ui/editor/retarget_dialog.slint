@@ -111,7 +111,7 @@ export component RetargetDialog inherits Rectangle {
             spacing: 8px;
 
             Text {
-                text: "Retarget for material";
+                text: "Retarget for Material";
                 font-size: 14px;
                 font-weight: 700;
                 color: Theme.text-primary;
@@ -128,7 +128,7 @@ export component RetargetDialog inherits Rectangle {
                 VerticalLayout {
                     horizontal-stretch: 1;
                     spacing: 3px;
-                    Lbl { text: "Target material"; }
+                    Lbl { text: "Target Material"; }
                     ComboBox {
                         // (`min-width: 0px` on the fields of this dialog's rows: the style's
                         // ComboBox / LineEdit are 160px wide at minimum, which pushed the RI
@@ -143,7 +143,7 @@ export component RetargetDialog inherits Rectangle {
                 VerticalLayout {
                     width: 110px;
                     spacing: 3px;
-                    Lbl { text: "RI override"; }
+                    Lbl { text: "RI Override"; }
                     LineEdit {
                         min-width: 0px;
                         text <=> RetargetModel.target-ri-override-text;
@@ -211,13 +211,13 @@ export component RetargetDialog inherits Rectangle {
                     alignment: end;
                     CheckBox {
                         enabled: !RetargetModel.is-busy;
-                        text: "Crown follows the pavilion";
+                        text: "Crown Follows the Pavilion";
                         checked <=> RetargetModel.crown-follows-pavilion;
                         toggled => { RetargetModel.proposal-changed(); }
                     }
                     CheckBox {
                         enabled: !RetargetModel.is-busy;
-                        text: "Scale crown by ratio";
+                        text: "Scale Crown by Ratio";
                         checked <=> RetargetModel.scale-crown-by-ratio;
                         toggled => { RetargetModel.proposal-changed(); }
                     }
@@ -228,7 +228,7 @@ export component RetargetDialog inherits Rectangle {
                 HorizontalLayout {
                     CheckBox {
                         enabled: !RetargetModel.is-busy;
-                        text: "Crown follows the pavilion";
+                        text: "Crown Follows the Pavilion";
                         checked <=> RetargetModel.crown-follows-pavilion;
                         toggled => { RetargetModel.proposal-changed(); }
                     }
@@ -237,7 +237,7 @@ export component RetargetDialog inherits Rectangle {
                 HorizontalLayout {
                     CheckBox {
                         enabled: !RetargetModel.is-busy;
-                        text: "Scale crown by ratio";
+                        text: "Scale Crown by Ratio";
                         checked <=> RetargetModel.scale-crown-by-ratio;
                         toggled => { RetargetModel.proposal-changed(); }
                     }
@@ -265,7 +265,7 @@ export component RetargetDialog inherits Rectangle {
                     }
                 }
                 HorizontalLayout {
-                    Button { text: "Cancel search"; clicked => { RetargetModel.cancel-optimize(); } }
+                    Button { text: "Cancel Search"; clicked => { RetargetModel.cancel-optimize(); } }
                     Rectangle { horizontal-stretch: 1; }
                 }
             }

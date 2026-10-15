@@ -8,12 +8,77 @@
 //!   resolver is not linear in the amounts (pair laws, valence splits, the 8 band budget), so the
 //!   derivative is a central difference in the log-amount with a fixed step
 //!   ([`CHROMOPHORE_FD_STEP`]), clamped at the bounds. Resolution is cached per parameter vector.
-//! * [`SmoothBasisModel`] (B): per zone, the log-amplitudes of the seven body-colour basis bands
-//!   (`BODY_COLOR_BASIS_NM`); the derivative is analytic.
+//! * [`SmoothBasisModel`] (B): per zone, the log-amplitudes of the fourteen bands of
+//!   [`FIT_BASIS_NM`]; the derivative is analytic. The fitted spectrum is exported to the
+//!   renderer (and the GPU, which carries at most eight bands per material) by a least-squares
+//!   refit onto the seven-band body-colour basis, see [`SmoothBasisModel`].
 //!
 //! Parameters are zone-major: zone `z` owns `params[z * per_zone .. (z + 1) * per_zone]`.
+//!
+//! # The priors of model B (round 5, ZC-1)
+//!
+//! The camera sees three numbers per pixel and path length, so a fourteen-band spectrum has a
+//! large null space: the priors only have to bound it, and must never decide the answer. Two
+//! rules follow, and the first version of this model broke both:
+//!
+//! 1. **The prior acts on the linear amplitudes `a_k = exp(theta_k)`, not on their logarithms.**
+//!    A second difference of `theta` charges a band that sits next to an empty neighbour (the
+//!    log of an empty band is `-13.8`) about 1800 per band at sigma 0.5, four times the data term
+//!    of a saturated two-band stone, so the optimiser escaped into a wavelength-flat floor and
+//!    paid for it with the common gain (the +12 % of the round-4 run).
+//! 2. **"Zero absorption" must be free.** A physical stone is transparent over most of the
+//!    visible, so the magnitude prior is an exponential (L1) prior on `a_k`, whose cost vanishes
+//!    at zero, not a Gaussian centred on 0.1 per mm.
+//!
+//! The smoothness prior is a Gaussian-process prior on the amplitude vector,
+//! `cost = 1/2 a^T K^-1 a`, with the covariance `K_kl = sigma_a^2 k(|c_k - c_l| / ell)` over the
+//! basis centres `c` (nm). The kernel is the **Matern 5/2** kernel
+//! `k(r) = (1 + sqrt5 r + 5 r^2 / 3) exp(-sqrt5 r)`, not the squared exponential the review
+//! proposed. Both were measured on the thirteen centres 420 to 720 nm (25 nm apart, `ell = 60 nm`,
+//! projected truth spectra of the validation suite, non-negative least squares); the 395 nm band
+//! added later extends the same grid by one point and was not re-measured:
+//!
+//! | kernel | condition of `K` | cost, saturated truth | cost, one band of 0.2 per mm |
+//! |---|---|---|---|
+//! | squared exponential | 8.7e7 | 9.5e3 | 7.8e4 |
+//! | Matern 5/2 (`sigma_a` 1 per mm, measured) | 7.5e2 | 0.15 | 0.80 |
+//! | Matern 5/2 (`sigma_a` 0.3 per mm, scaled by 1/0.09) | 7.5e2 | 1.7 | 8.9 |
+//!
+//! The scales matter as much as the kernel (round 6, R2). `sigma_a` is the prior standard
+//! deviation of an amplitude and body-colour amplitudes are 0.01 to 0.3 per mm, so the first
+//! `sigma_a = 1` bounded nothing: the whole prior budget (1 to 3) was below the 25 the data term
+//! fluctuates by, and the 11 null directions of the camera per zone were set by noise. With
+//! `sigma_a = 0.3` per mm and the L1 scale `b = 0.05` per mm the saturated truth costs 1.7 + 7.5
+//! = 9.2, one isolated 0.2 per mm band 8.9 + 4.0 = 12.9 (both under the bound of `2 BANDS`
+//! = 28), and a camera metamer with a red hump of 0.38 per mm costs 29, about 20 more than the
+//! truth, against the 2 the data can offer for it. The bias of a measured band is
+//! `(1/b) / curvature = 20 / 7e7` per mm: nothing.
+//!
+//! A third, scale-free "shape" prior was tried on 2026-10-12 (a Matern 5/2 process on the
+//! detrended softened log-amplitudes `ln(a_k + eps)`, so that a log-linear spectrum, any overall
+//! scale and the clear stone cost nothing) and taken out again. The camera leaves the spectrum
+//! free along about eleven directions per zone, and along them the magnitude prior picks the
+//! spectrum with the least absorption: one broad hump with dead edges (for a log-linear truth of
+//! 0.12 per mm the fit has 0 at 395 nm and 0.06 instead of 0.20 at 670 nm, a data term 4 BELOW
+//! the truth's, and a magnitude cost 12.5 below it). To pull such a fit back onto the truth a
+//! shape prior must charge the hump more than those 12.5 + 4, and no smoothness measure does
+//! that without charging the two-band saturated validation truth or an isolated band far more
+//! (measured: every setting that beats the hump costs the isolated band 75 to 6000 and the
+//! projected saturated truth 25 to 400 against the budget of 28). A hump is smoother than a
+//! two-band stone by any measure; the null space is a metamer statement, which the spread
+//! reports (see `predict`), not something a prior can settle.
+//!
+//! The squared exponential forbids, by construction, every feature narrower than `ell / sqrt2`
+//! (42 nm), and a Gaussian band of 33 nm (the 2600 cm^-1 bands of the validation truths) is one
+//! of them: its cost is finite on the grid points only because the matrix is regularised by
+//! rounding. Matern 5/2 is twice differentiable, keeps `K` well conditioned, and still keeps
+//! the null space bounded.
+//!
+//! With `L L^T = K^-1` (Cholesky) the cost is `1/2 |L^T a|^2`, so the prior rows are
+//! `r_i = sum_{k >= i} L_ki a_k` with `dr_i / dtheta_k = L_ki a_k`. The exponential prior
+//! `cost_k = a_k / b` has the row `r_k = sqrt(2 a_k / b)`, `dr_k / dtheta_k = r_k / 2`.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use indicatrix::optics::{
     absorption::{AbsorptionTensor, BODY_COLOR_BASIS_NM, body_color_bands},
@@ -21,7 +86,10 @@ use indicatrix::optics::{
     zoning::ZoneAbsorption,
 };
 
-use super::{FitConfig, FitError, ModelKind, linalg::solve_spd};
+use super::{
+    FitConfig, FitError, ModelKind,
+    linalg::{cholesky, inverse_spd, solve_spd},
+};
 use crate::rough_plan::colour_fit::forward::SpectralModel;
 
 /// The step in the log-amount of the central difference of [`ChromophoreModel`].
@@ -34,15 +102,98 @@ pub const CHROMOPHORE_FLOOR_FRACTION: f64 = 1e-4;
 /// Bounds of a basis log-amplitude of the smooth model: 1e-6 to 30 per mm.
 const BASIS_LOG_MIN: f64 = -13.815_510_557_964_274;
 const BASIS_LOG_MAX: f64 = 3.401_197_381_662_155_4;
-/// The weak magnitude prior of the smooth model is centred on 0.1 per mm (`ln 0.1 = -ln 10`).
-const BASIS_LOG_CENTRE: f64 = -std::f64::consts::LN_10;
+/// The level of the tilted seeds of the smooth model, 0.1 per mm (`ln 0.1 = -ln 10`).
+const SEED_LOG_LEVEL: f64 = -std::f64::consts::LN_10;
+
+/// The largest amplitude of the amplitude-space view of model B, per mm (`exp(BASIS_LOG_MAX)`).
+const AMPLITUDE_MAX: f64 = 30.0;
+
+/// The basis of the smooth-basis fit (round 5, ZC-6): `(centre nm, width nm)` of fourteen
+/// Gaussians.
+///
+/// The Gaussians are 25 nm apart from 395 to 720 nm, each with a standard deviation of 15 nm
+/// (FWHM 35 nm). The band at 395 nm was added after the first thirteen-band version (420 to
+/// 720 nm) could not follow the 390 nm absorber tail of the saturated validation truth (0.09
+/// per mm short at the 400 nm edge). The width is the wavelength-domain standard deviation, converted to the
+/// wavenumber standard deviation `width * 1e7 / centre^2` of an energy-domain band exactly as
+/// `body_color_bands` does for the body-colour basis.
+///
+/// The width is narrower than the spacing on purpose (ZC-6 round 6, R1). With 25 nm the 395 nm
+/// band had a wavenumber sigma of 1602 cm^-1, wider than the 1486 cm^-1 of the 3500 cm^-1
+/// wide 390 nm absorber of the saturated validation truth, and a non-negative sum of Gaussians
+/// cannot follow a feature narrower than its widest member: the projection overshot the
+/// 400 to 470 nm wing (1.75 to 2.96 dE2000 lost to the basis alone). At 15 nm the 395 nm band is
+/// 961 cm^-1 wide (720 nm: 289 cm^-1). The price is the ripple of a flat non-negative sum at
+/// the spacing `h = 25 nm`: `2 exp(-2 pi^2 (15 / 25)^2) = 0.17 %`. At 12.5 nm it would be
+/// 1.5 %, so 15 nm is the widest value under 0.2 % that resolves the absorber.
+///
+/// The fit needs its own table: the seven bands of `BODY_COLOR_BASIS_NM` (40 nm apart, 45 to
+/// 55 nm wide) belong to the body-colour slider and the GPU (at most eight bands per material),
+/// and a non-negative sum of 45 nm Gaussians cannot be narrower than 45 nm, which costs 2 to 3
+/// L* on a crystal-field band of 25 to 35 nm. The GPU export (`project_onto` the seven bands)
+/// refits a narrower spectrum less well; the `ExportRefit` warning (0.5 dE and more) reports it.
+/// Fourteen bands times four zones plus eight gains is 64 parameters, just over the plan's
+/// budget of 60 (section 6.3); the priors bound the null space.
+pub const FIT_BASIS_NM: [(f32, f32); 14] = [
+    (395.0, 15.0),
+    (420.0, 15.0),
+    (445.0, 15.0),
+    (470.0, 15.0),
+    (495.0, 15.0),
+    (520.0, 15.0),
+    (545.0, 15.0),
+    (570.0, 15.0),
+    (595.0, 15.0),
+    (620.0, 15.0),
+    (645.0, 15.0),
+    (670.0, 15.0),
+    (695.0, 15.0),
+    (720.0, 15.0),
+];
+
+/// The value of band `k` of `basis` at `lambda_nm` (unit peak), Gaussian in wavenumber.
+fn basis_value(basis: &[(f32, f32)], k: usize, lambda_nm: f64) -> f64 {
+    let (centre, width) = basis[k];
+    let sigma_nu = f64::from(width) * 1.0e7 / (f64::from(centre) * f64::from(centre));
+    let delta_nm = f64::from(centre) - lambda_nm;
+    let nu_diff = 1.0e7 * delta_nm / (lambda_nm * f64::from(centre));
+    let t = nu_diff / sigma_nu;
+    (-0.5 * t * t).exp()
+}
+
+/// The Matern 5/2 kernel at the scaled distance `r = |d| / ell`.
+fn matern52(r: f64) -> f64 {
+    let s = 5.0_f64.sqrt() * r;
+    (1.0 + s + s * s / 3.0) * (-s).exp()
+}
+
+/// The lower Cholesky factor `L` (row-major, `BANDS x BANDS`) of the precision matrix
+/// `K^-1` of the smoothness prior, `K_kl = sigma_a^2 matern52(|c_k - c_l| / ell_nm)` over the
+/// centres of [`FIT_BASIS_NM`]. `None` when the parameters are not positive finite numbers or
+/// `K` is numerically singular (a length of many band spacings); `FitConfig::validate` rejects
+/// such a configuration, so the model never meets `None` in a running fit.
+pub(super) fn smoothness_factor(sigma_a: f64, ell_nm: f64) -> Option<Vec<f64>> {
+    if !(sigma_a.is_finite() && sigma_a > 0.0 && ell_nm.is_finite() && ell_nm > 0.0) {
+        return None;
+    }
+    let n = FIT_BASIS_NM.len();
+    let mut k = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            let d = f64::from(FIT_BASIS_NM[i].0 - FIT_BASIS_NM[j].0).abs();
+            k[i * n + j] = sigma_a * sigma_a * matern52(d / ell_nm);
+        }
+    }
+    let precision = inverse_spd(&k, n)?;
+    cholesky(&precision, n)
+}
 
 /// Which prior a [`PriorRow`] belongs to (round 3, D1.3: the report names the dominant term).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PriorTag {
-    /// The second-difference smoothness of model B.
+    /// The Gaussian-process smoothness of the amplitudes of model B.
     Smoothness,
-    /// The weak magnitude prior of model B.
+    /// The exponential (L1) magnitude prior of model B.
     Magnitude,
     /// The reweighted L1 prior of model A.
     L1,
@@ -65,6 +216,10 @@ pub(super) struct PriorContext<'a> {
     pub l1_weights: &'a [f64],
     /// Pin the common mode of the log-gains (stage 2 of the staged fit, round 3, D1).
     pub pin_common_gain: bool,
+    /// Whether the model's own priors (smoothness, magnitude, L1, zone pull) are in the
+    /// objective. `false` leaves the data term and the gain prior alone: the data-only optimum
+    /// of the constrained colour search (round 5, ZC-4).
+    pub model_priors: bool,
 }
 
 /// A spectral model together with what the solver needs.
@@ -96,12 +251,33 @@ pub(super) trait FitModel: SpectralModel {
     fn host(&self) -> Option<&str> {
         None
     }
-    /// An independent copy (its own caches), for use on another thread.
+    /// An independent copy (its own caches; the smooth model shares its configuration-keyed
+    /// factor cache on purpose), for use on another thread.
     fn duplicate(&self) -> Box<dyn FitModel>;
     /// Extra deterministic starts derived from a fitted parameter vector (round 3, D1.2), each a
     /// full model parameter vector. Empty for a model that has none.
     fn structured_starts(&self, _params: &[f64]) -> Vec<Vec<f64>> {
         Vec::new()
+    }
+    /// A parametrisation of the same absorption in which the data term is much closer to a
+    /// quadratic, for the constrained colour search (round 5, ZC-4); `None` when the model's own
+    /// parameters are already the right ones. The returned model has the same zones and no
+    /// priors, and `to_search_space`/`from_search_space` convert parameter vectors (without
+    /// gains) between the two.
+    fn search_space(&self) -> Option<Box<dyn FitModel>> {
+        None
+    }
+    /// The parameters of [`search_space`](Self::search_space) for the model parameters `params`.
+    fn to_search_space(&self, params: &[f64]) -> Vec<f64> {
+        params.to_vec()
+    }
+    /// The model parameters for the search-space parameters `search`.
+    #[allow(
+        clippy::wrong_self_convention,
+        reason = "the converting pair to_search_space/from_search_space is symmetric and reads the model's layout"
+    )]
+    fn from_search_space(&self, search: &[f64]) -> Vec<f64> {
+        search.to_vec()
     }
 }
 
@@ -133,33 +309,66 @@ fn zone_pull_rows(
 // B: the smooth basis
 // ---------------------------------------------------------------------------------------------
 
-/// Model B: seven log-amplitudes per zone on the body-colour basis.
+/// Model B: fourteen log-amplitudes per zone on [`FIT_BASIS_NM`].
+///
+/// The fitted absorption of a zone is `sum_k exp(theta_k) b_k(lambda)`. The renderer and the GPU
+/// carry at most eight bands per material, so [`FitModel::tensors`] does not hand the fourteen
+/// bands over: it refits the fitted spectrum onto the seven bands of the body-colour basis
+/// (`BODY_COLOR_BASIS_NM`) by non-negative least squares on a 5 nm grid from 400 to 700 nm, and
+/// the fitter reports the face-up colour difference of that refit as a
+/// [`WarningKind::ExportRefit`](super::WarningKind::ExportRefit) when it is noticeable.
 #[derive(Debug, Clone)]
 pub struct SmoothBasisModel {
     zones: usize,
+    /// The smoothness factor of the last `(sigma, length)` asked for, shared by the duplicates of
+    /// the model: the 14 x 14 inverse and Cholesky are done once, not per normal pass.
+    factor: Arc<Mutex<Option<CachedFactor>>>,
 }
+
+/// The smoothness factor with the two parameters (as bit patterns) it was computed for.
+#[derive(Debug)]
+struct CachedFactor {
+    key: (u64, u64),
+    factor: Option<Arc<Vec<f64>>>,
+}
+
+/// The number of bands of the body-colour basis, which is what the GPU export carries.
+const EXPORT_BANDS: usize = BODY_COLOR_BASIS_NM.len();
 
 impl SmoothBasisModel {
     /// The basis bands per zone.
-    pub const BANDS: usize = 7;
+    pub const BANDS: usize = FIT_BASIS_NM.len();
 
     /// A model with `zones` zones (at least 1).
     #[must_use]
     pub fn new(zones: usize) -> Self {
         Self {
             zones: zones.max(1),
+            factor: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// [`smoothness_factor`] for the two parameters, computed once per distinct pair.
+    fn cached_smoothness_factor(&self, sigma_a: f64, ell_nm: f64) -> Option<Arc<Vec<f64>>> {
+        let key = (sigma_a.to_bits(), ell_nm.to_bits());
+        let mut guard = self.factor.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(entry) = guard.as_ref()
+            && entry.key == key
+        {
+            return entry.factor.clone();
+        }
+        let factor = smoothness_factor(sigma_a, ell_nm).map(Arc::new);
+        *guard = Some(CachedFactor {
+            key,
+            factor: factor.clone(),
+        });
+        factor
     }
 
     /// The value of basis band `k` at `lambda_nm` (unit peak).
     #[must_use]
     pub fn basis(k: usize, lambda_nm: f64) -> f64 {
-        let (centre, width) = BODY_COLOR_BASIS_NM[k];
-        let sigma_nu = f64::from(width) * 1.0e7 / (f64::from(centre) * f64::from(centre));
-        let delta_nm = f64::from(centre) - lambda_nm;
-        let nu_diff = 1.0e7 * delta_nm / (lambda_nm * f64::from(centre));
-        let t = nu_diff / sigma_nu;
-        (-0.5 * t * t).exp()
+        basis_value(&FIT_BASIS_NM, k, lambda_nm)
     }
 }
 
@@ -206,7 +415,7 @@ impl FitModel for SmoothBasisModel {
     fn param_names(&self) -> Vec<String> {
         let mut names = Vec::with_capacity(self.n_params());
         for z in 0..self.zones {
-            for &(centre, _) in &BODY_COLOR_BASIS_NM {
+            for &(centre, _) in &FIT_BASIS_NM {
                 names.push(format!("zone {z} band {centre:.0} nm"));
             }
         }
@@ -222,7 +431,8 @@ impl FitModel for SmoothBasisModel {
 
     fn seed(&self, index: usize) -> Vec<f64> {
         // Four flat spectra of different strength, then four tilted ones (red-heavy and
-        // blue-heavy absorbers at two strengths).
+        // blue-heavy absorbers at two strengths). A tilt is a log-linear slope per 40 nm about
+        // 540 nm, so it means the same on any basis.
         const LEVELS: [f64; 4] = [0.05, 0.2, 0.01, 0.5];
         const TILTS: [f64; 4] = [0.6, -0.6, 0.3, -0.3];
         let mut block = [0.0_f64; Self::BANDS];
@@ -230,7 +440,7 @@ impl FitModel for SmoothBasisModel {
             *value = if index % 8 < 4 {
                 LEVELS[index % 4].ln()
             } else {
-                BASIS_LOG_CENTRE + TILTS[index % 4] * (k as f64 - 3.0)
+                SEED_LOG_LEVEL + TILTS[index % 4] * (f64::from(FIT_BASIS_NM[k].0) - 540.0) / 40.0
             };
         }
         let mut out = Vec::with_capacity(self.n_params());
@@ -240,27 +450,44 @@ impl FitModel for SmoothBasisModel {
         out
     }
 
+    /// The priors of the module notes: per zone, the rows `r_i = sum_{k >= i} L_ki a_k` of the
+    /// Gaussian-process smoothness prior on the amplitudes `a = exp(theta)`, the rows
+    /// `sqrt(2 a_k / b)` of the exponential magnitude prior (`b = magnitude_scale`), plus the
+    /// optional zone pull.
     fn prior_rows(&self, params: &[f64], ctx: &PriorContext<'_>, out: &mut Vec<PriorRow>) {
-        let smooth = ctx.config.smoothness_sigma;
-        let magnitude = ctx.config.magnitude_sigma;
+        if !ctx.model_priors {
+            return;
+        }
+        let n = Self::BANDS;
+        // `FitConfig::validate` has checked that the factor exists.
+        let factor = self
+            .cached_smoothness_factor(ctx.config.smoothness_sigma, ctx.config.smoothness_length_nm);
+        debug_assert!(factor.is_some(), "FitConfig::validate admits this prior");
+        let scale = ctx.config.magnitude_scale;
         for z in 0..self.zones {
-            let base = z * Self::BANDS;
-            // Second-difference smoothness of the log-amplitudes.
-            for k in 1..Self::BANDS - 1 {
-                let (a, b, c) = (base + k - 1, base + k, base + k + 1);
-                out.push(PriorRow {
-                    value: (params[a] - 2.0 * params[b] + params[c]) / smooth,
-                    entries: vec![(a, 1.0 / smooth), (b, -2.0 / smooth), (c, 1.0 / smooth)],
-                    tag: PriorTag::Smoothness,
-                });
+            let base = z * n;
+            let amplitude: Vec<f64> = (0..n).map(|k| params[base + k].exp()).collect();
+            if let Some(l) = &factor {
+                for i in 0..n {
+                    let mut value = 0.0;
+                    let mut entries = Vec::with_capacity(n - i);
+                    for k in i..n {
+                        let coefficient = l[k * n + i];
+                        value += coefficient * amplitude[k];
+                        entries.push((base + k, coefficient * amplitude[k]));
+                    }
+                    out.push(PriorRow {
+                        value,
+                        entries,
+                        tag: PriorTag::Smoothness,
+                    });
+                }
             }
-            // A weak pull of every log-amplitude towards 0.1 per mm keeps the directions the
-            // three camera channels cannot see bounded.
-            for k in 0..Self::BANDS {
-                let a = base + k;
+            for k in 0..n {
+                let value = (2.0 * amplitude[k] / scale).sqrt();
                 out.push(PriorRow {
-                    value: (params[a] - BASIS_LOG_CENTRE) / magnitude,
-                    entries: vec![(a, 1.0 / magnitude)],
+                    value,
+                    entries: vec![(base + k, 0.5 * value)],
                     tag: PriorTag::Magnitude,
                 });
             }
@@ -278,12 +505,26 @@ impl FitModel for SmoothBasisModel {
         vec![1.0; params.len()]
     }
 
+    /// The fitted spectra on the seven bands of the body-colour basis (the most a material can
+    /// carry on the GPU): the least-squares refit of [`SmoothBasisModel`]'s notes. A refit
+    /// amplitude at the lower bound of the fit (1e-6 per mm) is "no band" and is left out.
     fn tensors(&self, params: &[f64]) -> Vec<AbsorptionTensor> {
+        let (theta, _) = project_onto(&BODY_COLOR_BASIS_NM, self.zones, &|zone, lambda| {
+            self.alpha(zone, lambda, params)
+        });
         (0..self.zones)
             .map(|z| {
-                let mut amplitudes = [0.0_f32; Self::BANDS];
+                let mut amplitudes = [0.0_f32; EXPORT_BANDS];
                 for (k, a) in amplitudes.iter_mut().enumerate() {
-                    *a = params[z * Self::BANDS + k].exp() as f32;
+                    let t = theta[z * EXPORT_BANDS + k];
+                    if t > BASIS_LOG_MIN + 1e-9 {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "band amplitude per mm is small and positive; the export bands are f32"
+                        )]
+                        let amplitude = t.exp() as f32;
+                        *a = amplitude;
+                    }
                 }
                 AbsorptionTensor::isotropic(body_color_bands(amplitudes))
             })
@@ -309,7 +550,7 @@ impl FitModel for SmoothBasisModel {
         let mut flat_removed = params.to_vec();
         let mut single_band = params.to_vec();
         for zone in 0..self.zones {
-            let at_centres: Vec<f64> = BODY_COLOR_BASIS_NM
+            let at_centres: Vec<f64> = FIT_BASIS_NM
                 .iter()
                 .map(|&(centre, _)| self.alpha(zone, f64::from(centre), params))
                 .collect();
@@ -327,7 +568,7 @@ impl FitModel for SmoothBasisModel {
                 }
             }
             let level = self.alpha(zone, channel, params).max(START_LEVEL);
-            for (k, &(centre, width)) in BODY_COLOR_BASIS_NM.iter().enumerate() {
+            for (k, &(centre, width)) in FIT_BASIS_NM.iter().enumerate() {
                 let t = (channel - f64::from(centre)) / f64::from(width);
                 single_band[zone * Self::BANDS + k] = (level * (-0.5 * t * t).exp())
                     .max(START_FLOOR)
@@ -336,6 +577,117 @@ impl FitModel for SmoothBasisModel {
             }
         }
         vec![flat_removed, single_band]
+    }
+
+    /// Model B in amplitude space ([`AmplitudeModel`]): the absorption is linear in the
+    /// amplitudes, so the data term (a sum of `exp(-tau)` with `tau` linear in them) is close to
+    /// quadratic there, and "zero absorption" is a point of the box instead of `-13.8` in a
+    /// logarithm.
+    fn search_space(&self) -> Option<Box<dyn FitModel>> {
+        Some(Box::new(AmplitudeModel { zones: self.zones }))
+    }
+
+    fn to_search_space(&self, params: &[f64]) -> Vec<f64> {
+        params.iter().map(|theta| theta.exp()).collect()
+    }
+
+    fn from_search_space(&self, search: &[f64]) -> Vec<f64> {
+        search
+            .iter()
+            .map(|a| a.max(0.0).ln().clamp(BASIS_LOG_MIN, BASIS_LOG_MAX))
+            .collect()
+    }
+}
+
+/// Model B with the amplitudes `a_k` (per mm, `0..=30`) as its parameters, no priors: the search
+/// space of the constrained colour search (see [`FitModel::search_space`]).
+#[derive(Debug, Clone)]
+struct AmplitudeModel {
+    zones: usize,
+}
+
+impl SpectralModel for AmplitudeModel {
+    fn n_params(&self) -> usize {
+        self.zones * SmoothBasisModel::BANDS
+    }
+
+    fn alpha(&self, zone: usize, lambda_nm: f64, params: &[f64]) -> f64 {
+        let n = SmoothBasisModel::BANDS;
+        let block = &params[zone * n..(zone + 1) * n];
+        let mut sum = 0.0;
+        for (k, a) in block.iter().enumerate() {
+            sum += a * SmoothBasisModel::basis(k, lambda_nm);
+        }
+        sum
+    }
+
+    fn dalpha(&self, zone: usize, lambda_nm: f64, _params: &[f64], out: &mut [f64]) {
+        out.fill(0.0);
+        for k in 0..SmoothBasisModel::BANDS {
+            out[zone * SmoothBasisModel::BANDS + k] = SmoothBasisModel::basis(k, lambda_nm);
+        }
+    }
+}
+
+impl FitModel for AmplitudeModel {
+    fn as_spectral(&self) -> &dyn SpectralModel {
+        self
+    }
+
+    fn kind(&self) -> ModelKind {
+        ModelKind::SmoothBasis
+    }
+
+    fn zone_count(&self) -> usize {
+        self.zones
+    }
+
+    fn per_zone(&self) -> usize {
+        SmoothBasisModel::BANDS
+    }
+
+    fn param_names(&self) -> Vec<String> {
+        let mut names = Vec::with_capacity(self.n_params());
+        for z in 0..self.zones {
+            for &(centre, _) in &FIT_BASIS_NM {
+                names.push(format!("zone {z} amplitude {centre:.0} nm"));
+            }
+        }
+        names
+    }
+
+    fn bounds(&self) -> (Vec<f64>, Vec<f64>) {
+        (
+            vec![0.0; self.n_params()],
+            vec![AMPLITUDE_MAX; self.n_params()],
+        )
+    }
+
+    fn seed(&self, _index: usize) -> Vec<f64> {
+        vec![0.05; self.n_params()]
+    }
+
+    fn prior_rows(&self, _params: &[f64], _ctx: &PriorContext<'_>, _out: &mut Vec<PriorRow>) {}
+
+    fn l1_weights(&self, params: &[f64]) -> Vec<f64> {
+        vec![1.0; params.len()]
+    }
+
+    fn tensors(&self, params: &[f64]) -> Vec<AbsorptionTensor> {
+        let theta: Vec<f64> = params
+            .iter()
+            .map(|a| a.max(0.0).ln().clamp(BASIS_LOG_MIN, BASIS_LOG_MAX))
+            .collect();
+        SmoothBasisModel::new(self.zones).tensors(&theta)
+    }
+
+    /// The step of the finite difference of a colour in an amplitude, per mm.
+    fn fd_step(&self) -> f64 {
+        2e-4
+    }
+
+    fn duplicate(&self) -> Box<dyn FitModel> {
+        Box::new(self.clone())
     }
 }
 
@@ -347,96 +699,114 @@ const START_LEVEL: f64 = 0.02;
 const CHANNEL_NM: [f64; 3] = [610.0, 540.0, 460.0];
 
 impl SmoothBasisModel {
-    /// The log-amplitudes of the basis that best represent the absorption `alpha(zone, lambda)`
-    /// (per mm) in the least-squares sense on a 5 nm grid from 400 to 700 nm, and the largest
-    /// absolute misfit on that grid (per mm). The truth of a synthetic photo is not exactly in
-    /// the basis, so the priors "at the truth" (round 3, D1.3) are those of this projection.
+    /// The log-amplitudes of the fit basis ([`FIT_BASIS_NM`]) that best represent the absorption
+    /// `alpha(zone, lambda)` (per mm) in the least-squares sense on a 5 nm grid from 400 to
+    /// 700 nm, and the largest absolute misfit on that grid (per mm). The truth of a synthetic
+    /// photo is not exactly in the basis, so the priors "at the truth" (round 3, D1.3) are those
+    /// of this projection.
     pub(super) fn project(zones: usize, alpha: &dyn Fn(usize, f64) -> f64) -> (Vec<f64>, f64) {
-        let grid: Vec<f64> = (0..=60).map(|i| 400.0 + 5.0 * f64::from(i)).collect();
-        let bands = Self::BANDS;
-        let mut out = Vec::with_capacity(zones * bands);
-        let mut worst = 0.0_f64;
-        for zone in 0..zones {
-            let target: Vec<f64> = grid.iter().map(|&l| alpha(zone, l)).collect();
-            let model_at = |theta: &[f64]| -> Vec<f64> {
-                grid.iter()
-                    .map(|&l| {
-                        (0..bands)
-                            .map(|k| theta[k].exp() * Self::basis(k, l))
-                            .sum::<f64>()
-                    })
-                    .collect()
-            };
-            let sse = |theta: &[f64]| -> f64 {
-                model_at(theta)
-                    .iter()
-                    .zip(&target)
-                    .map(|(m, t)| (m - t) * (m - t))
-                    .sum()
-            };
-            let mut theta: Vec<f64> = BODY_COLOR_BASIS_NM
-                .iter()
-                .map(|&(c, _)| {
-                    alpha(zone, f64::from(c))
-                        .max(START_FLOOR)
-                        .ln()
-                        .clamp(BASIS_LOG_MIN, BASIS_LOG_MAX)
-                })
-                .collect();
-            let mut cost = sse(&theta);
-            let mut mu = 1e-3_f64;
-            for _ in 0..80 {
-                let predicted = model_at(&theta);
-                let mut jtj = vec![0.0; bands * bands];
-                let mut jtr = vec![0.0; bands];
-                for (i, &l) in grid.iter().enumerate() {
-                    let r = predicted[i] - target[i];
-                    let row: Vec<f64> = (0..bands)
-                        .map(|k| theta[k].exp() * Self::basis(k, l))
-                        .collect();
-                    for a in 0..bands {
-                        jtr[a] += row[a] * r;
-                        for b in 0..bands {
-                            jtj[a * bands + b] += row[a] * row[b];
-                        }
-                    }
-                }
-                let mut accepted = false;
-                for _ in 0..12 {
-                    let mut a = jtj.clone();
-                    for d in 0..bands {
-                        a[d * bands + d] += mu * jtj[d * bands + d].max(1e-12) + 1e-12;
-                    }
-                    let rhs: Vec<f64> = jtr.iter().map(|v| -v).collect();
-                    if let Some(delta) = solve_spd(&a, bands, &rhs) {
-                        let trial: Vec<f64> = theta
-                            .iter()
-                            .zip(&delta)
-                            .map(|(t, d)| (t + d).clamp(BASIS_LOG_MIN, BASIS_LOG_MAX))
-                            .collect();
-                        let trial_cost = sse(&trial);
-                        if trial_cost <= cost {
-                            theta = trial;
-                            cost = trial_cost;
-                            mu = (mu / 3.0).max(1e-9);
-                            accepted = true;
-                            break;
-                        }
-                    }
-                    mu *= 4.0;
-                }
-                if !accepted {
-                    break;
-                }
-            }
-            let fitted = model_at(&theta);
-            for (m, t) in fitted.iter().zip(&target) {
-                worst = worst.max((m - t).abs());
-            }
-            out.extend_from_slice(&theta);
-        }
-        (out, worst)
+        project_onto(&FIT_BASIS_NM, zones, alpha)
     }
+}
+
+/// The log-amplitudes of `basis` that best represent `alpha(zone, lambda)` per zone, in the
+/// least-squares sense on a 5 nm grid from 400 to 700 nm (Levenberg-Marquardt on the logarithms
+/// from the absorption at the band centres), and the largest absolute misfit on that grid.
+/// `theta` is zone-major with `basis.len()` entries per zone.
+fn project_onto(
+    basis: &[(f32, f32)],
+    zones: usize,
+    alpha: &dyn Fn(usize, f64) -> f64,
+) -> (Vec<f64>, f64) {
+    let grid: Vec<f64> = (0..=60).map(|i| 400.0 + 5.0 * f64::from(i)).collect();
+    let bands = basis.len();
+    // The basis on the grid, once: `table[i * bands + k]`.
+    let table: Vec<f64> = grid
+        .iter()
+        .flat_map(|&l| (0..bands).map(move |k| basis_value(basis, k, l)))
+        .collect();
+    let mut out = Vec::with_capacity(zones * bands);
+    let mut worst = 0.0_f64;
+    for zone in 0..zones {
+        let target: Vec<f64> = grid.iter().map(|&l| alpha(zone, l)).collect();
+        let model_at = |theta: &[f64]| -> Vec<f64> {
+            (0..grid.len())
+                .map(|i| {
+                    (0..bands)
+                        .map(|k| theta[k].exp() * table[i * bands + k])
+                        .sum::<f64>()
+                })
+                .collect()
+        };
+        let sse = |theta: &[f64]| -> f64 {
+            model_at(theta)
+                .iter()
+                .zip(&target)
+                .map(|(m, t)| (m - t) * (m - t))
+                .sum()
+        };
+        let mut theta: Vec<f64> = basis
+            .iter()
+            .map(|&(c, _)| {
+                alpha(zone, f64::from(c))
+                    .max(START_FLOOR)
+                    .ln()
+                    .clamp(BASIS_LOG_MIN, BASIS_LOG_MAX)
+            })
+            .collect();
+        let mut cost = sse(&theta);
+        let mut mu = 1e-3_f64;
+        for _ in 0..80 {
+            let predicted = model_at(&theta);
+            let mut jtj = vec![0.0; bands * bands];
+            let mut jtr = vec![0.0; bands];
+            for i in 0..grid.len() {
+                let r = predicted[i] - target[i];
+                let row: Vec<f64> = (0..bands)
+                    .map(|k| theta[k].exp() * table[i * bands + k])
+                    .collect();
+                for a in 0..bands {
+                    jtr[a] += row[a] * r;
+                    for b in 0..bands {
+                        jtj[a * bands + b] += row[a] * row[b];
+                    }
+                }
+            }
+            let mut accepted = false;
+            for _ in 0..12 {
+                let mut a = jtj.clone();
+                for d in 0..bands {
+                    a[d * bands + d] += mu * jtj[d * bands + d].max(1e-12) + 1e-12;
+                }
+                let rhs: Vec<f64> = jtr.iter().map(|v| -v).collect();
+                if let Some(delta) = solve_spd(&a, bands, &rhs) {
+                    let trial: Vec<f64> = theta
+                        .iter()
+                        .zip(&delta)
+                        .map(|(t, d)| (t + d).clamp(BASIS_LOG_MIN, BASIS_LOG_MAX))
+                        .collect();
+                    let trial_cost = sse(&trial);
+                    if trial_cost <= cost {
+                        theta = trial;
+                        cost = trial_cost;
+                        mu = (mu / 3.0).max(1e-9);
+                        accepted = true;
+                        break;
+                    }
+                }
+                mu *= 4.0;
+            }
+            if !accepted {
+                break;
+            }
+        }
+        let fitted = model_at(&theta);
+        for (m, t) in fitted.iter().zip(&target) {
+            worst = worst.max((m - t).abs());
+        }
+        out.extend_from_slice(&theta);
+    }
+    (out, worst)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -486,8 +856,12 @@ impl ChromophoreModel {
         let mut elements = Vec::new();
         let mut max_amount = Vec::new();
         let mut end_member = Vec::new();
-        for id in catalogue.selectable_elements(host_id) {
-            let max = host.element_conc_max(&id);
+        // The fit's box bounds follow the fixed treatments, every selectable element presumed
+        // present; the resolver still caps the sums of multi-element chromophores.
+        let ids = catalogue.selectable_elements(host_id);
+        let split = host.treated_split(treatments, &|x| ids.iter().any(|i| i == x));
+        for id in ids {
+            let max = host.element_conc_max_split(&id, &split);
             if max.is_finite() && max > 0.0 {
                 end_member.push(host.end_members.iter().any(|m| m.id == id));
                 max_amount.push(max);
@@ -515,8 +889,8 @@ impl ChromophoreModel {
         &self.elements
     }
 
-    /// The upper bound of each element's amount (the catalogue's `conc_max`), in the element's
-    /// input unit.
+    /// The upper bound of each element's amount (the catalogue's `conc_max` under the fixed
+    /// treatments), in the element's input unit.
     #[must_use]
     pub fn max_amounts(&self) -> &[f64] {
         &self.max_amount
@@ -718,6 +1092,9 @@ impl FitModel for ChromophoreModel {
     }
 
     fn prior_rows(&self, params: &[f64], ctx: &PriorContext<'_>, out: &mut Vec<PriorRow>) {
+        if !ctx.model_priors {
+            return;
+        }
         let l1 = ctx.config.l1_weight;
         if l1 > 0.0 && l1.is_finite() {
             for (p, &theta) in params.iter().enumerate() {

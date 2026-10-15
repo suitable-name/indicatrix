@@ -85,6 +85,10 @@ impl Step {
 
 /// What has been done so far; the inputs of [`reachable`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "facts about the wizard's progress; fields are independent switches, not a mode"
+)]
 pub struct StepFacts {
     /// A camera rig is picked.
     pub rig_picked: bool,
@@ -102,6 +106,9 @@ pub struct StepFacts {
     pub calibration_applied: bool,
     /// A fit has finished and its result is shown.
     pub fit_done: bool,
+    /// The fit was restored from the saved plan and has no render (it needs neither the rig, the
+    /// alignment nor the calibration to be shown or accepted again).
+    pub fit_without_render: bool,
     /// A background job is running.
     pub busy: bool,
 }
@@ -124,7 +131,7 @@ pub fn blocker(step: Step, facts: &StepFacts) -> Option<&'static str> {
             if !facts.rig_picked {
                 Some("Pick a camera rig first.")
             } else if !facts.aligned {
-                Some("Align the mesh to the rig first (Locate inclusion from photos, step 2).")
+                Some("Align the mesh to the rig first (Locate Inclusion from Photos, step 2).")
             } else {
                 None
             }
@@ -143,11 +150,17 @@ pub fn blocker(step: Step, facts: &StepFacts) -> Option<&'static str> {
         } else {
             Some("Apply the calibration first.")
         }),
-        Step::Compare | Step::Accept => blocker(Step::Fit, facts).or(if facts.fit_done {
-            None
-        } else {
-            Some("Run the fit first.")
-        }),
+        Step::Compare | Step::Accept => {
+            if facts.fit_done && facts.fit_without_render {
+                None
+            } else {
+                blocker(Step::Fit, facts).or(if facts.fit_done {
+                    None
+                } else {
+                    Some("Run the fit first.")
+                })
+            }
+        }
     }
 }
 
@@ -198,6 +211,7 @@ mod tests {
             prepared_views: 8,
             calibration_applied: true,
             fit_done: true,
+            fit_without_render: false,
             busy: false,
         }
     }
@@ -268,6 +282,28 @@ mod tests {
     fn a_finished_fit_opens_everything() {
         assert_eq!(reachable_all(&done()), [true; 8]);
         assert!(Step::ALL.iter().all(|&s| blocker(s, &done()).is_none()));
+    }
+
+    #[test]
+    fn a_restored_fit_opens_compare_and_accept_without_the_rig_or_the_calibration() {
+        let facts = StepFacts {
+            fit_done: true,
+            fit_without_render: true,
+            ..StepFacts::default()
+        };
+        assert!(reachable(Step::Compare, &facts));
+        assert!(reachable(Step::Accept, &facts));
+        assert!(
+            !reachable(Step::Fit, &facts),
+            "a new fit still needs its inputs"
+        );
+        assert!(!reachable(Step::Import, &facts));
+        // Without a restored fit the old chain applies.
+        let fresh = StepFacts {
+            fit_done: true,
+            ..StepFacts::default()
+        };
+        assert!(!reachable(Step::Accept, &fresh));
     }
 
     #[test]

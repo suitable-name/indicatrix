@@ -1,5 +1,7 @@
 //! color recipe and resolved band budget definitions.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::optics::absorption::{AbsorptionBand, AbsorptionTensor};
@@ -71,23 +73,45 @@ impl ColorRecipe {
         true
     }
 
-    /// Clamps every entry to `[0, conc_max]` of its host (`HostData::element_conc_max`) and
-    /// drops entries whose id is not selectable in the host. Returns the number of changed or
-    /// dropped entries. A recipe for an unknown host is left untouched.
+    /// Clamps every entry to `[0, conc_max]` of its host under the recipe's treatments
+    /// (`HostData::element_conc_max_split` with the treated valence split), scales down together
+    /// the elements of a multi-element chromophore whose amounts add up to more than its
+    /// `conc_max` (`HostData::cap_summed_amounts`), and drops entries whose id is not selectable
+    /// in the host. Returns the number of changed or dropped entries. A recipe for an unknown host
+    /// is left untouched.
     pub fn clamp_amounts(&mut self, catalogue: &super::catalogue::ChromophoreCatalogue) -> usize {
         let Some(host) = catalogue.host(&self.host) else {
             return 0;
         };
         let selectable = catalogue.selectable_elements(&self.host);
         let before = self.entries.clone();
+        // Which elements are present gates the treatments' `requires`; read it before editing.
+        let present: BTreeSet<String> = self
+            .entries
+            .iter()
+            .filter(|e| e.amount > 0.0)
+            .map(|e| e.id.clone())
+            .collect();
+        let split = host.treated_split(&self.treatments, &|id| present.contains(id));
         self.entries.retain(|e| selectable.contains(&e.id));
         for e in &mut self.entries {
-            let max = host.element_conc_max(&e.id);
+            let max = host.element_conc_max_split(&e.id, &split);
             e.amount = if e.amount.is_finite() {
                 e.amount.clamp(0.0, max)
             } else {
                 0.0
             };
+        }
+        let mut amounts: BTreeMap<String, f64> = self
+            .entries
+            .iter()
+            .map(|e| (e.id.clone(), e.amount))
+            .collect();
+        host.cap_summed_amounts(&mut amounts);
+        for e in &mut self.entries {
+            if let Some(&amount) = amounts.get(&e.id) {
+                e.amount = amount;
+            }
         }
         before.iter().filter(|b| !self.entries.contains(b)).count()
     }
@@ -225,7 +249,8 @@ pub enum ResolveWarning {
         /// The chromophore the relation names.
         other: String,
     },
-    /// An amount above the host's `conc_max` was clamped.
+    /// An amount above the host's bound under the recipe's treatments was clamped, or scaled down
+    /// with its partner elements to the summed `conc_max` of a multi-element chromophore.
     AmountClamped {
         /// Entry id.
         id: String,

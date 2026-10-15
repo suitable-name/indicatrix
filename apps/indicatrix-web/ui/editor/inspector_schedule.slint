@@ -38,7 +38,7 @@ export component ScheduleTab inherits VerticalLayout {
     HorizontalLayout {
         spacing: 6px;
         Button {
-            text: "Cutting sheet (HTML)";
+            text: "Cutting Sheet (HTML)";
             enabled: AppModel.has-design;
             clicked => { AppModel.download-cutting-sheet(); }
         }

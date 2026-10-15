@@ -10,6 +10,20 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// A payload length as the `u32` the stream headers carry. Frames are far below 4 GiB
+/// (the framing layer caps a frame well under that), so a larger payload is a bug.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "asserted to be at most u32::MAX on the line before the cast"
+)]
+const fn payload_len_u32(len: usize) -> u32 {
+    assert!(
+        len <= u32::MAX as usize,
+        "stream payload exceeds u32::MAX bytes"
+    );
+    len as u32
+}
+
 /// The `postcard`-encoded header half of a `<- FRAME` message: a DELTA, at full
 /// resolution.
 ///
@@ -65,9 +79,9 @@ impl FrameHeader {
             request_id,
             first_sample,
             samples,
-            payload_len: xyz_bytes.len() as u32,
+            payload_len: payload_len_u32(xyz_bytes.len()),
             encoding: PayloadEncoding::Raw,
-            raw_len: xyz_bytes.len() as u32,
+            raw_len: payload_len_u32(xyz_bytes.len()),
         }
     }
 
@@ -84,7 +98,7 @@ impl FrameHeader {
             request_id,
             first_sample,
             samples,
-            payload_len: encoded.bytes.len() as u32,
+            payload_len: payload_len_u32(encoded.bytes.len()),
             encoding: encoded.encoding,
             raw_len: encoded.raw_len,
         }
@@ -134,9 +148,9 @@ impl PreviewHeader {
             width,
             height,
             samples_done,
-            payload_len: xyz_bytes.len() as u32,
+            payload_len: payload_len_u32(xyz_bytes.len()),
             encoding: PayloadEncoding::Raw,
-            raw_len: xyz_bytes.len() as u32,
+            raw_len: payload_len_u32(xyz_bytes.len()),
         }
     }
 
@@ -155,7 +169,7 @@ impl PreviewHeader {
             width,
             height,
             samples_done,
-            payload_len: encoded.bytes.len() as u32,
+            payload_len: payload_len_u32(encoded.bytes.len()),
             encoding: encoded.encoding,
             raw_len: encoded.raw_len,
         }
@@ -342,12 +356,12 @@ pub enum ClientMessage {
     /// (index 8). `CANCEL` with the batch's `request_id` cancels it.
     #[cfg(feature = "render")]
     BatchRenderRequest(Box<crate::messages::batch::BatchRenderRequest>),
-    /// `-> ZONING_PAYLOAD` (`zoning` feature, no protocol bump; index 9): the colour zones of
+    /// `-> ZONING_PAYLOAD` (`render` feature, no protocol bump; index 9): the colour zones of
     /// the request that follows, keyed by its `request_id` -- see
     /// [`crate::messages::zoning`]. Sent only to a peer whose `WELCOME` advertised the zoning
     /// capability (a peer without it cannot decode this index), so it never reaches a
-    /// default build. Boxed like the requests.
-    #[cfg(feature = "zoning")]
+    /// peer without the extension. Boxed like the requests.
+    #[cfg(feature = "render")]
     ZoningPayload(Box<crate::messages::zoning::ZoningPayload>),
 }
 

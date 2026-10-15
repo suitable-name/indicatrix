@@ -581,8 +581,8 @@ fn tone_rows_judge_only_the_figure_the_goal_pulls_on() {
     let (result, candidate) = toned_result(Some(ToneGoal::Lighter));
     let rows = tone_result_rows(&result, &candidate);
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].label, "Face-up lightness L*");
-    assert_eq!(rows[1].label, "Face-up colour strength C*");
+    assert_eq!(rows[0].label, "Face-Up Lightness L*");
+    assert_eq!(rows[1].label, "Face-Up Color Strength C*");
     assert_eq!(rows[0].direction, 1, "L* rose under a lighter goal");
     assert_eq!(
         rows[1].direction, 0,
@@ -633,8 +633,8 @@ fn a_material_has_body_colour_only_with_a_positive_band() {
 fn the_scale_note_has_a_branch_for_colour_size_and_light() {
     let mut design = crate::EditorSession::fresh().design;
     let none = tone_scale_note(&design, &GemMaterial::diamond(), LightingPreset::Daylight);
-    assert!(none.contains("no body colour"), "{none}");
-    assert!(none.contains("Design settings"), "{none}");
+    assert!(none.contains("no body color"), "{none}");
+    assert!(none.contains("Design Settings"), "{none}");
 
     let material = blue_sapphire();
     let unsized_note = tone_scale_note(&design, &material, LightingPreset::Daylight);
@@ -646,7 +646,7 @@ fn the_scale_note_has_a_branch_for_colour_size_and_light() {
 
     design.girdle_diameter_mm = Some(6.5);
     let daylight = tone_scale_note(&design, &material, LightingPreset::Daylight);
-    assert!(daylight.starts_with("Face-up colour is worked out for a 6.5 mm stone"));
+    assert!(daylight.starts_with("Face-up color is worked out for a 6.5 mm stone"));
     assert!(
         daylight.contains("under D65 Daylight (6500K)"),
         "{daylight}"
@@ -700,9 +700,19 @@ fn a_stone_size_scales_the_material_to_the_design_width() {
     design.girdle_diameter_mm = None;
     let banded_unsized =
         crate::material_lookup::sized_material_for_optimize(banded(), &design, &planes);
-    assert_eq!(banded_unsized.absorption_path_scale, (7.0 / width) as f32);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the material stores the path scale as f32; the expected value is rounded the same way"
+    )]
+    let unsized_scale = (7.0 / width) as f32;
+    assert_eq!(banded_unsized.absorption_path_scale, unsized_scale);
     design.girdle_diameter_mm = Some(6.5);
     let banded_sized =
         crate::material_lookup::sized_material_for_optimize(banded(), &design, &planes);
-    assert_eq!(banded_sized.absorption_path_scale, (6.5 / width) as f32);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the material stores the path scale as f32; the expected value is rounded the same way"
+    )]
+    let sized_scale = (6.5 / width) as f32;
+    assert_eq!(banded_sized.absorption_path_scale, sized_scale);
 }

@@ -43,7 +43,7 @@ impl SliceSide {
 }
 
 /// The outward normal of the cutting plane through the eye and the screen line
-/// `a -> b`, oriented so the removed half-space `{x : n . x > m}` lies on `side`.
+/// `a -> b`, oriented so the removed half-space `{x : n . x > m}` lies on `which_side`.
 ///
 /// `normal = normalize(cross(dir_a, dir_b))` with `dir_*` the camera rays through the
 /// two pixels. The side is decided by a probe 10 px to the right of the line's midpoint
@@ -57,7 +57,7 @@ pub fn slice_normal(
     a: ScreenPoint,
     b: ScreenPoint,
     size: ScreenSize,
-    side: SliceSide,
+    which_side: SliceSide,
 ) -> Option<Vec3> {
     let (dx, dy) = a.delta_to(b);
     let length = dx.hypot(dy);
@@ -84,7 +84,7 @@ pub fn slice_normal(
     } else {
         -normal
     };
-    Some(match side {
+    Some(match which_side {
         SliceSide::Right => right_oriented,
         SliceSide::Left => -right_oriented,
     })

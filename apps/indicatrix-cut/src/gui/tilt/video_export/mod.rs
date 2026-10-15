@@ -100,15 +100,12 @@ pub(in crate::gui) fn setup_video_export_callback(
 
     ui.global::<TiltVideoExportModel>()
         .on_frame_count(|start, end, step| {
-            params::frame_count(f64::from(start), f64::from(end), f64::from(step)) as i32
+            let frames = params::frame_count(f64::from(start), f64::from(end), f64::from(step));
+            i32::try_from(frames).unwrap_or(i32::MAX)
         });
 
     ui.global::<TiltVideoExportModel>()
-        .on_parse_step_deg(|raw| {
-            raw.trim()
-                .parse::<f64>()
-                .map_or(1.0, params::clamp_step_deg) as f32
-        });
+        .on_parse_step_deg(|raw| parse_step_deg(&raw));
 
     // The single source of truth for "which `resolution_preset` index means Custom" --
     // `performance_graph_dialog.slint`'s combo-box custom-size fields read this instead
@@ -329,6 +326,11 @@ fn start_video_run(
             return;
         }
     };
+    // "Last used": the section opens with these values next time (and the Render & Output tab
+    // lists them). The transfer only counts when this run actually sends work to the remote.
+    let uses_remote = request.remote.worker.is_some()
+        && !matches!(request.remote.compute_target, ComputeTarget::LocalOnly);
+    crate::gui::render::output_defaults::remember_tilt(ui, settings_store, uses_remote);
     // `build_request` names the folder but does not touch the disk (a queued video must not
     // create it), so the direct export finds a free name and creates the folder itself.
     request.out_dir = template::unique_folder_path(export_dir, &request.out_name);
@@ -358,7 +360,7 @@ fn start_video_run(
     model.set_has_error(false);
     model.set_status_message("Rendering...".into());
     model.set_current_frame(0);
-    model.set_total_frames(request.total_frames as i32);
+    model.set_total_frames(i32::try_from(request.total_frames).unwrap_or(i32::MAX));
     model.set_progress(0.0);
     model.set_eta_text(String::new().into());
 
@@ -470,7 +472,7 @@ fn build_request(
         model.get_custom_width(),
         model.get_custom_height(),
     );
-    let samples_per_pixel = model.get_sample_exponent_raw().round().exp2().round() as u32;
+    let samples_per_pixel = samples_per_pixel_from_exponent(model.get_sample_exponent_raw());
     let max_bounces = params::resolve_max_bounces(model.get_selected_bounce_index());
     let color_space = crate::gui::color_space_from_index(model.get_selected_color_space_index());
 
@@ -494,7 +496,10 @@ fn build_request(
     let local_compute = RenderContext::lock(render_ctx).local_compute_target;
     let worker = settings_store.snapshot().settings.remote_worker();
     let remote = RemoteSelection {
-        compute_target: compute_target_of(model.get_compute_target_index(), worker.is_some()),
+        compute_target: compute_target_of(
+            model.get_compute_target_index(),
+            crate::gui::remote::current_availability(ui).configured && worker.is_some(),
+        ),
         worker,
         transfer: ExportTransfer::from_index(model.get_transfer_index()),
         contribute_local: settings_store
@@ -546,7 +551,7 @@ fn build_request(
 
     Ok(run::VideoExportRequest {
         scene,
-        axis_index: axis_index.max(0) as usize,
+        axis_index: usize::try_from(axis_index.max(0)).unwrap_or(0),
         start_deg,
         end_deg,
         step_deg,
@@ -586,10 +591,7 @@ const fn compute_target_of(index: i32, remote_configured: bool) -> ComputeTarget
 /// before the video export section can be interacted with). `None` if the axis is out
 /// of range or the sweep for it hasn't landed yet (fewer than 181 points).
 fn read_axis_curves(ui: &MainWindow, axis_index: i32) -> Option<metrics::MetricCurves> {
-    if axis_index < 0 {
-        return None;
-    }
-    let idx = axis_index as usize;
+    let idx = usize::try_from(axis_index).ok()?;
     let tilt = ui.global::<TiltModel>();
     let to_vec = |row: slint::ModelRc<f32>| row.iter().collect::<Vec<f32>>();
 
@@ -635,7 +637,7 @@ fn resolve_export_directory_then(
         ui,
         crate::gui::pickers::PickerRequest {
             kind: crate::gui::pickers::PickerKind::PickFolder,
-            title: Some("Choose an export folder".to_string()),
+            title: Some("Choose an Export Folder".to_string()),
             filters: Vec::new(),
             default_file_name: None,
             starting_dir: None,
@@ -650,14 +652,33 @@ fn resolve_export_directory_then(
     );
 }
 
+/// The samples-per-pixel count behind the dialog's log2 slider (`2^round(exponent)`).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the slider exponent is a small non-negative value, so 2^exponent is a positive integer far below u32::MAX"
+)]
+fn samples_per_pixel_from_exponent(exponent: f32) -> u32 {
+    exponent.round().exp2().round() as u32
+}
+
+/// Parses the dialog's step field in degrees, falling back to 1 degree, clamped.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the Slint property precision; the clamped step is a small degree value"
+)]
+fn parse_step_deg(raw: &str) -> f32 {
+    raw.trim()
+        .parse::<f64>()
+        .map_or(1.0, params::clamp_step_deg) as f32
+}
+
 /// `axis_index` -> its azimuth label (e.g. `"45"`) for `{axis}` in the folder-name
 /// template.
 fn axis_label_for_index(axis_index: i32) -> String {
-    if axis_index < 0 {
-        return "0".to_string();
-    }
-    PROFILE_AZIMUTHS_DEG
-        .get(axis_index as usize)
+    usize::try_from(axis_index)
+        .ok()
+        .and_then(|index| PROFILE_AZIMUTHS_DEG.get(index))
         .map_or_else(|| "0".to_string(), |deg| format!("{deg:.0}"))
 }
 
@@ -765,7 +786,7 @@ fn live_template_context(
         model.get_custom_width(),
         model.get_custom_height(),
     );
-    let spp = model.get_sample_exponent_raw().round().exp2().round() as u32;
+    let spp = samples_per_pixel_from_exponent(model.get_sample_exponent_raw());
     let bounces = params::resolve_max_bounces(model.get_selected_bounce_index());
     let color_space = crate::gui::color_space_from_index(model.get_selected_color_space_index());
     let step_deg = params::clamp_step_deg(f64::from(model.get_step_deg()));

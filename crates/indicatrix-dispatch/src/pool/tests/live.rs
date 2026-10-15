@@ -51,7 +51,10 @@ fn assert_exact(merger: &Merger, samples: &mut [u32], range: SampleRange) {
         assert_ne!(pair[0], pair[1], "sample {} was traced twice", pair[0]);
     }
     let mut snapshot = vec![Vec3::ZERO; 4];
-    assert_eq!(merger.snapshot_into(&mut snapshot), samples.len() as u32);
+    assert_eq!(
+        merger.snapshot_into(&mut snapshot),
+        u32::try_from(samples.len()).expect("a test sample count fits u32")
+    );
     let expected: Vec<u32> = (range.first_sample..range.end()).collect();
     if samples.len() == expected.len() {
         assert_eq!(samples, expected.as_slice());
@@ -59,7 +62,11 @@ fn assert_exact(merger: &Merger, samples: &mut [u32], range: SampleRange) {
     let mut reference = vec![Vec3::ZERO; 4];
     for &sample in &*samples {
         for (pixel, dst) in reference.iter_mut().enumerate() {
-            *dst += value(Values::Integer, pixel as u32, sample);
+            *dst += value(
+                Values::Integer,
+                u32::try_from(pixel).expect("a test pixel index fits u32"),
+                sample,
+            );
         }
     }
     assert_eq!(snapshot, reference);

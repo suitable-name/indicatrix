@@ -18,7 +18,7 @@ export component OptimizeTab inherits VerticalLayout {
     SectionTitle { text: "Optimize"; }
     InfoLine { text: OptimizeModel.hint; }
 
-    FieldLabel { text: "Weights: windowing / extinction / tilt brilliance"; wrap: word-wrap; }
+    FieldLabel { text: "Weights: Windowing / Extinction / Tilt Brilliance"; wrap: word-wrap; }
     // `min-width: 0px` on every field of a row: the style's LineEdit is at least 160px wide,
     // so three of them made the whole tab wider than the dock (the hint text stopped
     // wrapping and the third field was cut off).
@@ -29,14 +29,14 @@ export component OptimizeTab inherits VerticalLayout {
         LineEdit { min-width: 0px; enabled: !root.busy; text <=> OptimizeModel.weight-tilt-brilliance; placeholder-text: "tilt"; changed has-focus => { AppModel.text-focus = self.has-focus; } }
     }
     FieldLabel { text: "Relative weights, any non-negative number; higher matters more."; wrap: word-wrap; }
-    FieldLabel { text: "Yield weight: " + Math.round(OptimizeModel.weight-yield * 100) + "%"; }
+    FieldLabel { text: "Yield Weight: " + Math.round(OptimizeModel.weight-yield * 100) + "%"; }
     Slider {
         enabled: !root.busy;
         minimum: 0.0;
         maximum: 1.0;
         value <=> OptimizeModel.weight-yield;
     }
-    FieldLabel { text: "Evaluation budget / seed"; }
+    FieldLabel { text: "Evaluation Budget / Seed"; }
     HorizontalLayout {
         spacing: 4px;
         LineEdit { min-width: 0px; enabled: !root.busy; text <=> OptimizeModel.budget-text; placeholder-text: "budget"; changed has-focus => { AppModel.text-focus = self.has-focus; } }
@@ -45,7 +45,7 @@ export component OptimizeTab inherits VerticalLayout {
     HorizontalLayout {
         spacing: 10px;
         CheckBox { enabled: !root.busy; text: "Polish"; checked <=> OptimizeModel.polish-enabled; }
-        CheckBox { enabled: !root.busy; text: "Only selected tiers"; checked <=> OptimizeModel.only-selected; }
+        CheckBox { enabled: !root.busy; text: "Only Selected Tiers"; checked <=> OptimizeModel.only-selected; }
     }
 
     HorizontalLayout {
@@ -117,7 +117,7 @@ export component OptimizeTab inherits VerticalLayout {
             }
             if OptimizeModel.change-rows.length > 0: VerticalLayout {
                 spacing: 2px;
-                Text { text: "Tiers this would change:"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                Text { text: "Tiers This Would Change:"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
                 HorizontalLayout {
                     spacing: 4px;
                     Text { width: 28px; text: "#"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }

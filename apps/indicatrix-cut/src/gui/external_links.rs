@@ -178,6 +178,11 @@ fn opener_command(target: &OsStr) -> Command {
 /// "no handler registered" from "the handler launched and exited", and every caller has
 /// already put the target on screen, so the cutter is never left with nothing.
 fn launch(target: &OsStr) -> io::Result<()> {
+    // UI harness builds never start the OS opener: the target is captured instead.
+    #[cfg(feature = "ui-harness")]
+    if crate::harness_support::capture_opened(&target.to_string_lossy()) {
+        return Ok(());
+    }
     let mut child = opener_command(target).spawn()?;
     // Reaps the opener when it exits, so it never lingers as a zombie process on Unix.
     std::thread::spawn(move || {

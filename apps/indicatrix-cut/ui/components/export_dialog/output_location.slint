@@ -40,7 +40,7 @@ export component ExportOutputLocation inherits VerticalLayout {
             border-color: Theme.border-dialog;
             clip: true;
             accessible-role: AccessibleRole.text;
-            accessible-label: ExportModel.directory == "" ? "Output folder: chosen on first export" : "Output folder: " + ExportModel.directory;
+            accessible-label: ExportModel.directory == "" ? "Output Folder: chosen on first export" : "Output Folder: " +ExportModel.directory;
 
             Text {
                 text: ExportModel.directory == "" ? "Chosen on first export..." : ExportModel.directory;
@@ -70,7 +70,7 @@ export component ExportOutputLocation inherits VerticalLayout {
         height: template_caption.preferred-height;
         Tooltip { text: @markdown("The name of each exported file. Words in curly brackets, like {design}, are replaced by the real value."); }
         template_caption := Text {
-            text: "Filename template:";
+            text: "Filename Template:";
             font-size: 10px;
             color: Theme.text-muted;
             accessible-role: AccessibleRole.text;
@@ -105,7 +105,7 @@ export component ExportOutputLocation inherits VerticalLayout {
             // and editable by scrolling, not truncated.
             width: 100%;
             height: 100%;
-            accessible-label: "Filename template";
+            accessible-label: "Filename Template";
             text <=> ExportModel.filename_template;
             enabled: !ExportModel.is_exporting;
             edited(text) => { ExportModel.filename_template_changed(text); }

@@ -39,9 +39,7 @@ pub(super) struct BuildRequest {
     pub(super) titles: BTreeMap<i64, String>,
     /// For a stone's entry id, how its design is drawn.
     pub(super) mesh_ids: BTreeMap<i64, StoneDraw>,
-    /// The plan's rough colour and pose choices, when the plan has a rough colour (`zoning`
-    /// builds).
-    #[cfg(feature = "zoning")]
+    /// The plan's rough colour and pose choices, when the plan has a rough colour.
     pub(super) colour: Option<super::zoning_view::ColourJob>,
 }
 
@@ -94,15 +92,11 @@ pub(super) fn spawn_build_worker(
         "rough-view-scene",
         move |request: BuildRequest| {
             meshes.refresh(request.epoch);
-            // Zoning builds: the cutter's pose choice is applied and the stones are coloured by
-            // the plan's rough colour.
-            #[cfg(feature = "zoning")]
+            // The cutter's pose choice is applied and the stones are coloured by the plan's rough
+            // colour.
             let (posed, colours) =
                 super::zoning_view::prepare(&request.layout, request.colour.as_ref(), &meshes);
-            #[cfg(feature = "zoning")]
             let layout = &posed;
-            #[cfg(not(feature = "zoning"))]
-            let layout = &request.layout;
             let fit = build_fit_scene(
                 &FitInputs {
                     layout,
@@ -112,7 +106,6 @@ pub(super) fn spawn_build_worker(
                 },
                 &*meshes,
             );
-            #[cfg(feature = "zoning")]
             let fit = {
                 let mut fit = fit;
                 fit.apply_stone_colours(&colours);

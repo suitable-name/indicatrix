@@ -4,7 +4,7 @@ version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 authors = { workspace = true }
-description = "Headless command-line tool for Indicatrix faceting designs: info, solve, metrics, validate, optimize, retarget, sweep and export from scripts, with no window. Reads .indicatrix, .asc, .gem and .gcs; uses the same solver, retarget gate and optimizer as the desktop editor."
+description = "Headless command-line tool for Indicatrix faceting designs: info, solve, metrics, validate, optimize, retarget, sweep and export from scripts, with no window. Reads .isdd (and older .indicatrix), .asc, .gem and .gcs; uses the same solver, retarget gate and optimizer as the desktop editor."
 license = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
@@ -24,7 +24,7 @@ path = "src/main.rs"
 [dependencies]
 # `GemMaterial`, `LightingPreset`, the solid mesh and the optical metrics the commands print.
 indicatrix = { workspace = true }
-# `Design`, the solver, the optimizer, the native `.indicatrix` codec, manufacturability checks.
+# `Design`, the solver, the optimizer, the native `.isdd` codec, manufacturability checks.
 indicatrix-cut-core = { workspace = true }
 # The GUI-free editor session and view models both front ends share: the retarget engine and
 # its validity gate, the sweep engine, the verdict, the cut sheet and the `.asc` text export.
@@ -35,6 +35,9 @@ indicatrix-formats = { workspace = true }
 indicatrix-vault = { workspace = true }
 # `--json` output. Object keys come out sorted, so the text is deterministic.
 serde_json = { workspace = true }
+# The new-version notice `main.rs` prints to standard error before a command (skipped with
+# `--no-update-check` or INDICATRIX_NO_UPDATE_CHECK).
+indicatrix-update = { workspace = true }
 # `render` / `tilt-video`: the desktop app's own render core and remote client, so a job renders exactly
 # as it would in the app's render queue (spec C:\temp\mcp2\render_jobs_spec_2026-10-06.md §5.1).
 indicatrix-cut = { workspace = true }

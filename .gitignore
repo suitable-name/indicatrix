@@ -10,3 +10,4 @@ certs
 exports
 indicatrix*.log
 dist
+build

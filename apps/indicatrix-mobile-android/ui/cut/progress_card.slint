@@ -1,0 +1,129 @@
+// The progress card (how far the cutting has got and the big Start / Continue button) and
+// the diagram card of the Cut page. Both read `CutModel`.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "../shell/icon.slint";
+import { StateLayer } from "../shell/state_layer.slint";
+import { CutModel } from "cut_model.slint";
+
+// A 64 px filled button: the one thing to press at the machine.
+component StartButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+
+    height: 64px;
+    border-radius: 32px;
+    background: Theme.primary;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    StateLayer {
+        pressed: touch.pressed;
+        hovered: touch.has-hover;
+        tint: Theme.on-primary;
+        border-radius: root.border-radius;
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: Theme.space-sm;
+
+        Rectangle {
+            width: 24px;
+
+            Icon {
+                source: Icons.cut;
+                tint: Theme.on-primary;
+            }
+        }
+
+        Text {
+            text: root.text;
+            color: Theme.on-primary;
+            font-size: Theme.text-title;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component ProgressCard inherits Rectangle {
+    background: Theme.surface-container;
+    border-radius: Theme.radius-lg;
+    height: card.preferred-height;
+
+    card := VerticalLayout {
+        padding: Theme.space-lg;
+        spacing: Theme.space-md;
+
+        Text {
+            text: CutModel.progress-text;
+            color: Theme.on-surface;
+            font-size: Theme.text-title-large;
+            font-weight: 500;
+            overflow: elide;
+        }
+
+        // The bar: a track with the done share filled.
+        Rectangle {
+            height: 8px;
+            border-radius: 4px;
+            background: Theme.surface-highest;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Progress " + CutModel.progress-text;
+
+            Rectangle {
+                x: 0px;
+                width: parent.width * clamp(CutModel.progress, 0.0, 1.0);
+                height: parent.height;
+                border-radius: 4px;
+                background: Theme.primary;
+            }
+        }
+
+        StartButton {
+            text: CutModel.done-count == 0 ? "Start Cutting" : (CutModel.done-count >= CutModel.total-count ? "Review Cutting" : "Continue Cutting");
+            clicked => {
+                CutModel.start-cutting();
+            }
+        }
+    }
+}
+
+// The three-panel diagram with the selected row's tier highlighted. The picture is
+// drawn on a dark background, so the card stays dark in the light theme too.
+export component DiagramCard inherits Rectangle {
+    in property <string> hint: "";
+
+    // The picture is 2.5 times as wide as it is tall; the user of the card sets the height.
+    border-radius: Theme.radius-lg;
+    background: #0c0e14;
+    clip: true;
+
+    if CutModel.has-diagram: Image {
+        width: parent.width;
+        height: parent.height;
+        source: CutModel.diagram;
+        image-fit: contain;
+        accessible-role: AccessibleRole.image;
+        accessible-label: "Faceting diagram of the design";
+    }
+
+    if !CutModel.has-diagram: Text {
+        text: root.hint;
+        color: #cac4d0;
+        font-size: Theme.text-body;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+}

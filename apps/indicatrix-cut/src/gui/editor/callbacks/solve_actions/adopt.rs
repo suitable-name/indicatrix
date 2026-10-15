@@ -59,10 +59,9 @@ pub(in crate::gui::editor) fn setup_adopt_meet_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            if index < 0 {
+            let Ok(index) = usize::try_from(index) else {
                 return;
-            }
-            let index = index as usize;
+            };
             let mut st = state.borrow_mut();
             // The lookup of the imported meet and the one `Edit::SetConstraint` live in
             // `EditorSession::adopt_imported_meet` (shared with the web app).

@@ -9,7 +9,10 @@ use crate::{
         Ctx, coalesce_now,
         push::{MessageKind, show_message},
     },
-    editor::edit::{Dirty, finish_edit},
+    editor::{
+        edit::{Dirty, finish_edit},
+        nudge::{driven_refusal, with_followers},
+    },
     views::{request_refresh, state::ViewsState},
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
@@ -64,6 +67,19 @@ fn committed_inputs(ctx: &Ctx, target: &HandleTarget) -> Option<GestureInputs> {
     })
 }
 
+/// The relation (as a cutter reads it, `P1 - 2`) the angle of committed tier `tier` follows,
+/// `None` for a free angle or while the app state is borrowed.
+fn driven_relation(ctx: &Ctx, tier: usize) -> Option<String> {
+    let app = ctx.state.try_borrow().ok()?;
+    app.design.as_ref()?.session.design.relation_text(tier)
+}
+
+/// The status sentence naming the tier that drives `tier` (see [`driven_refusal`]).
+fn driven_reason(ctx: &Ctx, tier: usize) -> Option<String> {
+    let app = ctx.state.try_borrow().ok()?;
+    driven_refusal(&app.design.as_ref()?.session.design, tier)
+}
+
 /// `ManipulateModel.drag-begin`: takes the gesture's snapshot and grants (or refuses) it.
 fn begin(ctx: &Ctx, kind: i32, x: f32, y: f32) {
     let (Some(kind), Some(ui)) = (kind_from_int(kind), ctx.ui.upgrade()) else {
@@ -81,6 +97,22 @@ fn begin(ctx: &Ctx, kind: i32, x: f32, y: f32) {
         return;
     };
     if kind == HandleKind::Index && target.frame.is_indexless() {
+        return;
+    }
+    // A tier whose angle follows a relation takes no angle drag (the desktop draws no
+    // angle handle for it); a press that still names it is refused with the reason, which
+    // names the driving tier. The provisional Slice tier is not in the design yet.
+    if kind == HandleKind::Angle
+        && !target.provisional
+        && let Some(relation) = driven_relation(ctx, target.tier)
+    {
+        set_hint(
+            &ui,
+            &text::angle_follows_relation_hint(&target.label, &relation),
+        );
+        if let Some(reason) = driven_reason(ctx, target.tier) {
+            show_message(ctx, MessageKind::Info, &reason);
+        }
         return;
     }
     let inputs = if target.provisional {
@@ -199,7 +231,13 @@ fn apply_value(ctx: &Ctx, drag: &mut ActiveDrag, value: DragValue) {
         })
     };
     if applied {
-        notify_edit(ctx, Dirty::one(tier));
+        // The tiers that follow the dragged one moved with it.
+        let dirty = ctx.state.try_borrow().ok().and_then(|app| {
+            app.design
+                .as_ref()
+                .map(|d| with_followers(&d.session.design, [tier]))
+        });
+        notify_edit(ctx, dirty.map_or_else(|| Dirty::one(tier), Dirty::Tiers));
     }
     if let Some(message) = failure {
         show_message(ctx, MessageKind::Error, &message);

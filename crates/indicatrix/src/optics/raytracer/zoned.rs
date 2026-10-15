@@ -1,4 +1,4 @@
-//! Zoned (colour-zoned) absorption in the CPU tracer: `zoning` feature only.
+//! Zoned (colour-zoned) absorption in the CPU tracer.
 //!
 //! A material with `GemMaterial::zoning == Some(..)` replaces the homogeneous Beer-Lambert
 //! term `alpha(lambda) * path` of every interior segment by `sum_z alpha_z(lambda) * len_z`,
@@ -166,11 +166,17 @@ impl ZonedCache {
         }
         let e_mode_hat = cache.hero_indicatrix.map_or_else(
             || {
-                let n_o_hero = cache.n_o_ch[ctx.hero_idx];
-                let n_e_hero = ctx
+                let ordinary_hero = cache.n_o_ch[ctx.hero_idx];
+                let extraordinary_hero = ctx
                     .material
-                    .extraordinary_index_at(ctx.lambdas[ctx.hero_idx], n_o_hero);
-                assigned_mode_e_field_uniaxial(k_hat, c_axis, is_extraordinary, n_o_hero, n_e_hero)
+                    .extraordinary_index_at(ctx.lambdas[ctx.hero_idx], ordinary_hero);
+                assigned_mode_e_field_uniaxial(
+                    k_hat,
+                    c_axis,
+                    is_extraordinary,
+                    ordinary_hero,
+                    extraordinary_hero,
+                )
             },
             |ind| ind.assigned_mode_e_field(k_hat, is_extraordinary),
         );
@@ -204,7 +210,12 @@ impl ZonedCache {
             ZoneKernels::Single(kernel) => kernel.lengths(from, to),
             ZoneKernels::Double(kernel) => {
                 let lengths = kernel.lengths(from.as_dvec3(), to.as_dvec3());
-                lengths.map(|l| l as f32)
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "zone path lengths in model units fit f32; the GPU kernels use f32"
+                )]
+                let narrowed = lengths.map(|l| l as f32);
+                narrowed
             }
         };
         let total: f32 = raw.iter().sum();

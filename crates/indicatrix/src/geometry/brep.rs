@@ -438,12 +438,17 @@ impl GemPolyhedron {
         }
         let vertices = output_vertices(&candidates, &welded, scale)?;
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the GPU/storage precision of the bounding radius"
+        )]
+        let bounding_radius = (radius * scale) as f32;
         Ok(Self {
             vertices,
             facet_planes: planes,
             facet_polygons,
             triangle_indices,
-            bounding_radius: (radius * scale) as f32,
+            bounding_radius,
         })
     }
 
@@ -475,6 +480,10 @@ impl GemPolyhedron {
     ///
     /// Panics if `facet_idx` is out of range.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the storage precision of a facet area; the f64 sum is in the normal float range"
+    )]
     pub fn facet_area(&self, facet_idx: usize) -> f32 {
         let poly = &self.facet_polygons[facet_idx];
         if poly.len() < 3 {
@@ -505,6 +514,10 @@ impl GemPolyhedron {
     /// Panics only if internal invariants are violated (should not happen for a
     /// `GemPolyhedron` returned by [`Self::from_planes`]).
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the storage precision of the volume; the f64 sum is in the normal float range"
+    )]
     pub fn volume(&self) -> f32 {
         let positions: Vec<DVec3> = self.vertices.iter().map(|v| v.as_dvec3()).collect();
         mesh_volume(&positions, &self.triangle_indices) as f32

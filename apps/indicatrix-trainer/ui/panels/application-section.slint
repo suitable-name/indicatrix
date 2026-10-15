@@ -1,0 +1,33 @@
+import { Button, Switch } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+import { TrainingController } from "../models.slint";
+import { Section } from "../components/section.slint";
+
+// The application's own settings: the new-version check.
+export component ApplicationSection inherits Section {
+    title: "APPLICATION";
+
+    Switch {
+        text: "Check for New Versions";
+        checked <=> TrainingController.update_enabled;
+        accessible-label: "Check for new versions once a day";
+        toggled => { TrainingController.set_update_enabled(self.checked); }
+        Tooltip { text: @markdown("Ask GitHub once a day whether a newer release exists. Nothing is downloaded or installed."); }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        Button {
+            text: "Check Now";
+            accessible-label: "Check for a new version now";
+            clicked => { TrainingController.check_updates_now(); }
+            Tooltip { text: @markdown("Ask GitHub now, whatever the daily check says."); }
+        }
+    }
+    if TrainingController.update_status != "": Text {
+        text: TrainingController.update_status;
+        color: TrainerTheme.text-secondary;
+        font-size: 12px;
+        wrap: word-wrap;
+        accessible-role: text;
+    }
+}

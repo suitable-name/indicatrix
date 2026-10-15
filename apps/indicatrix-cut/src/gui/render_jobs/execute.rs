@@ -108,6 +108,11 @@ pub fn execute_job(
     }
 }
 
+/// A frame count at the `u32` the job records use; saturates instead of wrapping.
+fn count_u32(count: usize) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
 const fn failed(kind: FailureKind, message: String, frames_done: u32) -> JobOutcome {
     JobOutcome::Failed {
         kind,
@@ -249,12 +254,12 @@ fn execute_video(
     match frames::render_frames(&request, true, cancel, &mut reporter) {
         FramesOutcome::Done(paths) => finish_video(video, &dir, &paths, total),
         FramesOutcome::Cancelled { frames_done } => JobOutcome::Stopped {
-            frames_done: frames_done as u32,
+            frames_done: count_u32(frames_done),
         },
         FramesOutcome::Failed {
             message,
             frames_done,
-        } => failed(FailureKind::Render, message, frames_done as u32),
+        } => failed(FailureKind::Render, message, count_u32(frames_done)),
     }
 }
 
@@ -338,8 +343,8 @@ impl SinkReporter<'_> {
     fn report(&mut self, frames_done: usize, total: usize, fraction: f32, note: Option<String>) {
         let eta_secs = self.eta.eta(Instant::now()).map(|left| left.as_secs_f64());
         self.sink.progress(&JobProgress {
-            frames_done: frames_done as u32,
-            frames_total: total as u32,
+            frames_done: count_u32(frames_done),
+            frames_total: count_u32(total),
             fraction,
             eta_secs,
             note,
@@ -363,6 +368,7 @@ impl FrameReporter for SinkReporter<'_> {
             frames_done as f32 / total.max(1) as f32,
             None,
         );
-        self.sink.frame_finished(frames_done as u32, total as u32);
+        self.sink
+            .frame_finished(count_u32(frames_done), count_u32(total));
     }
 }

@@ -1,0 +1,78 @@
+// `InfoButton` replaces a desktop tooltip: tapping it opens an info sheet with the
+// explanation. `InfoSheetHost` is that sheet; `AppWindow` places one above the pages.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell } from "../models.slint";
+import { IconButton } from "icon_button.slint";
+import { TextButton } from "buttons.slint";
+
+export component InfoButton inherits IconButton {
+    in property <string> info-title;
+    in property <string> info-body;
+
+    icon: Icons.info;
+    label: "About " + root.info-title;
+    clicked => {
+        Shell.show-info(root.info-title, root.info-body);
+    }
+}
+
+export component InfoSheetHost inherits Rectangle {
+    visible: Shell.info-visible;
+
+    Rectangle {
+        background: Theme.scrim.with-alpha(0.32);
+
+        TouchArea {
+            clicked => {
+                Shell.info-visible = false;
+            }
+        }
+    }
+
+    card := Rectangle {
+        y: root.height - self.height;
+        width: min(root.width, 560px);
+        height: content.preferred-height;
+        background: Theme.surface-container;
+        border-top-left-radius: Theme.radius-xl;
+        border-top-right-radius: Theme.radius-xl;
+        drop-shadow-color: Theme.shadow;
+        drop-shadow-blur: Theme.shadow-blur-3;
+        drop-shadow-offset-y: -Theme.shadow-offset-1;
+
+        TouchArea { }
+
+        content := VerticalLayout {
+            padding: Theme.space-xl;
+            padding-bottom: Theme.space-xl + Shell.inset-bottom;
+            spacing: Theme.space-md;
+
+            Text {
+                text: Shell.info-title;
+                color: Theme.on-surface;
+                font-size: Theme.text-title-large;
+                font-weight: 500;
+                wrap: word-wrap;
+            }
+
+            Text {
+                text: Shell.info-body;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body-large;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+
+                TextButton {
+                    text: "Got It";
+                    clicked => {
+                        Shell.info-visible = false;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -44,7 +44,12 @@ export component TabViewPillRow inherits HorizontalLayout {
             padding-right: root.compact ? 8px : 12px;
             alignment: center;
             spacing: 6px;
-            Image { source: @image-url("../../icons/gem.svg"); colorize: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+            // Centred by a layout of its own: a fixed-size Image in the row sits at the top of
+            // its cell (`vertical-alignment` only places the picture inside the Image).
+            VerticalLayout {
+                alignment: center;
+                Image { source: @image-url("../../icons/gem.svg"); colorize: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; }
+            }
             Text { text: root.compact ? "3D (1)" : "3D Spectral Preview (1)"; font-size: 11px; font-weight: 600; color: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
         }
     }
@@ -63,7 +68,10 @@ export component TabViewPillRow inherits HorizontalLayout {
             padding-right: root.compact ? 8px : 12px;
             alignment: center;
             spacing: 6px;
-            Image { source: @image-url("../../icons/ruler.svg"); colorize: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+            VerticalLayout {
+                alignment: center;
+                Image { source: @image-url("../../icons/ruler.svg"); colorize: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; }
+            }
             Text { text: root.compact ? "Cutting (2)" : "Cutting Instructions (2)"; font-size: 11px; font-weight: 600; color: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
         }
     }
@@ -82,7 +90,10 @@ export component TabViewPillRow inherits HorizontalLayout {
             padding-right: root.compact ? 8px : 12px;
             alignment: center;
             spacing: 6px;
-            Image { source: @image-url("../../icons/folder.svg"); colorize: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+            VerticalLayout {
+                alignment: center;
+                Image { source: @image-url("../../icons/folder.svg"); colorize: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; }
+            }
             Text { text: root.compact ? "Files (3)" : "Files & Downloads (3)"; font-size: 11px; font-weight: 600; color: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
         }
     }
@@ -112,12 +123,14 @@ export component TabViewPillRow inherits HorizontalLayout {
                 padding-right: root.compact ? 8px : 12px;
                 alignment: center;
                 spacing: 6px;
-                Image {
-                    source: @image-url("../../icons/gem.svg");
-                    colorize: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
-                    width: 11px;
-                    height: 11px;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../../icons/gem.svg");
+                        colorize: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
+                        width: 11px;
+                        height: 11px;
+                    }
                 }
                 Text {
                     text: "Live Render";
@@ -143,12 +156,14 @@ export component TabViewPillRow inherits HorizontalLayout {
                 padding-right: root.compact ? 8px : 12px;
                 alignment: center;
                 spacing: 6px;
-                Image {
-                    source: @image-url("../../icons/pencil.svg");
-                    colorize: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
-                    width: 11px;
-                    height: 11px;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../../icons/pencil.svg");
+                        colorize: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
+                        width: 11px;
+                        height: 11px;
+                    }
                 }
                 Text {
                     text: "Edit";

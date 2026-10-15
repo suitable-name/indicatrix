@@ -40,6 +40,7 @@ component MetricChip inherits Rectangle {
         spacing: 3px;
         Text { text: root.label; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.none; }
         Text {
+            max-width: 160px;
             text: root.value;
             font-size: 11px;
             font-weight: 600;
@@ -167,14 +168,14 @@ component DetailActions inherits HorizontalLayout {
 
     if root.detail.url != "" && !root.detail.is_local: HeaderAction {
         icon: @image-url("../icons/globe.svg");
-        label: "Open on the web";
+        label: "Open on the Web";
         hint: "Open this design's page on the web, in your browser.";
         clicked => { root.open_url(root.detail.url); }
     }
 
     if root.detail.url != "" && !root.detail.is_local: HeaderAction {
         icon: @image-url("../icons/clipboard.svg");
-        label: "Copy link";
+        label: "Copy Link";
         hint: "Copy the web address of this design to the clipboard.";
         clicked => { root.copy_url(root.detail.url); }
     }
@@ -193,7 +194,7 @@ component DetailActions inherits HorizontalLayout {
     // (`gui::library::local::export`); experimental, see the hint. Advanced only.
     if GuideModel.shows_advanced(): HeaderAction {
         word: "gcs";
-        label: "Export as Gem Cut Studio file";
+        label: "Export as Gem Cut Studio File";
         hint: "Save the cutting instructions as a Gem Cut Studio (.gcs) file. Experimental: it follows the published Gem Cut Studio 1.1 file description, and chiral designs are untested.";
         clicked => { root.export_gcs(); }
     }
@@ -204,7 +205,7 @@ component DetailActions inherits HorizontalLayout {
     // and remote designs.
     HeaderAction {
         icon: @image-url("../icons/steps.svg");
-        label: "Build this design";
+        label: "Build This Design";
         hint: "A step-by-step lesson that rebuilds this design from an empty design, one tier at a time.";
         enabled: !BuildDesignModel.busy;
         clicked => { BuildDesignModel.start_selected(); }
@@ -217,14 +218,14 @@ component DetailActions inherits HorizontalLayout {
     // local-only).
     if root.with_metadata && root.detail.is_local: HeaderAction {
         icon: @image-url("../icons/info.svg");
-        label: "Edit metadata";
+        label: "Edit Metadata";
         hint: "Edit the title, designer, shape, refractive index, gear, facet count and proportions.";
         clicked => { root.edit_metadata(); }
     }
 
     if !root.confirming_delete: HeaderAction {
         icon: @image-url("../icons/trash.svg");
-        label: "Delete this design";
+        label: "Delete This Design";
         hint: "Delete this design. You are asked to confirm first.";
         clicked => { root.confirming_delete = true; }
     }
@@ -240,14 +241,14 @@ component DetailActions inherits HorizontalLayout {
         button_width: 44px;
         ink: Theme.accent-ruby;
         edge: Theme.accent-ruby;
-        label: "Yes, delete this design";
+        label: "Yes, Delete This Design";
         hint: "Delete this design now.";
         clicked => { root.confirming_delete = false; root.delete_diagram(); }
     }
     if root.confirming_delete: HeaderAction {
         word: "No";
         button_width: 44px;
-        label: "No, keep this design";
+        label: "No, Keep This Design";
         hint: "Do not delete. The design stays in the library.";
         clicked => { root.confirming_delete = false; }
     }
@@ -263,13 +264,16 @@ component DesignChipsRow inherits HorizontalLayout {
     in property <bool> editing_shape;
     in property <[string]> shape_options;
     in property <int> shape_current_index;
+    // 0 = every chip in one row; 1 = Shape to H/W; 2 = C/W to Material. A narrow window shows
+    // parts 1 and 2 as two rows, so no chip reaches past the window's edge.
+    in property <int> part: 0;
     callback edit_shape_requested();
     callback shape_selected(string);
     callback shape_edit_cancelled();
 
     spacing: 4px;
 
-    if (root.detail.shape != "" || root.is_local) && !root.editing_shape: Rectangle {
+    if root.part != 2 && (root.detail.shape != "" || root.is_local) && !root.editing_shape: Rectangle {
         height: 20px;
         background: Theme.bg-input;
         border-radius: Theme.radius-sm;
@@ -306,14 +310,14 @@ component DesignChipsRow inherits HorizontalLayout {
                 size: 20px;
                 glyph: 10px;
                 icon: @image-url("../icons/pencil.svg");
-                label: "Correct the shape";
+                label: "Correct the Shape";
                 hint: "Correct the shape that was detected automatically, or fill it in.";
                 clicked => { root.edit_shape_requested(); }
             }
         }
     }
 
-    if root.editing_shape: Rectangle {
+    if root.part != 2 && root.editing_shape: Rectangle {
         height: 24px;
         background: Theme.bg-input;
         border-radius: Theme.radius-sm;
@@ -337,26 +341,26 @@ component DesignChipsRow inherits HorizontalLayout {
                 size: 20px;
                 glyph: 9px;
                 icon: @image-url("../icons/close.svg");
-                label: "Cancel the shape change";
+                label: "Cancel the Shape Change";
                 hint: "Leave the shape as it was.";
                 clicked => { root.shape_edit_cancelled(); }
             }
         }
     }
 
-    if root.detail.gear != "": MetricChip {
+    if root.part != 2 && root.detail.gear != "": MetricChip {
         label: "Gear:";
         value: root.detail.gear;
         hint: "The index gear the design is cut on. See the glossary.";
         value_color: Theme.accent-cyan;
     }
-    if root.detail.facets != "": MetricChip {
+    if root.part != 2 && root.detail.facets != "": MetricChip {
         label: "Facets:";
         value: root.detail.facets;
         hint: "How many facets the finished stone has.";
         value_color: Theme.accent-amber;
     }
-    if root.detail.lw_ratio != "": MetricChip {
+    if root.part != 2 && root.detail.lw_ratio != "": MetricChip {
         label: "L/W:";
         value: root.detail.lw_ratio;
         hint: "Length divided by width. 1.0 is round or square.";
@@ -367,27 +371,27 @@ component DesignChipsRow inherits HorizontalLayout {
     // field here, and same 3-decimal display formatting as L/W/Volume
     // (`gui::detail::format_proportion`) -- the stored value itself is never rounded,
     // only what's shown here.
-    if root.detail.hw_ratio != "": MetricChip {
+    if root.part != 2 && root.detail.hw_ratio != "": MetricChip {
         label: "H/W:";
         value: root.detail.hw_ratio;
         hint: "Total height divided by width.";
     }
-    if root.detail.cw_ratio != "": MetricChip {
+    if root.part != 1 && root.detail.cw_ratio != "": MetricChip {
         label: "C/W:";
         value: root.detail.cw_ratio;
         hint: "Crown height divided by width.";
     }
-    if root.detail.pw_ratio != "": MetricChip {
+    if root.part != 1 && root.detail.pw_ratio != "": MetricChip {
         label: "P/W:";
         value: root.detail.pw_ratio;
         hint: "Pavilion depth divided by width.";
     }
-    if root.detail.volume != "": MetricChip {
+    if root.part != 1 && root.detail.volume != "": MetricChip {
         label: "Vol/W³:";
         value: root.detail.volume;
         hint: "Volume divided by width cubed: how much stone there is for its width.";
     }
-    if root.detail.ri != "": MetricChip {
+    if root.part != 1 && root.detail.ri != "": MetricChip {
         label: "R.I.:";
         value: root.detail.ri;
         hint: "Refractive index: how strongly the material bends light. See the glossary.";
@@ -395,7 +399,7 @@ component DesignChipsRow inherits HorizontalLayout {
     }
     // A guess, not a fact -- see `DiagramDetailData.material_guess`'s own doc
     // comment.
-    if root.detail.material_guess != "": MetricChip {
+    if root.part != 1 && root.detail.material_guess != "": MetricChip {
         label: "Material:";
         value: root.detail.material_guess;
         hint: "A guess made from the design's data, not a recorded fact.";
@@ -450,6 +454,8 @@ export component DetailHeaderView inherits Rectangle {
     // `window_width` still includes the library panel/gaps/padding this column
     // doesn't get; a bit of early wrapping is preferable to a binding loop.
     property <bool> narrow: root.window_width < 1300px;
+    // Below this the chips split over two rows (`DesignChipsRow.part`).
+    property <bool> very_narrow: root.window_width < 1100px;
     // Shape picker's option list and which entry matches `detail.shape` (-1 for
     // unclassified) -- see `library::build_shape_picker_options`'s doc comment.
     // Local designs only: the pencil below is gated on `detail.is_local`.
@@ -501,7 +507,7 @@ export component DetailHeaderView inherits Rectangle {
     border-color: Theme.border-subtle;
     vertical-stretch: 0;
     accessible-role: AccessibleRole.groupbox;
-    accessible-label: "Design details";
+    accessible-label: "Design Details";
 
     // A layout parent for the two conditional branches: `if` children of a plain
     // `Rectangle` contribute nothing to its layout constraints (the compiler
@@ -531,7 +537,7 @@ export component DetailHeaderView inherits Rectangle {
                     size: 20px;
                     glyph: 10px;
                     icon: @image-url("../icons/chevron-right.svg");
-                    label: "Design header";
+                    label: "Design Header";
                     hint: "Show the full design header, with the designer and every figure.";
                     expandable: true;
                     expanded: false;
@@ -600,7 +606,10 @@ export component DetailHeaderView inherits Rectangle {
             }
             // A guess, not a fact -- see `DiagramDetailData.material_guess`'s own
             // doc comment.
-            if root.detail.material_guess != "": CompactChip {
+            // Left out below ~1100 px: the one-line header has no second row to wrap onto, and
+            // this last, longest chip is the one that ran past the window's edge at 720 px
+            // (the full header shows it in its own row there).
+            if root.detail.material_guess != "" && !root.very_narrow: CompactChip {
                 label: "Material:";
                 value: root.detail.material_guess;
                 hint: "A guess made from the design's data, not a recorded fact.";
@@ -654,7 +663,7 @@ export component DetailHeaderView inherits Rectangle {
                             size: 20px;
                             glyph: 10px;
                             icon: @image-url("../icons/chevron-down.svg");
-                            label: "Design header";
+                            label: "Design Header";
                             hint: "Collapse the design header to one line.";
                             expandable: true;
                             expanded: true;
@@ -678,7 +687,7 @@ export component DetailHeaderView inherits Rectangle {
                     if root.renaming: LineEdit {
                         width: 200px;
                         text <=> root.rename_draft;
-                        accessible-label: "Design title";
+                        accessible-label: "Design Title";
                         accessible-description: "Type the new title, then press Enter to save it.";
                         accepted => {
                             root.rename_diagram(root.rename_draft);
@@ -693,7 +702,7 @@ export component DetailHeaderView inherits Rectangle {
                             size: 20px;
                             glyph: 11px;
                             icon: @image-url("../icons/pencil.svg");
-                            label: "Rename this design";
+                            label: "Rename This Design";
                             hint: "Change the title of this design.";
                             clicked => {
                                 root.rename_draft = root.detail.title;
@@ -712,7 +721,7 @@ export component DetailHeaderView inherits Rectangle {
                                 glyph: 11px;
                                 icon: @image-url("../icons/check.svg");
                                 ink: Theme.accent-emerald;
-                                label: "Save the new title";
+                                label: "Save the New Title";
                                 hint: "Save the new title.";
                                 clicked => {
                                     root.rename_diagram(root.rename_draft);
@@ -727,7 +736,7 @@ export component DetailHeaderView inherits Rectangle {
                                 size: 20px;
                                 glyph: 11px;
                                 icon: @image-url("../icons/close.svg");
-                                label: "Cancel the rename";
+                                label: "Cancel the Rename";
                                 hint: "Keep the old title.";
                                 clicked => { root.renaming = false; }
                             }
@@ -749,12 +758,17 @@ export component DetailHeaderView inherits Rectangle {
                         border-radius: 4px;
                         height: 18px;
                         accessible-role: AccessibleRole.text;
-                        accessible-label: "Competition design";
+                        accessible-label: "Competition Design";
                         accessible-description: "The catalogue marks this design as a competition design.";
                         Tooltip { text: @markdown("The catalogue marks this design as a competition design."); }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 6px; spacing: 4px;
-                            Image { source: @image-url("../icons/trophy.svg"); colorize: Theme.badge-orange-text; width: 10px; height: 10px; vertical-alignment: center; }
+                            // Centred by a layout of its own: a fixed-size Image in the row sits at
+                            // the top of its cell.
+                            VerticalLayout {
+                                alignment: center;
+                                Image { source: @image-url("../icons/trophy.svg"); colorize: Theme.badge-orange-text; width: 10px; height: 10px; }
+                            }
                             Text { text: "Competition Design"; font-size: 9px; font-weight: 700; color: Theme.badge-orange-text; vertical-alignment: center; accessible-role: AccessibleRole.none; }
                         }
                     }
@@ -810,9 +824,19 @@ export component DetailHeaderView inherits Rectangle {
                 editing_shape: root.editing_shape;
                 shape_options: root.shape_options;
                 shape_current_index: root.shape_current_index;
+                part: root.very_narrow ? 1 : 0;
                 edit_shape_requested => { root.editing_shape = true; }
                 shape_selected(val) => { root.set_shape(val); root.editing_shape = false; }
                 shape_edit_cancelled => { root.editing_shape = false; }
+            }
+            // Below ~1100 px the nine chips no longer fit one row: the rest go on a third line.
+            if root.very_narrow && root.detail.title != "": DesignChipsRow {
+                detail: root.detail;
+                is_local: root.detail.is_local;
+                editing_shape: root.editing_shape;
+                shape_options: root.shape_options;
+                shape_current_index: root.shape_current_index;
+                part: 2;
             }
         }
     }

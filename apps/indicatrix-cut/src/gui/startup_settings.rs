@@ -10,18 +10,15 @@
 //! from growing further -- same reasoning as `gui`'s other submodules.
 
 use crate::{
-    EditorModel, LibraryModel, LightingPresetItem, MainWindow, SettingsModel, SolidPreviewModel,
-    TiltVideoExportModel, ViewportModel,
+    EditorModel, LibraryModel, LightingPresetItem, MainWindow, RemoteWorkerModel, SettingsModel,
+    SolidPreviewModel, ViewportModel,
     bridge::render_thread::{RenderContext, load_env_map, resolve_material},
-    gui::{
-        optics::c_axis::angles_to_c_axis, remote::live_compute_target_index,
-        render::sample_scale::count_to_exponent, show_toast,
-    },
+    gui::{remote::live_compute_target_index, render::sample_scale::count_to_exponent, show_toast},
     settings::{
         LightingPreset as SavedLightingPreset, LocalComputeTarget, LocalPreviewScale, SettingsFile,
         model::{
-            DEFAULT_LIGHT_PITCH_DEG, DEFAULT_LIGHT_YAW_DEG, clamp_head_shadow_deg,
-            clamp_surface_glare, percent_from_surface_glare,
+            EXPOSURE_RANGE, PITCH_RANGE_RAD, clamp_head_shadow_deg, clamp_surface_glare,
+            percent_from_surface_glare,
         },
     },
 };
@@ -32,7 +29,6 @@ use indicatrix::{
         materials::{GemMaterial, OpticalCharacter},
         raytracer::LightingModel,
     },
-    render_setup::inclusion_scale,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
@@ -43,10 +39,9 @@ const DEFAULT_MATERIAL_NAME: &str = "Diamond";
 
 /// Applies settings loaded from disk into the render context and into the UI's own
 /// mirrored properties (`target_samples_exponent`, `resolution_index`, `bounce_index`,
-/// `exposure_val`, `light_yaw_deg`, `light_pitch_deg`, `inclusion_sigma_s`,
-/// `c_axis_override_enabled`/`c_axis_tilt_deg`/`c_axis_azimuth_deg`, `girdle_frosted`,
-/// `edge_rounding_radius`, `stone_width_mm` -- hoisted onto `MainWindow` for exactly this reason, see the
-/// comment beside them in `app.slint`). Called once at startup, before the render
+/// `exposure_val`, `light_yaw_deg`, `light_pitch_deg` -- hoisted onto `MainWindow` for exactly
+/// this reason, see the comment beside them in `app.slint`). The stone's size and render effects
+/// are the open design's, not the file's. Called once at startup, before the render
 /// thread or any callback is wired up, so there is no risk of a callback firing
 /// mid-application and racing this.
 pub(super) fn apply_loaded_settings(
@@ -129,12 +124,16 @@ pub(super) fn apply_loaded_settings(
         crate::bridge::preview_render::material_ri_at_sodium_d,
     );
     // `ri_default` is an f64; Slint's `float` property type is f32 -- a lossy but
-    // harmless cast for a display/filter-default value in the 1.0-3.0 RI range,
-    // `cast_possible_truncation` is workspace-`allow`ed (`Cargo.toml`).
+    // harmless narrowing for a display/filter-default value in the 1.0-3.0 RI range.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Slint float properties are f32; the refractive index is in the 1.0-3.0 range"
+    )]
+    let ri_default_f32 = ri_default as f32;
     ui.global::<LibraryModel>()
-        .set_ri_material_default(ri_default as f32);
+        .set_ri_material_default(ri_default_f32);
     ui.global::<LibraryModel>()
-        .set_ri_tolerance_center(ri_default as f32);
+        .set_ri_tolerance_center(ri_default_f32);
 
     // Reload the last-loaded HDR environment map, if any. Mirrors
     // `on_load_env_map` (in `setup_environment_map_callbacks`) but runs before any
@@ -187,23 +186,20 @@ fn apply_loaded_render_context(
     ctx.width = s.render_width;
     ctx.height = s.render_height;
     ctx.max_bounces = s.max_bounces;
-    // Clamped the same way the live handlers do (`gui::render::material_quality`'s
-    // `on_exposure_changed`/`on_inclusion_changed`) -- a hand-edited or stale settings
+    // Clamped the same way the live exposure handler does -- a hand-edited or stale settings
     // file could otherwise carry an out-of-range value straight into the render loop,
     // which every live-drag path already refuses to do.
-    ctx.exposure = s.exposure.clamp(0.2, 5.0);
-    ctx.inclusion_sigma_s = inclusion_scale::clamp_stored_sigma_s(s.inclusion_sigma_s);
-    // The settings dialog drags degrees, `RenderContext` stores the already-
-    // resolved `Vec3` -- see `RenderContext::c_axis_override`'s own doc comment for
-    // why this crossing happens here rather than downstream in `bridge`.
-    ctx.c_axis_override = s
-        .c_axis_override_enabled
-        .then(|| angles_to_c_axis(s.c_axis_tilt_deg, s.c_axis_azimuth_deg));
-    ctx.girdle_frosted = s.girdle_frosted;
-    ctx.edge_rounding_radius = s.edge_rounding_radius;
-    ctx.stone_width_mm = s.stone_width_mm;
+    ctx.exposure = s.exposure.clamp(EXPOSURE_RANGE.0, EXPOSURE_RANGE.1);
+    // The stone's size and render effects (inclusion haze, crystal axis, frosted girdle, edge
+    // rounding) are the design's own: the render context keeps its built-in defaults here and
+    // the open design sets them. The old app-level values in the settings file are read only
+    // once, by the one-shot migration onto the first design opened
+    // (`AppSettings::legacy_stone_defaults`).
     ctx.light_yaw = s.light_yaw_deg.to_radians();
-    ctx.light_pitch = s.light_pitch_deg.to_radians().clamp(0.15, 1.55);
+    ctx.light_pitch = s
+        .light_pitch_deg
+        .to_radians()
+        .clamp(PITCH_RANGE_RAD.0, PITCH_RANGE_RAD.1);
     ctx.lighting_preset = lighting_preset;
     ctx.yaw = s.camera_yaw;
     ctx.pitch = crate::gui::render::camera_lighting::wrap_pitch(s.camera_pitch);
@@ -264,32 +260,14 @@ fn apply_loaded_ui_mirrors(
     // stale out-of-range value shows the slider at the value ACTUALLY being traced,
     // not the raw unclamped figure the file happened to carry.
     ui.global::<SettingsModel>()
-        .set_exposure_val(s.exposure.clamp(0.2, 5.0));
+        .set_exposure_val(s.exposure.clamp(EXPOSURE_RANGE.0, EXPOSURE_RANGE.1));
     ui.global::<SettingsModel>()
         .set_backdrop_index(s.backdrop.index());
     ui.global::<SettingsModel>()
         .set_surface_glare_pct(percent_from_surface_glare(s.surface_glare));
     ui.global::<SettingsModel>()
         .set_head_shadow_deg(clamp_head_shadow_deg(s.head_shadow_deg));
-    // The slider shows the stored coefficient's position; the coefficient itself is the stored
-    // number, so an old file keeps its haze.
-    let inclusion_sigma_s = inclusion_scale::clamp_stored_sigma_s(s.inclusion_sigma_s);
-    ui.global::<SettingsModel>()
-        .set_inclusion_sigma_s(inclusion_sigma_s);
-    ui.global::<SettingsModel>()
-        .set_inclusion_position(inclusion_scale::sigma_s_to_position(inclusion_sigma_s));
-    ui.global::<SettingsModel>()
-        .set_c_axis_override_enabled(s.c_axis_override_enabled);
-    ui.global::<SettingsModel>()
-        .set_c_axis_tilt_deg(s.c_axis_tilt_deg);
-    ui.global::<SettingsModel>()
-        .set_c_axis_azimuth_deg(s.c_axis_azimuth_deg);
-    ui.global::<SettingsModel>()
-        .set_girdle_frosted(s.girdle_frosted);
-    ui.global::<SettingsModel>()
-        .set_edge_rounding_radius(s.edge_rounding_radius);
-    ui.global::<SettingsModel>()
-        .set_stone_width_mm(s.stone_width_mm);
+    // (The stone effects and width controls show the open design's values, not the file's.)
     ui.global::<SettingsModel>()
         .set_local_preview_scale_index(local_preview_scale_index(s.local_preview_scale));
     ui.global::<SettingsModel>()
@@ -298,13 +276,15 @@ fn apply_loaded_ui_mirrors(
         .set_local_compute_target_index(local_compute_target_index(s.local_compute_target));
     ui.global::<SettingsModel>()
         .set_contribute_to_final_picture(s.contribute_to_final_picture);
-    ui.global::<TiltVideoExportModel>()
-        .set_compute_target_index(s.tilt_video_compute_target.index());
-    // "Reset to Defaults" reads these instead of hard-coding the numbers.
-    ui.global::<SettingsModel>()
-        .set_default_light_yaw_deg(DEFAULT_LIGHT_YAW_DEG);
-    ui.global::<SettingsModel>()
-        .set_default_light_pitch_deg(DEFAULT_LIGHT_PITCH_DEG);
+    // The tilt-video section opens with the settings of its last run, and the Render & Output
+    // tab shows the remembered output defaults (the still export dialog seeds itself each time
+    // it opens). This also sets the section's compute pill from the persisted choice.
+    crate::gui::render::output_defaults::seed_tilt_dialog(ui, s);
+    crate::gui::render::output_defaults::publish_summaries(
+        ui,
+        &s.output.clone().sanitised(),
+        s.tilt_video_compute_target,
+    );
     ui.global::<SettingsModel>()
         .set_light_yaw_deg(s.light_yaw_deg);
     // Clamped identically to `apply_loaded_render_context`'s own
@@ -316,7 +296,7 @@ fn apply_loaded_ui_mirrors(
     ui.global::<SettingsModel>().set_light_pitch_deg(
         s.light_pitch_deg
             .to_radians()
-            .clamp(0.15, 1.55)
+            .clamp(PITCH_RANGE_RAD.0, PITCH_RANGE_RAD.1)
             .to_degrees(),
     );
     // Restore the library panel's collapsed/expanded state.
@@ -370,7 +350,7 @@ fn apply_loaded_ui_mirrors(
     crate::gui::preferences::apply_loaded(ui, s);
 }
 
-/// The settings dialog's "Loaded: <file> (`WxH`)" status line for a decoded
+/// The Parameters panel's "Loaded: <file> (`WxH`)" status line for a decoded
 /// [`indicatrix::renderer::env_map::EnvironmentMap`] -- shared by the startup
 /// reload in `apply_loaded_settings` and the user-initiated load in
 /// `setup_environment_map_callbacks` so both report the map identically. Shows the
@@ -390,14 +370,14 @@ pub(in crate::gui) fn env_map_status_text(
 /// `material` -- `false` for an isotropic material (Diamond, Spinel, Cubic Zirconia,
 /// and any custom material with `birefringence_delta == 0.0`), whose optic axis is
 /// physically meaningless: there is no birefringence to orient. Drives
-/// `MainWindow.c_axis_override_available`, which `settings_dialog.slint` uses to grey
+/// `MainWindow.c_axis_override_available`, which the Parameters panel uses to grey
 /// out the control and explain why, rather than silently letting the user drag a
 /// slider that does nothing.
 pub(in crate::gui) fn is_c_axis_override_available(material: &GemMaterial) -> bool {
     material.optical_character != OpticalCharacter::Isotropic
 }
 
-/// Reverse of the mapping baked into `settings_dialog.slint`'s bounce-count pill
+/// Reverse of the mapping baked into the Parameters panel's bounce-count pill
 /// selector (4/8/12/24/64/128 at indices 0-5, raised from the old 4/8/12/16/24 ladder
 /// per the `bounce_cost.rs` benchmark -- see that pill block's own doc comment for the
 /// measurements). Exact matches map directly; anything else -- a settings file written
@@ -410,23 +390,66 @@ pub(in crate::gui) fn is_c_axis_override_available(material: &GemMaterial) -> bo
 /// reject or clamp the actual stored/rendered `max_bounces` -- see `on_bounces_changed`
 /// in `material_quality.rs`, which honours the raw persisted value untouched regardless
 /// of which pill this highlights.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "the result is an index into the bounce ladder, a handful of rungs"
+)]
 const fn bounces_index(bounces: u32) -> i32 {
-    const RUNGS: [u32; 6] = [4, 8, 12, 24, 64, 128];
-    let mut best_idx = 0usize;
-    let mut best_dist = u32::MAX;
-    let mut i = 0usize;
-    while i < RUNGS.len() {
-        let dist = RUNGS[i].abs_diff(bounces);
-        if dist < best_dist {
-            best_dist = dist;
-            best_idx = i;
-        }
-        i += 1;
-    }
-    best_idx as i32
+    // The ladder and the nearest-rung rule are Rust's one copy
+    // (`settings::model::BOUNCE_LADDER`); Slint reads the same ladder.
+    crate::settings::model::bounce_index(bounces) as i32
 }
 
-/// Reverse of the mapping baked into `settings_dialog.slint`'s "Render Resolution"
+/// Pushes every Render & Output tab value of `s` into the render context and the controls
+/// that mirror it: the live quality, the compute targets, the denoise switch, the output
+/// defaults and the library thumbnail values. Used after "Reset this tab"; start-up has its
+/// own two halves above. Like the live handlers, an actual live-compute change releases a
+/// settled remote epoch.
+pub(in crate::gui) fn apply_render_output_settings(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    s: &crate::settings::model::AppSettings,
+) {
+    {
+        let mut ctx = RenderContext::lock(render_ctx);
+        ctx.target_samples = s.target_samples;
+        ctx.width = s.render_width;
+        ctx.height = s.render_height;
+        ctx.max_bounces = s.max_bounces;
+        ctx.local_preview_scale = s.local_preview_scale;
+        ctx.local_compute_target = s.local_compute_target;
+        if ctx.live_compute_target != s.live_compute_target {
+            if ctx.remote_active || ctx.live_epoch.is_some() {
+                ctx.release_remote();
+            }
+            ctx.live_compute_target = s.live_compute_target;
+        }
+        ctx.denoise_enabled = s.denoise_enabled;
+        ctx.redisplay_requested = true;
+        ctx.dirty = true;
+    }
+    let settings = ui.global::<SettingsModel>();
+    settings.set_target_samples_exponent(count_to_exponent(s.target_samples) as f32);
+    settings.set_resolution_index(resolution_index(s.render_width, s.render_height));
+    settings.set_preview_size_val(s.preview_size as f32);
+    settings.set_preview_spp_val(s.preview_spp as f32);
+    settings.set_bounce_index(bounces_index(s.max_bounces));
+    settings.set_local_preview_scale_index(local_preview_scale_index(s.local_preview_scale));
+    settings.set_live_compute_target_index(live_compute_target_index(s.live_compute_target));
+    settings.set_local_compute_target_index(local_compute_target_index(s.local_compute_target));
+    settings.set_contribute_to_final_picture(s.contribute_to_final_picture);
+    ui.global::<RemoteWorkerModel>()
+        .set_denoise_enabled(s.denoise_enabled);
+    crate::gui::render::output_defaults::seed_tilt_dialog(ui, s);
+    crate::gui::render::output_defaults::publish_summaries(
+        ui,
+        &s.output.clone().sanitised(),
+        s.tilt_video_compute_target,
+    );
+}
+
+/// Reverse of the mapping baked into the Parameters panel's "Render Resolution"
 /// pill selector (640x480/800x600/1280x720/1920x1080 at indices 0-3) -- a blanket
 /// fixed-list-with-fallback treatment, used only to highlight the closest pill at
 /// startup. Falls back to the 800x600 index (1) for any pair that isn't one of the
@@ -444,7 +467,7 @@ const fn resolution_index(width: u32, height: u32) -> i32 {
     }
 }
 
-/// Reverse of the mapping baked into `settings_dialog.slint`'s "Motion Preview
+/// Reverse of the mapping baked into the Parameters panel's "Motion Preview
 /// Resolution" pill selector (Off/Half/Quarter at indices 0-2) -- same fixed-list
 /// treatment as `resolution_index` above, used to seed the pill at startup from a
 /// persisted `LocalPreviewScale`.
@@ -469,7 +492,7 @@ pub(in crate::gui) const fn local_preview_scale_from_index(index: i32) -> LocalP
     }
 }
 
-/// Reverse of the mapping baked into `settings_dialog.slint`'s "Local Compute" pill
+/// Reverse of the mapping baked into the Parameters panel's "Local Compute" pill
 /// selector (CPU/CPU+GPU/GPU only at indices 0-2) -- same fixed-list treatment as
 /// `local_preview_scale_index` above, used to seed the pill at startup from a
 /// persisted `LocalComputeTarget`.
@@ -517,13 +540,13 @@ pub(in crate::gui) fn find_option_index(
         let matches = options
             .row_data(i)
             .is_some_and(|s| s.as_str().eq_ignore_ascii_case(needle));
-        matches.then_some(i as i32)
+        matches.then_some(i).and_then(|row| i32::try_from(row).ok())
     })
 }
 
 /// Rebuilds the `MainWindow.lighting_presets` model from the settings store's current
 /// preset list. Called after startup load and after every create/rename/delete so the
-/// settings dialog's preset rows stay in sync with what's actually persisted.
+/// Parameters panel's preset rows stay in sync with what's actually persisted.
 pub(in crate::gui) fn refresh_lighting_preset_options(
     ui: &MainWindow,
     presets: &[SavedLightingPreset],
@@ -536,7 +559,7 @@ pub(in crate::gui) fn refresh_lighting_preset_options(
             export_usable: p.export_usable,
             has_env_map: p.env_map_path.is_some(),
             // Not export-dialog state -- see `LightingPresetItem.selected`'s own doc
-            // comment; this list is the settings dialog's, which never reads it.
+            // comment; this list is the Parameters panel's, which never reads it.
             selected: false,
         })
         .collect();
@@ -612,6 +635,18 @@ mod tests {
         assert_eq!(bounces_index(24), 3);
         assert_eq!(bounces_index(64), 4);
         assert_eq!(bounces_index(128), 5);
+    }
+
+    /// The start-up pill index and the `nearest_bounce_cap` lookup are both views of
+    /// `BOUNCE_LADDER`: index -> rung -> index is the identity for every rung.
+    #[test]
+    fn bounces_index_and_the_cap_lookup_agree_with_the_one_ladder() {
+        use crate::settings::model::{BOUNCE_LADDER, nearest_bounce_cap};
+        for (i, rung) in BOUNCE_LADDER.iter().enumerate() {
+            let index = i32::try_from(i).expect("a small index");
+            assert_eq!(bounces_index(*rung), index);
+            assert_eq!(nearest_bounce_cap(index), *rung);
+        }
     }
 
     #[test]

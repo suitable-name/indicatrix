@@ -61,6 +61,10 @@ use glam::Vec3;
 /// last element is `Some` only on the reflect branch (o<->e coupling is a
 /// reflection-time event only): the hero channel's own `R_o / (R_o + R_e)`, fed to
 /// `transport::apply_internal_mode_coupling` as its o<->e relabeling probability.
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names; ro_pow/re_pow are the established ordinary/extraordinary reflected-power names"
+)]
 pub(super) fn apply_uniaxial_internal_bounce(
     ubctx: &UniaxialBounceContext<'_, '_>,
     is_extraordinary: bool,
@@ -140,6 +144,10 @@ pub(super) struct HeroInternalSolve {
 /// same magnitude-only simplification `apply_tir_bounce`'s own uniaxial branch uses
 /// (see its doc comment), just importance-sampling-corrected by `1 / r_branch` since
 /// this reflect event is NOT forced (probability `r_branch`, not 1).
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names"
+)]
 pub(super) fn apply_uniaxial_internal_reflect_channels(
     ubctx: &UniaxialBounceContext<'_, '_>,
     hero_solve: &HeroInternalSolve,
@@ -197,6 +205,10 @@ pub(super) fn apply_uniaxial_internal_reflect_channels(
 /// Stokes vector, sufficient here. Returns the transmitted state and `i_unit` (the
 /// matching branch's own `path_pdf[k] *= i_unit.clamp(..)` factor; the split branch
 /// applies this same factor unconditionally at every exit event).
+#[expect(
+    clippy::similar_names,
+    reason = "ts_n/tp_n are the established s/p polarisation normalised-amplitude names"
+)]
 fn compute_uniaxial_exit_transmission(
     sol: uniaxial_fresnel::InternalPolarizationSolution,
     r_branch: f32,
@@ -228,6 +240,10 @@ fn compute_uniaxial_exit_transmission(
 /// doc comment. `exit.enabled == false` reproduces plain chromatic termination exactly
 /// (channel k's own Snell direction at k's own index, compared against the hero's,
 /// zeroed on mismatch).
+#[expect(
+    clippy::similar_names,
+    reason = "n_o/n_e are the established ordinary/extraordinary index names"
+)]
 pub(super) fn apply_uniaxial_internal_transmit_channels(
     ubctx: &UniaxialBounceContext<'_, '_>,
     hero_solve: &HeroInternalSolve,

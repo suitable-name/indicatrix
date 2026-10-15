@@ -100,6 +100,10 @@ pub(super) fn finished_metrics(design: &Design, solved: &[SolvedTier]) -> Option
 /// every solved vertex against every preform half-space directly is the
 /// rule that always gets this right, of which the extents comparison is
 /// just the box special case.
+///
+/// A [`crate::preform::PreformShape::Planes`] preform (the Rough Planner's
+/// planned piece of rough) is exactly this general case: its extents compare
+/// its bounding box only, and the half-space test is the one that counts.
 pub(super) fn worst_halfspace_violation(
     vertices: &[glam::DVec3],
     planes: &[(glam::DVec3, f64)],
@@ -150,7 +154,9 @@ pub struct PreformFit {
     /// [`Self::exceeds_length`]/[`Self::exceeds_height`] scale theirs by the
     /// FULL preform extent -- a factor of two apart -- so a violation sized
     /// squarely between the two scaled slacks can trip one check without the
-    /// other.
+    /// other. A [`crate::preform::PreformShape::Planes`] preform is exactly the
+    /// general case: the three extents compare its bounding box, and this
+    /// half-space test is the one that counts.
     pub outside_halfspace: Option<(usize, f64)>,
 }
 

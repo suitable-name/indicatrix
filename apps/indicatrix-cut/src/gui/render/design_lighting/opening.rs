@@ -23,7 +23,7 @@ impl Lookup {
         !matches!(self, Self::NoRow)
     }
 
-    /// The line the settings dialog shows under the heading.
+    /// The line the Parameters panel shows under the heading.
     pub(super) fn summary_text(&self) -> String {
         match self {
             Self::NoRow => String::new(),

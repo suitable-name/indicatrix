@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 const READOUT_HINT: &str = "Move the pointer over the chart, or pick a row in the table.";
 
 /// The label of "Use this angle" when no angle is picked.
-const USE_LABEL: &str = "Use this angle";
+const USE_LABEL: &str = "Use This Angle";
 
 /// A position that is not on the chart (the model's "not shown").
 const NOT_SHOWN: f32 = -1.0;
@@ -119,6 +119,10 @@ pub(super) fn axis_labels(rows: &[SweepRow]) -> (String, String) {
 }
 
 /// A row's x position on the chart in percent, or the model's "not shown".
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the Slint property precision; a chart percentage is 0..=100"
+)]
 fn x_of(rows: &[SweepRow], row: Option<usize>) -> f32 {
     row.filter(|&index| index < rows.len())
         .map_or(NOT_SHOWN, |index| chart_x_percent(rows, index) as f32)
@@ -225,7 +229,12 @@ pub(super) fn push_results(ui: &MainWindow, dialog: &Dialog) {
     let (low, high) = axis_labels(&outcome.rows);
     model.set_axis_low(low.into());
     model.set_axis_high(high.into());
-    model.set_current_x(current_x_percent(&outcome.rows).map_or(NOT_SHOWN, |x| x as f32));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the Slint property precision; a chart percentage is 0..=100"
+    )]
+    let current_x = current_x_percent(&outcome.rows).map_or(NOT_SHOWN, |x| x as f32);
+    model.set_current_x(current_x);
     push_lines(ui, dialog);
 }
 
@@ -430,13 +439,13 @@ mod tests {
     #[test]
     fn use_this_angle_names_the_angle_once_one_is_picked() {
         let mut dialog = dialog_of(sample());
-        assert_eq!(use_label(&dialog), "Use this angle");
+        assert_eq!(use_label(&dialog), "Use This Angle");
         dialog.select(2);
         assert_eq!(use_label(&dialog), "Use 42.00\u{b0}");
         dialog.select(1);
         assert_eq!(
             use_label(&dialog),
-            "Use this angle",
+            "Use This Angle",
             "the current angle needs no use"
         );
     }

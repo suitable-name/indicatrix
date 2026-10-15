@@ -217,7 +217,7 @@ fn measure_payload(
     frame: Frame<'_>,
     reps: usize,
 ) -> Result<Timings, Box<dyn Error>> {
-    let (w, h) = (frame.width as u32, frame.height as u32);
+    let (w, h) = (u32::try_from(frame.width)?, u32::try_from(frame.height)?);
     let raw = frame.raw;
     let mut encoder = PayloadEncoder::new(enc);
     let compress_s = median_secs(reps, || {
@@ -228,17 +228,17 @@ fn measure_payload(
     let (sent_enc, raw_len, wire) = (sent.encoding, sent.raw_len, sent.bytes.to_vec());
 
     let mut decoder = PayloadDecoder::new();
-    let decoded = decoder
+    let round_trip = decoder
         .decode_to_vec(sent_enc, raw_len, &wire, w, h)
         .map_err(|e| e.to_string())?;
-    if as_bytes(&decoded) != raw {
+    if as_bytes(&round_trip) != raw {
         return Err(format!(
             "{enc:?} on {}x{} {}: round trip is NOT bit-identical",
             frame.width, frame.height, frame.set
         )
         .into());
     }
-    let mut acc = decoded;
+    let mut acc = round_trip;
     let decompress_s = median_secs(reps, || {
         let dropped = decoder
             .decode_and_add(sent_enc, raw_len, black_box(&wire), w, h, &mut acc)
@@ -260,7 +260,7 @@ fn measure_display(
     frame: Frame<'_>,
     reps: usize,
 ) -> Result<Timings, Box<dyn Error>> {
-    let (w, h) = (frame.width as u32, frame.height as u32);
+    let (w, h) = (u32::try_from(frame.width)?, u32::try_from(frame.height)?);
     let rgba = frame.raw;
     let mut wire = Vec::new();
     let compress_s = median_secs(reps, || {

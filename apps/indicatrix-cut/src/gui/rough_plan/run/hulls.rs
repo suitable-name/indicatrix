@@ -242,7 +242,12 @@ mod tests {
                         y + offset[1],
                         (-x).mul_add(sin, z * cos) + offset[2],
                     ];
-                    vertices.push(rotated.map(|c| c as f32));
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "f32 is the hull storage precision; test boxes are in the normal float range"
+                    )]
+                    let vertex = rotated.map(|c| c as f32);
+                    vertices.push(vertex);
                 }
             }
         }

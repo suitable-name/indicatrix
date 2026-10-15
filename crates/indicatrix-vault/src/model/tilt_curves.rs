@@ -289,15 +289,16 @@ impl TiltPerformanceCurves {
             return false;
         };
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the stored curve-metric precision the bound is compared in"
+        )]
+        let mean = (sum / f64::from(count.get())) as f32;
         match (filter.aggregate, filter.bound) {
             (PerformanceAggregate::Worst, PerformanceBound::AtMost(t)) => max <= t,
             (PerformanceAggregate::Worst, PerformanceBound::AtLeast(t)) => min >= t,
-            (PerformanceAggregate::Mean, PerformanceBound::AtMost(t)) => {
-                (sum / f64::from(count.get())) as f32 <= t
-            }
-            (PerformanceAggregate::Mean, PerformanceBound::AtLeast(t)) => {
-                (sum / f64::from(count.get())) as f32 >= t
-            }
+            (PerformanceAggregate::Mean, PerformanceBound::AtMost(t)) => mean <= t,
+            (PerformanceAggregate::Mean, PerformanceBound::AtLeast(t)) => mean >= t,
         }
     }
 }

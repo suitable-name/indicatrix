@@ -189,7 +189,7 @@ pub(super) fn enumerate_candidate_vertices_cancellable(
         let owner = if q.owner == usize::MAX {
             crate::simd::BLANK_OWNER
         } else {
-            q.owner as u32
+            u32::try_from(q.owner).expect("plane owner index fits u32")
         };
         soa.push(q.n, q.m, owner);
     }
@@ -455,6 +455,11 @@ mod tests {
     fn filter_levels_by_instance_support_matches_linear_reference() {
         let mut state = 99u64;
         for _case in 0..200 {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "abs() of the LCG output times 4 is a small non-negative float; truncation to a bucket count is intended"
+            )]
             let n_normals = 1 + (lcg(&mut state).abs() * 4.0) as usize; // 1..=4
             let normals_i: Vec<DVec3> = (0..n_normals)
                 .map(|_| DVec3::new(lcg(&mut state), lcg(&mut state), lcg(&mut state)).normalize())
@@ -526,7 +531,7 @@ mod tests {
                 let owner = if q.owner == usize::MAX {
                     crate::simd::BLANK_OWNER
                 } else {
-                    q.owner as u32
+                    u32::try_from(q.owner).expect("plane owner index fits u32")
                 };
                 soa.push(q.n, q.m, owner);
             }

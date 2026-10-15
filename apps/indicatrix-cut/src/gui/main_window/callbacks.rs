@@ -41,6 +41,8 @@ pub(super) fn setup_render_callbacks(
     // collapsed sections the same way -- see `editor_layout::
     // setup_editor_layout_callbacks`'s own doc comment.
     editor_layout::setup_editor_layout_callbacks(ui, settings_store);
+    // The Parameters dock's open/tab state: restored now, saved on every change.
+    crate::gui::parameters_dock::setup_parameters_dock(ui, settings_store);
     // The Preferences dialog and the header's Simple | Advanced pill: save each choice
     // and apply it -- see `gui::preferences`.
     crate::gui::preferences::setup_preferences_callbacks(ui, settings_store);
@@ -57,16 +59,15 @@ pub(super) fn setup_render_callbacks(
         &solid.mesh_bounding_radius,
     );
     render::camera_lighting::setup_camera_drag_callbacks(ui, render_ctx);
-    render::material_quality::setup_material_changed_callback(ui, render_ctx, settings_store);
-    render::material_quality::setup_backdrop_callback(ui, render_ctx, settings_store);
-    render::material_quality::setup_surface_glare_callback(ui, render_ctx, settings_store);
-    render::material_quality::setup_head_shadow_callback(ui, render_ctx, settings_store);
-    render::material_quality::setup_material_and_quality_callbacks(ui, render_ctx, settings_store);
-    render::material_quality::setup_material_effect_override_callbacks(
-        ui,
-        render_ctx,
-        settings_store,
-    );
+    render::material::setup_material_changed_callback(ui, render_ctx);
+    render::quality::setup_backdrop_callback(ui, render_ctx, settings_store);
+    render::quality::setup_surface_glare_callback(ui, render_ctx, settings_store);
+    render::quality::setup_head_shadow_callback(ui, render_ctx, settings_store);
+    render::quality::setup_material_and_quality_callbacks(ui, render_ctx, settings_store);
+    render::material::setup_material_effect_override_callbacks(ui, render_ctx);
+    render::parameter_constants::publish_parameter_constants(ui);
+    // "Reset this tab" for the Stone and Render & Output tabs (Lighting has its own handler).
+    render::reset_tab::setup_reset_tab_callback(ui, render_ctx, settings_store);
     render::camera_lighting::setup_environment_map_callbacks(ui, render_ctx, settings_store);
     render::lighting_presets::setup_lighting_preset_callbacks(
         ui,

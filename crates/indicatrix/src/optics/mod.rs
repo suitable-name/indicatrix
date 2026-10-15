@@ -12,9 +12,7 @@ pub mod chromophore;
 /// wavelength.
 pub mod dispersion;
 pub mod fluorescence;
-/// Unpolarised Fresnel reflectance of a dielectric interface (`f64`). Only with the
-/// `zoning` feature.
-#[cfg(feature = "zoning")]
+/// Unpolarised Fresnel reflectance of a dielectric interface (`f64`).
 pub mod fresnel;
 /// [`GemMaterial`] and the built-in gemstone material table.
 ///
@@ -34,13 +32,9 @@ pub mod raytracer;
 /// Shared by the CPU and GPU environment sampling paths.
 pub mod studio_rig;
 /// Colour zoning: zone types, path-length kernels and the zoned segment optical depth.
-///
-/// Only with the `zoning` feature.
-#[cfg(feature = "zoning")]
 pub mod zoning;
 
 pub use fluorescence::{EmissionBand, Fluorescence, FluorescentEmitter};
-#[cfg(feature = "zoning")]
 pub use fresnel::fresnel_dielectric;
 pub use materials::GemMaterial;
 pub use raytracer::{

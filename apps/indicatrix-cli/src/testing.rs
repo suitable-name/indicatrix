@@ -47,11 +47,11 @@ pub fn temp_path(name: &str) -> PathBuf {
     folder.join(name)
 }
 
-/// Writes `design` as a `.indicatrix` file called `name` and returns its path as text.
+/// Writes `design` as a `.isdd` file called `name` and returns its path as text.
 pub fn write_design(name: &str, design: &Design) -> String {
     let loaded = crate::load::Loaded::in_memory(design.clone(), name);
     let text = loaded
-        .indicatrix_text(design, &crate::materials::Catalogue::default())
+        .design_text(design, &crate::materials::Catalogue::default())
         .expect("the fixture can be written");
     let path = temp_path(name);
     std::fs::write(&path, text).expect("the fixture folder is writable");

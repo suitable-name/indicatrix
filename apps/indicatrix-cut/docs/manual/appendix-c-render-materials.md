@@ -1,6 +1,6 @@
 # Appendix C: Built-in Render Materials
 
-This table lists every one of the app's 33 built-in render materials, as
+This table lists every one of the app's 34 built-in render materials (Ametrine is the zoned one), as
 used by the spectral renderer (Chapter 2) and the Material Editor's
 templates. n_D is the refractive index at the sodium D line (589.3nm).
 Birefringence (Δn) is the difference between a material's fast and slow
@@ -9,11 +9,11 @@ given as the Abbe number V_d where the underlying data provides one (lower
 V_d means more dispersive, i.e. more "fire"); a few entries only have a
 directly stated Δn(F–C) instead, shown as such.
 
-All 33 are reachable from the viewport's **Render Material** drop-down
+All 34 are reachable from the Stone tab's **Material** and **Preview As...** combos
 (Chapter 2), listed alphabetically. The entries marked with `*` were the
 only ones offered by older versions of the drop-down.
 
-| Material | Optical character | n_D | Birefringence (Δn) | Dispersion | color |
+| Material | Optical character | n_D | Birefringence (Δn) | Dispersion | Color |
 |---|---|---|---|---|---|
 | Diamond* | Isotropic | 2.417 | — | Abbe V_d ≈ 55.3 | colorless |
 | Sapphire* | Uniaxial (−) | 1.768 | −0.0081 | Abbe V_d ≈ 72.3 | Blue (Fe²⁺–Ti⁴⁺ charge transfer) |
@@ -33,10 +33,11 @@ only ones offered by older versions of the drop-down.
 | Chrysoberyl (Yellow) | Biaxial (+) | 1.746 | +0.0090 | Abbe V_d ≈ 74.2 | Yellow (Fe³⁺) |
 | Amethyst | Uniaxial (+) | 1.544 | +0.0091 | Abbe V_d ≈ 69.7 | Purple/violet (irradiation-induced iron color centre) |
 | Citrine | Uniaxial (+) | 1.544 | +0.0091 | Abbe V_d ≈ 69.7 | Yellow-orange (Fe³⁺ UV-blue absorption edge) |
+| Ametrine | Uniaxial (+) | 1.544 | +0.0091 | Abbe V_d ≈ 69.7 | Bicolor quartz: amethyst purple on one side of a plane through the stone's centre, citrine yellow-orange on the other (Chapter 24) |
 | Pyrope Garnet | Isotropic | 1.714 | — | Abbe V_d ≈ 56.1 | Deep red (Cr³⁺/Fe²⁺) |
 | Almandine Garnet | Isotropic | 1.790 | — | Abbe V_d ≈ 56.9 | Red-brown to violet-red (Fe²⁺ triplet) |
 | Spessartine Garnet | Isotropic | 1.800 | — | Abbe V_d ≈ 51.2 | Vivid orange (Mn²⁺ triplet) |
-| Color-Change Garnet (Pyrope-Spessartine) | Isotropic | 1.760 | — | Abbe V_d ≈ 52.5 | Tanzanian colour-change garnet: brownish-mauve in daylight, pink-red to orange-red under incandescent light (Mn²⁺ violet cut-off plus a broad Cr³⁺/V³⁺ band at ~573 nm) |
+| Color-Change Garnet (Pyrope-Spessartine) | Isotropic | 1.760 | — | Abbe V_d ≈ 52.5 | Tanzanian color-change garnet: brownish-mauve in daylight, pink-red to orange-red under incandescent light (Mn²⁺ violet cut-off plus a broad Cr³⁺/V³⁺ band at ~573 nm) |
 | Grossular Garnet (Tsavorite) | Isotropic | 1.734 | — | Abbe V_d ≈ 45.7 | Vivid green (V³⁺/Cr³⁺) |
 | Andradite Garnet (Demantoid) | Isotropic | 1.887 | — | Abbe V_d ≈ 26.9 | Vivid, saturated green — the most dispersive of the garnets here (Cr³⁺) |
 | Peridot | Biaxial (+) | 1.654 | +0.0360 | Abbe V_d ≈ 56.5 | Yellow-green (Fe²⁺ triplet) |
@@ -53,14 +54,15 @@ only ones offered by older versions of the drop-down.
 
 - Sapphire and Ruby share the same host-mineral optics (dispersion and
   birefringence), differing only in color. The same is true for
-  Aquamarine and Morganite (both beryl), and for Quartz, Amethyst, and
-  Citrine (all three the same silica host).
-- Quartz (and, sharing its optics, Amethyst and Citrine) is the one
+  Aquamarine and Morganite (both beryl), and for Quartz, Amethyst, Citrine,
+  and Ametrine (all the same silica host).
+- Quartz (and, sharing its optics, Amethyst, Citrine and
+  Ametrine) is the one
   built-in material with a genuinely wavelength-dependent birefringence
   curve for its extraordinary ray, rather than the constant-offset
   approximation every other birefringent built-in uses. That genuine curve
   renders correctly on the CPU only; a GPU-routed render still falls back
-  to the constant-offset approximation for these three (Chapter 12).
+  to the constant-offset approximation for these (Chapter 12).
 - One further species with real gemological interest, Sphene (titanite),
   is deliberately not included: it needs birefringence and dispersion
   magnitudes well outside the range this renderer's anisotropic optics
@@ -70,7 +72,7 @@ only ones offered by older versions of the drop-down.
   see the `built_in_material_rutile` doc comment in
   `crates/indicatrix/src/optics/materials/rutile.rs`.
 
-## Next steps
+## Next Steps
 
 This is the final appendix. Return to the manual's [overview](README.md) to
 find any other chapter.

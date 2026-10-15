@@ -25,9 +25,8 @@ pub mod sampling;
 pub mod scattering;
 pub mod transport;
 pub mod uniaxial_fresnel;
-#[cfg(feature = "zoning")]
 mod zoned;
-#[cfg(all(test, feature = "zoning"))]
+#[cfg(test)]
 mod zoned_tests;
 
 /// Number of spectral channels `trace_spectral_ray` traces per ray (8-channel
@@ -91,7 +90,8 @@ pub use environment::{
     EnvironmentSource, LightingModel, LightingPreset, LightingRigParams, TentParams,
     blackbody_spectrum, head_shadow_cosines, sample_studio_environment,
     sample_studio_environment_observed, sample_studio_environment_with_rig,
-    sample_studio_environment_with_rig_shadow,
+    sample_studio_environment_with_rig_shadow, sample_studio_environment_with_rig_spec_power,
+    studio_spec_power,
 };
 #[cfg(feature = "gpu")]
 pub(crate) use environment::{

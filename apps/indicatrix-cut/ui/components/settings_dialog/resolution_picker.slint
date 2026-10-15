@@ -5,7 +5,7 @@ import { SettingLabel } from "setting_label.slint";
 
 // Render Resolution - Segmented Pill Selector, same idiom as the Ray Bounces
 // picker and `export_dialog.slint`'s "Output Size" pills. A fixed list
-// rather than a slider -- see `SettingsDialog.resolution_index` for why.
+// rather than a slider -- see `SettingsModel.resolution_index` for why.
 export component ResolutionPicker inherits VerticalLayout {
     // 0 = 640x480, 1 = 800x600 (the default), 2 = 1280x720, 3 = 1920x1080.
     pure function width_for(idx: int) -> int {

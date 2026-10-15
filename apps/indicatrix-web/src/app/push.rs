@@ -9,7 +9,7 @@ use super::{
     settings::{lighting_options, material_options},
     state::{SolveState, WebApp},
 };
-use crate::{AppModel, AppWindow};
+use crate::{AppModel, AppWindow, RenderModel};
 use slint::{ComponentHandle, ModelRc, SharedString, TimerMode, VecModel};
 use std::{rc::Rc, time::Duration};
 
@@ -55,8 +55,8 @@ pub fn push_all(ui: &AppWindow, app: &WebApp) {
     push_solve_status(ui, app);
 }
 
-/// Material and lighting combos (options and selection), the view tab, the camera
-/// and the HDR name.
+/// Material and lighting combos (options and selection), the view tab, the camera,
+/// the HDR name and the surface-glare slider.
 pub fn push_settings(ui: &AppWindow, app: &WebApp) {
     let model = ui.global::<AppModel>();
     let materials = material_options(&app.custom_materials);
@@ -77,6 +77,10 @@ pub fn push_settings(ui: &AppWindow, app: &WebApp) {
             .as_ref()
             .map_or_else(SharedString::new, |hdr| hdr.name.as_str().into()),
     );
+    // The settings panel's surface-glare slider reports through its own callback
+    // (`callbacks::wire_settings`), so it is seeded here with the stored value.
+    ui.global::<RenderModel>()
+        .set_surface_glare_percent(app.settings.surface_glare_percent());
 }
 
 /// The design summary: presence, name, source, dirty marker, tier count, undo/redo.

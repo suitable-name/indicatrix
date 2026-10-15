@@ -77,15 +77,15 @@ fn solve() -> Guide {
     .step(
         GuideStep::new(
             "Turn auto-solve off",
-            "The Auto-solve list can solve for you after every edit. For this lesson switch it off, so you can watch what Solve does.",
+            "The Auto-Solve list can solve for you after every edit. For this lesson switch it off, so you can watch what Solve does.",
         )
         .actions([
-            "Open the Auto-solve list next to the Solve button and choose Off.",
+            "Open the Auto-Solve list next to the Solve button and choose Off.",
             "If it already says Off, choose 1 s and then Off again.",
         ])
-        .check("the Auto-solve list reads Off.")
+        .check("the Auto-Solve list reads Off.")
         .why("With auto-solve on, a design that solves quickly is solved again by itself a moment after every edit, so you would never see it marked not solved. The last step of this lesson says how to put it back.")
-        .goal(event(events::AUTO_SOLVE_OFF), "the Auto-solve list set to Off")
+        .goal(event(events::AUTO_SOLVE_OFF), "the Auto-Solve list set to Off")
         .highlight("auto_solve")
         .allow(SOLVE),
     )
@@ -140,10 +140,10 @@ fn solve() -> Guide {
             "Choose the setting you want to work with.",
         )
         .actions([
-            "Open the Auto-solve list. 300 ms is the usual choice: a small design then solves itself shortly after you stop typing.",
+            "Open the Auto-Solve list. 300 ms is the usual choice: a small design then solves itself shortly after you stop typing.",
             "Choose Off if you would rather press Solve yourself.",
         ])
-        .why("The setting is remembered across sessions. See the Auto-solve lesson for how the time limit works.")
+        .why("The setting is remembered across sessions. See the Auto-Solve lesson for how the time limit works.")
         .highlight("auto_solve")
         .allow(SOLVE),
     )
@@ -152,7 +152,7 @@ fn solve() -> Guide {
 fn auto_solve() -> Guide {
     Guide::new(
         "solving-auto-solve",
-        "Auto-solve",
+        "Auto-Solve",
         "Let a design solve itself after an edit: the Off, 150 ms, 300 ms, 1 s and 3 s settings and what they mean.",
         GuideCategory::Solving,
     )
@@ -163,7 +163,7 @@ fn auto_solve() -> Guide {
             "After an edit, a small design can solve itself, so you skip the click on Solve.",
         )
         .actions([
-            "Find the Auto-solve list next to the Solve button: Off, 150 ms, 300 ms, 1 s and 3 s.",
+            "Find the Auto-Solve list next to the Solve button: Off, 150 ms, 300 ms, 1 s and 3 s.",
             "After an edit, if this design's last solve took less than the time you chose, a new solve starts by itself after a short pause.",
             "The pause lets you finish typing, so a burst of keystrokes causes one solve, not one for every key.",
         ])
@@ -177,11 +177,11 @@ fn auto_solve() -> Guide {
             "Start with auto-solve off to see what it replaces.",
         )
         .actions([
-            "Open the Auto-solve list and choose Off.",
+            "Open the Auto-Solve list and choose Off.",
             "If it already says Off, choose 1 s and then Off again.",
         ])
-        .check("the Auto-solve list reads Off.")
-        .goal(event(events::AUTO_SOLVE_OFF), "the Auto-solve list set to Off")
+        .check("the Auto-Solve list reads Off.")
+        .goal(event(events::AUTO_SOLVE_OFF), "the Auto-Solve list set to Off")
         .highlight("auto_solve")
         .allow(SOLVE),
     )
@@ -208,10 +208,10 @@ fn auto_solve() -> Guide {
             "Choose 300 ms",
             "Now let the design solve itself.",
         )
-        .actions(["Open the Auto-solve list and choose 300 ms."])
-        .check("the Auto-solve list reads 300 ms.")
+        .actions(["Open the Auto-Solve list and choose 300 ms."])
+        .check("the Auto-Solve list reads 300 ms.")
         .why("Off means edits only ever mark the design not solved, exactly as the program always did. Any other setting turns the automatic solve on for designs that solve within that time.")
-        .goal(event(events::AUTO_SOLVE_ON), "the Auto-solve list set to a time")
+        .goal(event(events::AUTO_SOLVE_ON), "the Auto-Solve list set to a time")
         .highlight("auto_solve")
         .allow(SOLVE),
     )
@@ -255,7 +255,7 @@ fn auto_solve() -> Guide {
 fn status() -> Guide {
     Guide::new(
         "solving-status",
-        "Reading the solver status",
+        "Reading the Solver Status",
         "Read the status strip after a good solve and a failed one, fix a missing anchor, and learn what Abandon does.",
         GuideCategory::Solving,
     )
@@ -292,7 +292,7 @@ fn status() -> Guide {
         )
         .actions([
             "Click the Girdle row in the tier table.",
-            "In the Tier tab, set Meets to Unspecified vertex.",
+            "In the Tier tab, set Meets to Unspecified Vertex.",
             "Click Save Tier.",
         ])
         .check("the Girdle row no longer shows an exact scale value.")
@@ -322,7 +322,7 @@ fn status() -> Guide {
             "Give the girdle its anchor back.",
         )
         .actions([
-            "Click the Girdle row, set Meets back to Exact scale value and type 1 in the box beside it.",
+            "Click the Girdle row, set Meets back to Exact Scale Value and type 1 in the box beside it.",
             "Click Save Tier. Pressing Ctrl+Z to undo the edit works too.",
             "Click Solve.",
         ])
@@ -357,7 +357,7 @@ fn status() -> Guide {
 fn verdict() -> Guide {
     Guide::new(
         "solving-verdict",
-        "The overall verdict",
+        "The Overall Verdict",
         "Read the Good, Check or Problem badge, open its reasons and see how a lower-index material changes it.",
         GuideCategory::Solving,
     )
@@ -420,14 +420,13 @@ fn verdict() -> Guide {
             "Cut the same stone in a material with a lower refractive index and watch it start to leak light.",
         )
         .actions([
-            "Open the Design Settings panel above the tier table.",
-            "Set Material to Opal. Its refractive index, 1.45, is lower than most gems.",
-            "Click Apply Material.",
+            "Open the Stone tab of the Parameters dock (View > Stone Properties, or Ctrl+Alt+1).",
+            "Set Material to Opal. It applies at once. Its refractive index, 1.45, is lower than most gems.",
         ])
-        .check("the Design Settings panel shows Opal and its critical angle, and Apply Material no longer shows an asterisk.")
+        .check("the Stone tab shows Opal, with its Eff. RI and critical angle (Crit.) beside it.")
         .why("A lower index means a larger critical angle: a pavilion facet that was steep enough to keep light inside in diamond now lets it out. That shows as windowing.")
         .goal(Goal::Material("Opal".to_owned()), "the material set to Opal")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(SETTINGS),
     )
     .step(
@@ -516,7 +515,7 @@ fn verdict_fixes() -> Guide {
         )
         .actions([
             "Click the verdict badge.",
-            "Find the reason that says the crown has no table and click Add a table beside it.",
+            "Find the reason that says the crown has no table and click Add a Table beside it.",
         ])
         .check("a Table row is back at the end of the tier table, and a message says what was added.")
         .why("A Fix is planned on a copy of the design first and refused, with a plain sentence and no change, when it cannot be made safely. When it goes ahead it is one undo step: a single Ctrl+Z puts everything back.")
@@ -551,7 +550,7 @@ fn verdict_fixes() -> Guide {
         .actions([
             "Click Solve, or wait for auto-solve, so the verdict is current.",
             "Click the verdict badge and find the reason that an index position sits between gear teeth.",
-            "Click Snap to teeth beside it.",
+            "Click Snap to Teeth beside it.",
         ])
         .check("the Crown Main indices are whole numbers again.")
         .why("Positions that become the same tooth merge into one. The change is one undo step.")
@@ -569,7 +568,7 @@ fn verdict_fixes() -> Guide {
         )
         .actions([
             "Remove: after a confirmation, takes out the facets of a tier that later tiers cut away entirely (the whole tier when none is left), once it has checked that the finished stone is unchanged.",
-            "Move later: moves a tier to just after the last tier it meets, so the schedule is cut in a workable order.",
+            "Move Later: moves a tier to just after the last tier it meets, so the schedule is cut in a workable order.",
             "Steepen: turns a pavilion facet that is below the critical angle to the critical angle plus 2 degrees about its girdle-side edge, so the girdle stays where it is.",
         ])
         .why("A fix is refused, with the reason and no change, when it cannot be made safely: for example a pavilion angle that follows a relation, an angle the material would need beyond 89.5 degrees, or a result that no longer solves. While a lesson locks the tier table the Fix buttons are dimmed.")
@@ -580,7 +579,7 @@ fn verdict_fixes() -> Guide {
 fn preform() -> Guide {
     Guide::new(
         "solving-preform",
-        "The Preform tab",
+        "The Preform Tab",
         "Read the stone's proportions, change the rough's size with Apply Preform and solve again.",
         GuideCategory::Solving,
     )
@@ -660,7 +659,7 @@ fn preform() -> Guide {
 fn yield_and_carat() -> Guide {
     Guide::new(
         "solving-yield-carat",
-        "Yield and carat weight",
+        "Yield and Carat Weight",
         "Set the material and the girdle diameter, apply the yield inputs, solve and read the yield and carat weight.",
         GuideCategory::Solving,
     )
@@ -671,14 +670,13 @@ fn yield_and_carat() -> Guide {
             "A weight needs a density, and the density comes from the material.",
         )
         .actions([
-            "Open the Design Settings panel above the tier table.",
-            "Set Material to Quartz.",
-            "Click Apply Material.",
+            "Open the Stone tab of the Parameters dock (View > Stone Properties, or Ctrl+Alt+1).",
+            "Set Material to Quartz. It applies at once.",
         ])
-        .check("the panel shows Quartz, and Apply Material no longer shows an asterisk.")
+        .check("the Stone tab shows Quartz, with its Eff. RI and critical angle (Crit.) beside it.")
         .why("Quartz has a specific gravity of 2.65. A design with no material has no density to estimate a weight from, unless you type a Specific Gravity Override.")
         .goal(Goal::Material("Quartz".to_owned()), "the material set to Quartz")
-        .highlight("design_settings")
+        .highlight("stone_tab")
         .allow(SETTINGS),
     )
     .step(
@@ -728,7 +726,7 @@ fn yield_and_carat() -> Guide {
             "The yield is not only a number to read.",
         )
         .actions([
-            "The Optimize tab's Keep weight objective favours angles that waste less of the rough.",
+            "The Optimize tab's Keep Weight objective favours angles that waste less of the rough.",
             "The angle sweep table has a Yield % column.",
             "The Rough Planner uses the carat estimate to fit stones into a rough.",
         ])

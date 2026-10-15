@@ -572,6 +572,15 @@ ignored rather than treated as an error — see
 connection handler without the rest of the crate), since `EnvFilter` accepts
 the usual `tracing_subscriber` filter syntax.
 
+### New-version notice
+
+At start, before the command runs, the worker asks GitHub's release list (one request, at
+most 2 s) whether a newer Indicatrix release exists. Only then it logs one `info` line,
+`Indicatrix 0.7.3 is available (this is 0.7.2): <release page>`; up to date, offline or any
+failure logs nothing. Nothing is downloaded. `--no-update-check` (accepted with every
+command) or the environment variable `INDICATRIX_NO_UPDATE_CHECK` (any value) skips the
+request, e.g. on a machine without internet access.
+
 ## Troubleshooting
 
 - **`error: "serve" requires --ca <path> unless --insecure-no-tls is set`** — you

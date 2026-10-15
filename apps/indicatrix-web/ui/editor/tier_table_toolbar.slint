@@ -69,7 +69,7 @@ export component TierTableToolbar inherits VerticalLayout {
         padding-right: 2px;
         spacing: 6px;
         ToolButton {
-            text: "Adopt all";
+            text: "Adopt All";
             locked: !GuideModel.allows-tier-table();
             hint: "Adopt every tier's imported meet at once, as one Undo step.";
             clicked => { TierTableModel.adopt-all(); }
@@ -190,7 +190,7 @@ export component TierTableToolbar inherits VerticalLayout {
             clicked => { TierTableModel.remove-multi(); }
         }
         ToolButton {
-            text: "Adopt sel.";
+            text: "Adopt Sel.";
             locked: !GuideModel.allows-tier-table();
             hint: "Adopt the imported meet of every selected tier, as one Undo step.";
             clicked => { TierTableModel.adopt-selected(); }

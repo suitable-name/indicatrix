@@ -240,11 +240,16 @@ mod tests {
     use super::*;
 
     fn sample_secret() -> [u8; SECRET_LEN] {
-        std::array::from_fn(|i| i as u8)
+        std::array::from_fn(|i| u8::try_from(i).expect("array index fits in u8"))
     }
 
     fn sample_fingerprint() -> crate::tls::Fingerprint {
-        std::array::from_fn(|i| (i as u8).wrapping_mul(7).wrapping_add(3))
+        std::array::from_fn(|i| {
+            u8::try_from(i)
+                .expect("array index fits in u8")
+                .wrapping_mul(7)
+                .wrapping_add(3)
+        })
     }
 
     #[test]

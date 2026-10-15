@@ -88,11 +88,11 @@ component Rows inherits VerticalLayout {
     }
 }
 
-// "Rough colour...": the Rough planner's colour wizard (behind the `zoning` feature). Photos of a
+// "Rough colour...": the Rough planner's colour wizard. Photos of a
 // mesh rough on a fixed rig become a colour for the stone and, if needed, for zones inside it. All
 // state is pushed from Rust (`gui::rough_colour::wizard`); the window holds only what is typed.
 export component RoughColourWindow inherits Window {
-    title: "Rough Colour from Photos \u{2014} Indicatrix Cut";
+    title: "Rough Color from Photos \u{2014} Indicatrix Cut";
     // See `MainWindow`'s `icon` (app.slint) for why every window sets it.
     icon: @image-url("../assets/icon.png");
     preferred-width: 1320px;
@@ -167,6 +167,8 @@ export component RoughColourWindow inherits Window {
     in property <[string]> suggestions;
     in-out property <bool> mark_mode: false;
     in-out property <int> mark_kind_index: 0;
+    // The side count of a prism fitted from marks: 0 = 3 sides, 1 = 6 sides.
+    in-out property <int> prism_sides_index: 0;
     in property <string> mark_text;
     in property <[ReportRow]> fit_rows;
     // 7. Compare.
@@ -225,8 +227,9 @@ export component RoughColourWindow inherits Window {
     callback add_zones_from_prompt();
     callback accept_result();
     callback export_report();
+    callback clear_trace_cache();
 
-    if Zoning.enabled: Rectangle {
+    Rectangle {
         x: 0px;
         y: 0px;
         width: root.width;
@@ -245,7 +248,7 @@ export component RoughColourWindow inherits Window {
                 height: 28px;
                 spacing: 6px;
 
-                for title[i] in root.step_titles: RoughPill {
+                for title[i] in root.step_titles: rough-pill-step-title := RoughPill {
                     height: 24px;
                     text: "\{i + 1} \{title}";
                     hint: root.step_ok[i] ? "Go to this step." : "Not yet: finish the earlier steps first.";
@@ -319,13 +322,13 @@ export component RoughColourWindow inherits Window {
                                             model: root.rig_names;
                                             current-index <=> root.rig_index;
                                             enabled: !root.busy && root.rig_names.length > 0;
-                                            accessible-label: "Camera rig";
+                                            accessible-label: "Camera Rig";
                                             selected(value) => { root.rig_selected(root.rig_index); }
                                         }
                                     }
                                     RoughPill {
                                         text: "Locate...";
-                                        hint: "Open Locate inclusion from photos to create a rig and align the mesh to it.";
+                                        hint: "Open Locate Inclusion from Photos to create a rig and align the mesh to it.";
                                         clicked => { root.open_locate(); }
                                     }
                                 }
@@ -341,8 +344,8 @@ export component RoughColourWindow inherits Window {
                                 StepTitle { text: "PHOTOS PER VIEW"; }
                                 Note { text: "Load the stone photo and its white frame for each view, a dark frame if you have one, and optionally a second, shorter exposure. RAW, TIFF, PNG and JPEG are read; files are never copied."; }
                                 RoughPill {
-                                    text: "Use the photos of the locate window";
-                                    hint: "Take the stone photos already loaded in the Locate inclusion window.";
+                                    text: "Use the Photos of the Locate Window";
+                                    hint: "Take the stone photos already loaded in the Locate Inclusion from Photos window.";
                                     enabled: !root.busy;
                                     clicked => { root.use_locate_photos(); }
                                 }
@@ -363,7 +366,7 @@ export component RoughColourWindow inherits Window {
                                             RoughPill { text: "Stone"; hint: slot.stone == "" ? "Load the stone photo." : slot.stone; active: slot.stone != ""; enabled: !root.busy; clicked => { root.load_file(i, 0); } }
                                             RoughPill { text: "White"; hint: slot.white == "" ? "Load a white frame (empty rig, backlight on)." : slot.white; active: slot.white != ""; enabled: !root.busy; clicked => { root.load_file(i, 1); } }
                                             RoughPill { text: "Dark"; hint: slot.dark == "" ? "Load a dark frame (backlight off)." : slot.dark; active: slot.dark != ""; enabled: !root.busy; clicked => { root.load_file(i, 2); } }
-                                            RoughPill { text: "2nd exposure"; hint: slot.second == "" ? "Load a second exposure about 2 EV lower." : slot.second; active: slot.second != ""; enabled: !root.busy; clicked => { root.load_file(i, 3); } }
+                                            RoughPill { text: "2nd Exposure"; hint: slot.second == "" ? "Load a second exposure about 2 EV lower." : slot.second; active: slot.second != ""; enabled: !root.busy; clicked => { root.load_file(i, 3); } }
                                             RoughPill { text: "Clear"; hint: "Forget this view's files."; enabled: !root.busy; clicked => { root.clear_view_files(i); } }
                                         }
                                         ElidedText {
@@ -376,7 +379,7 @@ export component RoughColourWindow inherits Window {
                                 HorizontalLayout {
                                     alignment: start;
                                     RoughPill {
-                                        text: "Prepare photos";
+                                        text: "Prepare Photos";
                                         hint: "Decode, calibrate and mask every complete view. This reads the photos and can take a minute.";
                                         active: true;
                                         enabled: !root.busy;
@@ -391,20 +394,20 @@ export component RoughColourWindow inherits Window {
                                 spacing: 6px;
                                 StepTitle { text: "CAMERA"; }
                                 TipBox {
-                                    hint: "How the camera's colour sensitivities are known. Measured curves or a reference filter set give the most certain colours; the sRGB fallback is a rough guess.";
+                                    hint: "How the camera's color sensitivities are known. Measured curves or a reference filter set give the most certain colors; the sRGB fallback is a rough guess.";
                                     ComboBox {
                                         min-width: 0px;
                                         model: root.camera_names;
                                         current-index <=> root.camera_index;
                                         enabled: !root.busy;
-                                        accessible-label: "Camera calibration";
+                                        accessible-label: "Camera Calibration";
                                         selected(value) => { root.camera_selected(root.camera_index); }
                                     }
                                 }
                                 if root.camera_index > 0: HorizontalLayout {
                                     spacing: 6px;
                                     ElidedText { text: root.camera_file_text; font_size: 10px; text_color: Theme.text-secondary; }
-                                    RoughPill { text: "Choose file..."; hint: "A curves file (wavelength, r, g, b) or a filter set (name, r, g, b, spectrum file per line)."; enabled: !root.busy; clicked => { root.pick_camera_file(); } }
+                                    RoughPill { text: "Choose File..."; hint: "A curves file (wavelength, r, g, b) or a filter set (name, r, g, b, spectrum file per line)."; enabled: !root.busy; clicked => { root.pick_camera_file(); } }
                                 }
                                 Rectangle { height: 6px; }
                                 StepTitle { text: "BACKLIGHT"; }
@@ -415,7 +418,7 @@ export component RoughColourWindow inherits Window {
                                         model: root.backlight_names;
                                         current-index <=> root.backlight_index;
                                         enabled: !root.busy;
-                                        accessible-label: "Backlight source";
+                                        accessible-label: "Backlight Source";
                                         selected(value) => { root.backlight_selected(root.backlight_index); }
                                     }
                                 }
@@ -426,24 +429,24 @@ export component RoughColourWindow inherits Window {
                                         model: root.led_names;
                                         current-index <=> root.led_index;
                                         enabled: !root.busy;
-                                        accessible-label: "LED kind";
+                                        accessible-label: "LED Kind";
                                     }
                                 }
                                 if root.backlight_index == 2: HorizontalLayout {
                                     spacing: 6px;
                                     ElidedText { text: root.backlight_file_text; font_size: 10px; text_color: Theme.text-secondary; }
-                                    RoughPill { text: "Choose file..."; hint: "A table of wavelength in nm and relative power."; enabled: !root.busy; clicked => { root.pick_backlight_file(); } }
+                                    RoughPill { text: "Choose File..."; hint: "A table of wavelength in nm and relative power."; enabled: !root.busy; clicked => { root.pick_backlight_file(); } }
                                 }
                                 HorizontalLayout {
                                     spacing: 6px;
                                     RoughField {
-                                        label: "Panel behind stone (mm)";
+                                        label: "Panel Behind Stone (mm)";
                                         hint: "How far behind the stone's centre the diffuse backlight panel is.";
                                         editable: !root.busy;
                                         value <=> root.panel_setback_text;
                                     }
                                     RoughField {
-                                        label: "Panel size (mm)";
+                                        label: "Panel Size (mm)";
                                         hint: "The side of the square backlight panel.";
                                         editable: !root.busy;
                                         value <=> root.panel_size_text;
@@ -452,7 +455,7 @@ export component RoughColourWindow inherits Window {
                                 HorizontalLayout {
                                     alignment: start;
                                     RoughPill {
-                                        text: "Apply calibration";
+                                        text: "Apply Calibration";
                                         hint: "Build the camera response and the backlight spectrum and show how well they fit.";
                                         active: true;
                                         enabled: !root.busy;
@@ -466,7 +469,7 @@ export component RoughColourWindow inherits Window {
                             if root.step == 3: VerticalLayout {
                                 spacing: 6px;
                                 StepTitle { text: "MASKS"; }
-                                Note { text: "Pixels with a colour here are left out of the fit. Brush away reflections, stains or anything else that is not the stone's colour."; }
+                                Note { text: "Pixels with a color here are left out of the fit. Brush away reflections, stains or anything else that is not the stone's color."; }
                                 for entry in root.legend: HorizontalLayout {
                                     spacing: 6px;
                                     Rectangle { width: 12px; height: 12px; border-radius: 2px; background: entry.swatch; }
@@ -474,20 +477,20 @@ export component RoughColourWindow inherits Window {
                                 }
                                 HorizontalLayout {
                                     spacing: 6px;
-                                    RoughPill { text: "Brush off"; hint: "Clicks on the picture do nothing."; active: root.brush_mode == 0; clicked => { root.brush_mode = 0; } }
+                                    RoughPill { text: "Brush Off"; hint: "Clicks on the picture do nothing."; active: root.brush_mode == 0; clicked => { root.brush_mode = 0; } }
                                     RoughPill { text: "Exclude"; hint: "Click the picture to leave a round patch out of the fit."; active: root.brush_mode == 1; clicked => { root.brush_mode = 1; } }
                                     RoughPill { text: "Restore"; hint: "Click to take your own exclusion off a patch."; active: root.brush_mode == 2; clicked => { root.brush_mode = 2; } }
-                                    RoughPill { text: "Clear brush"; hint: "Remove all your exclusions in this view."; enabled: !root.busy; clicked => { root.clear_brush(); } }
+                                    RoughPill { text: "Clear Brush"; hint: "Remove all your exclusions in this view."; enabled: !root.busy; clicked => { root.clear_brush(); } }
                                 }
                                 HorizontalLayout {
                                     spacing: 6px;
                                     RoughField {
-                                        label: "Brush radius (px)";
+                                        label: "Brush Radius (px)";
                                         hint: "The radius of a click, in working pixels (the picture is about 384 pixels across).";
                                         value <=> root.brush_radius_text;
                                     }
                                     RoughField {
-                                        label: "Edge band (px)";
+                                        label: "Edge Band (px)";
                                         hint: "How many working pixels at the stone's rim are left out, because the rim is where the model is least exact. Enter applies it.";
                                         editable: !root.busy;
                                         value <=> root.edge_band_text;
@@ -505,11 +508,11 @@ export component RoughColourWindow inherits Window {
                                 HorizontalLayout {
                                     spacing: 6px;
                                     RoughPill { text: "Polished"; hint: "Every face is polished."; active: root.surface_index == 0; enabled: !root.busy; clicked => { root.surface_index = 0; root.surface_selected(0); } }
-                                    RoughPill { text: "Frosted, fixed"; hint: "A frosted skin with the roughness below."; active: root.surface_index == 1; enabled: !root.busy; clicked => { root.surface_index = 1; root.surface_selected(1); } }
-                                    RoughPill { text: "Frosted, find it"; hint: "A frosted skin whose roughness the fit searches (about five traces, slower)."; active: root.surface_index == 2; enabled: !root.busy; clicked => { root.surface_index = 2; root.surface_selected(2); } }
+                                    RoughPill { text: "Frosted, Fixed"; hint: "A frosted skin with the roughness below."; active: root.surface_index == 1; enabled: !root.busy; clicked => { root.surface_index = 1; root.surface_selected(1); } }
+                                    RoughPill { text: "Frosted, Find It"; hint: "A frosted skin whose roughness the fit searches (about five traces, slower)."; active: root.surface_index == 2; enabled: !root.busy; clicked => { root.surface_index = 2; root.surface_selected(2); } }
                                 }
                                 if root.surface_index == 1: RoughField {
-                                    label: "Roughness (GGX alpha)";
+                                    label: "Roughness (GGX Alpha)";
                                     hint: "0.05 is a lightly frosted skin, 0.6 a very rough one.";
                                     value <=> root.roughness_text;
                                 }
@@ -518,10 +521,10 @@ export component RoughColourWindow inherits Window {
                                     StepTitle { text: "POLISHED WINDOWS"; }
                                     HorizontalLayout {
                                         spacing: 6px;
-                                        RoughPill { text: "Paint off"; hint: "Clicks on the picture do nothing."; active: root.paint_mode == 0; clicked => { root.paint_mode = 0; } }
-                                        RoughPill { text: "Paint window"; hint: "Click on a polished window of the rough, as seen in this photo, or on the rough in the Rough Planner's 3D view while this step is open. Every face under the brush becomes polished."; active: root.paint_mode == 1; clicked => { root.paint_mode = 1; } }
+                                        RoughPill { text: "Paint Off"; hint: "Clicks on the picture do nothing."; active: root.paint_mode == 0; clicked => { root.paint_mode = 0; } }
+                                        RoughPill { text: "Paint Window"; hint: "Click on a polished window of the rough, as seen in this photo, or on the rough in the Rough Planner's 3D view while this step is open. Every face under the brush becomes polished."; active: root.paint_mode == 1; clicked => { root.paint_mode = 1; } }
                                         RoughPill { text: "Erase"; hint: "Click, on the photo or in the Rough Planner's 3D view, to make faces frosted again."; active: root.paint_mode == 2; clicked => { root.paint_mode = 2; } }
-                                        RoughPill { text: "Clear windows"; hint: "Make every face frosted."; enabled: !root.busy; clicked => { root.clear_windows(); } }
+                                        RoughPill { text: "Clear Windows"; hint: "Make every face frosted."; enabled: !root.busy; clicked => { root.clear_windows(); } }
                                     }
                                     Note { text: root.windows_text; text_color: Theme.text-secondary; }
                                 }
@@ -530,8 +533,8 @@ export component RoughColourWindow inherits Window {
                             // --- 6. Fit ---------------------------------------------------------
                             if root.step == 5: VerticalLayout {
                                 spacing: 6px;
-                                StepTitle { text: "COLOUR MODEL"; }
-                                Note { text: "The colour of each zone is fitted as a smooth absorption spectrum. The photos of all views are fitted together."; }
+                                StepTitle { text: "COLOR MODEL"; }
+                                Note { text: "The color of each zone is fitted as a smooth absorption spectrum. The photos of all views are fitted together."; }
                                 if root.show_host_picker: TipBox {
                                     hint: "The host mineral, for the chromophore model. Unknown fits the smooth spectrum only.";
                                     ComboBox {
@@ -539,14 +542,14 @@ export component RoughColourWindow inherits Window {
                                         model: root.host_names;
                                         current-index <=> root.host_index;
                                         enabled: !root.busy;
-                                        accessible-label: "Host species";
+                                        accessible-label: "Host Species";
                                     }
                                 }
                                 HorizontalLayout {
                                     spacing: 6px;
                                     RoughField {
-                                        label: "Planned stone width (mm)";
-                                        hint: "The width of the cut stone, for the predicted colour next to the 7 mm reference.";
+                                        label: "Planned Stone Width (mm)";
+                                        hint: "The width of the cut stone, for the predicted color next to the 7 mm reference.";
                                         value <=> root.planned_text;
                                     }
                                 }
@@ -575,17 +578,17 @@ export component RoughColourWindow inherits Window {
                                 HorizontalLayout {
                                     spacing: 6px;
                                     RoughPill {
-                                        text: "Undo zone edit";
+                                        text: "Undo Zone Edit";
                                         hint: "Take back the last change to the zones. Dragging a handle in the rough view counts as one change.";
                                         enabled: !root.busy;
                                         clicked => { root.undo_zone_edit(); }
                                     }
                                     Note { text: "Drag the handles of the selected zone in the Rough Planner's 3D view."; }
                                 }
-                                Note { text: "Add a zone:"; }
+                                Note { text: "Add a Zone:"; }
                                 HorizontalLayout {
                                     spacing: 4px;
-                                    for name[k] in root.shape_names: RoughPill {
+                                    for name[k] in root.shape_names: rough-pill-l591 := RoughPill {
                                         text: name;
                                         hint: "Add a " + name + " zone in the middle of the rough, then edit it below.";
                                         enabled: !root.busy;
@@ -598,7 +601,7 @@ export component RoughColourWindow inherits Window {
                                     TipBox {
                                         width: 90px;
                                         hint: "Type a value in mm (angles in radians) and press Enter.";
-                                        LineEdit {
+                                        line-edit-name := LineEdit {
                                             min-width: 0px;
                                             text: param.value;
                                             enabled: !root.busy;
@@ -606,7 +609,7 @@ export component RoughColourWindow inherits Window {
                                             accepted(t) => { root.param_committed(r, t); }
                                         }
                                     }
-                                    RoughPill {
+                                    rough-pill-locked := RoughPill {
                                         text: param.locked ? "Locked" : "Lock";
                                         hint: "A locked parameter stays where it is when the geometry is refined.";
                                         active: param.locked;
@@ -622,7 +625,7 @@ export component RoughColourWindow inherits Window {
                                         committed => { root.softness_committed(); }
                                     }
                                     RoughField {
-                                        label: "Refinement iterations";
+                                        label: "Refinement Iterations";
                                         hint: root.iterations_hint;
                                         editable: !root.busy;
                                         value <=> root.iterations_text;
@@ -633,9 +636,9 @@ export component RoughColourWindow inherits Window {
                                 Note { text: "Mark a boundary in at least two photos (the same points in the same order), then fit it as a primitive."; }
                                 HorizontalLayout {
                                     spacing: 6px;
-                                    RoughPill { text: root.mark_mode ? "Marking on" : "Marking off"; hint: "While on, clicks on the picture add boundary points to this view."; active: root.mark_mode; clicked => { root.mark_mode = !root.mark_mode; } }
-                                    RoughPill { text: "Undo point"; hint: "Take back the last point in this view."; clicked => { root.marks_undo(); } }
-                                    RoughPill { text: "Clear marks"; hint: "Remove all marks."; clicked => { root.marks_clear(); } }
+                                    rough-pill-mark-mode := RoughPill { text: root.mark_mode ? "Marking On" : "Marking Off"; hint: "While on, clicks on the picture add boundary points to this view."; active: root.mark_mode; clicked => { root.mark_mode = !root.mark_mode; } }
+                                    RoughPill { text: "Undo Point"; hint: "Take back the last point in this view."; clicked => { root.marks_undo(); } }
+                                    RoughPill { text: "Clear Marks"; hint: "Remove all marks."; clicked => { root.marks_clear(); } }
                                 }
                                 HorizontalLayout {
                                     spacing: 6px;
@@ -645,10 +648,19 @@ export component RoughColourWindow inherits Window {
                                             min-width: 0px;
                                             model: root.shape_names;
                                             current-index <=> root.mark_kind_index;
-                                            accessible-label: "Primitive to fit";
+                                            accessible-label: "Primitive to Fit";
                                         }
                                     }
-                                    RoughPill { text: "Fit zone"; hint: "Fit the primitive to the marks and add it as a zone."; enabled: !root.busy; clicked => { root.marks_fit(); } }
+                                    if root.mark_kind_index == 3: TipBox {
+                                        hint: "How many sides the prism has (the habit of the crystal).";
+                                        ComboBox {
+                                            min-width: 0px;
+                                            model: ["3 Sides", "6 Sides"];
+                                            current-index <=> root.prism_sides_index;
+                                            accessible-label: "Sides of the Prism";
+                                        }
+                                    }
+                                    RoughPill { text: "Fit Zone"; hint: "Fit the primitive to the marks and add it as a zone."; enabled: !root.busy; clicked => { root.marks_fit(); } }
                                 }
                                 Note { text: root.mark_text; text_color: Theme.text-secondary; }
 
@@ -656,7 +668,7 @@ export component RoughColourWindow inherits Window {
                                 HorizontalLayout {
                                     spacing: 6px;
                                     alignment: start;
-                                    RoughPill { text: "Suggest from the photos"; hint: "Look for colour boundaries in the photos (or in the residual of the last fit). A suggestion is only a starting point; nothing is added until you accept it."; enabled: !root.busy; clicked => { root.suggest_zones(); } }
+                                    RoughPill { text: "Suggest from the Photos"; hint: "Look for color boundaries in the photos (or in the residual of the last fit). A suggestion is only a starting point; nothing is added until you accept it."; enabled: !root.busy; clicked => { root.suggest_zones(); } }
                                 }
                                 for sg[i] in root.suggestions: HorizontalLayout {
                                     spacing: 6px;
@@ -668,8 +680,8 @@ export component RoughColourWindow inherits Window {
                                 HorizontalLayout {
                                     spacing: 6px;
                                     alignment: start;
-                                    RoughPill { text: "Start fit"; hint: "Trace light through the stone for every view and fit the colours. This can take minutes."; active: true; enabled: !root.busy; clicked => { root.start_fit(); } }
-                                    RoughPill { text: "Refine geometry"; hint: "Move the zone boundaries to the position that fits the photos best. Needs a fit and at least one zone."; enabled: !root.busy; clicked => { root.refine(); } }
+                                    RoughPill { text: "Start Fit"; hint: "Trace light through the stone for every view and fit the colors. This can take minutes."; active: true; enabled: !root.busy; clicked => { root.start_fit(); } }
+                                    RoughPill { text: "Refine Geometry"; hint: "Move the zone boundaries to the position that fits the photos best. Needs a fit and at least one zone."; enabled: !root.busy; clicked => { root.refine(); } }
                                 }
                                 Rows { rows: root.fit_rows; }
                             }
@@ -692,14 +704,14 @@ export component RoughColourWindow inherits Window {
                                 }
                                 if root.zoned_prompt != "": HorizontalLayout {
                                     alignment: start;
-                                    RoughPill { text: "Add zones..."; hint: "Go back to the Fit step to add zones."; clicked => { root.add_zones_from_prompt(); } }
+                                    RoughPill { text: "Add Zones..."; hint: "Go back to the Fit step to add zones."; clicked => { root.add_zones_from_prompt(); } }
                                 }
                                 StepTitle { text: "HOW WELL IT FITS"; }
                                 Note { text: root.compare_stats; text_color: Theme.text-secondary; }
                                 Rows { rows: root.lovo_rows; }
                                 StepTitle { text: "MODELS"; }
                                 Rows { rows: root.model_rows; }
-                                StepTitle { text: "PREDICTED COLOURS"; }
+                                StepTitle { text: "PREDICTED COLORS"; }
                                 for chip in root.chips: HorizontalLayout {
                                     spacing: 6px;
                                     Rectangle { width: 22px; height: 22px; border-radius: 3px; background: chip.swatch; }
@@ -719,8 +731,9 @@ export component RoughColourWindow inherits Window {
                                 HorizontalLayout {
                                     spacing: 6px;
                                     alignment: start;
-                                    RoughPill { text: "Accept"; hint: root.can_accept ? "Store this rough colour with the saved plan and close." : "Save the plan in the Rough Planner first: the colour is stored with it."; active: true; enabled: root.can_accept && !root.busy; clicked => { root.accept_result(); } }
-                                    RoughPill { text: "Export report..."; hint: "Write a Markdown report and the pictures to a folder."; enabled: !root.busy; clicked => { root.export_report(); } }
+                                    RoughPill { text: "Accept"; hint: root.can_accept ? "Store this rough color with the saved plan and close." : "Save the plan in the Rough Planner first: the color is stored with it."; active: true; enabled: root.can_accept && !root.busy; clicked => { root.accept_result(); } }
+                                    RoughPill { text: "Export Report..."; hint: "Write a Markdown report and the pictures to a folder."; enabled: !root.busy; clicked => { root.export_report(); } }
+                                    RoughPill { text: "Clear Rough-Color Cache"; hint: "Delete the cached traces of the fits on this computer (up to 2 GiB are kept, files unused for 14 days go by themselves). The next fit traces again."; enabled: !root.busy; clicked => { root.clear_trace_cache(); } }
                                 }
                             }
                         }
@@ -735,7 +748,7 @@ export component RoughColourWindow inherits Window {
                     if root.step >= 2 && root.step <= 5: HorizontalLayout {
                         height: 22px;
                         spacing: 4px;
-                        for view[i] in root.view_rows: RoughPill {
+                        for view[i] in root.view_rows: rough-pill-name := RoughPill {
                             text: view.name;
                             hint: view.status;
                             active: view.active;
@@ -761,7 +774,7 @@ export component RoughColourWindow inherits Window {
                     if root.step == 6: HorizontalLayout {
                         height: 22px;
                         spacing: 4px;
-                        for view[i] in root.view_rows: RoughPill {
+                        for view[i] in root.view_rows: rough-pill-name-2 := RoughPill {
                             text: view.name;
                             hint: view.status;
                             active: view.active;
@@ -810,9 +823,9 @@ export component RoughColourWindow inherits Window {
                             width: parent.width - 40px;
                             x: 20px;
                             height: parent.height;
-                            text: root.step == 0 ? "Rough colour: photograph the rough on a fixed backlit rig, and the program works out what colour the stone itself will have, and where it changes colour inside."
+                            text: root.step == 0 ? "Rough color: photograph the rough on a fixed backlit rig, and the program works out what color the stone itself will have, and where it changes color inside."
                                 : (root.step == 1 ? "The pictures appear here from the Calibration step on."
-                                : "Accept stores the colour with the saved plan. The planner and the editor use it from then on.");
+                                : "Accept stores the color with the saved plan. The planner and the editor use it from then on.");
                             font-size: 12px;
                             color: Theme.text-muted;
                             wrap: word-wrap;

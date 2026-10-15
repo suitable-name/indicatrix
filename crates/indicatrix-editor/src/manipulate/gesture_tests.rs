@@ -468,10 +468,15 @@ fn the_first_provisional_replan_chains_from_the_committed_masts() {
     let last = last.expect("chains");
     assert_eq!(last.len(), 2);
     assert_eq!(last[0].mast, 0.7);
-    assert!(matches!(
+    #[expect(
+        clippy::float_cmp,
+        reason = "the scale reference is the committed mast copied verbatim"
+    )]
+    let references_last = matches!(
         slice.tier().map(|t| &t.constraint),
         Some(MeetConstraint::ScaleReference(m)) if *m == last[1].mast
-    ));
+    );
+    assert!(references_last);
     assert_eq!(dirty, std::collections::BTreeSet::from([1]));
     // Committed masts of another length do not align.
     let (last, _) = slice.replan_chain(Some(&[solved(0.7), solved(0.7)]));

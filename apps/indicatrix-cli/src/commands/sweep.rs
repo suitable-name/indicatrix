@@ -357,7 +357,7 @@ mod tests {
     }
 
     fn loaded() -> Loaded {
-        Loaded::in_memory(testing::brilliant_at_172(), "brilliant.indicatrix")
+        Loaded::in_memory(testing::brilliant_at_172(), "brilliant.isdd")
     }
 
     #[test]
@@ -476,7 +476,7 @@ mod tests {
     fn end_to_end_sweep_writes_the_csv_the_dialog_writes() {
         let design = testing::brilliant_at_172();
         let (_, angle) = pavilion(&design);
-        let input = testing::write_design("sweep-e2e.indicatrix", &design);
+        let input = testing::write_design("sweep-e2e.isdd", &design);
         let target = testing::temp_path("sweep-e2e.csv")
             .to_string_lossy()
             .into_owned();
@@ -516,7 +516,7 @@ mod tests {
     fn end_to_end_a_signed_and_an_unsigned_range_make_the_same_report() {
         let design = testing::brilliant_at_172();
         let (_, angle) = pavilion(&design);
-        let input = testing::write_design("sweep-e2e-sign.indicatrix", &design);
+        let input = testing::write_design("sweep-e2e-sign.isdd", &design);
         let low = fixed(angle.abs() - 1.0, 1);
         let high = fixed(angle.abs() + 1.0, 1);
         let run_with = |from: &str, to: &str| {
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn end_to_end_an_angle_out_of_range_is_refused_before_any_work() {
         let design = testing::brilliant_at_172();
-        let input = testing::write_design("sweep-e2e-bounds.indicatrix", &design);
+        let input = testing::write_design("sweep-e2e-bounds.isdd", &design);
         let outcome = testing::run(&[
             "sweep",
             &input,

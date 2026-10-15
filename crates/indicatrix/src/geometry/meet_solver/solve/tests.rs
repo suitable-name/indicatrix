@@ -455,7 +455,10 @@ fn solve_meet_points_with_reports_monotonic_progress_reaching_every_phases_total
             r.blocks_done <= r.blocks_total,
             "blocks_done exceeded blocks_total: {r:?}"
         );
-        assert_eq!(r.blocks_total, tiers.len() as u32);
+        assert_eq!(
+            r.blocks_total,
+            u32::try_from(tiers.len()).expect("the tier count fits u32")
+        );
         if r.blocks_done == r.blocks_total {
             reached_total.insert(rank);
         }

@@ -95,7 +95,7 @@ pub(super) fn handle_optimize_outcome(
             // appending the anchor-specific remedy to it would be wrong.
             let status = if matches!(error, DesignSolveError::MissingAnchor(_)) {
                 format!(
-                    "Optimize failed: {error} -- add an Exact scale value tier there \
+                    "Optimize failed: {error} -- add an Exact Scale Value tier there \
                      and Solve first."
                 )
             } else {

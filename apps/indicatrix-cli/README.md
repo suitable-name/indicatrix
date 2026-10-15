@@ -10,7 +10,7 @@ cargo run -p indicatrix-cli -- <command> <design> [options]
 cargo run -p indicatrix-cli -- <command> --help
 ```
 
-A `<design>` is a `.indicatrix`, `.asc`, `.gem` or `.gcs` file. The kind is read from the
+A `<design>` is a `.isdd`, `.asc`, `.gem` or `.gcs` file (an older `.indicatrix` file opens too, exactly like a `.isdd`). The kind is read from the
 extension.
 
 ## Commands
@@ -18,13 +18,13 @@ extension.
 | Command | What it does |
 |---|---|
 | `info` | Name, gear, symmetry, preform (shape, size and offset), material and the tier list. Does not solve. |
-| `solve` | Solves every tier, checks that the facets enclose a stone, lists the manufacturability warnings. `--out` saves the design as `.indicatrix` (this converts `.asc`, `.gem` and `.gcs`). |
+| `solve` | Solves every tier, checks that the facets enclose a stone, lists the manufacturability warnings. `--out` saves the design as `.isdd` (this converts `.asc`, `.gem` and `.gcs`). |
 | `metrics` | Table-up windowing, brilliance, extinction, fire and scintillation, the proportions and the yield. `--tilt` also averages the tilt performance. |
 | `validate` | The warnings and the overall Good, Check or Problem verdict of the editor's status strip. |
 | `optimize` | The Optimize tab's search on the design's own material. Lists ranked candidates; `--out` saves the best. |
 | `retarget` | The Retarget dialog's engine and validity gate, for another material. |
 | `sweep` | Sets one tier to every angle of a range and scores each one. |
-| `export` | Writes `.asc` (GemCAD cutting instructions), `.indicatrix`, `.gcs` or the cutting sheet as `.html`. |
+| `export` | Writes `.asc` (GemCAD cutting instructions), `.isdd`, `.gcs` or the cutting sheet as `.html`. `--format isdd` also takes the older name `indicatrix`. |
 | `render` | Renders a still picture from a render job file (`*.job.json`) made by the desktop app. See [Render jobs](#render-jobs). |
 | `tilt-video` | Renders a tilt performance video from a render job file, and resumes from the frames already written. |
 
@@ -32,16 +32,16 @@ extension.
 
 ```
 indicatrix-cli info round.asc
-indicatrix-cli solve round.asc --out round.indicatrix
-indicatrix-cli metrics round.indicatrix --ri 1.76 --json
-indicatrix-cli metrics round.indicatrix --material Sapphire --tilt --csv
+indicatrix-cli solve round.asc --out round.isdd
+indicatrix-cli metrics round.isdd --ri 1.76 --json
+indicatrix-cli metrics round.isdd --material Sapphire --tilt --csv
 indicatrix-cli validate round.asc --json
-indicatrix-cli optimize round.indicatrix --preset brilliance --budget 400 --starts 4 --seed 7 --out better.indicatrix
-indicatrix-cli retarget round.indicatrix --material Sapphire --crown-fraction 0.33 --out sapphire.indicatrix
-indicatrix-cli retarget round.indicatrix --ri 1.7681 --mode optimize --range 4 --out sapphire.indicatrix
-indicatrix-cli sweep round.indicatrix --tier "Pavilion Main" --from 39 --to 43 --step 0.5 --csv sweep.csv
-indicatrix-cli export round.indicatrix --format html --out sheet.html
-indicatrix-cli export round.indicatrix --out round.asc
+indicatrix-cli optimize round.isdd --preset brilliance --budget 400 --starts 4 --seed 7 --out better.isdd
+indicatrix-cli retarget round.isdd --material Sapphire --crown-fraction 0.33 --out sapphire.isdd
+indicatrix-cli retarget round.isdd --ri 1.7681 --mode optimize --range 4 --out sapphire.isdd
+indicatrix-cli sweep round.isdd --tier "Pavilion Main" --from 39 --to 43 --step 0.5 --csv sweep.csv
+indicatrix-cli export round.isdd --format html --out sheet.html
+indicatrix-cli export round.isdd --out round.asc
 ```
 
 Angles are positive numbers, as the tier table shows them: the side of the girdle comes from
@@ -67,7 +67,7 @@ difference and keeps its sign in both.
   tab does the same). An unknown `--material` is a command-line mistake and ends with exit
   code 1. A material the design itself names that neither the built-ins, `--db` nor the file's
   own snapshot hold is refused with exit code 2. Neither falls back silently.
-- When a saved `.indicatrix` file names a custom material of the `--db` library (for example
+- When a saved `.isdd` file names a custom material of the `--db` library (for example
   after `retarget --material`), the material's numbers are saved inside the file
   (`[material.custom]`), as the desktop's Save does, so the file opens without `--db`.
 - `--db FILE` is a design library (`facet_diagrams.sqlite`). It is opened **read-only**; the
@@ -104,6 +104,12 @@ fixed order, JSON objects come out with sorted keys, and nothing reads the clock
 Only the thread count of a sweep depends on the machine: it sizes its worker pool from the
 processor count, but every row is a pure function of its angle and the rows come back in angle
 order (flattest first).
+
+Before a command runs, the tool asks GitHub (at most 2 s) whether a newer Indicatrix release
+exists; only then it prints one line to standard error, `info: Indicatrix 0.7.3 is available
+(this is 0.7.2): <release page>`. Standard output is never touched, and up to date, offline or
+any other failure prints nothing. `--no-update-check` (anywhere on the command line) or the
+environment variable `INDICATRIX_NO_UPDATE_CHECK` (any value) skips the check.
 
 `metrics --json` keys: `table_up_brilliance_pct`, `table_up_windowing_pct`,
 `table_up_extinction_pct`, `table_up_fire_index`, `table_up_scintillation_pct`, with `tilt_*`

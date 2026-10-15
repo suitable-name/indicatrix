@@ -2,7 +2,7 @@
 //!
 //! A [`Perform`] is plain data (no UI types) that names what the learner would do, in the
 //! editor's own words: fill in the New Design form and press Create, type this into the Tier
-//! form and press Add Tier or Save Tier, pick this material and press Apply Material, press
+//! form and press Add Tier or Save Tier, pick this material in the Stone tab, press
 //! Solve, run this palette command. A UI carries it out through the very callbacks those
 //! actions call, so the edit is one undo step like the learner's own, a bad entry is refused by
 //! the same parser with the same message, and the step then completes the usual way (the goal
@@ -226,7 +226,7 @@ pub enum Perform {
         /// The offset in degrees (a number or a sum); blank clears it.
         text: String,
     },
-    /// Design Settings: pick this material and click Apply Material.
+    /// The Stone tab: pick this material (it applies at once).
     Material(String),
     /// The Preform tab: type this Girdle Diameter and click Apply Yield Inputs.
     Yield {

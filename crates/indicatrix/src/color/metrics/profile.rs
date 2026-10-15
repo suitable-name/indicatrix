@@ -3,7 +3,11 @@
 //! [`evaluate_angular_profile`]) and the full `-90..=90°` tilt-away-from-table-up
 //! sweep ([`evaluate_full_axis_profile_at_azimuth`]).
 
-use super::{evaluate::evaluate_gem_optical_metrics_geom, types::PROFILE_ANGLES_DEG};
+use super::{
+    pose_batch::{AxisCurves, run_poses, sweep_axes, sweep_axes_gated},
+    prepared::PreparedEval,
+    types::PROFILE_ANGLES_DEG,
+};
 use crate::{
     geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
     optics::{materials::GemMaterial, raytracer::EnvironmentSource},
@@ -52,51 +56,33 @@ pub fn evaluate_angular_profile_at_azimuth_geom(
     cam_yaw: f32,
     environment: EnvironmentSource<'_>,
 ) -> ([f32; 19], [f32; 19], [f32; 19]) {
-    sample_elevation_sweep(
-        geom,
-        material,
-        cam_yaw,
-        &PROFILE_ANGLES_DEG,
-        environment,
-        &mut || true,
-    )
+    sample_elevation_sweep(geom, material, cam_yaw, &PROFILE_ANGLES_DEG, environment)
 }
 
-/// Shared per-angle sampling loop behind [`evaluate_angular_profile_at_azimuth`] (called
-/// with `&PROFILE_ANGLES_DEG`, 19 points / 5° steps) and
-/// [`evaluate_full_axis_profile_at_azimuth`] (called with `&HALF_AXIS_PITCH_DEG`, 90
-/// points / 1° steps -- a different grid needing its own const array rather than a finer
-/// `PROFILE_ANGLES_DEG`). Factored out so both call sites run the textually identical
-/// sequence of floating-point operations rather than two hand-copies that could drift
-/// apart. Const-generic over `N` so one function body serves both grids without a
-/// `Vec`-based version paying an allocation per sweep.
-///
-/// `gate` is asked before every evaluation; when it answers `false` the sweep stops and
-/// the rest of the curves stay `0.0` (the caller that passed a gate that can say no
-/// discards them). A gate that always answers `true` leaves the sequence of
-/// floating-point operations exactly as it was without one.
+/// The per-angle sampling loop behind [`evaluate_angular_profile_at_azimuth`] (called with
+/// `&PROFILE_ANGLES_DEG`, 19 points / 5° steps). Reads only brilliance, extinction and
+/// windowing, so it runs the Fire-less pass (bit-identical for those three) on one prepared
+/// stone. Serial on purpose: 19 poses are ~20 ms, and the metrics cache calls this from
+/// UI-adjacent code that must not fan out threads. Const-generic over `N` so one function
+/// body serves any grid without a `Vec`-based version paying an allocation per sweep.
 fn sample_elevation_sweep<const N: usize>(
     geom: StoneGeometry<'_>,
     material: &GemMaterial,
     cam_yaw: f32,
     angles_deg: &[f32; N],
     environment: EnvironmentSource<'_>,
-    gate: &mut dyn FnMut() -> bool,
 ) -> ([f32; N], [f32; N], [f32; N]) {
+    let prepared = PreparedEval::new(geom, material, environment);
+    let poses = angles_deg.map(|deg| (cam_yaw, deg.to_radians()));
+    let triples = run_poses(prepared.as_ref(), &poses, 1);
+
     let mut brilliance_curve = [0.0f32; N];
     let mut extinction_curve = [0.0f32; N];
     let mut windowing_curve = [0.0f32; N];
-
-    for (i, &deg) in angles_deg.iter().enumerate() {
-        if !gate() {
-            break;
-        }
-        let cam_pitch_rad = deg.to_radians();
-        let m =
-            evaluate_gem_optical_metrics_geom(geom, material, cam_yaw, cam_pitch_rad, environment);
-        brilliance_curve[i] = m.brilliance_pct;
-        extinction_curve[i] = m.extinction_pct;
-        windowing_curve[i] = m.windowing_pct;
+    for (i, [brilliance, extinction, windowing]) in triples.into_iter().enumerate() {
+        brilliance_curve[i] = brilliance;
+        extinction_curve[i] = extinction;
+        windowing_curve[i] = windowing;
     }
 
     (brilliance_curve, extinction_curve, windowing_curve)
@@ -117,7 +103,7 @@ const fn build_half_axis_pitch_deg() -> [f32; 90] {
     }
     out
 }
-const HALF_AXIS_PITCH_DEG: [f32; 90] = build_half_axis_pitch_deg();
+pub(super) const HALF_AXIS_PITCH_DEG: [f32; 90] = build_half_axis_pitch_deg();
 
 const fn build_tilt_angles_deg() -> [f32; 181] {
     let mut out = [0.0f32; 181];
@@ -157,31 +143,6 @@ const fn build_tilt_angles_deg() -> [f32; 181] {
 /// hundred pixels wide, so finer sampling would only resolve grid-sampling noise --
 /// don't "improve" this to 0.5° later.
 pub const TILT_ANGLES_DEG: [f32; 181] = build_tilt_angles_deg();
-
-/// Merges one axis's independently-swept positive-azimuth and negative-azimuth
-/// (`positive_azimuth + 180°`) pitch-0..89 halves, plus the shared table-up (pitch-90)
-/// pole evaluated once, into the single 181-point `TILT_ANGLES_DEG`-indexed output
-/// array -- see [`evaluate_full_axis_profile_at_azimuth`]'s doc comment for the
-/// geometry and tilt-to-pose formula. `positive_pitch_sweep`/`negative_pitch_sweep` are
-/// each indexed by [`HALF_AXIS_PITCH_DEG`] (pitch `i` at index `i`, i.e. ascending
-/// pitch = descending `|tilt|`, since `pitch = 90 - |tilt|`).
-fn merge_full_axis_halves(
-    table_up_pole: f32,
-    positive_pitch_sweep: &[f32; 90],
-    negative_pitch_sweep: &[f32; 90],
-) -> [f32; 181] {
-    let mut out = [0.0f32; 181];
-    // [0..90] = tilt -90..=-1: negative_pitch_sweep laid down directly (pitch = 90 +
-    // tilt for tilt < 0, so out[k] is exactly negative_pitch_sweep[k]).
-    out[0..90].copy_from_slice(negative_pitch_sweep);
-    out[90] = table_up_pole; // tilt = 0.0: the shared table-up (pitch 90) pole.
-    // [91..181] = tilt 1..=90: positive_pitch_sweep laid down reversed (pitch = 90 -
-    // tilt, descending as tilt increases, ending at pitch 0/edge-on at tilt 90).
-    for i in 0..90 {
-        out[91 + i] = positive_pitch_sweep[89 - i];
-    }
-    out
-}
 
 /// Calculates a full-axis, 181-point angular profile spanning the ENTIRE `-90°..=+90°`
 /// TILT range for one axis of [`PROFILE_AZIMUTHS_DEG`].
@@ -251,6 +212,9 @@ pub fn evaluate_full_axis_profile_at_azimuth(
 
 /// [`evaluate_full_axis_profile_at_azimuth`] for a stone with tools; bit-identical to it
 /// when `geom.tools` is empty.
+///
+/// The 181 poses run in parallel on up to the machine's cores (at most 16); see
+/// [`evaluate_full_axis_profile_at_azimuth_geom_threaded`] to cap that.
 #[must_use]
 pub fn evaluate_full_axis_profile_at_azimuth_geom(
     geom: StoneGeometry<'_>,
@@ -258,13 +222,42 @@ pub fn evaluate_full_axis_profile_at_azimuth_geom(
     positive_azimuth_deg: f32,
     environment: EnvironmentSource<'_>,
 ) -> ([f32; 181], [f32; 181], [f32; 181]) {
-    full_axis_profile(
+    evaluate_full_axis_profile_at_azimuth_geom_threaded(
         geom,
         material,
         positive_azimuth_deg,
         environment,
-        &mut || true,
+        None,
     )
+}
+
+/// [`evaluate_full_axis_profile_at_azimuth_geom`] with an explicit worker cap.
+///
+/// `max_threads` of `None` uses the machine's parallelism (at most 16), `Some(1)` runs
+/// serially on the calling thread; a caller that already parallelises across designs (the
+/// batch tilt curves) passes its share so lanes x threads stays within the core count.
+/// Every pose writes the curve slot it owns, so the result is bit-identical for any
+/// thread count (and to the pre-parallel serial sweep). `wasm32` always runs serially.
+#[must_use]
+pub fn evaluate_full_axis_profile_at_azimuth_geom_threaded(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    positive_azimuth_deg: f32,
+    environment: EnvironmentSource<'_>,
+    max_threads: Option<usize>,
+) -> ([f32; 181], [f32; 181], [f32; 181]) {
+    let [curves]: [AxisCurves; 1] = sweep_axes(
+        geom,
+        material,
+        environment,
+        &[positive_azimuth_deg],
+        max_threads,
+    )
+    .try_into()
+    // An ungated sweep returns one curve set per azimuth; the all-placeholder set keeps
+    // this total without a panic path.
+    .unwrap_or([[[0.0; 181]; 3]]);
+    curves.into()
 }
 
 /// [`evaluate_full_axis_profile_at_azimuth`] with a hook before every evaluation.
@@ -301,79 +294,48 @@ pub fn evaluate_full_axis_profile_at_azimuth_stepped_geom(
     environment: EnvironmentSource<'_>,
     step: &mut dyn FnMut() -> bool,
 ) -> Option<([f32; 181], [f32; 181], [f32; 181])> {
-    let mut stopped = false;
-    let mut gate = || {
-        if !stopped && !step() {
-            stopped = true;
-        }
-        !stopped
-    };
-    let curves = full_axis_profile(geom, material, positive_azimuth_deg, environment, &mut gate);
-    (!stopped).then_some(curves)
+    evaluate_full_axis_profile_at_azimuth_stepped_geom_threaded(
+        geom,
+        material,
+        positive_azimuth_deg,
+        environment,
+        None,
+        step,
+    )
+}
+
+/// [`evaluate_full_axis_profile_at_azimuth_stepped_geom`] with an explicit worker cap (see
+/// [`evaluate_full_axis_profile_at_azimuth_geom_threaded`]).
+///
+/// `step` runs on the calling thread only, never concurrently, and is asked in evaluation
+/// order; on a parallel run it is asked a few evaluations per worker ahead of the work (so
+/// progress leads the finished poses by a few milliseconds) and the first `false` stops the
+/// sweep before the next batch starts. Serial runs interleave ask and evaluate exactly as
+/// before.
+#[must_use]
+pub fn evaluate_full_axis_profile_at_azimuth_stepped_geom_threaded(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    positive_azimuth_deg: f32,
+    environment: EnvironmentSource<'_>,
+    max_threads: Option<usize>,
+    step: &mut dyn FnMut() -> bool,
+) -> Option<([f32; 181], [f32; 181], [f32; 181])> {
+    let axes = sweep_axes_gated(
+        geom,
+        material,
+        environment,
+        &[positive_azimuth_deg],
+        max_threads,
+        &mut |_axis| step(),
+    )?;
+    let [curves]: [AxisCurves; 1] = axes.try_into().ok()?;
+    Some(curves.into())
 }
 
 /// Raytrace evaluations one full-axis profile costs: the shared table-up pole, then 90
 /// pitches (0..=89) at each of the two opposite azimuths.
 pub const EVALUATIONS_PER_AXIS: usize = 181;
-
-/// The body of [`evaluate_full_axis_profile_at_azimuth`] with a `gate` asked before every
-/// evaluation (see `sample_elevation_sweep`). The pole is always evaluated, even when the
-/// gate has already said no: one evaluation is cheaper than another code path.
-fn full_axis_profile(
-    geom: StoneGeometry<'_>,
-    material: &GemMaterial,
-    positive_azimuth_deg: f32,
-    environment: EnvironmentSource<'_>,
-    gate: &mut dyn FnMut() -> bool,
-) -> ([f32; 181], [f32; 181], [f32; 181]) {
-    // The gate is asked once for the pole, so it counts as one of the evaluations.
-    let _ = gate();
-    // The shared table-up (pitch 90) pole -- see this function's doc comment for why
-    // evaluating it once is sound. Evaluated at the positive azimuth by convention
-    // (azimuth is provably irrelevant here, but a concrete choice is still needed).
-    let table_up_pole = evaluate_gem_optical_metrics_geom(
-        geom,
-        material,
-        positive_azimuth_deg.to_radians(),
-        90.0f32.to_radians(),
-        environment,
-    );
-    let (positive_brilliance, positive_extinction, positive_windowing) = sample_elevation_sweep(
-        geom,
-        material,
-        positive_azimuth_deg.to_radians(),
-        &HALF_AXIS_PITCH_DEG,
-        environment,
-        gate,
-    );
-    let negative_azimuth_deg = positive_azimuth_deg + 180.0;
-    let (negative_brilliance, negative_extinction, negative_windowing) = sample_elevation_sweep(
-        geom,
-        material,
-        negative_azimuth_deg.to_radians(),
-        &HALF_AXIS_PITCH_DEG,
-        environment,
-        gate,
-    );
-
-    (
-        merge_full_axis_halves(
-            table_up_pole.brilliance_pct,
-            &positive_brilliance,
-            &negative_brilliance,
-        ),
-        merge_full_axis_halves(
-            table_up_pole.extinction_pct,
-            &positive_extinction,
-            &negative_extinction,
-        ),
-        merge_full_axis_halves(
-            table_up_pole.windowing_pct,
-            &positive_windowing,
-            &negative_windowing,
-        ),
-    )
-}
 
 /// Calculates a 19-point angular profile of (Brilliance %, Extinction %, Windowing %)
 /// at the canonical (0°) camera azimuth.

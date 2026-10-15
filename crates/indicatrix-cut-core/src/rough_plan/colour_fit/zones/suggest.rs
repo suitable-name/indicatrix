@@ -351,7 +351,7 @@ fn nearest(centres: &[[f64; 3]], f: [f64; 3]) -> u8 {
             best = j;
         }
     }
-    best as u8
+    u8::try_from(best).expect("a cluster index fits in u8 (labels are bytes)")
 }
 
 /// Lloyd's algorithm from quantile seeds of the pixels sorted by their features.
@@ -367,6 +367,11 @@ fn kmeans(features: &[[f64; 3]], k: usize, iterations: usize) -> KMeans {
     });
     let mut centres: Vec<[f64; 3]> = (0..k)
         .map(|j| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the quantile position is non-negative and below n; truncation to an index is the intent"
+            )]
             let pos = (((j as f64 + 0.5) / k as f64) * n as f64) as usize;
             features[order[pos.min(n - 1)]]
         })
@@ -418,6 +423,11 @@ fn kmeans(features: &[[f64; 3]], k: usize, iterations: usize) -> KMeans {
 ///
 /// [`SuggestError`] for bad settings, views that do not match their grids, mixed image kinds, or
 /// fewer valid pixels than clusters.
+///
+/// # Panics
+///
+/// Never in practice: the cluster count is 2 to 4, so converting a cluster index to a byte label
+/// cannot fail.
 pub fn segment_views(
     views: &[SuggestView],
     options: &SuggestOptions,
@@ -488,7 +498,7 @@ pub fn segment_views(
     });
     let mut rank = vec![0_u8; k];
     for (new, &old) in order.iter().enumerate() {
-        rank[old] = new as u8;
+        rank[old] = u8::try_from(new).expect("a cluster index fits in u8 (labels are bytes)");
     }
     let centres: Vec<[f64; 3]> = order.iter().map(|&old| run.centres[old]).collect();
     let mut labels: Vec<Vec<u8>> = views
@@ -500,6 +510,7 @@ pub fn segment_views(
     }
 
     // Iterated conditional modes with a Potts prior.
+    let cluster_count = u8::try_from(k).expect("a cluster count fits in u8 (labels are bytes)");
     let sigma2 = (run.inertia / (3.0 * pooled.len() as f64)).max(1e-9);
     for _ in 0..options.icm_sweeps {
         let mut changed = false;
@@ -524,7 +535,7 @@ pub fn segment_views(
                     };
                     let mut best = current;
                     let mut best_e = energy(current);
-                    for l in 0..k as u8 {
+                    for l in 0..cluster_count {
                         let e = energy(l);
                         if e < best_e - 1e-12 {
                             best_e = e;
@@ -567,13 +578,13 @@ pub fn segment_views(
 
 fn neighbour_labels(labels: &[u8], w: usize, h: usize, x: usize, y: usize) -> [u8; 4] {
     let at = |xx: isize, yy: isize| -> u8 {
-        if xx < 0 || yy < 0 || xx >= w as isize || yy >= h as isize {
+        if xx < 0 || yy < 0 || xx >= w.cast_signed() || yy >= h.cast_signed() {
             NO_LABEL
         } else {
-            labels[yy as usize * w + xx as usize]
+            labels[yy.cast_unsigned() * w + xx.cast_unsigned()]
         }
     };
-    let (xi, yi) = (x as isize, y as isize);
+    let (xi, yi) = (x.cast_signed(), y.cast_signed());
     [
         at(xi - 1, yi),
         at(xi + 1, yi),

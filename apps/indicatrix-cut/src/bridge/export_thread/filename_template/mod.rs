@@ -89,7 +89,7 @@ fn substitute(name: &str, ctx: &TemplateContext, now: SystemTime) -> Option<Stri
     let (secs, (year, month, day, hour, minute, second)) = {
         let secs = now
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
+            .map_or(0, |d| d.as_secs().cast_signed());
         (secs, civil_from_unix_seconds(secs))
     };
     Some(match name {
@@ -301,6 +301,11 @@ pub fn resolve_export_path(export_dir: &Path, template: &str, ctx: &TemplateCont
 /// public-domain `civil_from_days` algorithm
 /// (<http://howardhinnant.github.io/date_algorithms.html>), pinned by this function's
 /// tests against several known dates including the 1970 epoch and a Feb-29 leap day.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "time-of-day fields are bounded (hour < 24, minute/second < 60, day <= 31, month <= 12) by the algorithm's ranges; try_from is not const"
+)]
 pub const fn civil_from_unix_seconds(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = secs.div_euclid(86_400);
     let time_of_day = secs.rem_euclid(86_400);
@@ -310,10 +315,10 @@ pub const fn civil_from_unix_seconds(secs: i64) -> (i64, u32, u32, u32, u32, u32
 
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
-    let day_of_era = (z - era * 146_097) as u64; // [0, 146096]
+    let day_of_era = (z - era * 146_097).cast_unsigned(); // [0, 146096]
     let year_of_era =
         (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365; // [0, 399]
-    let year = year_of_era as i64 + era * 400;
+    let year = year_of_era.cast_signed() + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100); // [0, 365]
     let mp = (5 * day_of_year + 2) / 153; // [0, 11]
     let day = (day_of_year - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]

@@ -97,20 +97,19 @@ fn frame_geometry(cached: &CachedMesh, camera: CameraPose, size: (u32, u32)) -> 
 }
 
 /// View mode 3's diagram-building step: the diagram (three-panel, or the enlarged
-/// panel) at `size` from the pipeline's `last_diagram` memory, or `None` when the
-/// arrangement does not close. Camera-independent. Builds nothing in any other
-/// view mode.
+/// panel) of the closed `cached` mesh at `size` from the pipeline's `last_diagram`
+/// memory. Camera-independent. The caller passes the mesh it already fetched from the
+/// cache, so the plane list is not hashed a second time (perf review UI-7).
 ///
 /// `moved` is the app-owned set of drag-follower facet ids (see
 /// [`super::state::Outlines`]): like the solid view, the diagram outlines it from the
 /// newest value at draw time, not from the style the last replan remembered.
 fn build_diagram(
-    mesh_cache: &mut MeshCache,
-    stone: &StoneGeometryBuf,
+    cached: &CachedMesh,
     size: (u32, u32),
     last_diagram: &DiagramMemory,
     moved: &[u32],
-) -> Option<DiagramFrame> {
+) -> DiagramFrame {
     let style = if last_diagram.style.moved == moved {
         Cow::Borrowed(&last_diagram.style)
     } else {
@@ -119,22 +118,20 @@ fn build_diagram(
             ..last_diagram.style.clone()
         })
     };
-    mesh_cache.get_or_build_geometry(stone).map(|cached| {
-        let config = DiagramConfig {
-            width: size.0,
-            height: size.1,
-            gear_teeth: last_diagram.gear_teeth,
-            gear_reference_angle: last_diagram.gear_reference_angle,
-            symmetry_order: last_diagram.symmetry_order,
-            mirror: last_diagram.mirror,
-        };
-        // The "enlarge this panel" mode: draw just that one panel filling the
-        // whole frame instead of the ordinary three-column layout.
-        last_diagram.enlarged_panel.map_or_else(
-            || diagram2d::render_diagram(&cached.mesh, &config, &style),
-            |panel| diagram2d::render_diagram_single_panel(&cached.mesh, &config, &style, panel),
-        )
-    })
+    let config = DiagramConfig {
+        width: size.0,
+        height: size.1,
+        gear_teeth: last_diagram.gear_teeth,
+        gear_reference_angle: last_diagram.gear_reference_angle,
+        symmetry_order: last_diagram.symmetry_order,
+        mirror: last_diagram.mirror,
+    };
+    // The "enlarge this panel" mode: draw just that one panel filling the
+    // whole frame instead of the ordinary three-column layout.
+    last_diagram.enlarged_panel.map_or_else(
+        || diagram2d::render_diagram(&cached.mesh, &config, &style),
+        |panel| diagram2d::render_diagram_single_panel(&cached.mesh, &config, &style, panel),
+    )
 }
 
 /// Renders one request against `mesh_cache`/`rasterizer`/`edges_rasterizer` plus
@@ -156,8 +153,18 @@ pub fn render_request(
     memory: &mut WorkerMemory,
     request: RedrawRequest,
 ) -> Option<RenderedFrame> {
-    let (stone, camera_pose, size, view_mode, style, solved, stale, unsolvable_status, generation) =
-        resolve_request_state(memory, mesh_cache, request)?;
+    let (
+        stone,
+        camera_pose,
+        size,
+        view_mode,
+        style,
+        solved,
+        out_of_date,
+        unsolvable_status,
+        generation,
+        known_key,
+    ) = resolve_request_state(memory, mesh_cache, request)?;
     // The app-owned outlines (slice tier, drag followers) are read NOW, not taken from
     // the request: a `Planned` request rebuilds the style without them and the gate
     // drops a superseded overlay update -- see `Outlines`.
@@ -170,22 +177,43 @@ pub fn render_request(
         camera_pose.distance,
         DEFAULT_FOV_DEG,
     );
-    let (has_solid, status) = if let Some(cached) = mesh_cache.get_or_build_geometry(&stone) {
-        rasterizer.render_prepared(cached, &camera, &style);
-        (true, String::new())
-    } else if let Some(cached) = mesh_cache.last_closed() {
-        // This frame's arrangement doesn't close, but a real solid was built
-        // before. Show that, dimmed, rather than blanking the viewport.
-        let dimmed = dim_style(style.clone());
-        rasterizer.render_prepared(cached, &camera, &dimmed);
-        (true, mesh_cache.status_message())
-    } else {
-        // Never built a closed solid at all yet: still produce a real,
-        // correctly-sized (background-colored) image -- the viewport must never
-        // go blank/stale -- plus the reason, for the caller's status banner.
-        rasterizer.render(&SolidMesh::default(), &camera, &style);
-        (false, mesh_cache.status_message())
-    };
+    // The plane list is hashed once per request (perf review UI-7): by
+    // `resolve_request_state` for a `Planned` request (`known_key`), by this lookup
+    // otherwise. It used to be hashed again for the "Both" layer, the diagram and the
+    // frame geometry. Everything that needs the CURRENT closed mesh is therefore done
+    // inside this branch; none of it reads state the other passes write.
+    let mut has_edges = false;
+    let mut diagram = None;
+    let mut closed_geometry = None;
+    let stone_key = known_key.unwrap_or_else(|| stone.cache_key());
+    let (has_solid, status) =
+        if let Some(cached) = mesh_cache.get_or_build_geometry_keyed(stone_key, &stone) {
+            rasterizer.render_prepared(cached, &camera, &style);
+            // "Both" mode: the transparent-fill/opaque-edges layer, composited by the
+            // caller over the path-traced image -- only built when asked for.
+            if view_mode == 2 {
+                edges_rasterizer.resize(size.0, size.1);
+                render_edges_layer(edges_rasterizer, cached, &camera, &style);
+                has_edges = true;
+            }
+            if view_mode == 3 {
+                diagram = Some(build_diagram(cached, size, &memory.diagram, &style.moved));
+            }
+            closed_geometry = Some(frame_geometry(cached, camera_pose, size));
+            (true, String::new())
+        } else if let Some(cached) = mesh_cache.last_closed() {
+            // This frame's arrangement doesn't close, but a real solid was built
+            // before. Show that, dimmed, rather than blanking the viewport.
+            let dimmed = dim_style(style.clone());
+            rasterizer.render_prepared(cached, &camera, &dimmed);
+            (true, mesh_cache.status_message())
+        } else {
+            // Never built a closed solid at all yet: still produce a real,
+            // correctly-sized (background-colored) image -- the viewport must never
+            // go blank/stale -- plus the reason, for the caller's status banner.
+            rasterizer.render(&SolidMesh::default(), &camera, &style);
+            (false, mesh_cache.status_message())
+        };
     // An unsolvable/unbounded override always wins the status banner -- it names
     // the actual reason the CURRENT edit can't be shown.
     let status = unsolvable_status.unwrap_or(status);
@@ -195,28 +223,15 @@ pub fn render_request(
         pick: rasterizer.pick.clone(),
     };
 
-    // "Both" mode: the transparent-fill/opaque-edges layer, composited by the
-    // caller over the path-traced image -- only built when asked for.
-    let has_edges = view_mode == 2
-        && mesh_cache
-            .get_or_build_geometry(&stone)
-            .is_some_and(|cached| {
-                edges_rasterizer.resize(size.0, size.1);
-                render_edges_layer(edges_rasterizer, cached, &camera, &style);
-                true
-            });
-
-    let (diagram, diagram_hover_text, diagram_facet_tier, diagram_facet_concave_tier) =
-        if view_mode == 3 {
-            (
-                build_diagram(mesh_cache, &stone, size, &memory.diagram, &style.moved),
-                Some(memory.diagram.hover_text.clone()),
-                Some(memory.diagram.facet_tier.clone()),
-                Some(memory.diagram.facet_concave_tier.clone()),
-            )
-        } else {
-            (None, None, None, None)
-        };
+    let (diagram_hover_text, diagram_facet_tier, diagram_facet_concave_tier) = if view_mode == 3 {
+        (
+            Some(memory.diagram.hover_text.clone()),
+            Some(memory.diagram.facet_tier.clone()),
+            Some(memory.diagram.facet_concave_tier.clone()),
+        )
+    } else {
+        (None, None, None)
+    };
     // The Solid view's own hover/tier tables -- the SAME ones the diagram's
     // carry, handed out unconditionally since every view mode's facet ids come
     // from the same `FacetMap`.
@@ -226,16 +241,13 @@ pub fn render_request(
 
     // Mirrors the `get_or_build(..).or_else(last_closed)` fallback chain the image
     // was rendered from, so the distance clamp (and the manipulation handles) always
-    // describe the SAME solid the viewport is showing. Each `.map(..)` turns the
-    // borrow into an owned value before `last_closed` reborrows the cache.
-    let geometry = mesh_cache
-        .get_or_build_geometry(&stone)
-        .map(|cached| frame_geometry(cached, camera_pose, size))
-        .or_else(|| {
-            mesh_cache
-                .last_closed()
-                .map(|cached| frame_geometry(cached, camera_pose, size))
-        });
+    // describe the SAME solid the viewport is showing. The current mesh's geometry was
+    // taken above, from the same single cache lookup the image used.
+    let geometry = closed_geometry.or_else(|| {
+        mesh_cache
+            .last_closed()
+            .map(|cached| frame_geometry(cached, camera_pose, size))
+    });
     // The Diagram view's panel layout rides on the same geometry value, so the sink
     // stores both together and a handle never pairs a layout with a stale mesh.
     let diagram_layout = diagram.as_ref().map(|drawn| Arc::new(drawn.layout.clone()));
@@ -252,7 +264,7 @@ pub fn render_request(
         has_solid,
         status,
         solved,
-        stale,
+        stale: out_of_date,
         pick,
         has_edges,
         diagram,

@@ -1,5 +1,7 @@
 import { Theme } from "../../theme.slint";
 import { ExportModel } from "../../models/export.slint";
+import { SettingsModel } from "../../models/settings.slint";
+import { RemoteWorkerModel } from "../../models/remote_worker.slint";
 import { SegmentPill } from "../pill_button.slint";
 
 // A caption with a tooltip, above a row of pills.
@@ -19,28 +21,26 @@ component SectionCaption inherits Rectangle {
 }
 
 // Compute target (Local/Remote/Local+Remote) and Max Ray Bounces -- split out
-// of `export_dialog.slint` to keep that file under its line budget.
-// `compute_target`/`selected_bounce_index` are `ExportDialog`'s own cached
-// pill-selection state (see that file's own doc comment on `compute_target`
-// for why each is a plain, not `in-out`, property there that re-derives from
-// a default UNTIL the user clicks a pill) -- two-way bound here so a click in
-// this component writes straight back to the dialog's own copy.
+// of `export_dialog.slint` to keep that file under its line budget. The pill
+// selections live in `ExportModel` (`compute_target_index`, `bounce_index`): they are seeded
+// from the last-used values (`AppSettings::output.still`) every time the dialog opens and
+// written back when an export starts, so a click in this component writes straight into the
+// model and the dialog reads the same values.
 //
 // The dialog shows this whole component only in Advanced mode (or while a tutorial step
-// unlocks it): the defaults (local plus remote when a worker is reachable, and the live
-// view's bounce cap) are what most exports want.
+// unlocks it): the defaults (local plus remote when a worker is reachable, and the last-used
+// bounce cap) are what most exports want.
 export component ExportComputeAndBounces inherits VerticalLayout {
     spacing: 14px;
-
-    in-out property <int> compute_target: 0;
-    in-out property <int> selected_bounce_index: 0;
 
     // 2c. Compute target: which engine(s) trace this export. Same segmented-
     // pill idiom as "Output Size"/"color Space" in `export_dialog.slint` --
     // the Remote/Local+Remote pills are disabled (not hidden) with
-    // `remote_unavailable_reason` shown beneath whenever
-    // `!ExportModel.remote_available`, so a user without a worker configured
-    // always sees WHY those choices aren't offered right now.
+    // `remote_unavailable_reason` shown beneath whenever the remote is not
+    // usable (`RemoteWorkerModel.availability.reachable_render_capable`), so a user without a
+    // worker configured always sees WHY those choices aren't offered right now. The pill that
+    // shows as selected is the effective one: Local only while the remote is unusable, the
+    // remembered choice otherwise.
     VerticalLayout {
         spacing: 6px;
         SectionCaption {
@@ -52,33 +52,33 @@ export component ExportComputeAndBounces inherits VerticalLayout {
             spacing: 4px;
 
             SegmentPill {
-                text: "Local only";
+                text: "Local Only";
                 hint: "Draw the picture on this computer only.";
-                selected: root.compute_target == 0;
+                selected: ExportModel.effective_compute_target == 0;
                 enabled: !ExportModel.is_exporting;
-                picked => { root.compute_target = 0; }
+                picked => { ExportModel.compute_target_index = 0; }
             }
             SegmentPill {
-                text: "Remote only";
-                hint: ExportModel.remote_available
+                text: "Remote Only";
+                hint: RemoteWorkerModel.availability.reachable_render_capable
                     ? "Draw the picture on the remote worker only."
                     : "Not available right now. " + ExportModel.remote_unavailable_reason;
-                selected: root.compute_target == 1;
-                enabled: !ExportModel.is_exporting && ExportModel.remote_available;
-                picked => { root.compute_target = 1; }
+                selected: ExportModel.effective_compute_target == 1;
+                enabled: !ExportModel.is_exporting && RemoteWorkerModel.availability.reachable_render_capable;
+                picked => { ExportModel.compute_target_index = 1; }
             }
             SegmentPill {
                 text: "Local + Remote";
-                hint: ExportModel.remote_available
+                hint: RemoteWorkerModel.availability.reachable_render_capable
                     ? "Share the work between this computer and the remote worker."
                     : "Not available right now. " + ExportModel.remote_unavailable_reason;
-                selected: root.compute_target == 2;
-                enabled: !ExportModel.is_exporting && ExportModel.remote_available;
-                picked => { root.compute_target = 2; }
+                selected: ExportModel.effective_compute_target == 2;
+                enabled: !ExportModel.is_exporting && RemoteWorkerModel.availability.reachable_render_capable;
+                picked => { ExportModel.compute_target_index = 2; }
             }
         }
 
-        if !ExportModel.remote_available: Text {
+        if !RemoteWorkerModel.availability.reachable_render_capable: Text {
             text: ExportModel.remote_unavailable_reason == "" ? "Checking for the remote..." : ExportModel.remote_unavailable_reason;
             font-size: 11px;
             color: Theme.text-muted;
@@ -90,7 +90,7 @@ export component ExportComputeAndBounces inherits VerticalLayout {
     // 2c'. Transfer: how the remote's result comes home. Only
     // offered while a remote is available and the Compute pill includes it -- with
     // "Local only" there is nothing to transfer.
-    if ExportModel.remote_available && root.compute_target != 0: VerticalLayout {
+    if ExportModel.effective_compute_target != 0: VerticalLayout {
         spacing: 6px;
         SectionCaption {
             text: "Transfer";
@@ -100,14 +100,14 @@ export component ExportComputeAndBounces inherits VerticalLayout {
         HorizontalLayout {
             spacing: 4px;
             SegmentPill {
-                text: "Full data";
+                text: "Full Data";
                 hint: "The remote sends its raw light samples, which are merged with this computer's own.";
                 selected: ExportModel.transfer_index == 0;
                 enabled: !ExportModel.is_exporting;
                 picked => { ExportModel.transfer_index = 0; }
             }
             SegmentPill {
-                text: "Final picture only";
+                text: "Final Picture Only";
                 hint: "The remote draws and finishes the whole picture and sends one PNG file. Far less data, but this computer does not help.";
                 selected: ExportModel.transfer_index == 1;
                 enabled: !ExportModel.is_exporting;
@@ -127,12 +127,10 @@ export component ExportComputeAndBounces inherits VerticalLayout {
     }
 
     // 2d. Max Ray Bounces -- the export's OWN cap, independent of the live
-    // viewport's. Same segmented-pill idiom and ladder (4/8/12/24/64/128) as
-    // `settings_dialog.slint`'s "Ray Bounces" section -- see that file's own
-    // doc comment for the `bounce_cost.rs` measurements behind these six rungs.
-    // Defaults to `SettingsModel.bounce_index` (see `ExportDialog.
-    // selected_bounce_index`'s own doc comment) so opening this dialog shows
-    // the value an export would have used anyway.
+    // viewport's. Same segmented-pill idiom as the Render & Output tab's "Max Ray Bounces",
+    // and the same ladder: Rust publishes it once (`settings::model::BOUNCE_LADDER` ->
+    // `SettingsModel.bounce_ladder`), so there is no second copy here. See the Rust
+    // constant's doc comment for the `bounce_cost.rs` measurements behind the rungs.
     VerticalLayout {
         spacing: 6px;
         SectionCaption {
@@ -143,22 +141,21 @@ export component ExportComputeAndBounces inherits VerticalLayout {
         HorizontalLayout {
             spacing: 4px;
 
-            for bounces[idx] in ["4", "8", "12", "24", "64", "128"]: SegmentPill {
-                text: bounces;
-                hint: "Allow up to " + bounces + " bounces per ray.";
-                selected: root.selected_bounce_index == idx;
+            for cap[idx] in SettingsModel.bounce_ladder: SegmentPill {
+                text: "" + cap;
+                hint: "Allow up to " + cap + " bounces per ray.";
+                selected: ExportModel.bounce_index == idx;
                 enabled: !ExportModel.is_exporting;
-                picked => { root.selected_bounce_index = idx; }
+                picked => { ExportModel.bounce_index = idx; }
             }
         }
 
-        // Same wording/measurement basis as `settings_dialog.slint`'s own
-        // bounce-ladder hint: flat cost on CPU (the `bounce_cost.rs` benchmark
-        // measured only a 1.3-1.4x spread from a cap of 12 all the way to
-        // 1024), but GPU threads run in lockstep, so the few long paths in the
-        // tail stall the whole workgroup and this rung range costs noticeably
-        // more there than on CPU.
-        if root.selected_bounce_index >= 4: Text {
+        // Same wording/measurement basis as the live view's bounce-ladder hint: flat cost on
+        // CPU (the `bounce_cost.rs` benchmark measured only a 1.3-1.4x spread from a cap of
+        // 12 all the way to 1024), but GPU threads run in lockstep, so the few long paths in
+        // the tail stall the whole workgroup and this rung range costs noticeably more there
+        // than on CPU.
+        if ExportModel.bounce_index >= 4: Text {
             text: "Cheap on CPU, but noticeably steeper on GPU -- lockstep execution makes long paths expensive there.";
             font-size: 11px;
             color: Theme.text-muted;

@@ -32,7 +32,8 @@ impl Database {
             .conn
             .query_row("SELECT COUNT(*) FROM diagram_entries", [], |r| r.get(0))
             .context("Failed to count diagram_entries")?;
-        Ok(count as usize)
+        // A SQL COUNT(*) is never negative, so the fallback is unreachable.
+        Ok(usize::try_from(count).unwrap_or_default())
     }
 
     /// Returns the union of the seeded `shape_vocabulary` (see `DEFAULT_SHAPES`) and
@@ -172,6 +173,10 @@ impl Database {
             return Ok((0, 0));
         };
         let floats: Vec<f64> = values.iter().map(|&v| v as f64).collect();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a percentile of the stored i64 values lies between the smallest and the largest of them, so it fits i64"
+        )]
         let bound_max =
             (percentile_of_sorted(&floats, RANGE_BOUND_PERCENTILE).ceil() as i64).max(min);
 
@@ -190,6 +195,11 @@ pub(in crate::db::sqlite) fn percentile_of_sorted(values: &[f64], p: f64) -> f64
         return values[0];
     }
     let idx = (p / 100.0) * (n - 1) as f64;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "idx lies in 0..=n-1 for a percentile in 0..=100, so the floor is a valid index"
+    )]
     let lo = idx.floor() as usize;
     let hi = (lo + 1).min(n - 1);
     let frac = idx - lo as f64;

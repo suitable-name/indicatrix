@@ -103,7 +103,7 @@ pub fn cpu_record(pixel: u32, sample: u32) -> RngRecord {
     // Stratified pixel jitter and hero wavelength each use a different prime base
     // (2, 3, 5): same base for all three measured worse variance on high-variance pixels.
     let rot_jx_hash = hash_u32(pixel ^ PIXEL_JITTER_X_ROTATION_STREAM);
-    let rot_jy_hash = hash_u32(pixel ^ PIXEL_JITTER_Y_ROTATION_STREAM);
+    let jitter_y_rot_hash = hash_u32(pixel ^ PIXEL_JITTER_Y_ROTATION_STREAM);
     let rot_hero_hash = hash_u32(pixel ^ HERO_WAVELENGTH_ROTATION_STREAM);
     // Tier 1 precursor for `jx` (base 2) only -- `jy`/`hero_rand` (bases 3/5) have no
     // comparably cheap pure-integer precursor since `radical_inverse_base` interleaves
@@ -111,10 +111,10 @@ pub fn cpu_record(pixel: u32, sample: u32) -> RngRecord {
     let sample_reversed = sample.reverse_bits();
 
     let rot_jx = low_discrepancy_base2(rot_jx_hash);
-    let rot_jy = low_discrepancy_base2(rot_jy_hash);
+    let jitter_y_rot = low_discrepancy_base2(jitter_y_rot_hash);
     let rot_hero = low_discrepancy_base2(rot_hero_hash);
     let jx = cranley_patterson_rotate(low_discrepancy_base2(sample), rot_jx) - 0.5;
-    let jy = cranley_patterson_rotate(radical_inverse_base(sample, 3), rot_jy) - 0.5;
+    let jy = cranley_patterson_rotate(radical_inverse_base(sample, 3), jitter_y_rot) - 0.5;
     let hero_rand = cranley_patterson_rotate(radical_inverse_base(sample, 5), rot_hero);
 
     let lambdas: [f32; 8] = wrapped_hero_wavelengths(hero_rand);
@@ -124,7 +124,7 @@ pub fn cpu_record(pixel: u32, sample: u32) -> RngRecord {
     let mut biref_draws = [0u32; 4];
     let mut mode_coupling_draws = [0u32; 4];
     let mut frosted_dir_u_draws = [0u32; 4];
-    let mut frosted_dir_v_draws = [0u32; 4];
+    let mut frosted_v_draws = [0u32; 4];
     for bounce in 0..NUM_BOUNCES {
         let b = bounce;
         fresnel_draws[bounce as usize] = hash_u32(seed ^ hash_u32(b ^ FRESNEL_BRANCH_STREAM));
@@ -132,13 +132,13 @@ pub fn cpu_record(pixel: u32, sample: u32) -> RngRecord {
         biref_draws[bounce as usize] = hash_u32(seed ^ hash_u32(b ^ BIREFRINGENT_SPLIT_STREAM));
         mode_coupling_draws[bounce as usize] = hash_u32(seed ^ hash_u32(b ^ MODE_COUPLING_STREAM));
         frosted_dir_u_draws[bounce as usize] = hash_u32(seed ^ hash_u32(b ^ FROSTED_DIR_U_STREAM));
-        frosted_dir_v_draws[bounce as usize] = hash_u32(seed ^ hash_u32(b ^ FROSTED_DIR_V_STREAM));
+        frosted_v_draws[bounce as usize] = hash_u32(seed ^ hash_u32(b ^ FROSTED_DIR_V_STREAM));
     }
 
     RngRecord {
         seed,
         rot_jx_hash,
-        rot_jy_hash,
+        rot_jy_hash: jitter_y_rot_hash,
         rot_hero_hash,
         sample_reversed,
         jx,
@@ -150,7 +150,7 @@ pub fn cpu_record(pixel: u32, sample: u32) -> RngRecord {
         biref_draws,
         mode_coupling_draws,
         frosted_dir_u_draws,
-        frosted_dir_v_draws,
+        frosted_dir_v_draws: frosted_v_draws,
     }
 }
 
@@ -422,7 +422,7 @@ pub fn run(
         &[(0, &params_buf), (1, &out_buf)],
     );
 
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total).expect("a few samples").div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -440,8 +440,9 @@ pub fn run(
     let mut mismatches = Vec::new();
     let mut float_acc = FloatUlpAccumulator::default();
     for (idx, gpu_record) in gpu_records.iter().enumerate() {
-        let pixel = (idx as u32) / num_samples;
-        let sample = (idx as u32) % num_samples;
+        let tuple = u32::try_from(idx).expect("pixels times samples is small");
+        let pixel = tuple / num_samples;
+        let sample = tuple % num_samples;
         let cpu = cpu_record(pixel, sample);
         if mismatches.len() < 64 {
             compare_record(pixel, sample, &cpu, gpu_record, &mut mismatches);

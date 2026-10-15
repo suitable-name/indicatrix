@@ -51,6 +51,11 @@ pub fn raster_size_for_view(
     } else {
         1.0
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "edges are non-negative and shrunk to at most max_edge; the clamp bounds the result"
+    )]
     let clamp = |edge: f32| ((edge * shrink).round() as u32).clamp(limits.min_edge, max_edge);
     (clamp(width), clamp(height))
 }
@@ -69,6 +74,11 @@ pub fn with_min_aspect(size: (u32, u32), min_aspect: f32, min_edge: u32) -> (u32
     if min_aspect <= 0.0 || (width as f32) >= (height as f32) * min_aspect {
         return size;
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "min_aspect is positive here, so the reduced height is non-negative and below the width"
+    )]
     let reduced = ((width as f32 / min_aspect).round() as u32).max(min_edge);
     (width, reduced.min(height))
 }
@@ -102,6 +112,11 @@ pub fn diagram_raster_size(
     } else {
         1.0
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "edges are non-negative and shrunk to at most max_edge; the clamp bounds the result"
+    )]
     let fit =
         |edge: u32| ((edge as f32 * grow * shrink).round() as u32).clamp(limits.min_edge, max_edge);
     (fit(width), fit(height))
@@ -187,6 +202,11 @@ pub fn contain_fit(
 ///
 /// `None` outside the drawn image or for an empty view/image.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "px and py are floored and checked to be within 0..image size just above"
+)]
 pub fn contain_pixel(
     x: f32,
     y: f32,
@@ -252,6 +272,10 @@ pub fn step_selection(current: Option<usize>, delta: i32, tier_count: usize) -> 
 
 /// Every facet id whose tier (`facet_tier[id]`, a frame's facet -> tier table) is
 /// in `tiers`: the multi-selection highlight ([`super::FacetOverlay::multi_selected`]).
+///
+/// # Panics
+///
+/// Panics if a facet id exceeds `u32::MAX`, which no real frame reaches.
 #[must_use]
 pub fn facets_of_tiers(facet_tier: &[Option<usize>], tiers: &BTreeSet<usize>) -> Vec<u32> {
     if tiers.is_empty() {
@@ -261,7 +285,7 @@ pub fn facets_of_tiers(facet_tier: &[Option<usize>], tiers: &BTreeSet<usize>) ->
         .iter()
         .enumerate()
         .filter(|(_, tier)| tier.is_some_and(|tier| tiers.contains(&tier)))
-        .map(|(id, _)| id as u32)
+        .map(|(id, _)| u32::try_from(id).expect("a facet id fits u32"))
         .collect()
 }
 
@@ -273,9 +297,15 @@ pub fn facets_of_tiers(facet_tier: &[Option<usize>], tiers: &BTreeSet<usize>) ->
 /// symmetry or mirror changed (the desktop forces a full solve for those).
 #[must_use]
 pub fn dirty_tiers(previous: &Design, current: &Design) -> Option<BTreeSet<usize>> {
+    #[expect(
+        clippy::float_cmp,
+        reason = "any change at all to the reference angle, however small, forces a full solve"
+    )]
+    let reference_angle_changed =
+        previous.meta.gear_reference_angle != current.meta.gear_reference_angle;
     if previous.tiers.len() != current.tiers.len()
         || previous.meta.gear_teeth != current.meta.gear_teeth
-        || previous.meta.gear_reference_angle != current.meta.gear_reference_angle
+        || reference_angle_changed
         || previous.meta.symmetry_order != current.meta.symmetry_order
         || previous.meta.mirror != current.meta.mirror
     {

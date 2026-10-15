@@ -57,7 +57,7 @@ pub fn read_stream_event<R: std::io::Read>(
     let payload = match event.payload_len() {
         Some(expected) => {
             let bytes = crate::framing::read_frame(reader)?;
-            if bytes.len() as u32 != expected {
+            if u32::try_from(bytes.len()).ok() != Some(expected) {
                 return Err(crate::messages::codec::NetError::FramePayloadLenMismatch {
                     declared: expected,
                     actual: bytes.len(),
@@ -106,7 +106,7 @@ pub fn read_frame_message<R: std::io::Read>(
 ) -> Result<(FrameHeader, Vec<u8>), crate::messages::codec::NetError> {
     let header: FrameHeader = crate::messages::codec::read_control_message(reader)?;
     let payload = crate::framing::read_frame(reader)?;
-    if payload.len() as u32 != header.payload_len {
+    if u32::try_from(payload.len()).ok() != Some(header.payload_len) {
         return Err(crate::messages::codec::NetError::FramePayloadLenMismatch {
             declared: header.payload_len,
             actual: payload.len(),
@@ -145,7 +145,7 @@ pub fn read_preview_message<R: std::io::Read>(
 ) -> Result<(PreviewHeader, Vec<u8>), crate::messages::codec::NetError> {
     let header: PreviewHeader = crate::messages::codec::read_control_message(reader)?;
     let payload = crate::framing::read_frame(reader)?;
-    if payload.len() as u32 != header.payload_len {
+    if u32::try_from(payload.len()).ok() != Some(header.payload_len) {
         return Err(crate::messages::codec::NetError::FramePayloadLenMismatch {
             declared: header.payload_len,
             actual: payload.len(),

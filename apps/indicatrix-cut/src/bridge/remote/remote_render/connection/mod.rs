@@ -17,6 +17,7 @@ mod handshake;
 mod one_shot;
 mod payload_setting;
 mod persistent;
+mod pool;
 mod stream_io;
 #[cfg(test)]
 mod tests;

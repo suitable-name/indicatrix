@@ -1,4 +1,4 @@
-//! The Rough colour wizard's reach into the rough view (`zoning` feature only): coloured result
+//! The Rough colour wizard's reach into the rough view: coloured result
 //! previews, the zone handles drawn on the model view and dragged with the mouse, and the
 //! polished-window brush on the mesh.
 //!
@@ -21,7 +21,7 @@
 //!   frame ([`mesh_ray`]); the wizard finds the triangles under it.
 
 use super::{
-    design_mesh::{MeshLibrary, MeshSource},
+    design_mesh::MeshLibrary,
     render::{Pixels, camera_for},
     request_render,
     scene::{SceneKind, WorldFrame},
@@ -79,20 +79,12 @@ pub(in crate::gui::rough_plan) fn prepare(
     (posed, colours)
 }
 
-/// A design's placement in the planner's caliper frame and its caliper width in model units.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(in crate::gui::rough_plan) struct DesignInfo {
-    /// The caliper turn and centring.
-    pub(in crate::gui::rough_plan) placement: DesignPlacement,
-    /// The design's width along the caliper, model units.
-    pub(in crate::gui::rough_plan) width_units: f64,
-}
-
 /// Where the pointer is, which handle is lit and which is dragged.
+///
+/// (The planner's design meshes, which the adopt action reads on the UI thread, are registered in
+/// `super::design_info`.)
 #[derive(Default)]
 struct Link {
-    /// The planner's design meshes (for the adopt action, which runs on the UI thread).
-    meshes: Option<Arc<MeshLibrary>>,
     /// The handle the pointer is over or drags, as an index into the wizard's handle list.
     hot: Option<usize>,
     /// The handle drag under way.
@@ -110,22 +102,6 @@ thread_local! {
     static LINK: RefCell<Link> = RefCell::default();
 }
 
-/// Remembers the design meshes of the view (called when the view is set up).
-pub(in crate::gui::rough_plan) fn register_meshes(meshes: &Arc<MeshLibrary>) {
-    LINK.with(|link| link.borrow_mut().meshes = Some(Arc::clone(meshes)));
-}
-
-/// The placement and caliper width of design `entry_id`, read from the library.
-pub(in crate::gui::rough_plan) fn design_info(entry_id: i64) -> Option<DesignInfo> {
-    let meshes = LINK.with(|link| link.borrow().meshes.clone())?;
-    let placement = meshes.placement(entry_id)?;
-    let width_units = meshes.mesh(entry_id).ok()?.caliper_width();
-    (width_units.is_finite() && width_units > 0.0).then_some(DesignInfo {
-        placement,
-        width_units,
-    })
-}
-
 /// What the camera, the frame and the size of the model view are, copied out of the session.
 #[derive(Clone, Copy)]
 struct ViewData {
@@ -135,6 +111,11 @@ struct ViewData {
 }
 
 impl ViewData {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the view size is a positive logical pixel count (view_data rejects sizes <= 0); the saturating cast bounds it"
+    )]
     const fn pixels(&self) -> (u32, u32) {
         (self.size.0.round() as u32, self.size.1.round() as u32)
     }
@@ -187,11 +168,11 @@ pub(in crate::gui::rough_plan) fn hover(host: &Rc<Host>, x: f32, y: f32) -> bool
     let found = (x >= 0.0 && y >= 0.0)
         .then(|| handle_under(host, (x, y)))
         .flatten();
-    let hot = found.as_ref().map(|(index, _)| *index);
+    let lit = found.as_ref().map(|(index, _)| *index);
     let changed = LINK.with(|link| {
         let mut link = link.borrow_mut();
-        let changed = link.hot != hot;
-        link.hot = hot;
+        let changed = link.hot != lit;
+        link.hot = lit;
         changed
     });
     if let Some((index, handles)) = &found {
@@ -312,8 +293,8 @@ pub(in crate::gui::rough_plan) fn draw_overlay(host: &Host, pixels: &mut Pixels)
         centre: data.frame.centre,
         scale: data.frame.scale,
     };
-    let hot = LINK.with(|link| link.borrow().hot);
-    let drawn = overlay(&map, &set.handles, hot);
+    let lit = LINK.with(|link| link.borrow().hot);
+    let drawn = overlay(&map, &set.handles, lit);
     let (width, height) = (pixels.width(), pixels.height());
     let scale = width as f32 / data.size.0;
     draw_handles(

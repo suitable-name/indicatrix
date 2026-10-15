@@ -231,7 +231,12 @@ fn move_slab_boundary(ev: &LeafEval<'_>, t_off: f64, pair: &mut [Slab]) {
     });
     // A boundary that stays put keeps both sizes bitwise: `total - x` would not
     // give the second size back.
-    if x != pair[0].thickness {
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact check: an unmoved boundary must keep both sizes bit for bit"
+    )]
+    let moved = x != pair[0].thickness;
+    if moved {
         pair[0].thickness = x;
         pair[1].thickness = total - x;
     }
@@ -253,7 +258,12 @@ fn move_bar_boundary(ev: &LeafEval<'_>, offsets: [f64; 2], t: f64, pair: &mut [B
         ev.bar_value_at(t_off, w_off, t, x, &pair[0])
             + ev.bar_value_at(t_off, w_off + x + ev.kerf, t, total - x, &pair[1])
     });
-    if x != pair[0].width {
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact check: an unmoved boundary must keep both sizes bit for bit"
+    )]
+    let moved = x != pair[0].width;
+    if moved {
         pair[0].width = x;
         pair[1].width = total - x;
     }
@@ -284,7 +294,12 @@ fn move_leaf_boundary(ev: &LeafEval<'_>, start: [f64; 3], cross: [f64; 2], pair:
             leaf_b.orient,
         )
     });
-    if x != pair[0].len {
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact check: an unmoved boundary must keep both sizes bit for bit"
+    )]
+    let moved = x != pair[0].len;
+    if moved {
         pair[0].len = x;
         pair[1].len = total - x;
     }

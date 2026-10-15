@@ -72,8 +72,9 @@ pub(super) fn search(
     match db.search_diagrams_display(query, shape_filter, gear_filter, &range, filters) {
         Ok(result) => LibraryResponse::SearchResults {
             items: result.items.iter().map(to_summary).collect(),
-            // Capped at SEARCH_RESULT_CAP (1000), so this cast never truncates.
-            excluded_for_missing_curves: result.excluded_for_missing_curves as u32,
+            // Capped at SEARCH_RESULT_CAP (1000), so the conversion never saturates.
+            excluded_for_missing_curves: u32::try_from(result.excluded_for_missing_curves)
+                .unwrap_or(u32::MAX),
         },
         Err(e) => db_error("search_diagrams_display", &e),
     }
@@ -155,7 +156,7 @@ pub(super) fn design_source(db: &Database, entry_id: i64) -> LibraryResponse {
 
 /// Handles
 /// [`LibraryRequest::FetchDesignNative`](indicatrix_net::library::LibraryRequest::FetchDesignNative):
-/// returns `entry_id`'s first self-contained `.indicatrix` attachment (by
+/// returns `entry_id`'s first self-contained `.isdd` (or legacy `.indicatrix`) attachment (by
 /// `indicatrix_vault::local::native_design_attachment_position`, the rule the local
 /// loader uses) as raw bytes -- never parsed or re-encoded here, so nothing is lost on
 /// the way to a client that must see the concave tiers `.asc` cannot carry.
@@ -175,7 +176,7 @@ pub(super) fn design_native(db: &Database, entry_id: i64) -> LibraryResponse {
     let Some(position) = indicatrix_vault::local::native_design_attachment_position(
         meta.attached_files.iter().map(|f| f.name.as_str()),
     ) else {
-        tracing::debug!("FetchDesignNative: entry {entry_id} has no .indicatrix attachment");
+        tracing::debug!("FetchDesignNative: entry {entry_id} has no .isdd attachment");
         return LibraryResponse::DesignNativeNotAvailable;
     };
     match db.get_attachment_content(meta.attached_files[position].id) {

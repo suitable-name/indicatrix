@@ -62,7 +62,9 @@ pub(in crate::gui::editor) fn tier_items_from_rows(rows: Vec<TierRow>) -> Vec<Ed
             let concave_index = row.index;
             let mut item = tier_item_from_row(row);
             if item.kind == 1 {
-                item.index = (flat_count as i32).saturating_add(concave_index);
+                item.index = i32::try_from(flat_count)
+                    .unwrap_or(i32::MAX)
+                    .saturating_add(concave_index);
             }
             item
         })

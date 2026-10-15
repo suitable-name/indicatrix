@@ -1,7 +1,7 @@
 //! Settings persistence and the settings-to-scene conversion.
 
 use super::*;
-use crate::scene::OwnedScene;
+use crate::{display::MAX_EXPORT_COLOR_SPACE_INDEX, scene::OwnedScene};
 use indicatrix::{
     geometry::cuts::StandardGemCuts,
     render_setup::{
@@ -85,7 +85,8 @@ fn empty_partial_and_out_of_range_payloads_are_repaired() {
     assert_eq!(wild.view_tab, 2);
     assert_eq!(wild.export.long_edge, MAX_EXPORT_EDGE);
     assert_eq!(wild.export.spp, EXPORT_MIN_SPP);
-    assert_eq!(wild.export.color_space, 1);
+    assert_eq!(wild.export.color_space, MAX_EXPORT_COLOR_SPACE_INDEX);
+    assert_eq!(wild.export.color_space, 2, "Rec.2020 is the last space");
     let nan = RenderSettings {
         exposure: f32::NAN,
         camera_distance: f32::INFINITY,
@@ -104,6 +105,71 @@ fn empty_partial_and_out_of_range_payloads_are_repaired() {
         16.0
     );
     assert_eq!(nan.camera_distance, 2.4, "non-finite takes the default");
+}
+
+/// An old payload (no `surface_glare` key) loads the unscaled `1.0`; a dialled-in value
+/// round-trips, an out-of-range one is limited and NaN reads as the default.
+#[test]
+fn surface_glare_defaults_round_trips_and_is_limited() {
+    let old = SessionPayload::from_json(FIRST_BUILD_PAYLOAD).expect("parses");
+    assert_eq!(old.render.surface_glare.to_bits(), 1.0f32.to_bits());
+    assert_eq!(
+        old.render.lighting_spec().surface_glare.to_bits(),
+        1.0f32.to_bits()
+    );
+
+    let mut payload = SessionPayload::default();
+    payload.render.surface_glare = 0.4;
+    let back = SessionPayload::from_json(&payload.to_json().expect("writes")).expect("parses");
+    assert_eq!(back.render.surface_glare.to_bits(), 0.4f32.to_bits());
+    assert_eq!(
+        back.render.lighting_spec().surface_glare.to_bits(),
+        0.4f32.to_bits()
+    );
+
+    for (written, expected) in [(-0.5_f32, 0.0_f32), (3.0, 1.0), (f32::NAN, 1.0)] {
+        let settings = RenderSettings {
+            surface_glare: written,
+            ..RenderSettings::default()
+        }
+        .sanitized();
+        assert_eq!(settings.surface_glare.to_bits(), expected.to_bits());
+    }
+    let wild = SessionPayload::from_json(r#"{"render":{"surface_glare":-2.0}}"#)
+        .expect("parses")
+        .render
+        .sanitized();
+    assert_eq!(wild.surface_glare.to_bits(), 0.0f32.to_bits());
+}
+
+/// The slider's percent maps like the desktop's (`surface_glare_from_percent` and its inverse).
+#[test]
+fn the_glare_slider_percent_snaps_to_five() {
+    assert_eq!(
+        surface_glare_from_percent(100.0).to_bits(),
+        1.0f32.to_bits()
+    );
+    assert_eq!(surface_glare_from_percent(0.0).to_bits(), 0.0f32.to_bits());
+    assert_eq!(surface_glare_from_percent(52.0).to_bits(), 0.5f32.to_bits());
+    assert_eq!(surface_glare_from_percent(-9.0).to_bits(), 0.0f32.to_bits());
+    assert_eq!(
+        surface_glare_from_percent(180.0).to_bits(),
+        1.0f32.to_bits()
+    );
+    assert_eq!(
+        surface_glare_from_percent(f32::NAN).to_bits(),
+        1.0f32.to_bits()
+    );
+    assert_eq!(percent_from_surface_glare(0.5).to_bits(), 50.0f32.to_bits());
+    assert_eq!(
+        percent_from_surface_glare(2.0).to_bits(),
+        100.0f32.to_bits()
+    );
+    let half = RenderSettings {
+        surface_glare: 0.5,
+        ..RenderSettings::default()
+    };
+    assert_eq!(half.surface_glare_percent().to_bits(), 50.0f32.to_bits());
 }
 
 #[test]

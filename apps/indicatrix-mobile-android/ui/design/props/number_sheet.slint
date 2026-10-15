@@ -1,0 +1,100 @@
+// The keypad sheet behind every number field of the Stone and Checks tabs: a full-height
+// overlay of the tab (the page's sheet is raised to full height while it is open, as for the
+// Tiers tab's angle sheet) with a title, "Clear Value" and the app's own numeric keypad.
+//
+// Opened by `NumberField` through `PropsModel.open-number`; the typed text lives in Rust
+// (`KeypadState`). "OK" commits it to the field the sheet was opened for.
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { Shell } from "../../models.slint";
+import { PageScroll } from "../../shell/page_scroll.slint";
+import { TextButton } from "../../shell/buttons.slint";
+import { IconButton } from "../../shell/icon_button.slint";
+import { Keypad } from "../../shell/keypad.slint";
+import { PropsModel } from "props_model.slint";
+
+export component NumberSheet inherits Rectangle {
+    // When the page's sheet comes back down (the Back key, a drag) the sheet closes with it.
+    property <int> detent-watch: Shell.sheet-detent;
+
+    changed detent-watch => {
+        if (Shell.sheet-detent < 2 && PropsModel.number-open) {
+            PropsModel.dismiss-number();
+        }
+    }
+
+    visible: PropsModel.number-open;
+    background: Theme.surface-container;
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: PropsModel.number-title;
+
+    // Swallows taps so they do not reach the tab below.
+    TouchArea { }
+
+    VerticalLayout {
+        Rectangle {
+            height: 56px;
+
+            HorizontalLayout {
+                padding-left: Theme.space-xs;
+                padding-right: Theme.space-sm;
+                spacing: Theme.space-xs;
+
+                IconButton {
+                    icon: Icons.back;
+                    label: "Back";
+                    tint: Theme.on-surface;
+                    clicked => {
+                        PropsModel.close-number();
+                    }
+                }
+
+                Text {
+                    text: PropsModel.number-title;
+                    color: Theme.on-surface;
+                    font-size: Theme.text-title;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                if PropsModel.number-clearable: TextButton {
+                    text: "Clear Value";
+                    clicked => {
+                        PropsModel.clear-number();
+                    }
+                }
+            }
+        }
+
+        PageScroll {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                padding-bottom: Theme.space-xl;
+
+                HorizontalLayout {
+                    alignment: center;
+
+                    Keypad {
+                        max-width: 400px;
+                        horizontal-stretch: 1;
+                        caption: PropsModel.number-title;
+                        readout: PropsModel.number-readout;
+                        unit: PropsModel.number-typing ? "" : PropsModel.number-unit;
+                        typing: PropsModel.number-typing;
+                        key(id) => {
+                            PropsModel.number-key-pressed(id);
+                        }
+                        ok => {
+                            PropsModel.accept-number();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

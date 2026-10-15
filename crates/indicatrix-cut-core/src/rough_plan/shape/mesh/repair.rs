@@ -321,7 +321,7 @@ fn fill_holes(
             // A fan about a new vertex at the centroid.
             let centroid = points.iter().copied().sum::<DVec3>() / points.len() as f64;
             verts.push(centroid);
-            let c = (verts.len() - 1) as u32;
+            let c = super::geometry::index_u32(verts.len() - 1);
             (0..ring.len())
                 .map(|i| [ring[i], ring[(i + 1) % ring.len()], c])
                 .collect()

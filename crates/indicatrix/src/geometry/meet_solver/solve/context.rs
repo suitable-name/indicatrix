@@ -52,6 +52,10 @@ pub(in crate::geometry::meet_solver) struct SolveContext<'a> {
 /// [`SolveContext::new`] ever runs) falls back to `1.0`, i.e. no
 /// normalisation, rather than dividing by zero or producing a non-finite
 /// scale factor.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "scale is finite and positive, so log2 rounds to an exponent within about +-1075"
+)]
 fn pow2_scale_norm(scale: f64) -> f64 {
     if scale.is_finite() && scale > 0.0 {
         2f64.powi(scale.log2().round() as i32)

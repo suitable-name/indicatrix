@@ -1,6 +1,5 @@
-//! Tier relations in the files: the self-contained design file (version 3, written only
-//! when a relation exists), the legacy paired sidecar and the autosave, plus the keys of
-//! a design file this build does not claim surviving Open then Save.
+//! Tier relations in the design file (version 3, written only when a relation exists),
+//! plus the keys of a design file this build does not claim surviving Open then Save.
 
 use crate::{
     design::{
@@ -8,9 +7,8 @@ use crate::{
     },
     edit::Edit,
     native::{
-        DesignExtras, DesignLoadError, SaveExtras, design_from_file, design_from_str,
-        design_to_file, design_to_string, load_native_only, load_paired, save_native_only_toml,
-        to_native_file, to_toml_string,
+        DesignExtras, DesignLoadError, design_from_file, design_from_str, design_to_file,
+        design_to_string,
     },
     preform::PreformSpec,
 };
@@ -212,7 +210,7 @@ fn a_failing_relation_is_blamed_on_its_own_tier() {
     assert!(reason.contains("no longer in the design"), "{reason}");
 }
 
-// --- the paired sidecar and the autosave ----------------------------------------------
+// --- a design that came from a catalogue `.asc` ----------------------------------------
 
 /// A real schedule whose tier 2 is meant to follow tier 1 minus 2 degrees.
 const RELATION_ASC: &str = "GemCad 5.0\n\
@@ -236,75 +234,33 @@ fn asc_design() -> Design {
 }
 
 #[test]
-fn the_paired_sidecar_carries_relations_and_a_plain_one_does_not() {
+fn the_design_file_carries_relations_and_a_plain_one_does_not() {
     let design = asc_design();
-    let native = to_native_file(
-        &design,
-        "design.asc",
-        RELATION_ASC.as_bytes(),
-        None,
-        &SaveExtras::default(),
-    );
+    let file = design_to_file(&design, None, &DesignExtras::default());
     let reads = design.tier_id_at(1).expect("id").value();
-    assert_eq!(native.tiers[0].angle_relation, None);
-    assert_eq!(native.tiers[1].angle_relation, None);
-    assert_eq!(
-        native.tiers[2].angle_relation,
-        Some(format!("@{reads} - 2"))
-    );
-    let toml = to_toml_string(&native).expect("serializes");
-    assert!(toml.contains("angle_relation"));
+    assert_eq!(file.tiers[0].angle_relation, None);
+    assert_eq!(file.tiers[1].angle_relation, None);
+    assert_eq!(file.tiers[2].angle_relation, Some(format!("@{reads} - 2")));
+    let text = to_text(&design);
+    assert!(text.contains("angle_relation"));
 
-    let loaded = load_paired(RELATION_ASC, &toml, false).expect("loads");
+    let loaded = design_from_str(&text).expect("loads");
     assert_eq!(loaded.design.tier_relation(2), design.tier_relation(2));
     assert_eq!(loaded.design.tiers[2].angle_deg, 38.0);
 
-    // A design without relations writes no such key at all, so its sidecar bytes do
-    // not change.
+    // A design without relations writes no such key at all, so its bytes do not
+    // change.
     let mut plain = asc_design();
     plain.tier_relations.clear();
-    let plain_native = to_native_file(
-        &plain,
-        "design.asc",
-        RELATION_ASC.as_bytes(),
-        None,
-        &SaveExtras::default(),
-    );
-    assert!(
-        !to_toml_string(&plain_native)
-            .expect("ok")
-            .contains("angle_relation")
-    );
+    assert!(!to_text(&plain).contains("angle_relation"));
 }
 
 #[test]
-fn a_relation_waits_for_the_asc_it_was_saved_against() {
-    let design = asc_design();
-    let native = to_native_file(
-        &design,
-        "design.asc",
-        RELATION_ASC.as_bytes(),
-        None,
-        &SaveExtras::default(),
-    );
-    let toml = to_toml_string(&native).expect("serializes");
-    // The same schedule re-touched: the fingerprint no longer matches, so the saved
-    // overlay (and the relation, which decides an angle) is not applied.
-    let changed = format!(
-        "GemCad 5.0\nH Re-touched by GemCAD\n{}",
-        &RELATION_ASC[11..]
-    );
-    let loaded = load_paired(&changed, &toml, false).expect("still loads");
-    assert!(loaded.design.tier_relations.is_empty());
-}
-
-#[test]
-fn the_autosave_restores_relations() {
+fn a_design_file_restores_relations_after_an_open_and_save() {
     let design = related_design();
-    let toml =
-        save_native_only_toml(&design, "x.asc", None, &SaveExtras::default()).expect("serializes");
-    assert!(toml.contains("angle_relation"));
-    let restored = load_native_only(&toml).expect("restores").design;
+    let text = to_text(&design);
+    assert!(text.contains("angle_relation"));
+    let restored = design_from_str(&text).expect("restores").design;
     assert_eq!(restored.tier_relation(1), design.tier_relation(1));
     assert_eq!(restored.tiers[1].angle_deg, 38.0);
     assert!(restored.tier_ids_eq(&design));

@@ -27,6 +27,9 @@ mod materials_symmetry;
 mod misc;
 mod new_design;
 mod nudge;
+// The Rough Planner's "Open in Editor" and "Use Color" load a design here and apply a planned
+// stone to it; reached from `gui::rough_plan` as `gui::editor::planned_stone`.
+pub(in crate::gui) mod planned_stone;
 mod selection;
 mod solid_picking;
 #[cfg(test)]
@@ -86,7 +89,9 @@ pub(in crate::gui::editor) use tier_crud::{
     setup_duplicate_tier_callback, setup_remove_tier_callback, setup_toggle_detach_callback,
 };
 pub(in crate::gui::editor) use tier_form::setup_save_tier_callback;
-pub(in crate::gui::editor) use viewport_material::setup_viewport_material_linked_changed_callback;
+pub(in crate::gui::editor) use viewport_material::{
+    setup_printed_proportions_callback, setup_stone_tab_callbacks,
+};
 
 /// A cylindrical preform's side count, fixed and independent of the design's
 /// index gear. The preform is a piece of rough, not a machine setting. Switching

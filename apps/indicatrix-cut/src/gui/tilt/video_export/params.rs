@@ -54,7 +54,13 @@ pub fn frame_count(start_deg: f64, end_deg: f64, step_deg: f64) -> usize {
     // which a bare `.floor()` would under-count by one frame.
     let steps = (span / step_deg + 1e-6).floor();
     if steps.is_finite() {
-        (steps as usize).saturating_add(1)
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "steps is finite and non-negative (end >= start, step > 0); `as` saturates"
+        )]
+        let steps = steps as usize;
+        steps.saturating_add(1)
     } else {
         0
     }
@@ -129,6 +135,11 @@ pub const RESOLUTION_PRESETS: &[(u32, u32)] = &[
 ];
 /// The `resolution_preset` index meaning "Custom" (`custom_width`/`custom_height`) --
 /// one past the end of [`RESOLUTION_PRESETS`].
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "const context (no try_from); the preset table has 12 entries"
+)]
 pub const CUSTOM_RESOLUTION_INDEX: i32 = RESOLUTION_PRESETS.len() as i32;
 
 const MIN_VIDEO_DIM: i32 = 128;
@@ -154,12 +165,15 @@ const fn round_down_to_even(dim: i32) -> i32 {
 /// custom size.
 #[must_use]
 pub fn resolve_resolution(preset_index: i32, custom_width: i32, custom_height: i32) -> (u32, u32) {
-    if preset_index >= 0 && (preset_index as usize) < RESOLUTION_PRESETS.len() {
-        RESOLUTION_PRESETS[preset_index as usize]
+    if let Some(&preset) = usize::try_from(preset_index)
+        .ok()
+        .and_then(|index| RESOLUTION_PRESETS.get(index))
+    {
+        preset
     } else {
         (
-            round_down_to_even(custom_width.clamp(MIN_VIDEO_DIM, MAX_VIDEO_DIM)) as u32,
-            round_down_to_even(custom_height.clamp(MIN_VIDEO_DIM, MAX_VIDEO_DIM)) as u32,
+            round_down_to_even(custom_width.clamp(MIN_VIDEO_DIM, MAX_VIDEO_DIM)).cast_unsigned(),
+            round_down_to_even(custom_height.clamp(MIN_VIDEO_DIM, MAX_VIDEO_DIM)).cast_unsigned(),
         )
     }
 }
@@ -174,18 +188,12 @@ pub const fn resolve_fps(fps_index: i32) -> u32 {
     }
 }
 
-/// The bounce-ladder pill index (0..=5) -> the actual max-bounce cap -- the same
-/// 4/8/12/24/64/128 ladder `export_dialog.slint`/`settings_dialog.slint` already use.
+/// The bounce-ladder pill index -> the actual max-bounce cap, read off the one ladder
+/// (`settings::model::BOUNCE_LADDER`) every picker shares. An index off the ends is limited to
+/// the nearest rung.
 #[must_use]
 pub const fn resolve_max_bounces(bounce_index: i32) -> u32 {
-    match bounce_index {
-        0 => 4,
-        1 => 8,
-        3 => 24,
-        4 => 64,
-        5 => 128,
-        _ => 12,
-    }
+    crate::settings::model::nearest_bounce_cap(bounce_index)
 }
 
 /// The `done`/`total` frame-count pair (`run::report_progress`'s own inputs) as a
@@ -344,5 +352,21 @@ mod tests {
         assert_eq!(resolve_max_bounces(3), 24);
         assert_eq!(resolve_max_bounces(4), 64);
         assert_eq!(resolve_max_bounces(5), 128);
+    }
+
+    /// The tilt-video dialog keeps no ladder of its own: every pill index resolves to the
+    /// rung `BOUNCE_LADDER` holds, and an index off either end is limited to the nearest.
+    #[test]
+    fn resolve_max_bounces_reads_the_one_ladder() {
+        use crate::settings::model::BOUNCE_LADDER;
+        for (index, rung) in BOUNCE_LADDER.iter().enumerate() {
+            let index = i32::try_from(index).expect("a small index");
+            assert_eq!(resolve_max_bounces(index), *rung);
+        }
+        assert_eq!(resolve_max_bounces(-3), BOUNCE_LADDER[0]);
+        assert_eq!(
+            resolve_max_bounces(99),
+            BOUNCE_LADDER[BOUNCE_LADDER.len() - 1]
+        );
     }
 }

@@ -1,22 +1,18 @@
 //! Resolves a [`Design`] from a catalogue entry's full record -- preferring an attached
-//! self-contained `.indicatrix` design file, then a real attached schedule (and, when
-//! present, its paired older sidecar), over the angle-table placeholder
+//! self-contained `.isdd` design file (or a legacy `.indicatrix` one, read the same),
+//! then a real attached schedule, over the angle-table placeholder
 //! reconstruction. The bare-`.asc` half
 //! (`design_from_asc_text`, the default preform, [`LoadedDesign`]) lives in
 //! `indicatrix_editor::loading`, shared with the web app.
 
 use indicatrix::geometry::stone_metrics::ExternalProportions;
 use indicatrix_cut_core::{
-    Design, LoadPairedError, load_paired,
-    native::{
-        DesignLoadError, DesignMetadata, LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX,
-        design_from_str,
-    },
+    Design,
+    native::{CustomMaterialSnapshot, DesignLoadError, DesignMetadata, design_from_str},
 };
 use indicatrix_editor::loading::{
     LoadedDesign, default_preform_for_schedule, design_from_asc_text,
 };
-use indicatrix_vault::model::file::AttachedFile;
 use tracing::warn;
 
 /// Why [`design_from_attachment`] could not produce a design.
@@ -42,77 +38,39 @@ impl AttachmentError {
     }
 }
 
-/// A sibling older sidecar (current `.indicatrix.toml`, or the legacy
-/// `.gemcut.toml`) among `files`, if the catalogue entry has one attached alongside
-/// its `.asc` -- see [`design_from_asc_and_native`]'s own doc comment for why that
-/// combination is worth preferring over the bare `.asc` alone.
+/// A design read from a catalogue attachment, with the custom-material snapshot its file
+/// carries.
 ///
-/// The importer attaches the sidecar it finds beside a `.asc` (`gui::library::local::
-/// import`), and a remote source may attach one too. A self-contained `.indicatrix`
-/// design file is a different attachment: see [`design_from_design_attachment`].
-fn native_sidecar_attachment(files: &[AttachedFile]) -> Option<&AttachedFile> {
-    files.iter().find(|f| {
-        let lower = f.name.to_lowercase();
-        lower.ends_with(NATIVE_EXTENSION_SUFFIX) || lower.ends_with(LEGACY_NATIVE_EXTENSION_SUFFIX)
-    })
+/// `custom_material` is the file's own snapshot of a material no built-in preset answers
+/// to (`indicatrix_cut_core::native::LoadedDesign::restorable_custom_material`): `Some` only when the
+/// file names such a material and carried a snapshot of it. The editor's [`LoadedDesign`]
+/// has no field for it -- the web app and the CLI build that type by literal -- so it
+/// travels beside it. The consumers that draw a library design in its own material
+/// (`super::catalogue_planes`) rebuild the material from it when the vault's custom list
+/// lacks the name.
+pub(super) struct AttachedDesign {
+    /// The design and where its schedule came from.
+    pub loaded: LoadedDesign,
+    /// The file's snapshot of its custom material, when it has one to restore.
+    pub custom_material: Option<CustomMaterialSnapshot>,
 }
 
-/// [`design_from_full_record`]'s preferred path when a catalogue entry carries BOTH
-/// a real `.asc` attachment and an older sidecar paired with it: [`load_paired`]
-/// restores the sidecar's own preform/material/girdle-diameter unconditionally, and
-/// (when the fingerprint still matches) every tier's authored meet constraint and
-/// detached-facet set too -- all of which a bare `.asc` re-import otherwise
-/// reconstructs as fresh `ScaleReference` anchors with no detached facets at all
-/// (see `indicatrix_cut_core::native`'s own module doc comment for the full list of
-/// what only the sidecar carries).
-///
-/// Falls back to [`design_from_asc_text`] (logging a warning) when the sidecar text
-/// itself fails to parse -- a real `.asc` schedule is still strictly better than
-/// refusing to load the design at all. The exception is a concave-tier failure
-/// ([`LoadPairedError::ConcaveTier`]/[`LoadPairedError::ConcaveStale`]): the `.asc`
-/// has no concave tiers, so falling back would drop them and a later Save would
-/// destroy them; that is an error instead.
-fn design_from_asc_and_native(
-    asc_name: &str,
-    asc_text: &str,
-    native_text: &str,
-    lw_ratio: Option<&str>,
-    entry_id: i64,
-) -> Result<LoadedDesign, AttachmentError> {
-    match load_paired(asc_text, native_text, false) {
-        Ok(result) => Ok(LoadedDesign {
-            design: result.design,
-            used_placeholder: false,
-            asc_filename: Some(asc_name.to_string()),
-            original_asc_text: Some(asc_text.to_string()),
-            metadata: DesignMetadata::default(),
-            attachments: Vec::new(),
-        }),
-        Err(e @ (LoadPairedError::ConcaveTier { .. } | LoadPairedError::ConcaveStale { .. })) => {
-            Err(AttachmentError {
-                message: format!(
-                    "the concave tiers in the sidecar paired with '{asc_name}' cannot be \
-                     loaded, and the design was not opened so they are not lost on the next \
-                     save: {e}"
-                ),
-                concave: true,
-            })
-        }
-        Err(e) => {
-            warn!(
-                "Older sidecar paired with '{asc_name}' on diagram #{entry_id} failed to \
-                 load ({e}); falling back to the plain .asc schedule."
-            );
-            design_from_asc_text(asc_name, asc_text, lw_ratio).map_err(AttachmentError::plain)
+impl AttachedDesign {
+    /// `loaded` for a source that carries no material snapshot (a bare `.asc`, a converted
+    /// `.gem`/`.gcs`).
+    const fn without_snapshot(loaded: LoadedDesign) -> Self {
+        Self {
+            loaded,
+            custom_material: None,
         }
     }
 }
 
-/// The design built from `full`'s self-contained `.indicatrix` attachment, if it has
-/// one that reads. The file carries the whole design, so it wins over any `.asc`,
-/// `.gem` or `.gcs` attached beside it (an import attaches a `.indicatrix` file found
-/// next to its schedule; a catalogue save attaches the saved design beside the `.asc`
-/// it wrote).
+/// The design built from `full`'s self-contained `.isdd` attachment (or a legacy
+/// `.indicatrix` one), if it has one that reads. The file carries the whole design, so
+/// it wins over any `.asc`, `.gem` or `.gcs` attached beside it (an import attaches a
+/// design file found next to its schedule; a catalogue save attaches the saved design
+/// beside the `.asc` it wrote).
 ///
 /// The design is recorded under the attached `.asc`'s name when there is one -- with
 /// that text kept, so a later Save can preserve it byte for byte -- else under
@@ -122,7 +80,7 @@ fn design_from_asc_and_native(
 /// `Err` (see [`AttachmentError`]), since the schedule beside it has no concave tiers.
 fn design_from_design_attachment(
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
-) -> Option<Result<LoadedDesign, AttachmentError>> {
+) -> Option<Result<AttachedDesign, AttachmentError>> {
     let names = || full.attached_files.iter().map(|f| f.name.as_str());
     let attached =
         &full.attached_files[indicatrix_vault::local::native_design_attachment_position(names())?];
@@ -174,15 +132,18 @@ fn design_from_design_attachment(
             None,
         ),
     };
-    Some(Ok(LoadedDesign {
-        design: loaded.design,
-        used_placeholder: false,
-        asc_filename: Some(asc_filename),
-        original_asc_text,
-        // Kept so a Save from this design writes the file's own `[meta]` and
-        // attachments back instead of dropping them.
-        metadata: loaded.metadata,
-        attachments: loaded.attachments,
+    Some(Ok(AttachedDesign {
+        loaded: LoadedDesign {
+            design: loaded.design,
+            used_placeholder: false,
+            asc_filename: Some(asc_filename),
+            original_asc_text,
+            // Kept so a Save from this design writes the file's own `[meta]` and
+            // attachments back instead of dropping them.
+            metadata: loaded.metadata,
+            attachments: loaded.attachments,
+        },
+        custom_material: loaded.restorable_custom_material,
     }))
 }
 
@@ -194,21 +155,22 @@ fn design_from_design_attachment(
 /// masts instead of the angle-table placeholder. Reading runs inside
 /// `gui::library::local::catch_file_panic`, the importer's own per-file guard.
 ///
-/// A `.asc` paired with an older sidecar attachment goes through
-/// [`design_from_asc_and_native`]; a converted `.gem`/`.gcs` never does (a
-/// sidecar's fingerprint describes a `.asc`).
-///
 /// `None` when the record has no design-file attachment; `Some(Err)` (a ready
 /// message) when it has one that does not read, convert or parse, or whose concave
 /// tiers are unusable ([`AttachmentError::concave`]).
 ///
-/// A self-contained `.indicatrix` attachment comes first ([`design_from_design_attachment`]).
+/// A self-contained `.isdd` / `.indicatrix` attachment comes first
+/// ([`design_from_design_attachment`]).
+///
+/// The design comes with the custom-material snapshot its file carries, if any
+/// ([`AttachedDesign::custom_material`]): a design file's own; a bare or converted
+/// schedule has none.
 ///
 /// Also the design-file half of `super::catalogue_planes::resolve_catalogue_planes`,
 /// so the editor's Load Selected and every plane consumer read the same file.
 pub(super) fn design_from_attachment(
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
-) -> Option<Result<LoadedDesign, AttachmentError>> {
+) -> Option<Result<AttachedDesign, AttachmentError>> {
     if let Some(loaded) = design_from_design_attachment(full) {
         return Some(loaded);
     }
@@ -241,27 +203,9 @@ pub(super) fn design_from_attachment(
         );
     }
     let lw_ratio = full.lw_ratio.as_deref();
-    let sidecar = if kind == indicatrix_vault::local::DesignFileKind::Asc {
-        native_sidecar_attachment(&full.attached_files)
-    } else {
-        None
-    };
-    let loaded = sidecar.map_or_else(
-        || {
-            design_from_asc_text(&file.asc_file_name, &file.asc_text, lw_ratio)
-                .map_err(AttachmentError::plain)
-        },
-        |sidecar| {
-            let native_text = String::from_utf8_lossy(&sidecar.content);
-            design_from_asc_and_native(
-                &file.asc_file_name,
-                &file.asc_text,
-                &native_text,
-                lw_ratio,
-                full.entry_id,
-            )
-        },
-    );
+    let loaded = design_from_asc_text(&file.asc_file_name, &file.asc_text, lw_ratio)
+        .map(AttachedDesign::without_snapshot)
+        .map_err(AttachmentError::plain);
     Some(loaded.map_err(|e| {
         if e.concave {
             e
@@ -285,11 +229,6 @@ pub(super) fn design_from_attachment(
 /// export path already does, rather than silently handing the user a schedule whose
 /// masts are all zero.
 ///
-/// When an older sidecar is attached alongside the `.asc` (see
-/// [`native_sidecar_attachment`]), [`design_from_asc_and_native`] is preferred over
-/// the plain `.asc` path so an imported design does not lose the sidecar-only fields
-/// a re-import would otherwise silently discard.
-///
 /// # Errors
 ///
 /// Returns `Err` (a human-readable message) only when there is no readable attached
@@ -299,7 +238,7 @@ pub(in crate::gui::editor) fn design_from_full_record(
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
 ) -> Result<LoadedDesign, String> {
     match design_from_attachment(full) {
-        Some(Ok(loaded)) => return Ok(loaded),
+        Some(Ok(attached)) => return Ok(attached.loaded),
         // Concave tiers that cannot be loaded are a load failure, never a fallback:
         // the angle table has none, and the next Save would destroy them.
         Some(Err(e)) if e.concave => return Err(e.message),
@@ -374,7 +313,10 @@ pub(in crate::gui::editor) fn external_proportions_from_full_record(
 mod tests {
     use super::*;
     use indicatrix::geometry::meet_solver::MeetConstraint;
-    use indicatrix_vault::model::entry::FullDiagramRecord;
+    use indicatrix_formats::native::design::{
+        DESIGN_EXTENSION_DOTTED, LEGACY_DESIGN_EXTENSION_DOTTED,
+    };
+    use indicatrix_vault::model::{entry::FullDiagramRecord, file::AttachedFile};
 
     fn empty_full_record() -> FullDiagramRecord {
         FullDiagramRecord {
@@ -435,107 +377,10 @@ mod tests {
         }
     }
 
-    // --- native_sidecar_attachment / design_from_asc_and_native ---
-
-    #[test]
-    fn native_sidecar_attachment_finds_the_indicatrix_toml_sibling() {
-        let files = vec![
-            AttachedFile {
-                name: "design.asc".to_string(),
-                url: String::new(),
-                content: Vec::new(),
-            },
-            AttachedFile {
-                name: "design.indicatrix.toml".to_string(),
-                url: String::new(),
-                content: b"native".to_vec(),
-            },
-        ];
-        let sidecar = native_sidecar_attachment(&files).expect("sidecar must be found");
-        assert_eq!(sidecar.name, "design.indicatrix.toml");
-    }
-
-    #[test]
-    fn native_sidecar_attachment_also_finds_the_legacy_gemcut_toml_sibling() {
-        let files = vec![AttachedFile {
-            name: "design.gemcut.toml".to_string(),
-            url: String::new(),
-            content: b"native".to_vec(),
-        }];
-        assert!(native_sidecar_attachment(&files).is_some());
-    }
-
-    #[test]
-    fn native_sidecar_attachment_is_none_without_a_sidecar() {
-        let files = vec![AttachedFile {
-            name: "design.asc".to_string(),
-            url: String::new(),
-            content: Vec::new(),
-        }];
-        assert!(native_sidecar_attachment(&files).is_none());
-    }
-
-    #[test]
-    fn design_from_asc_and_native_falls_back_to_the_plain_asc_when_the_sidecar_does_not_parse() {
-        let asc_text = "GemCad 5.0\ng 96 0.0\ny 4 y\nI 1.54\na -41.000000 0.64991234 92 n 1 84\n";
-        let loaded =
-            design_from_asc_and_native("design.asc", asc_text, "not valid toml [[[", None, 1)
-                .expect("must fall back to the plain .asc path rather than erroring");
-        assert!(!loaded.used_placeholder);
-        assert_eq!(loaded.asc_filename.as_deref(), Some("design.asc"));
-        assert_eq!(loaded.design.tiers.len(), 1);
-    }
-
-    /// A sidecar whose concave tiers cannot be restored is a load failure: falling
-    /// back to the `.asc` would drop them and the next Save would destroy them.
-    #[test]
-    fn an_unusable_concave_stash_is_an_error_not_a_fallback_to_the_plain_asc() {
-        let design = Design::concave_fixture();
-        let saved =
-            indicatrix_cut_core::save_paired(&design, "x.asc", None, None, None).expect("saves");
-        assert!(
-            saved.native_toml.contains("CYL"),
-            "the stash names its tool"
-        );
-        let forged = saved.native_toml.replace("\"CYL\"", "\"XYZ\"");
-        let err = design_from_asc_and_native("x.asc", &saved.asc_text, &forged, None, 1)
-            .err()
-            .expect("must not fall back to the .asc");
-        assert!(err.concave, "{}", err.message);
-
-        // The same through the catalogue record: it does not fall back to the angle
-        // table either.
-        let mut full = empty_full_record();
-        full.attached_files.push(AttachedFile {
-            name: "x.asc".to_string(),
-            url: String::new(),
-            content: saved.asc_text.clone().into_bytes(),
-        });
-        full.attached_files.push(AttachedFile {
-            name: "x.indicatrix.toml".to_string(),
-            url: String::new(),
-            content: forged.into_bytes(),
-        });
-        let message = design_from_full_record(&full)
-            .err()
-            .expect("a load failure");
-        assert!(message.contains("concave"), "{message}");
-
-        // A sidecar that is merely broken still falls back to the plain .asc.
-        let loaded =
-            design_from_asc_and_native("x.asc", &saved.asc_text, "not valid toml [[[", None, 1)
-                .expect("plain fallback");
-        assert_eq!(
-            loaded.design.concave_tiers.len(),
-            0,
-            "the plain .asc has no concave tiers"
-        );
-    }
-
-    /// An attached `.indicatrix` file with unusable concave tiers is an error: the
+    /// An attached `.isdd` file with unusable concave tiers is an error: the
     /// `.asc` beside it has none, so using it would lose them on the next Save.
     #[test]
-    fn an_attached_indicatrix_file_with_unusable_concave_tiers_is_not_skipped() {
+    fn an_attached_design_file_with_unusable_concave_tiers_is_not_skipped() {
         let text = indicatrix_cut_core::native::design_to_string(
             &Design::concave_fixture(),
             None,
@@ -552,7 +397,7 @@ mod tests {
                 .to_vec(),
         });
         full.attached_files.push(AttachedFile {
-            name: "design.indicatrix".to_string(),
+            name: format!("design{DESIGN_EXTENSION_DOTTED}"),
             url: String::new(),
             content: forged.into_bytes(),
         });
@@ -566,10 +411,20 @@ mod tests {
         assert_eq!(loaded.design.concave_tiers.len(), 2);
     }
 
-    /// A record whose attachments hold a `.asc` AND a self-contained `.indicatrix` file
-    /// opens from the design file (every tier of it), under the `.asc`'s name.
+    /// A record whose attachments hold a `.asc` AND a self-contained design file opens
+    /// from the design file (every tier of it), under the `.asc`'s name. Both the
+    /// current `.isdd` extension and the legacy `.indicatrix` one are read.
     #[test]
-    fn design_from_full_record_prefers_an_attached_indicatrix_file() {
+    fn design_from_full_record_prefers_an_attached_design_file() {
+        for design_name in [
+            format!("round{DESIGN_EXTENSION_DOTTED}"),
+            format!("round{LEGACY_DESIGN_EXTENSION_DOTTED}"),
+        ] {
+            attached_design_file_is_preferred_over_the_asc(&design_name);
+        }
+    }
+
+    fn attached_design_file_is_preferred_over_the_asc(design_name: &str) {
         use indicatrix_cut_core::{
             ConstraintTier, PreformSpec, ScheduleMeta, native::DesignExtras,
         };
@@ -589,7 +444,7 @@ mod tests {
             content: asc.to_vec(),
         });
         full.attached_files.push(AttachedFile {
-            name: "round.indicatrix".to_string(),
+            name: design_name.to_string(),
             url: String::new(),
             content: text.into_bytes(),
         });
@@ -607,10 +462,10 @@ mod tests {
         assert_eq!(lone.design.tiers.len(), design.tiers.len());
     }
 
-    /// An attached `.indicatrix` file that does not parse leaves the `.asc` beside it
+    /// An attached design file that does not parse leaves the `.asc` beside it
     /// to load, and is not used on its own.
     #[test]
-    fn an_unreadable_indicatrix_attachment_is_not_used() {
+    fn an_unreadable_design_attachment_is_not_used() {
         let mut full = empty_full_record();
         full.attached_files.push(AttachedFile {
             name: "design.asc".to_string(),
@@ -619,7 +474,7 @@ mod tests {
                 .to_vec(),
         });
         full.attached_files.push(AttachedFile {
-            name: "design.indicatrix".to_string(),
+            name: format!("design{DESIGN_EXTENSION_DOTTED}"),
             url: String::new(),
             content: b"not a design".to_vec(),
         });

@@ -102,6 +102,22 @@ thread_local! {
     static SESSION: RefCell<Session> = RefCell::new(Session::default());
 }
 
+/// Forgets what a previous main window left behind: the handles (with the database), the plan
+/// and the watch timer. See `gui::window_release`.
+pub(super) fn release_window_state() {
+    let old = SESSION.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    drop(old);
+}
+
+/// Names this module's holder in `out` while it is still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(super) fn note_holders(out: &mut Vec<&'static str>) {
+    if SESSION.with(|cell| cell.borrow().handles.is_some()) {
+        out.push("editor::cutting_mode SESSION (vault, editor state)");
+    }
+}
+
 fn with_session<R>(f: impl FnOnce(&mut Session) -> R) -> R {
     SESSION.with(|cell| f(&mut cell.borrow_mut()))
 }

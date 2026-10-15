@@ -106,7 +106,7 @@ export global Theme {
     /// One step dimmer than `text-muted`. Same value as `border-control`, named
     /// separately because the two roles would not move together in a re-palette.
     /// Shared by `performance_graph_dialog.slint` (7 axis labels) and
-    /// `settings_dialog.slint` (a disabled override label).
+    /// the Parameters panel (a disabled override label).
     out property <color> text-disabled: root.high-contrast ? #9a9a9a : #475569;
     /// Dark text/icon color for content sitting directly on an `accent-amber`
     /// fill (a toggle button's own "on" state, e.g. `header.slint`'s Filters
@@ -301,7 +301,7 @@ export global Theme {
     /// The mouse-hint pills along the bottom edge, and their text and icons.
     out property <color> hint-surface: root.high-contrast ? #000000eb : #1e293bdd;
     out property <color> hint-text: root.high-contrast ? #ffffff : #cbd5e1;
-    /// The dimmer behind the render settings card.
+    /// The dimmer behind the in-window modal cards.
     out property <color> scrim-light: root.high-contrast ? #000000b0 : #00000055;
 
     // Shadows under a floating card: the strong one under the performance-graph and remote

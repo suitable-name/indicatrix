@@ -1,35 +1,49 @@
-// Rendering-quality/device settings (the "Settings" gear panel docked over the Live
-// Render viewport): sample count, resolution, local-preview scale, compute-target
+// Rendering-quality/device settings behind the Parameters dock's three tabs
+// (`ui/components/parameters_panel/`; whether the dock is open and which tab shows is
+// `ParametersModel`): sample count, resolution, local-preview scale, compute-target
 // split, ray bounces, exposure/light, inclusion scattering, crystal-axis override,
 // girdle finish, edge rounding, physical size, and the HDR environment map.
 export global SettingsModel {
-    in-out property <bool> is_open: false;
-
     // Carries the "Target Samples" slider's EXPONENT (3..=10 => 8..1024 samples), not
     // the sample count -- noise falls as 1/sqrt(N), so a linear control would spend
     // ~97% of its travel above 32 spp where each step barely changes anything visible.
     // `gui::sample_scale` converts to/from the persisted count. Default 8.0 => 256
     // samples (`settings::model::DEFAULT_TARGET_SAMPLES`).
     in-out property <float> target_samples_exponent: 8.0;
-    // 12 Bounces default -- see `settings_dialog.slint`'s pill ladder (4/8/12/24/64/128).
+    // 12 Bounces default -- see the Parameters panel's pill ladder (4/8/12/24/64/128).
     in-out property <int> bounce_index: 2;
     in-out property <float> exposure_val: 1.0;
     // Backdrop pill index: 0 = as lit, 1 = Grey (default), 2 = white.
     in-out property <int> backdrop_index: 1;
     // Surface glare, percent (0-100, default 100 = unscaled): the share of the white
     // mirror image of the light kept in the path-traced view and exports. Built-in
-    // lighting presets only; `settings_dialog.slint` greys it out for an HDR map.
+    // lighting presets only; the Parameters panel greys it out for an HDR map.
     in-out property <float> surface_glare_pct: 100.0;
     // Head-shadow radius in degrees (0 = off, 16 default): the lit lighting presets'
-    // observer head. `settings_dialog.slint` greys it out for an HDR map.
+    // observer head. the Parameters panel greys it out for an HDR map.
     in-out property <float> head_shadow_deg: 16.0;
     in-out property <float> light_yaw_deg: 48.0;
     in-out property <float> light_pitch_deg: 72.0;
-    // Defaults for "Reset to Defaults". Fed at startup from the Rust constants
-    // `DEFAULT_LIGHT_YAW_DEG` / `DEFAULT_LIGHT_PITCH_DEG` (settings/model/app_settings.rs)
-    // so they cannot drift; the literals here only matter before that runs.
-    in property <float> default_light_yaw_deg: 48.0;
-    in property <float> default_light_pitch_deg: 72.0;
+    // The lighting sliders' ranges. Fed at startup by `gui::render::parameter_constants` from
+    // `settings::model::EXPOSURE_RANGE` and `PITCH_RANGE_RAD` (in degrees), so the slider can
+    // reach exactly what the render context accepts; the literals only matter before that runs.
+    in property <float> exposure_min: 0.2;
+    in property <float> exposure_max: 5.0;
+    in property <float> light_elevation_min_deg: 8.6;
+    in property <float> light_elevation_max_deg: 88.8;
+    // The one bounce ladder and the sample/thumbnail ranges every picker shares. Fed at
+    // startup by `gui::render::parameter_constants` from `settings::model::BOUNCE_LADDER`
+    // and the `*_RANGE` constants; the literals here only matter before that runs, and
+    // later waves bind the pickers to these instead of keeping their own copies.
+    in property <[int]> bounce_ladder: [4, 8, 12, 24, 64, 128];
+    in property <int> live_samples_min_exponent: 3;
+    in property <int> live_samples_max_exponent: 10;
+    in property <int> export_samples_min_exponent: 3;
+    in property <int> export_samples_max_exponent: 15;
+    in property <int> preview_samples_min: 32;
+    in property <int> preview_samples_max: 512;
+    in property <int> preview_size_min: 96;
+    in property <int> preview_size_max: 256;
     // Inclusion/subsurface scattering amount, off by default -- range and endpoint
     // meanings from `GemMaterial::scattering_sigma_s` (per model unit, independent of the
     // stone size). This is the coefficient itself (what is persisted and shown); the slider
@@ -41,7 +55,7 @@ export global SettingsModel {
     // (0-90 from the table normal) and `c_axis_azimuth_deg` (0-360 around the table
     // normal) only apply while enabled (`gui::optics::c_axis` for the angle-to-vector mapping).
     // `c_axis_override_available` (Rust-driven) is `false` for an isotropic material,
-    // whose optic axis is meaningless; `settings_dialog.slint` greys the control out
+    // whose optic axis is meaningless; the Parameters panel greys the control out
     // rather than letting the user drag a slider that does nothing.
     in-out property <bool> c_axis_override_enabled: false;
     in-out property <float> c_axis_tilt_deg: 0.0;
@@ -51,8 +65,9 @@ export global SettingsModel {
     in-out property <bool> girdle_frosted: false;
     // Facet edge (meet-point) rounding radius, `0.0`-`0.03`, sharp by default.
     in-out property <float> edge_rounding_radius: 0.0;
-    // Physical stone size (girdle width, mm), 0 = unscaled by default.
-    in-out property <float> stone_width_mm: 0.0;
+    // Read-only mirror of the open design's girdle diameter (mm), 0 = not set. The design is the
+    // one place the width is edited (Stone tab / Preform tab); this is kept for color zoning.
+    in property <float> stone_width_mm: 0.0;
 
     // Live render resolution pill index: 0 = 640x480, 1 = 800x600 (default, matches
     // `RenderContext::default()`), 2 = 1280x720, 3 = 1920x1080.
@@ -72,14 +87,17 @@ export global SettingsModel {
     // Live rendering's Local/Remote/Local+Remote choice once the camera settles. `2`
     // (Local+Remote) matches `LiveComputeTarget`'s own `Default`.
     in-out property <int> live_compute_target_index: 2;
-    // Live transfer: 0 = Full data (default; float deltas, combined
-    // with local samples), 1 = Final picture (finished, denoised frames from the
-    // remote; the settled image is remote-only). Persisted on the remote endpoint.
-    in-out property <int> live_transfer_index: 0;
+    // The merged live transfer of the remote (read-only here; edited in the Remote
+    // Coordinator dialog, where the old "Live stream" and "Live transfer" are one control):
+    // 0 = progressive full data (default; float deltas, combined with local samples), 1 = full
+    // data sent when finished, 2 = final picture (finished, denoised frames from the remote;
+    // the settled image is remote-only). Persisted on the remote endpoint; Rust mirrors it
+    // here (`gui::remote::refresh_remote_ui`).
+    in property <int> live_transfer_index: 0;
     // v16: whether this machine's own idle CPU/GPU traces a share of a "final picture
     // only" export/tilt-frame alongside the remote -- on by default. Only meaningful
     // with a remote configured; the picker greys it out otherwise (see
-    // `RemoteWorkerModel.live_remote_available`).
+    // `RemoteWorkerModel.availability.configured`).
     in-out property <bool> contribute_to_final_picture: true;
     // Local live-rendering CPU/CPU+GPU/GPU choice. `1` (CPU+GPU) matches
     // `LocalComputeTarget`'s own `Default`. Only shown on a `gpu`-feature build
@@ -109,7 +127,7 @@ export global SettingsModel {
     callback clear_env_map();
 
     // `reset_defaults`/`open_performance_graph` are not declared here:
-    // `settings_dialog.slint`'s own same-named local function/callback do the
+    // the Parameters panel's own same-named local function/callback do the
     // real work directly against this global's other callbacks instead.
     callback target_samples_changed(int);
     // Carries the resolved (width, height) directly; a fixed pill list rather than a
@@ -120,8 +138,6 @@ export global SettingsModel {
     callback local_preview_scale_changed(int);
     // Carries the pill's clicked index directly (`gui::remote::live_compute_target_from_index`).
     callback live_compute_target_changed(int);
-    // Carries the pill's clicked index directly (`LiveTransfer::from_index`).
-    callback live_transfer_changed(int);
     // Carries the switch's new value directly.
     callback contribute_to_final_picture_changed(bool);
     // Carries the pill's clicked index directly (`gui::local_compute_target_from_index`).
@@ -135,9 +151,6 @@ export global SettingsModel {
     callback surface_glare_changed(float);
     // Carries whole degrees (0-30); `settings::model::head_shadow_deg_from_slider` limits it.
     callback head_shadow_changed(float);
-    // Carries the slider POSITION (0-1); `render_setup::inclusion_scale::position_to_sigma_s`
-    // turns it into the coefficient (which Rust writes back to `inclusion_sigma_s`).
-    callback inclusion_changed(float);
     callback c_axis_override_changed(bool);
     // Carries BOTH angles (moved slider's new value plus the other slider's current
     // value), same treatment `ViewportModel.light_pos_changed` gives yaw/pitch.
@@ -145,11 +158,24 @@ export global SettingsModel {
     callback girdle_frosted_changed(bool);
     callback edge_rounding_changed(float);
     callback stone_width_changed(float);
+    // Stone tab effects (per design, see `gui::render::stone_effects`). The live handlers above
+    // (and this one) only drive the picture; the debounced commit that writes the design is
+    // `stone_effects_edited`. `stone_inclusion_edited` carries the slider POSITION (0-1).
+    // (The Stone tab's reset is `ParametersModel.reset_stone_effects`, handled in Rust.)
+    callback stone_inclusion_edited(float);
+    callback stone_effects_edited();
 
     // Whether any control that Simple mode hides is off its default: preview size and
-    // samples, motion preview, live compute, live transfer, the final-picture share switch,
-    // local compute and the bounce cap, in that order (`gui::render::advanced_in_use`, which
-    // answers it and holds the defaults). The settings dialog shows "Some advanced settings
-    // are in use" in Simple mode while this is true.
-    pure callback advanced_in_use(int, int, int, int, int, bool, int, int) -> bool;
+    // samples, motion preview, live compute, the final-picture share switch, local compute and
+    // the bounce cap, in that order (`gui::render::advanced_in_use`, which answers it and holds
+    // the defaults). The live transfer is per remote and not part of it. The Parameters panel
+    // shows "Some advanced settings are in use" in Simple mode while this is true.
+    pure callback advanced_in_use(int, int, int, int, bool, int, int) -> bool;
+
+    // Render & Output tab (lane R4): the persisted output defaults, as one line each. The Export
+    // and Tilt Video dialogs open with these values and write the ones they used back when a run
+    // starts; Rust formats the lines (`gui::render::output_defaults`) and refreshes them on
+    // every write-back and after a tab reset.
+    in property <string> still_output_summary: "";
+    in property <string> tilt_output_summary: "";
 }

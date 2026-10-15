@@ -32,7 +32,7 @@ pub(super) fn random_designs(rng: &mut Lcg, n: usize) -> Vec<CandidateDesign> {
             let length = width * rng.range(1.0, 2.5);
             let height = width * rng.range(0.3, 1.5);
             CandidateDesign {
-                entry_id: i as i64 + 1,
+                entry_id: i64::try_from(i).expect("a small test index fits i64") + 1,
                 width,
                 length,
                 height,
@@ -238,7 +238,8 @@ fn refinement_finds_a_kink_and_not_the_convex_middle() {
 
 pub(super) fn shuffled<T>(items: &mut [T], rng: &mut Lcg) {
     for i in (1..items.len()).rev() {
-        let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+        let j = usize::try_from(rng.next_u64() % (i as u64 + 1))
+            .expect("a remainder below i + 1 fits usize");
         items.swap(i, j);
     }
 }

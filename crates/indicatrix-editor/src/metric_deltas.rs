@@ -190,10 +190,20 @@ pub fn average_axis_profiles(axes: &[AxisProfile]) -> TiltAverages {
         }
     }
     let samples = f64::from(samples.max(1));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the UI/storage precision; the averages are percentages in 0..=100"
+    )]
+    let [brilliance_pct, windowing_pct, extinction_pct] = [
+        brilliance / samples,
+        windowing / samples,
+        extinction / samples,
+    ]
+    .map(|mean| mean as f32);
     TiltAverages {
-        brilliance_pct: (brilliance / samples) as f32,
-        windowing_pct: (windowing / samples) as f32,
-        extinction_pct: (extinction / samples) as f32,
+        brilliance_pct,
+        windowing_pct,
+        extinction_pct,
     }
 }
 
@@ -239,11 +249,11 @@ impl DeltaMetric {
     #[must_use]
     pub const fn tilt_label(self) -> &'static str {
         match self {
-            Self::Brilliance => "Tilt brilliance",
-            Self::Windowing => "Tilt windowing",
-            Self::Extinction => "Tilt extinction",
-            Self::Fire => "Tilt fire",
-            Self::Scintillation => "Tilt scintillation",
+            Self::Brilliance => "Tilt Brilliance",
+            Self::Windowing => "Tilt Windowing",
+            Self::Extinction => "Tilt Extinction",
+            Self::Fire => "Tilt Fire",
+            Self::Scintillation => "Tilt Scintillation",
         }
     }
 

@@ -15,6 +15,4 @@ pub mod hdr_asset;
 pub mod live_lane;
 pub mod remote_render;
 
-#[cfg(feature = "zoning")]
-pub use guard::zoned_scene_refusal;
-pub use guard::{LiveDispatch, live_remote_dispatch, remote_can_render};
+pub use guard::{LiveDispatch, live_remote_dispatch, remote_can_render, zoned_scene_refusal};

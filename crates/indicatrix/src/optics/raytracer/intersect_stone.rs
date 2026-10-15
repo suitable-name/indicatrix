@@ -102,7 +102,7 @@ fn carve(
     let mut n = 2;
     for (k, tool) in tools.iter().enumerate() {
         if let Some((c, d)) = tool.ray_interval(ray) {
-            let key = 2 + 2 * k as u32;
+            let key = 2 + 2 * u32::try_from(k).expect("a stone has few tool primitives");
             events[n] = Boundary { t: c, key };
             events[n + 1] = Boundary { t: d, key: key + 1 };
             n += 2;

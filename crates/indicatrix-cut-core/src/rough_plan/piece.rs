@@ -224,6 +224,11 @@ pub fn choose_grid(rough: &RoughBlock, settings: &PlanSettings) -> Grid {
     let usable = usable_rough(rough, settings.skin_mm);
     let geomean = cube_root(usable[0] * usable[1] * usable[2]);
     let per_axis = (6 * ceil_cube_root(k)) as f64;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the rounded value is a non-negative length ratio and is clamped to 8..=48 immediately"
+    )]
     let mut cells = if geomean > 0.0 {
         usable.map(|r| ((per_axis * r / geomean).round() as usize).clamp(8, 48))
     } else {
@@ -289,6 +294,11 @@ pub fn build_piece_table(
 /// count. Reports [`PlanProgress::Grid`] once per x-plane (`done` is the plane, 1-based;
 /// the events of different lanes interleave) on the calling thread; `None` when cancelled.
 /// With one lane nothing is spawned.
+///
+/// # Panics
+///
+/// Panics if a design index exceeds `u32::MAX` or an orientation index exceeds 255, which a
+/// candidate front never produces.
 pub fn build_piece_table_lanes(
     grid: &Grid,
     front: &[CandidateDesign],
@@ -315,8 +325,10 @@ pub fn build_piece_table_lanes(
                         let (d, o, v) = best_pick(&norms, p, grid.settings.min_width_mm)
                             .unwrap_or((0, 0, f64::NEG_INFINITY));
                         part.values.push(v);
-                        part.design.push(d as u32);
-                        part.orient.push(o as u8);
+                        part.design
+                            .push(u32::try_from(d).expect("a design index fits u32"));
+                        part.orient
+                            .push(u8::try_from(o).expect("an orientation index is below 6"));
                     }
                 }
                 if !report(PlanProgress::Grid {

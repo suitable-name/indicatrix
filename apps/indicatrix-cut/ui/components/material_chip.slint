@@ -1,0 +1,211 @@
+import { Theme } from "../theme.slint";
+import { ViewportModel } from "../models/viewport.slint";
+import { EditorModel } from "../models/editor.slint";
+import { ParametersModel } from "../models/parameters.slint";
+
+// The stone's material as the other panels show it: a read-only chip (the DESIGN panel and the
+// Live Render toolbar), the amber "Previewing" badge with its Back to design button (the Stone
+// tab, both viewport toolbars) and the one-line material row of the export and tilt-video dialogs.
+// The material itself is edited in the Stone tab only; Rust owns every decision
+// (`gui::render::material`, `gui::editor::callbacks::tier_actions::viewport_material`).
+
+// The material name the picture shows: the design's body-colour variant ("Sapphire (Yellow)")
+// while the view follows the design, the plain material name otherwise.
+// (Repeated as an expression in the three components below; a component cannot export a function.)
+
+// The "Previewing X: not the design's material" badge. Never shown unless the person asked for a
+// preview (`ViewportModel.previewing`); the caller wraps it in that `if`.
+export component PreviewBadge inherits Rectangle {
+    // Shorter wording for a narrow toolbar.
+    in property <bool> compact: false;
+    in property <length> row_height: 32px;
+    // Widest the whole "Previewing <name>" text may grow before it elides (about 62px of it is the
+    // "Previewing " prefix). The wrapped toolbar row sets 280px, or 64px while its save-name row is
+    // open, so the Back to design button never leaves the row.
+    in property <length> name_max_width: 10000px;
+
+    height: root.row_height;
+    width: badge_row.preferred-width;
+    background: Theme.accent-amber.with-alpha(0.16);
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.accent-amber;
+
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: "Previewing " + ViewportModel.traced_material_name + ", not the design's material";
+    accessible-description: "The picture, exports and tilt videos use this preview material. Back to design returns to the design's own material.";
+
+    Tooltip { text: @markdown("Previewing another material: the picture, exports and tilt videos use it, but the design keeps its own material. Press Back to design to return."); }
+
+    badge_row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 4px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+        spacing: 8px;
+        Text {
+            text: root.compact
+                ? "Previewing " + ViewportModel.traced_material_name
+                : "Previewing " + ViewportModel.traced_material_name + ": not the design's material";
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            overflow: elide;
+            max-width: root.name_max_width;
+        }
+        Rectangle {
+            width: back_label.preferred-width + 16px;
+            background: back_touch.has-hover ? Theme.accent-amber.darker(0.15) : Theme.accent-amber;
+            border-radius: Theme.radius-sm;
+            border-width: back_focus.has-focus ? 2px : 0px;
+            border-color: Theme.accent-cyan-hover;
+
+            accessible-role: AccessibleRole.button;
+            accessible-label: "Back to Design";
+            accessible-description: "Stop previewing and show the design's own material again.";
+            accessible-action-default => { ViewportModel.preview_back_to_design(); }
+
+            Tooltip { text: @markdown("Stop previewing and show the design's own material again."); }
+
+            back_focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        ViewportModel.preview_back_to_design();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            back_label := Text {
+                text: "Back to Design";
+                font-size: 11px;
+                font-weight: 700;
+                color: Theme.text-on-amber;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            back_touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { ViewportModel.preview_back_to_design(); }
+            }
+        }
+    }
+}
+
+// A read-only chip: colour dot, material, and optionally the refractive index. Pressing it opens
+// the Stone tab, where the material is edited. It keeps the toolbar's colour readout fresh
+// (`render_color_refresh`) when it appears; `EditorModel` asks again when the design changes.
+export component MaterialChip inherits Rectangle {
+    // Drops the refractive index and narrows the name.
+    in property <bool> compact: false;
+    in property <bool> show_ri: false;
+    in property <length> row_height: 32px;
+    // Extra words of the tooltip (where the chip is, and what the press does).
+    in property <string> hint: "Press to open the Stone tab and change the material.";
+
+    // Later changes are tracked once, in `EditorModel`; a chip only asks when it appears.
+    init => { ViewportModel.render_color_refresh(); }
+
+    property <string> label: (ViewportModel.render_color_targets_design && EditorModel.body_color_readout != "")
+        ? EditorModel.body_color_readout
+        : ViewportModel.traced_material_name;
+    property <string> ri_text: root.show_ri && !root.compact && EditorModel.effective_ri_text != "" ? "RI " + EditorModel.effective_ri_text : "";
+
+    height: root.row_height;
+    width: min(chip_row.preferred-width, root.compact ? 150px : 300px);
+    background: chip_touch.has-hover ? Theme.bg-elevated : Theme.hint-surface;
+    border-radius: Theme.radius-sm;
+    border-width: chip_focus.has-focus ? 2px : 1px;
+    border-color: chip_focus.has-focus ? Theme.accent-cyan-hover : (ViewportModel.previewing ? Theme.accent-amber : Theme.border-medium);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: "Material: " + root.label;
+    accessible-description: root.hint;
+    accessible-action-default => { ParametersModel.show_tab(0); }
+
+    Tooltip { text: @markdown("Material: \{root.label}. \{root.hint}"); }
+
+    chip_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                ParametersModel.show_tab(0);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    chip_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { ParametersModel.show_tab(0); }
+    }
+
+    chip_row := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 7px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                background: ViewportModel.render_color_has_swatch ? ViewportModel.render_color_current : transparent;
+                border-width: ViewportModel.render_color_has_swatch ? 1px : 2px;
+                border-color: ViewportModel.render_color_has_swatch ? Theme.border-control : Theme.text-secondary;
+            }
+        }
+        Text {
+            text: root.label;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.ri_text != "": Text {
+            text: root.ri_text;
+            font-size: 11px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The material row of the export and tilt-video dialogs: which material the picture will use,
+// and a plain warning when that is a preview. Read-only; the material is changed in the Stone tab.
+export component MaterialLine inherits HorizontalLayout {
+    spacing: 8px;
+
+    property <string> label: (ViewportModel.render_color_targets_design && EditorModel.body_color_readout != "")
+        ? EditorModel.body_color_readout
+        : ViewportModel.traced_material_name;
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: "Material: " + root.label + (ViewportModel.previewing ? ", a preview, not the design's material" : "");
+
+    Text {
+        text: "Material";
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.text-secondary;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.label;
+        font-size: 11px;
+        font-weight: 700;
+        color: Theme.text-primary;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if ViewportModel.previewing: Text {
+        text: "Preview: not the design's material";
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.accent-amber;
+        vertical-alignment: center;
+    }
+    Rectangle { horizontal-stretch: 1; }
+}

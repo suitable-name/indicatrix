@@ -98,7 +98,10 @@ fn label_and_index_round_trip_for_every_preset() {
     for (pos, &p) in LightingPreset::ALL.iter().enumerate() {
         assert_eq!(LightingPreset::from_label(p.label()), p);
         assert_eq!(LightingPreset::from_index(p.index()), p);
-        assert_eq!(p.index(), pos as i32);
+        assert_eq!(
+            p.index(),
+            i32::try_from(pos).expect("the preset count fits i32")
+        );
     }
 }
 

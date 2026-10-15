@@ -81,6 +81,16 @@ fn on_host(f: impl FnOnce(&Host)) {
     }
 }
 
+/// The help window when it exists. UI harness only.
+#[cfg(feature = "ui-harness")]
+pub fn harness_window() -> Option<HelpWindow> {
+    HELP.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|host| host.window.clone_strong())
+    })
+}
+
 fn to_i32(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }

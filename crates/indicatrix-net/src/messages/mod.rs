@@ -8,7 +8,7 @@
 //! -> <ClientMessage>  Cancel | Library(LibraryRequest) | RenderRequest | TiltCurvesRequest
 //!                     | Ping { nonce } | FinalImageRequest | Asset { content_hash, len } + payload
 //!                     | Contribution + payload                        (post-handshake, tagged)
-//!                     | ZoningPayload (`zoning` feature only; no protocol bump, see `zoning`)
+//!                     | ZoningPayload (`render` feature only; no protocol bump, see `zoning`)
 //! <- <StreamEvent>    Frame | Preview | Progress | Done | Error
 //!                     | Pong { nonce } | DisplayFrame | FinalImage | CapabilityChanged { render }
 //!                     | NeedAsset { content_hash }                      (tagged)
@@ -60,11 +60,11 @@ mod render;
 mod stream;
 #[cfg(feature = "render")]
 mod tilt;
-/// The zoning wire extension (`zoning` feature only; no protocol bump).
+/// The zoning wire extension (`render` feature only; no protocol bump).
 ///
 /// A capability marker after `HELLO`/`WELCOME` and the separate `ZoningPayload` message -- see
 /// this module's own doc comment.
-#[cfg(feature = "zoning")]
+#[cfg(feature = "render")]
 pub mod zoning;
 
 #[cfg(feature = "render")]
@@ -106,7 +106,7 @@ pub use tilt::{
     AxisTiltCurves, TILT_CURVE_AXIS_COUNT, TILT_CURVE_POINTS_PER_AXIS, TiltCurvesRequest,
     TiltCurvesResponse, TiltCurvesResult,
 };
-#[cfg(feature = "zoning")]
+#[cfg(feature = "render")]
 pub use zoning::{
     MAX_ZONED_ENTRIES, ZONING_TAIL, ZonedMaterialEntry, ZoningPayload, ZoningPayloadError,
     hello_from_bytes, split_welcome_tail, write_hello_message, write_welcome_message,
@@ -222,10 +222,10 @@ pub use zoning::{
 ///     frame. Nothing existing changed shape, but a peer on 23 would fail to decode the new
 ///     indices outright, so the bump turns that into a handshake refusal.
 ///
-/// A `zoning` build (off by default) appends `ClientMessage::ZoningPayload` (index 9) WITHOUT a
-/// bump: it is sent only to a peer whose `WELCOME` carried the zoning capability marker, which a
-/// peer sends only in reply to a `HELLO` that carried the marker -- so a default build never
-/// sees the message or the marker. See the `zoning` module.
+/// A `render` build appends `ClientMessage::ZoningPayload` (index 9) WITHOUT a bump: it is
+/// sent only to a peer whose `WELCOME` carried the zoning capability marker, which a peer
+/// sends only in reply to a `HELLO` that carried the marker -- so a peer without the
+/// extension never sees the message or the marker. See the `zoning` module.
 pub const PROTOCOL_VERSION: u16 = 24;
 
 #[cfg(test)]

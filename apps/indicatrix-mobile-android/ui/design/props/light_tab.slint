@@ -1,0 +1,169 @@
+// The Light tab: the lighting rig, where the light shines from, how bright the picture is,
+// the backdrop and what the viewer does to the reflections.
+//
+// The rig, exposure, light direction, backdrop and head shadow persist across restarts
+// (they are app settings, not part of the design). A slider applies when it is released.
+// The tab fills its parent.
+import { Theme } from "../../theme.slint";
+import { PageScroll } from "../../shell/page_scroll.slint";
+import { Segmented } from "../../shell/chips.slint";
+import { TonalButton, TextButton } from "../../shell/buttons.slint";
+import { PropsModel } from "props_model.slint";
+import { SectionHeader, SettingBlock, SliderBlock, RadioMark, PresetRow } from "props_parts.slint";
+
+export component LightTab inherits PageScroll {
+    SectionHeader {
+        text: "Lighting Rig";
+    }
+
+    // The imported panorama is a choice above the presets; picking a preset turns it off.
+    PresetRow {
+        title: "HDR Map";
+        detail: PropsModel.hdr-description;
+        enabled: PropsModel.hdr-available;
+        clicked => {
+            PropsModel.hdr-use(true);
+        }
+
+        RadioMark {
+            checked: PropsModel.hdr-selected;
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-lg;
+        padding-right: Theme.space-lg;
+        padding-bottom: Theme.space-xs;
+        spacing: Theme.space-sm;
+        alignment: start;
+
+        TonalButton {
+            text: PropsModel.hdr-busy ? "Reading..." : (PropsModel.hdr-available ? "Replace Map" : "Import Map");
+            enabled: !PropsModel.hdr-busy;
+            clicked => {
+                PropsModel.hdr-import();
+            }
+        }
+
+        if PropsModel.hdr-available: TextButton {
+            text: "Clear";
+            enabled: !PropsModel.hdr-busy;
+            clicked => {
+                PropsModel.hdr-clear();
+            }
+        }
+    }
+
+    for preset in PropsModel.presets: PresetRow {
+        title: preset.title;
+        detail: preset.description;
+        clicked => {
+            PropsModel.preset-picked(preset.name);
+        }
+
+        RadioMark {
+            checked: preset.selected;
+        }
+    }
+
+    SectionHeader {
+        text: "Light Direction";
+    }
+
+    SliderBlock {
+        title: "Light Azimuth";
+        value-text: Math.round(PropsModel.azimuth) + "°";
+        info-body: "Light azimuth: the direction the main light shines from, as an angle around the stone (0 to 360 degrees).";
+        enabled: PropsModel.uses-light-direction;
+        value <=> PropsModel.azimuth;
+        minimum: 0;
+        maximum: 360;
+        step: 1;
+        released => {
+            PropsModel.light-released();
+        }
+    }
+
+    SliderBlock {
+        title: "Light Elevation";
+        value-text: Math.round(PropsModel.elevation) + "°";
+        info-body: "Light elevation: how high the main light is above the stone, from low and raking to nearly straight overhead.";
+        enabled: PropsModel.uses-light-direction;
+        value <=> PropsModel.elevation;
+        minimum: 9;
+        maximum: 88;
+        step: 1;
+        released => {
+            PropsModel.light-released();
+        }
+    }
+
+    SectionHeader {
+        text: "Exposure";
+    }
+
+    SliderBlock {
+        title: "Overall Brightness";
+        value-text: Math.round(PropsModel.exposure * 100.0) / 100.0 + "x";
+        info-body: "Exposure: the overall brightness of the picture. 1x is the normal level.";
+        value <=> PropsModel.exposure;
+        minimum: 0.2;
+        maximum: 5;
+        step: 0.05;
+        released => {
+            PropsModel.light-released();
+        }
+    }
+
+    SectionHeader {
+        text: "Environment";
+    }
+
+    SettingBlock {
+        title: "Backdrop";
+        info-body: "Backdrop: what the camera sees behind the stone. As Lit: the lighting's own ground. Grey: a neutral grey card, for like-for-like comparisons. White: a light box. The stone's optics never see the card, so light leaking out of the back stays dark.";
+
+        Segmented {
+            options: ["As Lit", "Grey", "White"];
+            current: PropsModel.backdrop;
+            selected(index) => {
+                PropsModel.backdrop-picked(index);
+            }
+        }
+    }
+
+    SectionHeader {
+        text: "Observer";
+    }
+
+    SliderBlock {
+        title: "Surface Glare";
+        value-text: Math.round(PropsModel.glare) + " %";
+        info-body: "Surface glare: hides the white mirror image of the light on the table so the inner facets stay visible. 0 % keeps only light that entered the stone. Applies to the built-in lighting rigs, to the path-traced picture and to exports.";
+        value <=> PropsModel.glare;
+        minimum: 0;
+        maximum: 100;
+        step: 5;
+        released => {
+            PropsModel.light-released();
+        }
+    }
+
+    SliderBlock {
+        title: "Head Shadow";
+        value-text: PropsModel.head-shadow < 0.5 ? "Off" : Math.round(PropsModel.head-shadow) + "°";
+        info-body: "How much of the sky the viewer's head hides: the dark table reflections a face-up stone shows. 16 degrees is a head at arm's length; 0 turns it off. Product-photography rigs (D65 Daylight, Incandescent, Ring Lights, Dramatic Dark Spotlight) ignore it.";
+        enabled: PropsModel.uses-head-shadow;
+        value <=> PropsModel.head-shadow;
+        minimum: 0;
+        maximum: 30;
+        step: 1;
+        released => {
+            PropsModel.light-released();
+        }
+    }
+
+    Rectangle {
+        height: Theme.space-xl;
+    }
+}

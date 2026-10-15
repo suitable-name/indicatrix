@@ -13,7 +13,7 @@ pub const WELCOME_TOUR_ID: &str = "welcome-tour";
 pub fn welcome_tour_guide() -> Guide {
     Guide::new(
         WELCOME_TOUR_ID,
-        "Welcome tour",
+        "Welcome Tour",
         "A two-minute look at the library, the editor, the viewport and the help.",
         GuideCategory::GettingStarted,
     )

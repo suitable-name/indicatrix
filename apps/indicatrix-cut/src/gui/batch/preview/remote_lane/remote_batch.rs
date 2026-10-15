@@ -239,12 +239,11 @@ impl Run<'_, '_> {
             }
         }
 
-        // `zoning` builds: a zoned picture goes only to a worker that advertised the zoning
+        // A zoned picture goes only to a worker that advertised the zoning
         // capability (otherwise it would render as its base zone). The others are handed back
         // like any picture the remote cannot take -- to the local pile under `Both`, counted
         // failed under `RemoteOnly` -- without touching the failure backoff: nothing is wrong
         // with the connection.
-        #[cfg(feature = "zoning")]
         let sendable = match self.client.as_ref() {
             Some(client) if !client.takes_zoning() => {
                 let (zoned, plain): (Vec<_>, Vec<_>) = sendable
@@ -261,7 +260,6 @@ impl Run<'_, '_> {
             }
             _ => sendable,
         };
-        #[cfg(feature = "zoning")]
         if sendable.is_empty() {
             return Launch::NothingSent;
         }
@@ -346,7 +344,8 @@ impl Run<'_, '_> {
         let mut batch_items = Vec::with_capacity(sendable.len());
         let mut handed_back = Vec::new();
         for (index, (item, mut batch_item, revision, _)) in sendable.into_iter().enumerate() {
-            let item_id = index as u32;
+            let item_id =
+                u32::try_from(index).expect("a batch holds far fewer than u32::MAX items");
             batch_item.item_id = item_id;
             batch_items.push(batch_item);
             handed_back.push(item);

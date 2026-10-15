@@ -18,6 +18,9 @@ name = "indicatrix-worker"
 path = "src/main.rs"
 
 [dependencies]
+# The new-version notice `main.rs` logs first (skipped with `--no-update-check` or
+# INDICATRIX_NO_UPDATE_CHECK).
+indicatrix-update = { workspace = true }
 # `indicatrix-vault`'s `Database` methods return `anyhow::Result` -- `crate::serve::library`
 # matches on those errors directly (to log the real reason server-side while reporting
 # a generic message to the peer -- see that module's doc comment).
@@ -93,7 +96,7 @@ zeroize = "1.9.1"
 # measures variants production never sends (unshuffled LZ4/zstd, zstd level 3).
 [dev-dependencies]
 lz4_flex = "0.14.0"
-zstd = "0.14.0"
+zstd = "0.14.2"
 
 # Renders real FRAME payloads with the production render core (needs `worker`; add
 # `gpu` to trace on the adapter).
@@ -119,6 +122,8 @@ default = []
 # own unconditional dependency, and this feature alone wouldn't achieve anything.
 # `indicatrix/hdr`: decoding the HDR environment maps a viewer sends by content hash
 # (protocol v14 -- `crate::assets`) with the exact decoder the viewer uses.
+# A worker build also accepts zoned scenes (it advertises the zoning capability bit and
+# handles the separate `ZoningPayload` message).
 worker = ["dep:indicatrix", "dep:indicatrix-dispatch", "dep:glam", "dep:bytemuck", "dep:postcard", "dep:serde_json", "dep:image", "indicatrix/hdr", "indicatrix-net/render"]
 # GPU with no render capacity is meaningless, so this implies `worker`. Routes tracing
 # through indicatrix's verified GPU megakernel (`indicatrix::renderer::gpu::frame::GpuFrameRenderer`,
@@ -129,35 +134,6 @@ worker = ["dep:indicatrix", "dep:indicatrix-dispatch", "dep:glam", "dep:bytemuck
 # default even with `worker` on: `wgpu`/`pollster` is a real dependency tree, and a
 # render-capable server may still run on a machine with no GPU adapter at all.
 gpu = ["worker", "indicatrix/gpu"]
-
-# Shows the physics-based color editor in the Gem Material Editor: the "Color Mode:
-# Fantasy | Physics" toggle and the whole host-crystal / element-recipe section
-# (`ChromophorePicker`), plus the "color changed by an older version" question and the
-# "color data updated" badge. UI only: the data layer is compiled and active in EVERY
-# build -- a material's stored color mode and recipe (vault `color_recipe_json`, the
-# design file's `color_recipe`) are kept byte-for-byte and still render as before. Off by
-# default (and left out of the shipped/PGO feature sets) because the physical color mode is
-# out of focus; see `gui::optics::physics_state::PHYSICS_COLOR_UI`.
-physical-color = []
-# Rough colour and colour zoning from rig photos (plan 2026-10-09, section 1a): the Rough
-# colour wizard, the zone panel, the vault side-table storage and the adopt integration.
-# UI switch: `gui::zoning_ui::ZONING_UI`, which sets the Slint global `Zoning.enabled`.
-# Off by default and left out of the shipped/PGO feature sets; a build without it is
-# unchanged. RAW decoding (`rawler`) lives in `indicatrix-cut-core` behind its own `zoning`
-# feature (lane P1), so it is reached through `indicatrix-cut-core/zoning` and this crate
-# declares no `rawler` dependency of its own.
-#
-# Lane I1: `indicatrix-vault/zoning` creates and serves the rough-colour side tables
-# (`gui::rough_colour::store`).
-zoning = [
-    "worker",
-    "indicatrix/zoning",
-    "indicatrix-net/zoning",
-    "indicatrix-vault/zoning",
-]
-
-# Experimental features bundle: activates both the zoning and physical-color feature sets.
-experimental = ["zoning", "physical-color"]
 
 [lints]
 workspace = true

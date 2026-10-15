@@ -76,7 +76,8 @@ pub struct MaterialComboCache {
 ///
 /// This lists every built-in species the renderer supports, not just a
 /// hand-picked THIRTEEN-name subset (`"Diamond"`..`"Cubic Zirconia"`) of the
-/// renderer's THIRTY-THREE built-ins -- every garnet, Aquamarine, Morganite,
+/// renderer's THIRTY-FOUR (including the zoned Ametrine)
+/// built-ins -- every garnet, Aquamarine, Morganite,
 /// Chrysoberyl (Yellow), Amethyst, Citrine, Peridot, YAG, GGG, Benitoite,
 /// Andalusite, Opal, both glasses and Rutile can already be traced in Live
 /// Render (`gui::startup_settings::built_in_material_option_names` already reads
@@ -110,7 +111,7 @@ pub fn builtin_preset_names() -> Vec<String> {
 pub fn material_index_from_name(name: Option<&str>) -> i32 {
     let names = builtin_preset_names();
     name.and_then(|n| names.iter().position(|p| p == n))
-        .map_or(0, |i| i as i32)
+        .map_or(0, |i| i32::try_from(i).unwrap_or(i32::MAX))
 }
 
 /// The inverse of [`material_index_from_name`]: the name at `index` in
@@ -280,7 +281,7 @@ pub fn design_material_index_from_name(name: Option<&str>, options: &[String]) -
                 .eq_ignore_ascii_case(n)
         })
     })
-    .map_or(0, |i| i as i32)
+    .map_or(0, |i| i32::try_from(i).unwrap_or(i32::MAX))
 }
 
 /// The name at `index` in `options`, or `None` for index `0` ("(none)"), the trailing
@@ -382,7 +383,7 @@ pub fn parse_design_material_form(
 /// ([`body_color_custom_index`]).
 #[must_use]
 pub fn body_color_options() -> Vec<String> {
-    std::iter::once("Material default".to_string())
+    std::iter::once("Material Default".to_string())
         .chain(BODY_COLOR_PRESETS.iter().map(|p| p.label.to_string()))
         .chain(std::iter::once(BODY_COLOR_CUSTOM_LABEL.to_string()))
         .collect()
@@ -406,7 +407,9 @@ pub fn body_color_custom_index() -> i32 {
 #[must_use]
 pub fn body_color_index_for(rgb: Option<[f32; 3]>) -> i32 {
     rgb.map_or(0, |rgb| {
-        preset_index_for_rgb(rgb).map_or_else(body_color_custom_index, |index| index as i32 + 1)
+        preset_index_for_rgb(rgb).map_or_else(body_color_custom_index, |index| {
+            i32::try_from(index).unwrap_or(i32::MAX).saturating_add(1)
+        })
     })
 }
 
@@ -487,7 +490,10 @@ pub fn gear_index_from_teeth(gear_teeth: i32) -> i32 {
     GEAR_PRESETS
         .iter()
         .position(|&g| g == gear_teeth)
-        .map_or(GEAR_PRESETS.len() as i32, |i| i as i32)
+        .map_or_else(
+            || i32::try_from(GEAR_PRESETS.len()).unwrap_or(i32::MAX),
+            |i| i32::try_from(i).unwrap_or(i32::MAX),
+        )
 }
 
 /// The inverse of [`gear_index_from_teeth`]: resolves the gear combo's selected index

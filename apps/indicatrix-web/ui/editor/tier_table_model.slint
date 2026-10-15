@@ -5,8 +5,18 @@
 // One tier-table row: field for field `indicatrix_editor::view_model::TierRow` (the
 // desktop's `EditorTierItem`), so the Rust side maps it with a plain copy.
 export struct TierRowData {
-    // The tier's position in the design.
+    // The row's id: its position in the table, which every callback sends back. A flat
+    // tier's id is its index in the design's tiers; a concave tier's id is the number of
+    // flat tiers plus its index among the concave ones (`editor::table::resolve_row`).
     index: int,
+    // The tier's code in cutting order (P1, G1, C1, T, ...), the cutting sheet's label.
+    code: string,
+    // A concave tier (a separate list; not edited on the web yet).
+    is-concave: bool,
+    // A concave row's tool line (tool, theta, displacement, details), "" for a flat row.
+    tool-line: string,
+    // The relation driving this tier's angle ("P1 - 2"), "" when the angle is free.
+    relation-text: string,
     // Two decimals / full precision (what the inline editor is seeded from).
     angle-deg: string,
     angle-full: string,

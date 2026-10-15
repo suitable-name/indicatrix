@@ -14,7 +14,7 @@ use crate::{
         remote::{RemoteOrchestratorHandle, refresh_remote_ui},
         show_toast,
     },
-    settings::{LiveTransfer, SettingsPersister, WorkerSettings},
+    settings::{SettingsPersister, WorkerSettings},
 };
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -32,11 +32,10 @@ pub fn setup_worker_callbacks(
     settings_store: &Arc<SettingsPersister>,
     orchestrator: &RemoteOrchestratorHandle,
 ) {
-    setup_save_remote_callback(ui, settings_store);
+    setup_save_remote_callback(ui, render_ctx, settings_store);
     setup_remove_remote_callback(ui, settings_store);
     setup_denoise_toggle_callback(ui, render_ctx, settings_store, orchestrator);
     setup_live_compute_target_callback(ui, render_ctx, settings_store);
-    setup_live_transfer_callback(ui, render_ctx, settings_store);
     setup_contribute_to_final_picture_callback(ui, settings_store);
     setup_claim_token_callback(ui);
     setup_test_worker_connection_callback(ui);
@@ -44,23 +43,46 @@ pub fn setup_worker_callbacks(
     super::advanced_in_use::setup_advanced_in_use_callback(ui);
 }
 
-/// Wires `on_save_remote`: the form replaces the one endpoint (keeping its live
-/// transfer, which the settings dialog owns). Forgets any remembered "this remote
-/// refuses final pictures" (the address may now point at an upgraded coordinator).
-fn setup_save_remote_callback(ui: &MainWindow, settings_store: &Arc<SettingsPersister>) {
+/// Wires `on_save_remote`: the form replaces the one endpoint, including its merged live
+/// transfer (the old "Live stream" and "Live transfer" are one form control). Forgets any
+/// remembered "this remote refuses final pictures" (the address may now point at an upgraded
+/// coordinator). An actual change of the live transfer while a settled epoch is live releases
+/// it (`RenderContext::release_remote`), exactly like a live-compute-target change: the
+/// orchestrator re-dispatches the settled view with the new transfer on its next tick.
+fn setup_save_remote_callback(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
+) {
     let settings_store_save = settings_store.clone();
+    let render_ctx_save = render_ctx.clone();
     let ui_weak_save = ui.as_weak();
     ui.global::<RemoteWorkerModel>()
         .on_save_remote(move |item: WorkerItem| {
             let Some(ui) = ui_weak_save.upgrade() else {
                 return;
             };
+            let mut live_changed = false;
             settings_store_save.update(|s| {
                 let endpoint = from_worker_item(&item, s.settings.remote.as_ref());
+                live_changed = s.settings.remote.as_ref().is_some_and(|old| {
+                    old.live_transfer != endpoint.live_transfer
+                        || old.connection.transfer_mode != endpoint.connection.transfer_mode
+                });
                 s.settings.remote = Some(endpoint);
             });
+            if live_changed {
+                let mut ctx = render_ctx_save
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if ctx.remote_active || ctx.live_epoch.is_some() {
+                    ctx.release_remote();
+                }
+            }
             export_thread::forget_final_picture_refusals();
-            refresh_remote_ui(&ui, settings_store_save.snapshot().settings.remote.as_ref());
+            let settings = settings_store_save.snapshot().settings;
+            refresh_remote_ui(&ui, settings.remote.as_ref());
+            crate::gui::render::output_defaults::follow_remote_default_for_tilt(&ui, &settings);
             show_toast(&ui, "Remote coordinator saved.", "success");
         });
 }
@@ -75,6 +97,10 @@ fn setup_remove_remote_callback(ui: &MainWindow, settings_store: &Arc<SettingsPe
         };
         settings_store_remove.update(|s| s.settings.remote = None);
         refresh_remote_ui(&ui, None);
+        crate::gui::render::output_defaults::follow_remote_default_for_tilt(
+            &ui,
+            &settings_store_remove.snapshot().settings,
+        );
         show_toast(
             &ui,
             "Remote coordinator removed -- renders stay local.",
@@ -83,37 +109,7 @@ fn setup_remove_remote_callback(ui: &MainWindow, settings_store: &Arc<SettingsPe
     });
 }
 
-/// Wires the settings dialog's "Live Transfer" pills (full data or final picture only), stored on
-/// the remote endpoint. An actual change while a settled epoch is live releases it
-/// (`RenderContext::release_remote`), exactly like a live-compute-target change: the
-/// orchestrator re-dispatches the settled view with the new transfer on its next tick.
-fn setup_live_transfer_callback(
-    ui: &MainWindow,
-    render_ctx: &Arc<Mutex<RenderContext>>,
-    settings_store: &Arc<SettingsPersister>,
-) {
-    let settings_store = settings_store.clone();
-    let render_ctx = render_ctx.clone();
-    ui.global::<SettingsModel>()
-        .on_live_transfer_changed(move |index: i32| {
-            let transfer = LiveTransfer::from_index(index);
-            let mut changed = false;
-            settings_store.update(|s| {
-                if let Some(remote) = s.settings.remote.as_mut() {
-                    changed = remote.live_transfer != transfer;
-                    remote.live_transfer = transfer;
-                }
-            });
-            if changed {
-                let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
-                if ctx.remote_active || ctx.live_epoch.is_some() {
-                    ctx.release_remote();
-                }
-            }
-        });
-}
-
-/// Wires the settings dialog's "Final-picture exports: this machine renders a share
+/// Wires the Render & Output tab's "Final-picture exports: this machine renders a share
 /// too" switch (v16). Unlike [`setup_live_transfer_callback`]/
 /// [`setup_live_compute_target_callback`] just above, this only PERSISTS the choice --
 /// no `RenderContext` field to keep in step, because an export reads the settings
@@ -284,7 +280,7 @@ fn setup_cert_dir_picker_callback(ui: &MainWindow) {
         });
 }
 
-/// Wires the "Live Compute" picker (`settings_dialog.slint`'s Local/Remote/Local+Remote
+/// Wires the "Live Compute" picker (the Parameters panel's Local/Remote/Local+Remote
 /// pills). Split out of `setup_worker_callbacks` purely to keep that function under
 /// clippy's function-length lint.
 ///

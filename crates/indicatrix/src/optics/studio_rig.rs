@@ -45,11 +45,11 @@ impl StudioRig {
     /// Builds the rig for a given key light yaw/pitch, in radians.
     #[must_use]
     pub fn new(light_yaw: f32, light_pitch: f32) -> Self {
-        let cos_lp = light_pitch.cos();
-        let sin_lp = light_pitch.sin();
-        let cos_ly = light_yaw.cos();
-        let sin_ly = light_yaw.sin();
-        let key_dir = Vec3::new(cos_lp * sin_ly, sin_lp, cos_lp * cos_ly).normalize();
+        let cos_pitch = light_pitch.cos();
+        let sin_pitch = light_pitch.sin();
+        let cos_yaw = light_yaw.cos();
+        let sin_yaw = light_yaw.sin();
+        let key_dir = Vec3::new(cos_pitch * sin_yaw, sin_pitch, cos_pitch * cos_yaw).normalize();
 
         // Fill Softbox Light (side reflector offset by 140 deg)
         let fill_yaw = std::f32::consts::PI.mul_add(0.78, light_yaw);
@@ -68,14 +68,14 @@ impl StudioRig {
                 std::f32::consts::PI * 2.0 / RING_LIGHT_COUNT as f32,
                 light_yaw,
             );
-            Vec3::new(angle.sin() * 0.75, sin_lp * 0.8, angle.cos() * 0.75).normalize()
+            Vec3::new(angle.sin() * 0.75, sin_pitch * 0.8, angle.cos() * 0.75).normalize()
         });
 
         Self {
             key_dir,
             fill_dir,
             ring_dirs,
-            sin_light_pitch: sin_lp,
+            sin_light_pitch: sin_pitch,
         }
     }
 }

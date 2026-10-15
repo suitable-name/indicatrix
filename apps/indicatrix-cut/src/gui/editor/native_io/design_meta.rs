@@ -1,4 +1,4 @@
-//! The `[meta]` table and `[[attachments]]` a Save writes into the `.indicatrix` file.
+//! The `[meta]` table and `[[attachments]]` a Save writes into the `.isdd` file.
 //!
 //! The file stores what an importer cannot recompute (see
 //! `indicatrix_formats::native::design`'s module documentation for the full list) and
@@ -17,10 +17,7 @@ use crate::{
     bridge::export_thread::filename_template::civil_from_unix_seconds,
     gui::editor::state::{DesignFileExtras, fresh_design_uuid},
 };
-use indicatrix_cut_core::native::{
-    AttachmentBlob, AttachmentRole, DesignMetadata, LEGACY_NATIVE_EXTENSION_SUFFIX,
-    NATIVE_EXTENSION_SUFFIX,
-};
+use indicatrix_cut_core::native::{AttachmentBlob, AttachmentRole, DesignMetadata};
 use indicatrix_formats::native::design::MAX_ATTACHMENT_BYTES;
 use indicatrix_vault::{
     db::sqlite::Database,
@@ -167,17 +164,14 @@ fn role_for_name(name: &str) -> AttachmentRole {
     }
 }
 
-/// `true` for a design file or an older paired sidecar: the file being written replaces
-/// them, so they are never nested inside it.
+/// `true` for a design file (`.isdd`, or a legacy `.indicatrix` one): the file being
+/// written replaces it, so it is never nested inside it.
 fn is_design_file_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
     is_native_design_name(name)
-        || lower.ends_with(NATIVE_EXTENSION_SUFFIX)
-        || lower.ends_with(LEGACY_NATIVE_EXTENSION_SUFFIX)
 }
 
-/// The row's files as attachments: every attached file except design files and
-/// sidecars, with at most one `.asc`, plus the diagram image under its own role.
+/// The row's files as attachments: every attached file except design files, with at
+/// most one `.asc`, plus the diagram image under its own role.
 pub(super) fn row_attachments(
     files: &[AttachedFile],
     image: Option<(&str, &[u8])>,
@@ -335,7 +329,7 @@ pub(super) fn prepare_design_extras(
     };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+        .map_or(0, |d| d.as_secs().cast_signed());
     assemble(base, row.as_ref(), &iso8601_utc(now), new_design_id)
 }
 

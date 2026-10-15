@@ -1,0 +1,61 @@
+// More > About > Licenses.
+import { Theme } from "../theme.slint";
+import { Shell } from "../models.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+
+component Section inherits VerticalLayout {
+    in property <string> heading;
+    in property <string> body;
+
+    spacing: Theme.space-sm;
+
+    Text {
+        text: root.heading;
+        color: Theme.on-surface;
+        font-size: Theme.text-title;
+        font-weight: 500;
+        wrap: word-wrap;
+    }
+
+    Text {
+        text: root.body;
+        color: Theme.on-surface-variant;
+        font-size: Theme.text-body;
+        wrap: word-wrap;
+    }
+}
+
+export component LicensesPage inherits Rectangle {
+    VerticalLayout {
+        TopBar {
+            title: "Licenses";
+            show-back: true;
+            back-clicked => {
+                Shell.handle-back();
+            }
+        }
+
+        PageScroll {
+            VerticalLayout {
+                padding: Theme.space-xl;
+                spacing: Theme.space-xl;
+
+                Section {
+                    heading: "Indicatrix";
+                    body: "Indicatrix is released under the MIT license. The full license text ships with the source distribution.";
+                }
+
+                Section {
+                    heading: "Slint";
+                    body: "The user interface is built with Slint (https://slint.dev), used under the Slint Royalty-free license. The Made with Slint badge is shown on the About page, as that license requires.";
+                }
+
+                Section {
+                    heading: "Other Components";
+                    body: "Indicatrix also builds on open-source Rust libraries, each under its own license (MIT, Apache-2.0 or similar). Their notices are listed in the source distribution.";
+                }
+            }
+        }
+    }
+}

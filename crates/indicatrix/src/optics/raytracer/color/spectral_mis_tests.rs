@@ -57,10 +57,18 @@ fn two_channel_fresnel_monte_carlo_discriminates_correct_from_biased_weighting()
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the averages are compared in f32, the precision of the shipped weights"
+    )]
     let plain_avg: Vec<f32> = plain_sum
         .iter()
         .map(|s| (*s / f64::from(TRIALS)) as f32)
         .collect();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the averages are compared in f32, the precision of the shipped weights"
+    )]
     let biased_avg: Vec<f32> = biased_sum
         .iter()
         .map(|s| (*s / f64::from(TRIALS)) as f32)
@@ -265,8 +273,14 @@ fn two_channel_dispersive_termination_monte_carlo_is_unbiased_under_alternating_
         sum_b += f64::from(f_b);
     }
 
-    let avg_a = (sum_a / f64::from(TRIALS)) as f32;
-    let avg_b = (sum_b / f64::from(TRIALS)) as f32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the averages are compared in f32, the precision of the shipped weights"
+    )]
+    let (avg_a, avg_b) = (
+        (sum_a / f64::from(TRIALS)) as f32,
+        (sum_b / f64::from(TRIALS)) as f32,
+    );
 
     for (label, avg) in [("A", avg_a), ("B", avg_b)] {
         let err = (avg - GROUND_TRUTH).abs() / GROUND_TRUTH;

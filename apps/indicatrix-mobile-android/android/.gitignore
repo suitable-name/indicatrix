@@ -1,0 +1,9 @@
+.gradle/
+.idea/
+*.iml
+build/
+local.properties
+captures/
+.cxx/
+# cargo-ndk writes the Rust library here during the Gradle build.
+app/src/main/jniLibs/

@@ -22,6 +22,7 @@ mod display;
 mod emit;
 mod picture;
 mod polling;
+mod stall;
 
 use super::{
     Output, ProducerSink, StreamOutcome, StreamSpec, TimeoutCache, TimeoutRead, TimeoutWrite,
@@ -34,8 +35,10 @@ use indicatrix_net::messages::{
     Done, ErrorMsg, NetError, PayloadEncoding, RenderRequest, Stats, StreamEvent,
     adaptive::PeerLink, error_codes,
 };
+use stall::StallWatch;
 use std::{
     io::{Read, Write},
+    ops::ControlFlow,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -59,6 +62,11 @@ pub use polling::{RawPoll, poll_raw_client_message};
 /// whether the cadence has elapsed, when the tracer hasn't signalled fresh progress.
 /// Independent of `TARGET_SUBBATCH` -- a poll interval, not a batch size.
 const EMITTER_POLL: Duration = Duration::from_millis(20);
+
+/// The socket-poll window once the producer has set `finished`: the loop only has the
+/// final write left, so it must not sit a whole [`EMITTER_POLL`] (up to 20 ms of tail
+/// latency per request) in the client-message poll before noticing.
+const FINISHED_POLL: Duration = Duration::from_millis(1);
 
 /// Caps how long any single `write()` inside this request's streaming phase may block --
 /// see [`TimeoutWrite`] for the stall/stuck-cancellation bug this closes.
@@ -110,7 +118,7 @@ fn write_cancelled_done<S: Write>(
     streaming_start: Instant,
     emission_count: u32,
 ) -> Result<(), NetError> {
-    let stats = {
+    let tally = {
         let guard = state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -128,7 +136,7 @@ fn write_cancelled_done<S: Write>(
         &StreamEvent::Done(Done {
             request_id: request.request_id,
             cancelled: true,
-            stats,
+            stats: tally,
         }),
         None,
     )
@@ -185,10 +193,10 @@ fn poll_once<S: Read + Write + TimeoutRead>(
     spec: &StreamSpec<'_>,
     request: &RenderRequest,
     cancel: &Arc<AtomicBool>,
-    timeouts: &mut TimeoutCache,
+    (timeouts, poll_timeout): (&mut TimeoutCache, Duration),
     flags: &mut LoopFlags<'_>,
 ) -> Option<Result<StreamOutcome, NetError>> {
-    match poll_for_client_message(stream, request.request_id, EMITTER_POLL, timeouts)
+    match poll_for_client_message(stream, request.request_id, poll_timeout, timeouts)
         .and_then(|polled| answer_ping(stream, polled))
     {
         Ok(ClientPoll::Cancelled) => {
@@ -237,38 +245,6 @@ struct StreamLoopOutcome {
     /// The stall watchdog failed the request: the producer thread may still be wedged, so
     /// [`run_stream_with`] must not join it (the `ERROR` would never be written).
     stalled: bool,
-}
-
-/// Watches the producer's `samples_done` against [`StreamSpec::stall_timeout`].
-///
-/// The emitter's own `PROGRESS` heartbeat says nothing about the producer, so without
-/// this a wedged tracer keeps every client's silence-based liveness deadline satisfied
-/// for as long as the connection lives.
-struct StallWatch {
-    timeout: Option<Duration>,
-    samples_done: u32,
-    since: Instant,
-}
-
-impl StallWatch {
-    /// A watch that starts its window now; `None` never reports a stall.
-    fn new(timeout: Option<Duration>) -> Self {
-        Self {
-            timeout,
-            samples_done: 0,
-            since: Instant::now(),
-        }
-    }
-
-    /// Records the latest `samples_done` (any change restarts the window) and returns
-    /// the window once the producer has gone longer than it without a new sample.
-    fn observe(&mut self, samples_done: u32) -> Option<Duration> {
-        if samples_done != self.samples_done {
-            self.samples_done = samples_done;
-            self.since = Instant::now();
-        }
-        self.timeout.filter(|window| self.since.elapsed() > *window)
-    }
 }
 
 /// The heartbeat pacing state [`wait_for_tracer_until`] shares with its caller -- bundled
@@ -361,6 +337,144 @@ fn finished_outcome<S: Write>(
     )
 }
 
+/// The mutable bookkeeping of [`run_stream_loop`], one field per value its iterations
+/// carry, so a single iteration can be the method [`LoopState::step`].
+struct LoopState {
+    cadence: Duration,
+    streaming_start: Instant,
+    last_emit: Instant,
+    emission_count: u32,
+    /// A CANCEL, a connection-closed/transport-error poll, or a pipelined `RenderRequest`
+    /// (queued, not rejected -- see `run_stream`'s doc comment) all set `cancel` and stop
+    /// the loop; `tracer_handle` is joined once, by the caller, after the loop returns.
+    cancelled: bool,
+    peer_closed: bool,
+    pipelined_next: Option<RenderRequest>,
+    /// Set only by the stall watchdog: the producer is presumed wedged.
+    stalled: bool,
+    stall_watch: StallWatch,
+    /// Fresh per request, never reused -- see `poll_for_client_message`'s doc comment.
+    timeouts: TimeoutCache,
+}
+
+impl LoopState {
+    /// One loop iteration: poll the socket, then wind down (cancel/close), fail a stalled
+    /// producer, emit a cadence tick or heartbeat, or emit the final payload. `Break`
+    /// carries the loop's result; `Continue` goes round again.
+    fn step<S: Read + Write + TimeoutRead + TimeoutWrite>(
+        &mut self,
+        stream: &mut S,
+        spec: &StreamSpec<'_>,
+        state: &Arc<Mutex<SharedState>>,
+        cancel: &Arc<AtomicBool>,
+        progress_rx: &mpsc::Receiver<()>,
+        emitter_accum: &mut EmitterAccum,
+    ) -> ControlFlow<Result<StreamOutcome, NetError>> {
+        let request = spec.request;
+        let _ = progress_rx.recv_timeout(EMITTER_POLL);
+
+        // Once the producer has finished there is nothing left to wait for but the final
+        // write: poll the socket only briefly (a CANCEL is still read) instead of
+        // blocking up to a whole `EMITTER_POLL` before `finished` is looked at again.
+        let finished_already = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .finished;
+        let poll_timeout = if finished_already {
+            FINISHED_POLL
+        } else {
+            EMITTER_POLL
+        };
+        let mut flags = LoopFlags {
+            cancelled: &mut self.cancelled,
+            peer_closed: &mut self.peer_closed,
+            pipelined_next: &mut self.pipelined_next,
+        };
+        if let Some(outcome) = poll_once(
+            stream,
+            spec,
+            request,
+            cancel,
+            (&mut self.timeouts, poll_timeout),
+            &mut flags,
+        ) {
+            return ControlFlow::Break(outcome);
+        }
+
+        if self.cancelled || self.peer_closed {
+            // This loop's own emission ends here, but the tracer may still be mid
+            // sub-batch for up to one sub-batch's wall time -- keep heartbeating while
+            // waiting for it (see wait_for_tracer_to_stop and this function's doc
+            // comment).
+            wait_for_tracer_to_stop(
+                stream,
+                request,
+                state,
+                progress_rx,
+                self.cadence.min(super::HEARTBEAT_INTERVAL),
+                &mut self.last_emit,
+                &mut self.emission_count,
+            );
+            return ControlFlow::Break(Ok(StreamOutcome::Completed));
+        }
+
+        let (finished, samples_done) = {
+            let guard = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (guard.finished, guard.samples_done)
+        };
+
+        // The producer stopped adding samples: fail the request with an ERROR instead of
+        // heartbeating a wedged lane forever (see `fail_stalled`).
+        if !finished && let Some(window) = self.stall_watch.observe(samples_done) {
+            self.stalled = true;
+            let mut pace = HeartbeatPace {
+                bound: self.cadence.min(super::HEARTBEAT_INTERVAL),
+                last_emit: &mut self.last_emit,
+                emission_count: &mut self.emission_count,
+            };
+            let error = fail_stalled(
+                stream,
+                request,
+                state,
+                cancel,
+                progress_rx,
+                window,
+                &mut pace,
+            );
+            return ControlFlow::Break(Ok(StreamOutcome::Failed(error)));
+        }
+
+        if !finished
+            && let Err(e) = emit_tick_or_heartbeat(
+                stream,
+                request,
+                state,
+                emitter_accum,
+                self.cadence,
+                &mut self.last_emit,
+                &mut self.emission_count,
+            )
+        {
+            cancel.store(true, Ordering::Relaxed);
+            return ControlFlow::Break(Err(e));
+        }
+
+        if finished {
+            return ControlFlow::Break(finished_outcome(
+                stream,
+                spec,
+                state,
+                emitter_accum,
+                self.streaming_start,
+                &mut self.emission_count,
+            ));
+        }
+        ControlFlow::Continue(())
+    }
+}
+
 /// `run_stream`'s own cadence-paced main loop: polls for a client message, then either
 /// winds down (cancel/close), emits a cadence tick or heartbeat, or emits the final
 /// payload once the tracer finishes. Split out purely to keep `run_stream` under
@@ -375,115 +489,35 @@ fn run_stream_loop<S: Read + Write + TimeoutRead + TimeoutWrite>(
     emitter_accum: &mut EmitterAccum,
     streaming_start: Instant,
 ) -> StreamLoopOutcome {
-    let request = spec.request;
-    let cadence = Duration::from_millis(u64::from(request.stream.cadence_ms));
-    let mut last_emit = Instant::now()
-        .checked_sub(cadence)
-        .unwrap_or_else(Instant::now);
-    let mut emission_count: u32 = 0;
-    // A connection-closed/transport-error poll, a CANCEL, or a pipelined RenderRequest
-    // (queued, not rejected -- see `run_stream`'s doc comment) all set `cancel` and stop
-    // the loop; `tracer_handle` is joined once, by the caller, after this returns.
-    let mut cancelled = false;
-    let mut peer_closed = false;
-    let mut pipelined_next: Option<RenderRequest> = None;
-    // Set only by the stall watchdog below: the producer is presumed wedged.
-    let mut stalled = false;
-    let mut stall_watch = StallWatch::new(spec.stall_timeout);
-    // Fresh per request, never reused -- see `poll_for_client_message`'s doc comment.
-    let mut timeouts = TimeoutCache::new();
-
+    let cadence = Duration::from_millis(u64::from(spec.request.stream.cadence_ms));
+    let mut ls = LoopState {
+        cadence,
+        streaming_start,
+        last_emit: Instant::now()
+            .checked_sub(cadence)
+            .unwrap_or_else(Instant::now),
+        emission_count: 0,
+        cancelled: false,
+        peer_closed: false,
+        pipelined_next: None,
+        stalled: false,
+        stall_watch: StallWatch::new(spec.stall_timeout),
+        timeouts: TimeoutCache::new(),
+    };
     let result = loop {
-        let _ = progress_rx.recv_timeout(EMITTER_POLL);
-
-        let mut flags = LoopFlags {
-            cancelled: &mut cancelled,
-            peer_closed: &mut peer_closed,
-            pipelined_next: &mut pipelined_next,
-        };
-        if let Some(outcome) = poll_once(stream, spec, request, cancel, &mut timeouts, &mut flags) {
-            break outcome;
-        }
-
-        if cancelled || peer_closed {
-            // This loop's own emission ends here, but the tracer may still be mid
-            // sub-batch for up to one sub-batch's wall time -- keep heartbeating while
-            // waiting for it (see wait_for_tracer_to_stop and this function's doc
-            // comment).
-            wait_for_tracer_to_stop(
-                stream,
-                request,
-                state,
-                progress_rx,
-                cadence.min(super::HEARTBEAT_INTERVAL),
-                &mut last_emit,
-                &mut emission_count,
-            );
-            break Ok(StreamOutcome::Completed);
-        }
-
-        let (finished, samples_done) = {
-            let guard = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (guard.finished, guard.samples_done)
-        };
-
-        // The producer stopped adding samples: fail the request with an ERROR instead of
-        // heartbeating a wedged lane forever (see `fail_stalled`).
-        if !finished && let Some(window) = stall_watch.observe(samples_done) {
-            stalled = true;
-            let mut pace = HeartbeatPace {
-                bound: cadence.min(super::HEARTBEAT_INTERVAL),
-                last_emit: &mut last_emit,
-                emission_count: &mut emission_count,
-            };
-            let error = fail_stalled(
-                stream,
-                request,
-                state,
-                cancel,
-                progress_rx,
-                window,
-                &mut pace,
-            );
-            break Ok(StreamOutcome::Failed(error));
-        }
-
-        if !finished
-            && let Err(e) = emit_tick_or_heartbeat(
-                stream,
-                request,
-                state,
-                emitter_accum,
-                cadence,
-                &mut last_emit,
-                &mut emission_count,
-            )
+        if let ControlFlow::Break(result) =
+            ls.step(stream, spec, state, cancel, progress_rx, emitter_accum)
         {
-            cancel.store(true, Ordering::Relaxed);
-            break Err(e);
-        }
-
-        if finished {
-            break finished_outcome(
-                stream,
-                spec,
-                state,
-                emitter_accum,
-                streaming_start,
-                &mut emission_count,
-            );
+            break result;
         }
     };
-
     StreamLoopOutcome {
         result,
-        peer_closed,
-        cancelled,
-        pipelined_next,
-        emission_count,
-        stalled,
+        peer_closed: ls.peer_closed,
+        cancelled: ls.cancelled,
+        pipelined_next: ls.pipelined_next,
+        emission_count: ls.emission_count,
+        stalled: ls.stalled,
     }
 }
 

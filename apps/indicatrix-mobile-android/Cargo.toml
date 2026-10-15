@@ -1,0 +1,79 @@
+[package]
+name = "indicatrix-mobile-android"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "Indicatrix for Android phones and tablets: the touch-first Slint UI over indicatrix-mobile-core, the JNI platform services (files, share, print, clipboard, keep-awake, thermal) and a desktop preview build of the same UI."
+license = { workspace = true }
+repository = { workspace = true }
+publish = { workspace = true }
+
+# `cdylib` is the `libindicatrix_mobile_android.so` the NativeActivity loads
+# (`android.app.lib_name` in the manifest); `rlib` lets the desktop preview binary and
+# native `cargo check`/`cargo test` use the library.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "indicatrix-mobile-preview"
+path = "src/bin/preview.rs"
+required-features = ["desktop-preview"]
+
+[features]
+default = []
+# The same UI in a desktop window (winit + femtovg) at a phone or tablet size, so the
+# UI can be exercised without a device. Never enabled for an Android build.
+desktop-preview = [
+    "slint/backend-winit",
+    "slint/renderer-femtovg",
+    "dep:rfd",
+    "dep:image",
+    "dep:tracing-subscriber",
+]
+
+[dependencies]
+indicatrix-mobile-core = { workspace = true }
+indicatrix = { workspace = true, features = ["hdr", "serde"] }
+indicatrix-cut-core = { workspace = true }
+indicatrix-editor = { workspace = true }
+indicatrix-formats = { workspace = true }
+indicatrix-solid = { workspace = true }
+slint = { workspace = true, features = ["std", "compat-1-18"] }
+tracing = { workspace = true }
+# Desktop preview only: the file pickers behind `platform_desktop`, the PNG writer behind
+# the preview's `--screenshot`, and the preview's console log.
+rfd = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+image = { workspace = true, optional = true, features = ["png"] }
+
+# Rewrites the mobile screenshots in the workspace's `assets/mobile` folder by driving the
+# desktop preview once per shot. Only on command: `cargo ui-screens-mobile`.
+[[test]]
+name = "ui_screens"
+path = "tests/ui_screens.rs"
+harness = false
+test = false
+required-features = ["desktop-preview"]
+
+# Any other host (a plain `cargo check` / `cargo test --workspace` on the desktop): the
+# preview's backend and renderer. Without a renderer Slint has no image decoders, and the
+# generated UI code, which embeds the SVG icons, does not compile.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+slint = { workspace = true, features = ["backend-winit", "renderer-femtovg"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Slint's Android backend (android-activity 0.6, NativeActivity, Skia renderer).
+slint = { workspace = true, features = ["backend-android-activity-06"] }
+jni = { workspace = true }
+android_logger = { workspace = true }
+log = { workspace = true }
+log-panics = { workspace = true }
+# The logcat writer of `platform_android::logging`.
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }
+
+[lints]
+workspace = true

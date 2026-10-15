@@ -80,6 +80,10 @@ pub fn pick_ri_preset_by<'a>(
 /// The candidates that fit `target_ri`: every one within `tolerance`, or, when none is,
 /// those with the smallest `|refractive_index - target_ri|`. Empty only for no candidates.
 #[must_use]
+#[expect(
+    clippy::float_cmp,
+    reason = "the closest distance is the min of the very same expression, so equality is exact"
+)]
 pub fn ri_shortlist(
     target_ri: f64,
     candidates: &[RiPresetCandidate],
@@ -106,6 +110,11 @@ pub fn ri_shortlist(
 
 /// An index in `0..len` from one `random_unit()` draw; `len` must be at least 1.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "r is in [0, 0.999999999] so r * len is within 0..len"
+)]
 pub fn uniform_index(len: usize, random_unit: &mut dyn FnMut() -> f64) -> usize {
     let r = random_unit();
     // 0.999_999_999 not 1.0 so an (incorrect) exact 1.0 input still lands on the last

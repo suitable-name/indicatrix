@@ -1,0 +1,213 @@
+import { Theme } from "../../theme.slint";
+import { SettingsModel } from "../../models/settings.slint";
+import { TiltModel } from "../../models/tilt.slint";
+import { RemoteWorkerModel } from "../../models/remote_worker.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { ResolutionPicker } from "../settings_dialog/resolution_picker.slint";
+import { MotionPreviewPicker } from "../settings_dialog/motion_preview_picker.slint";
+import { LiveComputePicker } from "../settings_dialog/live_compute_picker.slint";
+import { LocalComputePicker } from "../settings_dialog/local_compute_picker.slint";
+import { BouncesPicker } from "../settings_dialog/bounces_picker.slint";
+import { PerformanceCurvePanel } from "../settings_dialog/performance_curve_panel.slint";
+import { ToggleRow } from "../toggle_switch.slint";
+import { ExportModel } from "../../models/export.slint";
+import { GroupHeader, SliderRow, TextLink } from "parts.slint";
+
+// The Parameters dock's Render & Output tab: the technical render options -- samples,
+// resolution, compute, ray bounces, denoise, the output defaults of the export dialogs, the
+// catalogue thumbnails and the tilt curve. The pickers read and write `SettingsModel`.
+//
+// Nothing here keeps its own copy of a Rust-owned constant: the bounce ladder and every sample
+// range come from `SettingsModel` (published by `gui::render::parameter_constants` from
+// `settings::model::output_settings`), the remote choices read the one remote-availability
+// value (`RemoteWorkerModel.availability`), and "Reset this tab" is a Rust call.
+//
+// Simple mode (`GuideModel.shows_advanced()`) keeps target samples, resolution and denoise, and
+// hides the rest: catalogue preview size and samples, motion preview, live and local compute,
+// ray bounces and the tilt curve panel. A hidden control keeps its value and still applies; the
+// tab says so when one is off its default.
+export component RenderOutputTab inherits VerticalLayout {
+    // Rounded exponent driving the displayed sample count: `SliderBase` only snaps to `step` on
+    // arrow-key nudges, not on pointer drag, so the rounding happens here.
+    property <int> sample_exponent: Math.round(SettingsModel.target_samples_exponent);
+    property <int> target_samples_count: Math.round(Math.pow(2.0, root.sample_exponent));
+
+    // Simple mode hides some controls that are off their defaults: say so (see the callback's
+    // own comment in `models/settings.slint`).
+    property <bool> advanced_note_visible: !GuideModel.shows_advanced() && SettingsModel.advanced_in_use(
+        Math.round(SettingsModel.preview_size_val),
+        Math.round(SettingsModel.preview_spp_val),
+        SettingsModel.local_preview_scale_index,
+        SettingsModel.live_compute_target_index,
+        SettingsModel.contribute_to_final_picture,
+        SettingsModel.local_compute_target_index,
+        SettingsModel.bounce_index);
+
+    spacing: 14px;
+
+    // Simple mode hides some settings; one of them is off its default.
+    if root.advanced_note_visible: Rectangle {
+        border-radius: Theme.radius-sm;
+        background: Theme.notice-surface;
+        border-width: 1px;
+        border-color: Theme.notice-accent;
+        height: advanced_note.preferred-height + 12px;
+        accessible-role: AccessibleRole.text;
+        accessible-label: "Some advanced settings are in use. Switch to Advanced to see them.";
+        Tooltip { text: @markdown("Simple mode hides some render settings (preview size and samples, motion preview, compute choices, ray bounces). One of them is not at its default. It still applies. Switch to Advanced in the header to see and change it."); }
+        advanced_note := Text {
+            x: 8px;
+            y: 6px;
+            width: parent.width - 16px;
+            text: "Some advanced settings are in use. Switch to Advanced to see them.";
+            font-size: 11px;
+            color: Theme.notice-text;
+            wrap: word-wrap;
+        }
+    }
+
+    GroupHeader { text: "Live View Quality"; }
+
+    // Target Samples moves in powers of two -- noise falls as 1/sqrt(N), so a linear 8..1024
+    // control would spend ~97% of its travel above 32 spp where each step barely changes
+    // anything visible. The slider drags the EXPONENT (3..=10); `sample_exponent` /
+    // `target_samples_count` above derive the count. The exponent range is Rust's
+    // (`LIVE_SAMPLES_EXPONENT_RANGE`).
+    SliderRow {
+        text: "Target Samples";
+        hint: "Target Samples: how many light paths are traced for every pixel before the picture counts as finished. More samples mean less grain and a longer wait; each step doubles the number.";
+        value_text: root.target_samples_count + "";
+        minimum: SettingsModel.live_samples_min_exponent;
+        maximum: SettingsModel.live_samples_max_exponent;
+        step: 1;
+        value <=> SettingsModel.target_samples_exponent;
+        // The slider updates `target_samples_exponent` BEFORE firing `edited`, so
+        // `root.sample_exponent` reflects this change by the time it is read here.
+        edited(val) => { SettingsModel.target_samples_changed(root.sample_exponent); }
+    }
+
+    // Render Resolution - Segmented Pill Selector, same idiom as the Ray Bounces picker below
+    // and `export_dialog.slint`'s "Output Size" pills. A fixed list rather than a slider -- see
+    // `resolution_index` for why.
+    ResolutionPicker { }
+
+    // Motion Preview Resolution, off by default. Same segmented-pill idiom as Render Resolution
+    // above; a discrete choice rather than a slider since there's no meaningful continuum
+    // between "half" and "0.47". Advanced.
+    if GuideModel.shows_advanced(): MotionPreviewPicker { }
+
+    // Ray Bounces - Segmented Pill Selector. Advanced. The ladder is Rust's
+    // (`SettingsModel.bounce_ladder`); `bounces_picker.slint` has the measurements behind it.
+    if GuideModel.shows_advanced(): BouncesPicker { }
+
+    // Denoise live view: the same app-wide switch as the remote dialog's "Denoise merged image"
+    // row (`AppSettings::denoise_enabled`), bound to the one `RemoteWorkerModel.denoise_enabled`
+    // property and the one `denoise_toggled` callback, so the two rows always agree.
+    ToggleRow {
+        text: "Denoise Live View";
+        hint: "Denoise live view: smooth the grain out of the live picture while it builds up. Turn off to see the raw samples.";
+        checked: RemoteWorkerModel.denoise_enabled;
+        toggled => { RemoteWorkerModel.denoise_toggled(!RemoteWorkerModel.denoise_enabled); }
+    }
+
+    // Live Compute: which engine(s) trace the settled viewport image. Same segmented-pill idiom,
+    // and the same disabled-with-a-reason treatment, as `export_dialog.slint`'s "Compute"
+    // section; the remote choices follow `RemoteWorkerModel.availability` and the merged live
+    // transfer is shown read-only (it is edited per remote, in the Remote Coordinator dialog).
+    // Local Compute: which engine(s) the LOCAL (non-remote) render loop uses -- only
+    // shown on a GPU-capable build (`gpu_build`), since the choice is meaningless without a
+    // `gpu` feature to route through. Both advanced.
+    if GuideModel.shows_advanced(): GroupHeader { text: "Compute"; }
+    if GuideModel.shows_advanced(): LiveComputePicker { }
+    if SettingsModel.gpu_build && GuideModel.shows_advanced(): LocalComputePicker { }
+
+    // Output defaults: what the Export and Tilt Video dialogs open with. They are the values of
+    // the last run (Rust remembers them when a run starts; `AppSettings::output`), and a dialog
+    // keeps its own controls as per-run overrides on top of them. Shown in both modes, read-only:
+    // the controls are in the dialogs themselves.
+    GroupHeader { text: "Output Defaults"; }
+    VerticalLayout {
+        spacing: 4px;
+        Text {
+            text: "The Export and Tilt Video dialogs open with the settings of your last run. Starting a run remembers the settings it used.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Still: " + SettingsModel.still_output_summary;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+        }
+        Text {
+            text: "Tilt Video: "+ SettingsModel.tilt_output_summary;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+        }
+        Text {
+            text: "\"Reset This Tab\" puts them back to the built-in defaults.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            TextLink {
+                text: "Open Export Dialog...";
+                hint: "Open the Export dialog to change the still-picture settings.";
+                clicked => { ExportModel.is_open = true; }
+            }
+            TextLink {
+                text: "Open Tilt Video...";
+                hint: "Open the Tilt Performance dialog, where the tilt video is exported, to change its settings.";
+                clicked => {
+                    if !TiltModel.dialog_open {
+                        TiltModel.toggle_dialog();
+                    }
+                }
+            }
+        }
+    }
+
+    // Catalogue preview thumbnails: size and quality. Plain linear sliders (not the
+    // samples-exponent's drag-then-round idiom) since both ranges are narrow enough for a linear
+    // drag to stay fine-grained; the ranges are Rust's (`PREVIEW_SIZE_RANGE`,
+    // `PREVIEW_SAMPLES_RANGE`). Advanced.
+    if GuideModel.shows_advanced(): GroupHeader { text: "Library Thumbnails"; }
+    if GuideModel.shows_advanced(): SliderRow {
+        text: "Preview Image Size";
+        hint: "Preview Image Size: the width of the small pictures the catalogue draws for each design, in pixels. Larger pictures are sharper and take longer to draw.";
+        value_text: Math.round(SettingsModel.preview_size_val) + "px";
+        minimum: SettingsModel.preview_size_min;
+        maximum: SettingsModel.preview_size_max;
+        step: 16;
+        value <=> SettingsModel.preview_size_val;
+        edited(val) => { SettingsModel.preview_size_changed(Math.round(val)); }
+    }
+    if GuideModel.shows_advanced(): SliderRow {
+        text: "Preview Samples";
+        hint: "Preview Samples: how many light paths are traced for each pixel of a catalogue picture. More samples mean less grain and a slower batch.";
+        value_text: Math.round(SettingsModel.preview_spp_val) + "";
+        minimum: SettingsModel.preview_samples_min;
+        maximum: SettingsModel.preview_samples_max;
+        step: 32;
+        value <=> SettingsModel.preview_spp_val;
+        edited(val) => { SettingsModel.preview_spp_changed(Math.round(val)); }
+    }
+
+    // Performance Curve over Tilt Angles (Extinction & Brilliance Graph). Advanced. Goes through
+    // `TiltModel.toggle_dialog()` -- the SAME shared open/close + stale-cached-curve check the
+    // viewports' own Tilt Curve buttons use (see that function's own doc comment). Do not set
+    // `TiltModel.dialog_open = true` directly: that skips the stale-curve check.
+    if GuideModel.shows_advanced(): GroupHeader { text: "Tilt Performance"; }
+    if GuideModel.shows_advanced(): PerformanceCurvePanel {
+        open_performance_graph => { TiltModel.toggle_dialog(); }
+    }
+}

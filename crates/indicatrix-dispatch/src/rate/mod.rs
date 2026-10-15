@@ -143,7 +143,13 @@ impl ChunkPolicy {
         if wanted >= f64::from(max) {
             return max;
         }
-        (wanted.round() as u32).clamp(min, max)
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "wanted is finite and within [min, max) here, so the rounded value is a small non-negative integer"
+        )]
+        let rounded = wanted.round() as u32;
+        rounded.clamp(min, max)
     }
 
     /// `(min, max)` with both at least `1` and `min <= max`.
@@ -195,7 +201,13 @@ impl ChunkPolicy {
         } else if share >= f64::from(max) {
             max
         } else {
-            (share as u32).clamp(min, max)
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "share is in (0, max) here, so the truncated value is a small non-negative integer"
+            )]
+            let truncated = share as u32;
+            truncated.clamp(min, max)
         };
         by_target.min(share_samples).max(min)
     }

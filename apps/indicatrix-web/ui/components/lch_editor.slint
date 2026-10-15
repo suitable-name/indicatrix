@@ -114,7 +114,7 @@ export component LchEditor inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.border-medium;
                     accessible-role: AccessibleRole.image;
-                    accessible-label: "Colour at " + root.swatch-labels[index];
+                    accessible-label: "Color at " + root.swatch-labels[index];
                 }
                 Text {
                     text: root.swatch-labels[index];
@@ -154,7 +154,7 @@ export component LchEditor inherits Rectangle {
                 clicked => { root.cancelled(); }
             }
             Button {
-                text: "Apply colour";
+                text: "Apply Color";
                 primary: true;
                 enabled: root.enabled && root.has-solution;
                 clicked => { root.applied(); }

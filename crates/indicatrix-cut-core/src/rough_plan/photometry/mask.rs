@@ -217,6 +217,11 @@ impl Default for MeshMaskOptions {
 /// `None` when a corner is behind the camera, the view does not exist, or the rectangle is
 /// empty.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "each coordinate is clamped to 0..=image size and floored/ceiled before the cast"
+)]
 pub fn stone_region(scene: &Scene<'_>, view: usize, margin: f64) -> Option<[usize; 4]> {
     let pose = scene.rig.views.get(view)?;
     let (lo, hi) = scene.mesh.bounds();
@@ -295,8 +300,8 @@ fn mark_edge_band(mask: &mut PixelMask, inside: &[bool], radius: usize) {
         return;
     }
     let (width, height) = (mask.width, mask.height);
-    let limit = (radius * radius) as isize;
-    let reach = radius as isize;
+    let limit = (radius * radius).cast_signed();
+    let reach = radius.cast_signed();
     for y in 0..height {
         for x in 0..width {
             if !inside[y * width + x] {
@@ -308,11 +313,11 @@ fn mark_edge_band(mask: &mut PixelMask, inside: &[bool], radius: usize) {
                     if dx * dx + dy * dy > limit {
                         continue;
                     }
-                    let (nx, ny) = (x as isize + dx, y as isize + dy);
-                    if nx < 0 || ny < 0 || nx >= width as isize || ny >= height as isize {
+                    let (nx, ny) = (x.cast_signed() + dx, y.cast_signed() + dy);
+                    if nx < 0 || ny < 0 || nx >= width.cast_signed() || ny >= height.cast_signed() {
                         continue;
                     }
-                    if !inside[ny as usize * width + nx as usize] {
+                    if !inside[ny.cast_unsigned() * width + nx.cast_unsigned()] {
                         near_outside = true;
                         break 'search;
                     }
@@ -347,16 +352,29 @@ fn mark_ghosts(
             let Some((gx, gy)) = grid.working_coordinates(at) else {
                 continue;
             };
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "radius_work is a small positive working-pixel radius; `as` saturates"
+            )]
             let reach = radius_work.ceil() as isize + 1;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "working coordinates are bounded by the grid size; `as` saturates"
+            )]
+            let (base_x, base_y) = (gx.floor() as isize, gy.floor() as isize);
             for dy in -reach..=reach {
                 for dx in -reach..=reach {
-                    let (x, y) = (gx.floor() as isize + dx, gy.floor() as isize + dy);
-                    if x < 0 || y < 0 || x >= mask.width as isize || y >= mask.height as isize {
+                    let (x, y) = (base_x + dx, base_y + dy);
+                    if x < 0
+                        || y < 0
+                        || x >= mask.width.cast_signed()
+                        || y >= mask.height.cast_signed()
+                    {
                         continue;
                     }
                     let centre = (x as f64 + 0.5 - gx, y as f64 + 0.5 - gy);
                     if centre.0.hypot(centre.1) <= radius_work {
-                        mask.set(x as usize, y as usize, flag::GHOST);
+                        mask.set(x.cast_unsigned(), y.cast_unsigned(), flag::GHOST);
                     }
                 }
             }

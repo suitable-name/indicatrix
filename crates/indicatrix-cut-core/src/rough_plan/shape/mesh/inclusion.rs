@@ -226,8 +226,8 @@ impl RoughMesh {
         let mut shells = outer.inclusion_shells.clone();
         let mut bodies = outer.inclusions.clone();
         for body in inclusions {
-            shells.push(tris.len() as u32);
-            let offset = verts.len() as u32;
+            shells.push(super::geometry::index_u32(tris.len()));
+            let offset = super::geometry::index_u32(verts.len());
             verts.extend_from_slice(&body.verts);
             // Wound the other way: the material is outside an inclusion's shell.
             tris.extend(

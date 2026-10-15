@@ -1,4 +1,4 @@
-# indicatrix-cut — import / export
+# indicatrix-cut — Import / Export
 
 How `.asc` files move in and out of the local library. For everything else see
 [the README](../README.md).
@@ -19,7 +19,7 @@ want for a genuine re-import, but means two different designs that happen to sha
 a filename collapse into one. The summary says how many entries were replaced, so
 this is never silent.
 
-### Metadata the `.asc` file doesn't carry
+### Metadata the `.asc` File Doesn't Carry
 
 A GemCAD schedule stores the cutting instructions, not the finished stone's
 proportions. Title, refractive index, index gear, facet count, symmetry order and
@@ -72,7 +72,7 @@ replacing it, so pasting a path still works, and cancelling leaves the field
 exactly as it was. Import is the exception: it has no field to fill, because
 choosing *is* the action.
 
-## High-resolution still export
+## High-Resolution Still Export
 
 Independent of the viewport and of the `.asc` export above: renders the current
 scene at its own resolution and sample count on its own worker thread, so a
@@ -92,12 +92,12 @@ space, because it is displayed on screen by a widget that cannot carry an ICC
 profile — the preview is a guide to composition and convergence, not a proof of
 the final file's color.
 
-### Remote compute: timeouts and liveness
+### Remote Compute: Timeouts and Liveness
 
 A remote chunk dispatch (calibration or a share of the main render) is judged
 against the same two-tier liveness deadline the live viewport's connection
 uses (see [remote-rendering.md](remote-rendering.md)'s own "Timeouts and
-liveness" section): a generous 30s first-event grace for the wait for that
+Liveness" section): a generous 30s first-event grace for the wait for that
 chunk's very first update (a worker's calibration/warm-up at a high resolution
 with a coarse cadence can legitimately take that long), then a tighter 8s
 steady-state deadline once at least one update has arrived. This prevents a false
@@ -116,15 +116,15 @@ With no local fallback (`Compute: Remote`), a chunk that comes back short
 fails the whole export outright, loudly, rather than writing an image that is
 silently missing samples.
 
-All of the above is the dialog's default **Transfer: Full data** path. **Final
-picture only** instead sends one `FinalImageRequest` for the whole image and writes
+All of the above is the dialog's default **Transfer: Full Data** path. **Final
+Picture Only** instead sends one `FinalImageRequest` for the whole image and writes
 the finished PNG the remote returns. Local lanes are not idle by default, though:
 with `Compute: Both`, the `contribute_to_final_picture` setting (default on,
-Settings dialog: "Final-picture exports: this machine renders a share too") traces
+Render & Output tab: "Final-Picture Exports: This Machine Renders a Share Too") traces
 a share of the samples locally and uploads it as one `CONTRIBUTION`, which the
 coordinator folds in before tone-mapping; turn the setting off to leave this
 machine idle during the export instead. See
-[remote-rendering.md](remote-rendering.md)'s "Transfer" section for its fallbacks. A
+[remote-rendering.md](remote-rendering.md)'s "Transfer: Full Data or Final Picture" section for its fallbacks. A
 scene lit by an HDR map is only sent to a remote that advertises HDR support; any
 other remote leaves that export local-only, with a note, so the whole image is lit by
 one environment.

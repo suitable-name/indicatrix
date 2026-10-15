@@ -14,7 +14,7 @@
 //! tilt averages over four axes and 181 angles). A design with no material is scored with its
 //! own refractive index as a flat material, and the report says so.
 //!
-//! `--out FILE` saves the BEST candidate as a `.indicatrix` file, applied through the same
+//! `--out FILE` saves the BEST candidate as a `.isdd` file, applied through the same
 //! editor session path as the tab's Apply (tiers that follow a relation follow). When the search
 //! finds nothing better, nothing is written and the exit code is still 0: the report says so.
 
@@ -413,7 +413,7 @@ fn execute(loaded: &Loaded, catalogue: &Catalogue, args: &OptimizeArgs) -> Comma
     let best = result.candidates.first();
     let file = if let (Some(path), Some(best)) = (&args.out, best) {
         let after = applied_design(loaded, best)?;
-        Some((path.clone(), loaded.indicatrix_text(&after, catalogue)?))
+        Some((path.clone(), loaded.design_text(&after, catalogue)?))
     } else {
         None
     };
@@ -489,7 +489,7 @@ mod tests {
     }
 
     fn loaded() -> Loaded {
-        Loaded::in_memory(testing::brilliant_at_172(), "brilliant.indicatrix")
+        Loaded::in_memory(testing::brilliant_at_172(), "brilliant.isdd")
     }
 
     #[test]
@@ -533,7 +533,7 @@ mod tests {
             ScheduleMeta::standard_round_brilliant(),
             Vec::new(),
         );
-        let loaded = Loaded::in_memory(empty, "empty.indicatrix");
+        let loaded = Loaded::in_memory(empty, "empty.isdd");
         let error = execute(&loaded, &Catalogue::default(), &args(10)).expect_err("no stone");
         assert_eq!(error.code, EXIT_DESIGN, "{}", error.message);
     }
@@ -586,8 +586,8 @@ mod tests {
     #[test]
     fn end_to_end_a_file_is_written_exactly_when_a_candidate_was_found() {
         let design = testing::brilliant_at_172();
-        let input = testing::write_design("optimize-e2e.indicatrix", &design);
-        let target = testing::temp_path("optimize-e2e-out.indicatrix")
+        let input = testing::write_design("optimize-e2e.isdd", &design);
+        let target = testing::temp_path("optimize-e2e-out.isdd")
             .to_string_lossy()
             .into_owned();
         let outcome = testing::run(&[
@@ -632,7 +632,7 @@ mod tests {
         );
         if found {
             let saved = testing::file_text(&outcome, &target).expect("the design is saved");
-            let again = from_bytes("saved.indicatrix", saved.as_bytes()).expect("opens");
+            let again = from_bytes("saved.isdd", saved.as_bytes()).expect("opens");
             assert_ne!(testing::shape(&again.design), testing::shape(&design));
             assert_eq!(value["written"], target.as_str());
         } else {

@@ -240,12 +240,13 @@ impl MergeComparison {
                     (0, 0.0f64),
                     |best, (i, z)| if z > best.1 { (i, z) } else { best },
                 );
+        let max_idx_u32 = u32::try_from(max_idx).expect("the pixel count is a u32");
         Self {
             over_sigma_count: z_grid.iter().filter(|z| z.abs() > SIGMA_THRESHOLD).count(),
             total_pixels,
             cluster_sizes: connected_components(&z_grid, width, height, SIGMA_THRESHOLD),
             max_abs_z,
-            max_abs_z_pixel: ((max_idx as u32) % width, (max_idx as u32) / width),
+            max_abs_z_pixel: (max_idx_u32 % width, max_idx_u32 / width),
             mean_z: z_grid.iter().sum::<f64>() / total_pixels as f64,
         }
     }

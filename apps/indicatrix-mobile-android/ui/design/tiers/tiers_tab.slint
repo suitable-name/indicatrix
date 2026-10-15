@@ -1,0 +1,332 @@
+// The Tiers tab of the Design page: a scrolling toolbar of chips, the status line of the
+// solve, the list of tiers, and (in Select mode) the batch bar. The angle sheet, the
+// tier sheet and the "Remove Anyway?" question are full-height overlays of this tab.
+//
+// All data comes through `TiersModel`; the tab has no required properties and fills its
+// parent.
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Shell } from "../../models.slint";
+import { Chip } from "../../shell/chips.slint";
+import { PrimaryButton, TextButton } from "../../shell/buttons.slint";
+import { TiersModel } from "tiers_model.slint";
+import { TierRowItem } from "tier_row.slint";
+import { AngleSheet } from "angle_sheet.slint";
+import { TierSheet } from "tier_sheet.slint";
+
+// The question "Remove anyway?" when other tiers still meet a tier by name.
+component ConfirmCard inherits Rectangle {
+    visible: TiersModel.confirm-open;
+
+    Rectangle {
+        background: Theme.scrim.with-alpha(0.32);
+
+        TouchArea {
+            clicked => {
+                TiersModel.answer-confirm(false);
+            }
+        }
+    }
+
+    Rectangle {
+        width: min(root.width - 32px, 360px);
+        height: card-content.preferred-height;
+        background: Theme.surface-high;
+        border-radius: Theme.radius-xl;
+        drop-shadow-color: Theme.shadow;
+        drop-shadow-blur: Theme.shadow-blur-3;
+        drop-shadow-offset-y: Theme.shadow-offset-3;
+        accessible-role: AccessibleRole.groupbox;
+        accessible-label: TiersModel.confirm-title;
+
+        // Swallows taps on the card so they do not count as taps on the scrim.
+        TouchArea { }
+
+        card-content := VerticalLayout {
+            padding: Theme.space-xl;
+            spacing: Theme.space-lg;
+
+            Text {
+                text: TiersModel.confirm-title;
+                color: Theme.on-surface;
+                font-size: Theme.text-headline-small;
+                wrap: word-wrap;
+            }
+
+            Text {
+                text: TiersModel.confirm-body;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: Theme.space-sm;
+
+                TextButton {
+                    text: "Cancel";
+                    clicked => {
+                        TiersModel.answer-confirm(false);
+                    }
+                }
+
+                PrimaryButton {
+                    text: TiersModel.confirm-action;
+                    clicked => {
+                        TiersModel.answer-confirm(true);
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component TiersTab inherits Rectangle {
+    // The page's sheet is raised to full height while an overlay is open; when it comes
+    // back down (the Back key, a drag) the overlays close with it.
+    property <int> detent-watch: Shell.sheet-detent;
+
+    changed detent-watch => {
+        if (Shell.sheet-detent < 2 && TiersModel.overlay-open) {
+            TiersModel.dismiss-overlays();
+        }
+    }
+
+    VerticalLayout {
+        // The toolbar: scrolls sideways when the chips do not fit. (Undo and Redo are in the
+        // page's top bar.)
+        Rectangle {
+            height: Theme.touch;
+
+            Flickable {
+                content-width: toolbar.preferred-width;
+
+                toolbar := HorizontalLayout {
+                    x: 0px;
+                    width: max(self.preferred-width, parent.width);
+                    padding-left: Theme.space-sm;
+                    padding-right: Theme.space-sm;
+                    spacing: Theme.space-xs;
+
+                    Chip {
+                        text: "+ Tier";
+                        clicked => {
+                            TiersModel.add-tier();
+                        }
+                    }
+
+                    Chip {
+                        text: "Quick Add";
+                        selected: TiersModel.quick-open;
+                        clicked => {
+                            TiersModel.quick-open = !TiersModel.quick-open;
+                        }
+                    }
+
+                    // Orbit and Mirror act on the selected tier: a phone hides them while
+                    // nothing is selected, a larger window shows them dimmed.
+                    if Shell.window-class != 0 || TiersModel.selected-tier >= 0: Chip {
+                        text: "Orbit";
+                        enabled: TiersModel.selected-tier >= 0;
+                        clicked => {
+                            TiersModel.complete-orbit-selected();
+                        }
+                    }
+
+                    if Shell.window-class != 0 || TiersModel.selected-tier >= 0: Chip {
+                        text: "Mirror";
+                        enabled: TiersModel.selected-tier >= 0;
+                        clicked => {
+                            TiersModel.mirror-selected();
+                        }
+                    }
+
+                    Chip {
+                        text: "Adopt All";
+                        clicked => {
+                            TiersModel.adopt-all();
+                        }
+                    }
+
+                    Chip {
+                        text: "Select";
+                        selected: TiersModel.select-mode;
+                        clicked => {
+                            TiersModel.set-select-mode(!TiersModel.select-mode);
+                        }
+                    }
+                }
+            }
+        }
+
+        if TiersModel.quick-open: Rectangle {
+            height: Theme.touch;
+
+            HorizontalLayout {
+                padding-left: Theme.space-lg;
+                spacing: Theme.space-xs;
+                alignment: start;
+
+                Chip {
+                    text: "Table";
+                    clicked => {
+                        TiersModel.quick-add(0);
+                    }
+                }
+
+                Chip {
+                    text: "Girdle";
+                    clicked => {
+                        TiersModel.quick-add(1);
+                    }
+                }
+
+                Chip {
+                    text: "Culet";
+                    clicked => {
+                        TiersModel.quick-add(2);
+                    }
+                }
+            }
+        }
+
+        // (The solve status is in the page's header row; a tap there shows all of it.)
+        if TiersModel.rows.length == 0: Rectangle {
+            vertical-stretch: 1;
+
+            Text {
+                width: parent.width - 2 * Theme.space-xl;
+                text: "No tiers yet.\nTap + Tier or Quick Add to start cutting.";
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body-large;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        if TiersModel.rows.length > 0: ListView {
+            vertical-stretch: 1;
+
+            for row[i] in TiersModel.rows: TierRowItem {
+                data: row;
+                select-mode: TiersModel.select-mode;
+                tapped => {
+                    TiersModel.row-tapped(i);
+                }
+                long-pressed => {
+                    TiersModel.begin-select(i);
+                }
+                angle-tapped => {
+                    TiersModel.open-angle(i);
+                }
+                more-tapped => {
+                    TiersModel.open-tier(i);
+                }
+            }
+        }
+
+        // Select mode's batch bar.
+        if TiersModel.select-mode: Rectangle {
+            height: Theme.touch + Theme.space-md;
+            background: Theme.primary-container;
+
+            Flickable {
+                content-width: batch.preferred-width;
+
+                batch := HorizontalLayout {
+                    x: 0px;
+                    width: max(self.preferred-width, parent.width);
+                    padding-left: Theme.space-lg;
+                    padding-right: Theme.space-sm;
+                    padding-top: Theme.space-sm;
+                    spacing: Theme.space-xs;
+
+                    Text {
+                        text: "\{TiersModel.multi-count} Selected";
+                        color: Theme.on-primary-container;
+                        font-size: Theme.text-label-large;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+
+                    Chip {
+                        text: "Delete";
+                        enabled: TiersModel.multi-count > 0;
+                        clicked => {
+                            TiersModel.batch-delete();
+                        }
+                    }
+
+                    Chip {
+                        text: "Adopt";
+                        enabled: TiersModel.multi-count > 0;
+                        clicked => {
+                            TiersModel.batch-adopt();
+                        }
+                    }
+
+                    Chip {
+                        text: "\u{2212}0.1\u{b0}";
+                        enabled: TiersModel.multi-count > 0;
+                        clicked => {
+                            TiersModel.batch-offset(-0.1);
+                        }
+                    }
+
+                    Chip {
+                        text: "+0.1\u{b0}";
+                        enabled: TiersModel.multi-count > 0;
+                        clicked => {
+                            TiersModel.batch-offset(0.1);
+                        }
+                    }
+
+                    Chip {
+                        text: "All";
+                        clicked => {
+                            TiersModel.select-all();
+                        }
+                    }
+
+                    Chip {
+                        text: "Clear";
+                        clicked => {
+                            TiersModel.select-clear();
+                        }
+                    }
+
+                    Chip {
+                        text: "Done";
+                        clicked => {
+                            TiersModel.set-select-mode(false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    TierSheet {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        visible: TiersModel.tier-open;
+    }
+
+    AngleSheet {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        visible: TiersModel.angle-open;
+    }
+
+    ConfirmCard {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+    }
+}

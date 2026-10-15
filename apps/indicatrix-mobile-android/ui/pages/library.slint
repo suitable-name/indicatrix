@@ -1,0 +1,374 @@
+// Library destination: the designs saved on this device.
+//
+//   top bar        Import, Grid / List and Sort; selection mode swaps it for a bar with
+//                  Select All, Tag, Ignore, Share and Delete
+//   search row     the search box and the filter button
+//   filter chips   Shape, Gear, Refractive Index, Mine, Tag, Show Ignored
+//   body           2-up cards on a phone, 3 or 4 on wider windows; rows in list mode
+//
+// All data comes through `LibraryModel`; `src/library.rs` is the Rust side.
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell } from "../models.slint";
+import { Icon } from "../shell/icon.slint";
+import { IconButton } from "../shell/icon_button.slint";
+import { Chip } from "../shell/chips.slint";
+import { EmptyState } from "../shell/empty_state.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { LibraryModel } from "../library/library_model.slint";
+import { LibraryIcons } from "../library/library_icons.slint";
+import { CardGrid } from "../library/card_grid.slint";
+import { FilterSheet, TagSheet } from "../library/filter_sheet.slint";
+
+// The bar of selection mode.
+component SelectionBar inherits Rectangle {
+    height: Theme.top-bar-height;
+    background: Theme.secondary-container;
+
+    HorizontalLayout {
+        padding-left: Theme.space-xs;
+        padding-right: Theme.space-xs;
+        cross-axis-alignment: center;
+
+        IconButton {
+            icon: Icons.close;
+            label: "Clear Selection";
+            tint: Theme.on-secondary-container;
+            clicked => {
+                LibraryModel.clear-selection();
+            }
+        }
+
+        IconButton {
+            icon: LibraryIcons.select-all;
+            label: "Select All";
+            tint: Theme.on-secondary-container;
+            clicked => {
+                LibraryModel.select-all();
+            }
+        }
+
+        Text {
+            text: LibraryModel.selection-count + " Selected";
+            color: Theme.on-secondary-container;
+            font-size: Theme.text-title;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        IconButton {
+            icon: LibraryIcons.tag;
+            label: "Tag";
+            tint: Theme.on-secondary-container;
+            clicked => {
+                LibraryModel.open-tag-sheet();
+            }
+        }
+
+        IconButton {
+            icon: LibraryIcons.hide;
+            label: LibraryModel.selection-ignored ? "Stop Ignoring" : "Ignore";
+            tint: Theme.on-secondary-container;
+            clicked => {
+                LibraryModel.toggle-ignore-selected();
+            }
+        }
+
+        if LibraryModel.selection-count == 1: IconButton {
+            icon: Icons.share;
+            label: "Share";
+            tint: Theme.on-secondary-container;
+            clicked => {
+                LibraryModel.share-selected();
+            }
+        }
+
+        IconButton {
+            icon: LibraryIcons.trash;
+            label: "Delete";
+            tint: Theme.on-secondary-container;
+            clicked => {
+                LibraryModel.delete-selected();
+            }
+        }
+    }
+}
+
+// The search box and the button that opens the filter sheet.
+component SearchRow inherits Rectangle {
+    callback filter-clicked();
+
+    height: Theme.touch + Theme.space-sm;
+
+    HorizontalLayout {
+        padding-left: Theme.space-lg;
+        padding-right: Theme.space-xs;
+        padding-bottom: Theme.space-sm;
+        spacing: Theme.space-sm;
+
+        LineEdit {
+            text <=> LibraryModel.query-text;
+            placeholder-text: "Search Designs";
+            accessible-label: "Search Designs";
+            horizontal-stretch: 1;
+
+            edited(value) => {
+                LibraryModel.search-edited(value);
+            }
+        }
+
+        IconButton {
+            icon: LibraryIcons.filter;
+            label: LibraryModel.filter-count > 0 ? "Filters, " + LibraryModel.filter-count + " set" : "Filters";
+            selected: LibraryModel.filter-count > 0;
+            clicked => {
+                root.filter-clicked();
+            }
+        }
+    }
+}
+
+// The chip row under the search box. Shape, Gear, Refractive Index and Tag open the
+// filter sheet; Mine and Show Ignored switch at once.
+component FilterChips inherits Rectangle {
+    callback open-filters();
+
+    height: Theme.touch;
+
+    Flickable {
+        content-width: lay.preferred-width;
+        content-height: root.height;
+
+        lay := HorizontalLayout {
+            x: 0px;
+            y: 0px;
+            height: root.height;
+            width: self.preferred-width;
+            padding-left: Theme.space-lg;
+            padding-right: Theme.space-lg;
+            spacing: Theme.space-sm;
+
+            Chip {
+                text: LibraryModel.shape-text;
+                selected: LibraryModel.shape-index > 0;
+                clicked => {
+                    root.open-filters();
+                }
+            }
+
+            Chip {
+                text: LibraryModel.gear-text;
+                selected: LibraryModel.gear-index > 0;
+                clicked => {
+                    root.open-filters();
+                }
+            }
+
+            Chip {
+                text: LibraryModel.ri-text;
+                selected: LibraryModel.ri-index > 0;
+                clicked => {
+                    root.open-filters();
+                }
+            }
+
+            Chip {
+                text: "Mine";
+                selected: LibraryModel.mine-only;
+                clicked => {
+                    LibraryModel.set-mine-only(!LibraryModel.mine-only);
+                }
+            }
+
+            Chip {
+                text: LibraryModel.tag-text;
+                selected: LibraryModel.tag-index >= 0;
+                clicked => {
+                    root.open-filters();
+                }
+            }
+
+            Chip {
+                text: "Show Ignored";
+                selected: LibraryModel.show-ignored;
+                clicked => {
+                    LibraryModel.set-show-ignored(!LibraryModel.show-ignored);
+                }
+            }
+        }
+    }
+}
+
+export component LibraryPage inherits Rectangle {
+    property <bool> shown: Shell.destination == 0;
+    // The page has something to search: it is open and its library is not empty.
+    property <bool> searchable: LibraryModel.opened && LibraryModel.error == "" && LibraryModel.empty-kind != 1;
+
+    changed shown => {
+        if (root.shown) {
+            LibraryModel.page-shown();
+        } else {
+            // Leaving the page closes its overlays.
+            LibraryModel.filter-open = false;
+            LibraryModel.sort-open = false;
+        }
+    }
+
+    VerticalLayout {
+        if !LibraryModel.selecting: TopBar {
+            title: "Library";
+            actions: [
+                { icon: Icons.open, label: "Import Designs", enabled: LibraryModel.error == "" },
+                { icon: LibraryModel.list-mode ? LibraryIcons.grid : LibraryIcons.list, label: LibraryModel.list-mode ? "Show Grid" : "Show List", enabled: true },
+                { icon: LibraryIcons.sort, label: "Sort", enabled: root.searchable }
+            ];
+            action-clicked(index) => {
+                if (index == 0) {
+                    LibraryModel.import-designs();
+                } else if (index == 1) {
+                    LibraryModel.set-list-mode(!LibraryModel.list-mode);
+                } else {
+                    LibraryModel.sort-open = true;
+                }
+            }
+        }
+
+        if LibraryModel.selecting: SelectionBar { }
+
+        if root.searchable: SearchRow {
+            filter-clicked => {
+                LibraryModel.filter-open = true;
+            }
+        }
+
+        if root.searchable: FilterChips {
+            open-filters => {
+                LibraryModel.filter-open = true;
+            }
+        }
+
+        // A thin bar while a search or an import runs.
+        Rectangle {
+            height: 3px;
+            background: (LibraryModel.loading || LibraryModel.busy) ? Theme.primary : transparent;
+        }
+
+        if LibraryModel.busy: Rectangle {
+            height: 32px;
+
+            Text {
+                text: LibraryModel.busy-text;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        if LibraryModel.error != "": EmptyState {
+            vertical-stretch: 1;
+            icon: Icons.library;
+            title: "Library Unavailable";
+            body: LibraryModel.error;
+            primary-text: "Try Again";
+            primary-clicked => {
+                LibraryModel.page-shown();
+            }
+        }
+
+        if LibraryModel.error == "" && !LibraryModel.opened: Text {
+            vertical-stretch: 1;
+            text: "Opening Library";
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-body-large;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if LibraryModel.error == "" && LibraryModel.opened && LibraryModel.empty-kind == 1: EmptyState {
+            vertical-stretch: 1;
+            icon: Icons.library;
+            title: "Your Library Is Empty";
+            body: "Import designs from .isdd, .asc, .gem or .gcs files, or save a design from the Design page.";
+            primary-text: "Import Designs";
+            primary-icon: Icons.open;
+            primary-clicked => {
+                LibraryModel.import-designs();
+            }
+        }
+
+        if LibraryModel.error == "" && LibraryModel.opened && LibraryModel.empty-kind == 2: EmptyState {
+            vertical-stretch: 1;
+            icon: LibraryIcons.search;
+            title: "No Designs Match";
+            body: "No design fits the search and the filters.";
+            primary-text: "Clear Filters";
+            primary-clicked => {
+                LibraryModel.clear-filters();
+            }
+        }
+
+        if LibraryModel.error == "" && LibraryModel.opened && LibraryModel.empty-kind == 0: CardGrid {
+            vertical-stretch: 1;
+            list: LibraryModel.list-mode;
+        }
+    }
+
+    // The sort menu: a scrim and a card under the top bar.
+    if LibraryModel.sort-open: Rectangle {
+        TouchArea {
+            clicked => {
+                LibraryModel.sort-open = false;
+            }
+        }
+
+        Rectangle {
+            x: parent.width - self.width - Theme.space-sm;
+            y: Theme.top-bar-height - Theme.space-sm;
+            width: min(parent.width - 2 * Theme.space-sm, 280px);
+            height: sort-rows.preferred-height;
+            background: Theme.surface-high;
+            border-radius: Theme.radius-md;
+            clip: true;
+            drop-shadow-color: Theme.shadow;
+            drop-shadow-blur: Theme.shadow-blur-3;
+            drop-shadow-offset-y: Theme.shadow-offset-3;
+
+            TouchArea { }
+
+            sort-rows := VerticalLayout {
+                for name[index] in ["Catalogue Order", "Title", "Newest", "Recently Edited"]: ListRow {
+                    title: name;
+                    clicked => {
+                        LibraryModel.sort-open = false;
+                        LibraryModel.set-sort(index);
+                    }
+
+                    if index == LibraryModel.sort: Icon {
+                        source: Icons.check;
+                        tint: Theme.primary;
+                        glyph: 20px;
+                    }
+                }
+            }
+        }
+    }
+
+    FilterSheet {
+        open: LibraryModel.filter-open;
+        closed => {
+            LibraryModel.filter-open = false;
+        }
+    }
+
+    TagSheet {
+        open: LibraryModel.tag-sheet-open;
+        closed => {
+            LibraryModel.close-tag-sheet();
+        }
+    }
+}

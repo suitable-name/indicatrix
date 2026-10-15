@@ -56,7 +56,8 @@ impl EmptyFormFields {
         let gear_index = gear_index_from_teeth(spec.gear_teeth);
         Self {
             shape_index: match spec.preform.shape {
-                PreformShape::Block => BLOCK_SHAPE_INDEX,
+                // A planned piece has no shape of its own in the form: it shows its box.
+                PreformShape::Block | PreformShape::Planes(_) => BLOCK_SHAPE_INDEX,
                 PreformShape::Cylinder { .. } => CYLINDER_SHAPE_INDEX,
             },
             half_width: spec.preform.half_width.to_string(),

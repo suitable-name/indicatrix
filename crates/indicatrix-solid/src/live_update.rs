@@ -143,6 +143,10 @@ pub struct PreviewPlan {
 
 /// Narrows a [`indicatrix_cut_core::Design::planes_from_solved`] result to the `f32`
 /// convention every other `solid_preview` module uses.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the preview's GPU/storage precision; plane normals and offsets are in the normal float range"
+)]
 fn narrow_planes(planes: Vec<(DVec3, f64)>) -> Vec<(Vec3, f32)> {
     planes
         .into_iter()
@@ -471,11 +475,11 @@ pub fn plan_preview_limited(
         .iter()
         .all(|tier| matches!(tier.constraint, MeetConstraint::ScaleReference(_)))
     {
-        let solved = masts_from_pinned_tiers(design);
-        let planes = narrow_planes(planes_for_display(design, &solved, limit));
+        let pinned = masts_from_pinned_tiers(design);
+        let planes = narrow_planes(planes_for_display(design, &pinned, limit));
         return PreviewPlan {
             planes,
-            solved: Some(solved),
+            solved: Some(pinned),
             freshness: Freshness::Pinned,
         };
     }
@@ -486,11 +490,11 @@ pub fn plan_preview_limited(
 
     let Some(previous) = aligned_previous else {
         return match design.solve() {
-            Ok(solved) => {
-                let planes = narrow_planes(planes_for_display(design, &solved, limit));
+            Ok(fresh) => {
+                let planes = narrow_planes(planes_for_display(design, &fresh, limit));
                 PreviewPlan {
                     planes,
-                    solved: Some(solved),
+                    solved: Some(fresh),
                     freshness: Freshness::Fresh,
                 }
             }

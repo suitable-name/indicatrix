@@ -270,7 +270,7 @@ export component GuidePanel inherits Rectangle {
                     ? (next-touch.has-hover ? #60a5fa : #3b82f6)
                     : (next-touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                 next-txt := Text {
-                    text: GuideModel.current-is-manual ? (GuideModel.has-next ? "Next" : "Finish") : "Skip step";
+                    text: GuideModel.current-is-manual ? (GuideModel.has-next ? "Next" : "Finish") : "Skip Step";
                     font-size: 10px;
                     font-weight: GuideModel.current-is-manual ? 700 : 400;
                     color: GuideModel.current-is-manual ? #ffffff : Theme.text-muted;

@@ -41,7 +41,7 @@ window's own handle.
 | `RemoteWorkerModel` | `models/remote_worker.slint` | The one remote endpoint ("Remote Coordinator" form), "served by", library switch and mirroring |
 | `RetargetModel` | `models/retarget.slint` | The "Retarget for material" dialog |
 | `RoughPlanModel` | `models/rough_plan.slint` | The Rough Planner window (Library > Plan Rough...): inputs, results, saved plans |
-| `SettingsModel` | `models/settings.slint` | The render-quality settings panel, including Live Compute / Live Transfer |
+| `SettingsModel` | `models/settings.slint` | The render-quality settings: Live Compute, Local Compute, preview size and the other Render & Output controls the Parameters panel shows |
 | `ShortcutsModel` | `models/shortcuts.slint` | The keyboard-shortcuts overlay |
 | `SolidPreviewModel` | `models/solid_preview.slint` | The Edit tab's solid-inspection viewport |
 | `SweepModel` | `models/sweep.slint` | The Angle Sweep dialog (Edit > Angle Sweep...): the form, the run's progress, and the table, chart and readout of the finished sweep; the dialog is `components/sweep_dialog.slint` |
@@ -52,7 +52,7 @@ window's own handle.
 | `UndoRedoLabels` | `components/editor_command_bar.slint` | The Undo/Redo wording shown by the command bar and the Edit menu (declared beside the command bar because both import it from there) |
 | `VerdictModel` | `models/verdict.slint` | The overall Good / Check / Problem verdict of the open design: the word, the headline sentence, the reasons (each with a Show tier and an optional Fix), the stale and busy flags, and the `fix_reason` callback. Shown by `components/verdict_badge.slint` and `components/verdict_popover.slint` in the status strip. Rust: `gui::editor::verdict` over `indicatrix_editor::verdict` |
 | `ViewportModel` | `models/viewport.slint` | The 3D gem viewport's camera/lighting/material controls |
-| `Zoning` | `models/zoning.slint` | The `zoning` Cargo feature's UI switch: `enabled` is set per window from `gui::zoning_ui::ZONING_UI` and is `false` in a default build, so every zoning element sits under `if Zoning.enabled`. Planner window instance: the "Rough colour..." button, whether the shown plan has a stored colour (`colour_available`), the "Stone orientation" choice and "Use colour" on a design row. Main window instance: the zone list of a zoned material in the material editor. Rust: `gui::rough_colour`, `gui::rough_plan::zoning_hooks` |
+| `Zoning` | `models/zoning.slint` | Rough color and color zoning, always on. Planner window instance: the "Rough colour..." button, whether the shown plan has a stored colour (`colour_available`), the "Stone orientation" choice and "Use colour" on a design row. Main window instance: the zone list of a zoned material in the material editor. Rust: `gui::rough_colour`, `gui::rough_plan::zoning_hooks` |
 
 A `.slint` component reads/writes a global directly (`EditorModel.solve()`,
 `LibraryModel.search_text`), the same way it would read `root.` on a

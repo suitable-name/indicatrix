@@ -1,6 +1,6 @@
 # 4. Editing Tiers
 
-## What you will do
+## What You Will Do
 
 This chapter covers the inspector's Tier tab: adding a new facet tier,
 editing an existing one, detaching a tier (or a single facet within it)
@@ -10,7 +10,7 @@ keyboard nudging, duplicating a tier, and navigating the list from the
 keyboard — for when you're adjusting angles on an already-built design
 rather than typing a whole tier from scratch.
 
-## The inspector
+## The Inspector
 
 Below the tier table, a resizable, collapsible inspector panel has five
 tabs: **Tier**, **Preform**, **Optimize**, **Schedule**, and **History**.
@@ -24,7 +24,7 @@ History is Chapter 18.
 Each tab pill is a tab stop with a hover tip, and a screen reader announces
 it as a tab, picked or not. A small **?** button at the right of the tab row
 opens the manual page for the open tab (the Tier tab opens the tier form, the
-concave form opens "Adding a concave tier," and so on). The **Simple**
+concave form opens "Adding a Concave Tier," and so on). The **Simple**
 interface (Chapter 17) shows four tabs: the **Schedule** tab, which is a
 read-only listing for the cutting sheet, is left out until you switch to
 Advanced. The controls inside the other tabs that only matter to
@@ -32,7 +32,9 @@ experienced cutters are hidden in the same way, and each tab says so with
 "Some advanced settings are in use. Switch to Advanced to see them." when a
 hidden control holds something other than its default.
 
-## The tier form
+## The Tier Form
+
+![The inspector's Tier tab with a crown tier selected.](../../../../assets/tier_form.png)
 
 The Tier tab has these fields:
 
@@ -40,7 +42,7 @@ The Tier tab has these fields:
   can type a plain number (`41.5`) or a small calculation (`41.5+0.3`,
   `(90-41)/2`); the app works it out and keeps the result. Start the text
   with `=` and the angle is not a fixed number any more but **follows other
-  tiers** — see "Relations between tiers," below. With the cursor in the
+  tiers** — see "Relations Between Tiers," below. With the cursor in the
   field, **Up** and **Down** change a plain number by 0.1°, with **Shift**
   by 1° and with **Ctrl** by 0.01°. The new text is worked out by the app and
   written with two decimals and a decimal point, the same on every computer.
@@ -50,29 +52,29 @@ The Tier tab has these fields:
   saved until Save Tier.
 - **Meets** — a drop-down with six choices that decide how the facet's
   depth is worked out:
-  - **Unspecified vertex** — the facet is cut until its plane meets some
+  - **Unspecified Vertex** — the facet is cut until its plane meets some
     vertex of the surrounding geometry, with no vertex named. Use this for
     a straightforward meet where nothing needs to be spelled out (a first
     culet facet, a simple meet against whatever's already there).
-  - **Named facet(s)** — the facet is cut until its plane meets a vertex
+  - **Named Facet(s)** — the facet is cut until its plane meets a vertex
     defined together with specific other facets, which you type into the
     field that appears (comma-separated facet names, e.g. `P1, P2, G1`).
-  - **Exact scale value** — you type a real number directly: an authored
+  - **Exact Scale Value** — you type a real number directly: an authored
     dimension, not a derived one. This is how you set an **anchor** (see
     Chapter 3). The field's own hint reads "a real dimension, e.g. girdle
     half-width." A small calculation works here too (`0.5+0.15`).
-  - **Cut to depth (mm)**, **Girdle thickness (mm)**, **Table width (mm)** —
-    the three real-world **targets** — see "Targets: cut to depth, girdle
-    thickness, table width," below.
+  - **Cut to Depth (mm)**, **Girdle Thickness (mm)**, **Table Width (mm)** —
+    the three real-world **targets** — see "Targets: Cut to Depth, Girdle
+    Thickness, Table Width," below.
 
-  The Simple interface leaves **Exact scale value** out of this list, because
+  The Simple interface leaves **Exact Scale Value** out of this list, because
   an anchor is an authoring tool most designs never need. A tier that
   already uses it still shows it (and so does the **Girdle Facet Preset**
   button's result), so nothing is ever hidden from a tier that depends on it.
-  The **Quick add** buttons (Table, Girdle, Culet) and a row's **Add Anchor**
+  The **Quick Add** buttons (Table, Girdle, Culet) and a row's **Add Anchor**
   button still make anchors in the Simple interface. Switch to Advanced to
-  pick Exact scale value for any tier.
-- **Name** — the facet's name, referenced by other tiers' "Named facet(s)"
+  pick Exact Scale Value for any tier.
+- **Name** — the facet's name, referenced by other tiers' "Named Facet(s)"
   field and shown in the tier list and cutting instructions.
 - **Indices** — which index position(s) on the gear this tier occupies.
   A single value for one facet, several for a symmetric family (e.g.
@@ -101,9 +103,9 @@ about (Angle, the Meets value, Name or Indices), and that field gets a red
 border. Start typing in the field and the message clears. A message that
 belongs to no single field appears at the bottom of the form.
 
-A **Girdle Facet Preset (90°, scale = 1)** button sits with the form
+A **Girdle Facet Preset (90°, Scale = 1)** button sits with the form
 fields. Click it to fill Angle, Meets, and the scale value in one step —
-`90`, **Exact scale value**, and `1` — the exact combination Chapter 7's
+`90`, **Exact Scale Value**, and `1` — the exact combination Chapter 7's
 worked example sets by hand for its own girdle tier. It only fills the
 form; you still type the Name and Indices and click **Add Tier** yourself.
 Use it any time you are about to author a girdle anchor and want the
@@ -121,7 +123,7 @@ touching the tier list.
 A new tier can also be started without the form: the Solid viewport's
 **Slice** mode lets you draw a line across the stone and adds the tier it
 defines, snapped to the index wheel, in one undo step (Chapter 13, "Slicing a
-new facet with the mouse").
+New Facet with the Mouse").
 
 **Saving does not re-solve.** Clicking Save Tier (or Add Tier, or Remove,
 or Apply Preform) updates the tier list's editable columns
@@ -130,7 +132,7 @@ Chapter 5's job, and it can take real time on a large design. Instead the
 MAST and SOLVE columns, and the status strip, are marked visibly stale
 until you click **Solve** (or until auto-solve runs, if you turned it on).
 Undo and Redo follow the same rule; their exact behaviour is under "Undo and
-redo," below.
+Redo," below.
 
 For an already-saved tier, the Tier tab also shows a read-only **Solved**
 section once you have loaded that row: its mast, its block, its SOLVE
@@ -139,7 +141,7 @@ shows), its margin over the critical angle, its orbit shape, which other
 tiers it actually meets (by name, e.g. "meets tier 3 (C1)"), and its own
 manufacturability warning, if it has one.
 
-## The angle slider and the Typical menu
+## The Angle Slider and the Typical Menu
 
 Under the **Angle (deg)** field, a pavilion or crown tier has a slider and a
 **Typical** menu. They are a quicker way to fill in the same field. The field
@@ -156,8 +158,8 @@ the field says. You get both in the Simple and in the Advanced interface.
   **Page Down** by 0.5°, and **Home** and **End** to the two ends.
 - **The green band.** On a pavilion the slider marks a green band from 1° to
   6° over the stone's critical angle. The critical angle comes from the
-  design's refractive index, which is the material you chose in Design
-  Settings (Chapter 6). A line under the slider gives the numbers, for example
+  design's refractive index, which is the material you chose in the Stone tab
+  (Chapter 6). A line under the slider gives the numbers, for example
   "Green band: 41.4° to 46.4°". A high-index stone such as diamond has its band
   below 30°, so the slider then starts lower, at 25° for diamond, to show the
   whole band. On a crown, the line under the slider gives the usual crown
@@ -165,10 +167,10 @@ the field says. You get both in the Simple and in the Advanced interface.
 - **Typical.** The menu lists common angles, each with a one-line reason.
   For a pavilion it offers **Standard for** your material (the middle of the
   published range for that kind of stone, raised when that would leave less
-  than 2° over the critical angle), **Critical angle + 2° (bright, safe)** (the
-  lowest angle the margin bar calls Safe) and **Critical angle + 4° (extra
-  margin)**. For a crown it offers **Standard for** your material, **Low
-  crown** (25°), **Medium crown** (32°) and **High crown** (40°). Choosing an
+  than 2° over the critical angle), **Critical Angle + 2° (Bright, Safe)** (the
+  lowest angle the margin bar calls Safe) and **Critical Angle + 4° (Extra
+  Margin)**. For a crown it offers **Standard for** your material, **Low
+  Crown** (25°), **Medium Crown** (32°) and **High Crown** (40°). Choosing an
   entry only fills in the Angle field. An entry that gives the same angle as an
   earlier one is left out.
 
@@ -181,7 +183,7 @@ bar is right whether you drag, type or choose a preset.
 
 A tier has no slider when its angle is not a free number: a girdle tier (90°),
 a flat tier (the table and the culet), and a tier whose angle follows other
-tiers (its Angle field starts with `=`; see "Relations between tiers"). The
+tiers (its Angle field starts with `=`; see "Relations Between Tiers"). The
 slider dims and stops reacting while the field holds text it cannot show, such
 as `41.5+` typed half way. A calculation that works out, such as `41.5+0.3`, is
 shown at its result, and dragging then replaces it with a plain number.
@@ -192,7 +194,7 @@ angle does the same. Otherwise the slider treats it as a crown. The tier table
 then shows the angle as a plain positive number with its side in the letter of
 the CODE column.
 
-## Losing an unsaved draft
+## Losing an Unsaved Draft
 
 If you are still typing into the tier form — an in-progress "Add Tier"
 draft, or an edit to an existing tier you have not saved yet — and the
@@ -205,7 +207,7 @@ table's highlight may already show a different row, but the form still
 shows your draft) and **Discard Draft, ...** (loads the new selection,
 discarding what you typed).
 
-## Per-facet editing
+## Per-Facet Editing
 
 Once you have an existing tier loaded, the Tier tab shows a row of small
 chips below the form fields, one per index position the tier occupies. If
@@ -225,7 +227,7 @@ The whole row of chips is **one Tab stop**, so Tab does not have to walk past
 every chip to reach the fields below. With the row focused, **Left** and
 **Right** move along the chips (**Home** and **End** jump to the first and the
 last), **Enter** detaches or reattaches the chosen facet (Advanced only), and
-**Delete** removes it. The chosen chip gets a coloured frame while the row
+**Delete** removes it. The chosen chip gets a colored frame while the row
 has the keyboard, and a screen reader announces the row as a list with the
 chosen facet.
 
@@ -280,7 +282,7 @@ detached, has a cheater offset or has an imported meet, the Tier tab says
 "Some advanced settings are in use. Switch to Advanced to see them." and the
 table's toolbar says the same when any tier is detached.
 
-## Preform, proportions, and yield
+## Preform, Proportions, and Yield
 
 The inspector's **Preform** tab holds three groups, none of them tied to
 any one selected tier — they describe the whole design. The Simple interface
@@ -291,7 +293,8 @@ estimate used. They keep their values, and a line reads "Some advanced
 settings are in use. Switch to Advanced to see them." when the Y-Offset or the
 override holds one.
 
-- **Preform** — the rough's shape (Block or Cylinder), Half-Width, Length /
+- **Preform** — the rough's shape (Block or Cylinder, or the planned piece
+  described below), Half-Width, Length /
   Width, Depth and the Girdle Y-Offset, with an **Apply Preform** button.
   Every number field takes a number or a small calculation (`1.2+0.1`,
   `3/2`), and each of the four has a slider under it:
@@ -306,13 +309,32 @@ override holds one.
   The stone's girdle half-width is 1 in these units, so a rough is never
   narrower than 1. Block and Cylinder roughs use the same ranges, because both
   have to enclose the same stone. The sliders move in steps of 0.05 (0.01 with
-  **Shift**) and take the same keys as the angle slider (see "The angle slider
-  and the Typical menu"). The Y-Offset slider works only once a **Girdle
+  **Shift**) and take the same keys as the angle slider (see "The Angle Slider
+  and the Typical Menu"). The Y-Offset slider works only once a **Girdle
   Diameter (mm)** is set in the Yield group, because its range is in
   millimetres; until then it is dimmed and says so. A slider only fills its
   field in and marks the tab "not applied yet" (the **Apply Preform** button is
   highlighted and shows an asterisk); nothing changes in the design until you
   click **Apply Preform**. A slider dims when its field holds text that is not a number.
+
+  **A planned piece.** A design opened with **Open in Editor** from the Rough
+  Planner (Chapter 15) can carry a third kind of rough: the *planned piece*. It is
+  the sawn piece of rough that the planner's first stone of that design comes from,
+  clipped by the rough's own outline where that outline reaches into the piece,
+  and turned and scaled into the design's own frame. Unlike a Block or a Cylinder
+  it can have any number of flat sides, as long as the piece is convex. The tab
+  shows it by its bounding box in the number fields, and a note under the shape
+  box says where it came from, for example: "Planned piece from the Rough Planner:
+  Saved plan "Aqua pebble", result 3, stone 1 (14 planes). The fields show its
+  bounding box; Apply Preform replaces it with the shape above." Until you click
+  **Apply Preform**, the piece stays as it is. The Cut slider's left end (Chapter 13),
+  the yield figures, the rough-fit warning (Chapter 5) and the rendered rough all
+  use the piece itself, not its bounding box. **Apply
+  Preform** replaces the piece with the Block or Cylinder chosen in the shape box,
+  at the size in the fields, as one undoable edit. From then on the sliders and
+  fields describe that replacement. The piece is saved in the design file, so the
+  design opens with it again; a build of the app from before 2026-10-12 cannot
+  open such a file.
 - **Proportions** — the figures a cutter actually quotes, worked out from
   the last Solve: table size and length-to-width on one line, then Crown
   Height, Pavilion Depth, and Total Depth each on their own line. Every one
@@ -332,20 +354,20 @@ override holds one.
   shown at all when there is nothing to judge yet (the design does not
   currently solve/close).
 - **Yield** — the effective-RI readout and its source, Girdle Diameter
-  (mm), a Specific Gravity Override for the carat estimate (blank uses the
-  specific gravity of the material set in Design Settings — Chapter 6; both
+  (mm; the same value as the Stone tab's Stone Width (mm), so editing either changes both), a Specific Gravity Override for the carat estimate (blank uses the
+  specific gravity of the material set in the Stone tab — Chapter 6; both
   fields take a number or a small calculation, such as `6.5+0.25`, and have no
   slider because they are measured or looked up, not tuned), an
   **Apply Yield Inputs** button, and the resulting
   Volumetric Yield, Est. Carat Weight, and Specific Gravity Used, each
   blank until the next Solve.
 
-## Inline angle editing
+## Inline Angle Editing
 
 The tier list's ANGLE column is itself editable — you don't have to load a
 tier into the Tier tab just to nudge its angle. A single click on the angle
 cell **selects that row**, the same as clicking anywhere else in it (see
-"Selecting a tier" in Chapter 3). To edit the value in place,
+"Selecting a Tier" in Chapter 3). To edit the value in place,
 **double-click** the cell (or select the row and press **F2**): it turns
 into a text field, and you type a new number, then either press **Enter**
 (commits) or click elsewhere to move focus away (also commits). Press
@@ -360,7 +382,7 @@ The cell takes the same kinds of text as the form's Angle field: a number,
 a small calculation (`41+0.5`), or a calculation that names another tier
 (`P1-2` means "the angle of P1, minus 2", worked out once). Text that starts
 with `=` (`=P1-2`) makes the angle *follow* P1 instead — see "Relations
-between tiers."
+Between Tiers."
 
 A tier whose angle follows a relation shows a small link icon in this cell,
 and its tooltip reads "Angle follows: P1 - 2." Double-click and F2 do not
@@ -372,7 +394,7 @@ like any other change — and, like every other tier edit, it marks the
 design stale (MAST/SOLVE/the status strip) until you next click Solve, or
 until auto-solve picks it up if it's turned on (Chapter 5).
 
-## Nudging an angle with the keyboard or scroll wheel
+## Nudging an Angle with the Keyboard or Scroll Wheel
 
 With the inline angle cell open for editing (or with focus in the tier
 form's own **Angle (deg)** field), the arrow keys step the value without
@@ -413,9 +435,9 @@ just the last step.
 
 You can also change a tier's angle by dragging a handle on its facet in the
 Solid viewport, with snapping and live feedback; see Chapter 13, "Dragging a
-facet: the angle, depth and index handles".
+Facet: The Angle, Depth and Index Handles".
 
-## Duplicating a tier
+## Duplicating a Tier
 
 Click the small duplicate button on a tier's row (the two-sheets icon), or select a
 row and press **Ctrl+D**, to append a copy of it to the end of the tier
@@ -425,7 +447,7 @@ selection moves to the new copy so you can immediately start editing it.
 Duplicating is one undoable `Add Tier` edit, like typing a new tier by hand
 and clicking Add Tier.
 
-## Reordering tiers
+## Reordering Tiers
 
 The small up and down arrow buttons on a tier's row (and the same pair on
 the command bar), or **Alt+Up** / **Alt+Down** on the
@@ -437,7 +459,7 @@ the list. A tier that meets a facet further down its side of the list is still
 cut after that facet: the cutting sheet puts it just after the last facet it
 meets (Chapter 11).
 
-## Keyboard navigation in the tier list
+## Keyboard Navigation in the Tier List
 
 Click anywhere in the tier list to give it keyboard focus, then:
 
@@ -467,13 +489,13 @@ every button of every row between the list and the rest of the window. Tab
 from the list walks the buttons of the row you are on (Adopt, Pin, Detach,
 Anchor, the move arrows, Duplicate and Remove, as far as the interface shows
 them); the other rows' buttons are not Tab stops, though a mouse or a screen
-reader still reaches them. Every button has a hover tip, a coloured ring while
+reader still reaches them. Every button has a hover tip, a colored ring while
 it has the keyboard, and answers Space and Enter. A screen reader announces the
 list as "Tiers" and each row with its name, angle and state. In the Simple
 interface (Chapter 17) the Mast and Orbit columns, the Adopt, Pin and Detach
 buttons and the Steps / Mirror tools are left out.
 
-## Selecting several tiers for a batched nudge
+## Selecting Several Tiers for a Batched Nudge
 
 Ctrl+click a tier row to add it to a multi-select group (Ctrl+click again
 to remove it) — selected rows get a cyan outline, and a small bar above the
@@ -511,13 +533,13 @@ nudge right after still moves the same set of tiers together. Only the
 visible outline needs a fresh Ctrl+click to reappear; the batching itself
 isn't affected.
 
-## Removing a tier
+## Removing a Tier
 
 Click the **×** button on a tier's row, or select it and press **Delete**,
 to remove it. Like every other edit in this list, removing a tier marks the
 design stale; click Solve afterwards to see whether it still closes.
 
-## Undo and redo
+## Undo and Redo
 
 The **Undo** and **Redo** buttons step backward and forward through your
 edit history (adding, saving, removing, detaching, reordering, and
@@ -533,8 +555,8 @@ What Undo and Redo do, step by step, and what they leave for you:
   the numbers that come from a solve are not recomputed. The table's MAST
   and SOLVE columns, the solved readout in the Tier tab and the status strip
   are marked stale, the same way they are after Save Tier. A Deep Solve or
-  Optimize result that is still on screen is marked "Stale: design
-  changed". Click **Solve** to bring them up to date; if you turned
+  Optimize result that is still on screen is marked "Stale: Design
+  Changed". Click **Solve** to bring them up to date; if you turned
   auto-solve on (Chapter 5), it starts by itself after a short pause, and
   only on a design small enough for your chosen time limit.
 - **The 3D preview is rebuilt at once.** The Solid viewport shows the
@@ -551,7 +573,7 @@ What Undo and Redo do, step by step, and what they leave for you:
   step changes the tier you are editing, the Tier tab shows a notice ("Tier #N
   changed in the design after you started this draft") with **Reload From
   Design** and **Keep Draft**; if the selection moves to another tier, the
-  notice under "Losing an unsaved draft," above, asks what to keep.
+  notice under "Losing an Unsaved Draft," above, asks what to keep.
 - **One step at a time.** Each press moves exactly one entry of the history;
   the History tab (Chapter 18) can jump several at once.
 
@@ -559,7 +581,7 @@ To see every step at once, with a small picture of the design at each one,
 and to go straight back to the one that looked good instead of pressing
 Undo over and over, open the inspector's **History** tab (Chapter 18).
 
-## Row identity and cheater offsets
+## Row Identity and Cheater Offsets
 
 Every row in the tier table carries a stable identity of its own
 (`TierId`, `indicatrix-cut-core/src/design/tier_id.rs`) that survives
@@ -573,24 +595,24 @@ about the vertical axis before the solid, the tracer and the diagram build
 from it — a positive offset rotates counter-clockwise about the vertical
 axis.
 
-## Targets: cut to depth, girdle thickness, table width
+## Targets: Cut to Depth, Girdle Thickness, Table Width
 
 A tier can carry an authoring-level **target** instead of a raw scale
 value — three of the Meets combo's six choices:
 
-- **Cut to depth (mm)** — the facet's own plane offset, stated directly in
-  millimetres rather than the model-unit scale value **Exact scale value**
+- **Cut to Depth (mm)** — the facet's own plane offset, stated directly in
+  millimetres rather than the model-unit scale value **Exact Scale Value**
   uses. Converts through the design's own mm-per-unit scale in one pass: the
   design is solved once with this tier bootstrapped at mast `0.0` to measure
   its own width, the millimetre figure you typed is converted to a mast
   through that measurement, and that mast becomes the tier's real scale
   reference.
-- **Girdle thickness (mm)** — searches (bisects) this tier's own mast until
+- **Girdle Thickness (mm)** — searches (bisects) this tier's own mast until
   the *whole design's* measured girdle thickness matches the millimetre
   figure you typed. You do not have to author this on the actual girdle
   tier — it resolves the same way regardless of which tier carries it,
   though ordinarily you would put it there.
-- **Table width (mm)** — searches (bisects) this tier's own mast until the
+- **Table Width (mm)** — searches (bisects) this tier's own mast until the
   table facet's own measured width matches the millimetre figure you typed.
 
 All three need a **Girdle Diameter (mm)** set on the Preform tab's Yield
@@ -607,7 +629,7 @@ same as for any other tier. Changing the Meets combo away from a target
 kind and saving clears the target — the tier goes back to being an ordinary
 meet/scale-reference tier, exactly as if the target had never been set.
 
-### When a target cannot be resolved
+### When a Target Cannot Be Resolved
 
 Two things can stop a target from resolving into a real mast; both surface
 as the status strip's (and the Solve toast's) problem text, the same way a
@@ -621,9 +643,9 @@ missing anchor does:
   figure you typed is outside what the design can physically produce (for
   example, a table width wider than the preform itself allows). Remedy:
   type a more plausible figure, or clear the target and author an ordinary
-  **Exact scale value** instead.
+  **Exact Scale Value** instead.
 
-## Relations between tiers
+## Relations Between Tiers
 
 A **relation** makes one tier's angle follow other tiers' angles instead of
 being a number of its own. If P2 follows P1 with the relation `P1 - 2`, then
@@ -632,7 +654,7 @@ by itself, in the same undo step. Use a relation for the things that are
 meant to stay in step — a ladder of step cuts, a main that sits a fixed
 number of degrees from its break, a facet halfway between two others.
 
-### Typing a relation
+### Typing a Relation
 
 In the Tier tab, start the **Angle (deg)** field with `=` and write what the
 angle should follow, then press Enter or **Save Tier**:
@@ -659,16 +681,16 @@ Once saved, the tier is marked in three places:
 - the Angle field now shows the relation after the `=` (for example
   `=P1 - 2`), so you can edit it there;
 - a small note under the field reads "Follows a relation" and gives the
-  angle it works out to now, with a **Remove relation** button;
+  angle it works out to now, with a **Remove Relation** button;
 - the tier table shows a small link icon in the angle cell; hover it to read
   "Angle follows: P1 - 2."
 
 To change the relation, type a new one in the Angle field and save. To stop
-following, click **Remove relation**: the tier keeps the angle it has right
+following, click **Remove Relation**: the tier keeps the angle it has right
 now and becomes an ordinary tier again. Each of these is one undo step; the
 Undo button reads "Undo: Set P2 = P1 - 2" or "Undo: Clear relation for P2."
 
-### What is refused
+### What Is Refused
 
 Nothing changes when the app refuses a relation; the reason appears in
 plain words directly under the Angle field:
@@ -689,7 +711,7 @@ plain words directly under the Angle field:
   rest of the form (name, indices, Meets) still saves as long as the Angle
   field still holds the relation, or the angle the tier already has.
 
-### Nudging and dragging
+### Nudging and Dragging
 
 A tier that follows a relation has no angle of its own to nudge. A
 double-click or F2 on its angle cell, Ctrl+scroll over the cell, and the
@@ -705,31 +727,31 @@ The other direction works as you would hope: nudge or drag the tier that is
 being followed, and every tier that follows it moves along. The whole move,
 followers included, is one undo step.
 
-### Removing a tier other tiers follow
+### Removing a Tier Other Tiers Follow
 
 Removing P1 while P2 follows it is allowed. P2 keeps the angle it has and
 stops following anything; a message names the tiers that were freed ("Removed
 the relation of P2; its angle stays as it is."). One Undo brings back P1 and
 the relation together.
 
-### A ladder that stays linked
+### A Ladder That Stays Linked
 
 The **Steps / Mirror** panel above the tier list generates a ladder of step
-cuts. Tick **Keep linked** before **Generate** and every tier after the first
+cuts. Tick **Keep Linked** before **Generate** and every tier after the first
 gets a relation to the first (`Step1 + 2`, `Step1 + 4`, and so on), so
 "later changes to the first tier move the others by the same steps."
 Without the tick the ladder is made of ordinary tiers, as before.
 
-### Saving and exporting
+### Saving and Exporting
 
 Relations are saved with the design (Chapter 11 describes the file version).
 An `.asc` file has no way to say "follows," so exporting one writes each
 tier's current angle as a plain number.
 
-### Numbers elsewhere
+### Numbers Elsewhere
 
 The same small calculations work in the other number fields of the Edit tab:
-the Exact scale value, the Cheater Offset, the Preform Half-Width, Length /
+the Exact Scale Value, the Cheater Offset, the Preform Half-Width, Length /
 Width, Depth and Y-offset, the Girdle Diameter and Specific Gravity Override
 of the Yield group, the gear reference angle and the Symmetry Order (which
 must work out to a whole number), the multi-select **Offset** box, and the
@@ -737,7 +759,7 @@ position box of **+ Add** and the teeth box of **Rotate** in the Tier tab.
 Hover the Angle, scale value, Cheater Offset, Offset or a Preform label for a
 reminder.
 
-## Next steps
+## Next Steps
 
 Continue to Chapter 5 to solve the design and read what its status
 messages mean.

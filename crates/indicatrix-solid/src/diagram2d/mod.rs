@@ -467,9 +467,9 @@ impl DiagramFrame {
     }
 
     const fn idx(&self, x: i32, y: i32) -> Option<usize> {
-        if x < 0 || y < 0 || x as u32 >= self.width || y as u32 >= self.height {
+        if x < 0 || y < 0 || x.cast_unsigned() >= self.width || y.cast_unsigned() >= self.height {
             return None;
         }
-        Some((y as u32 * self.width + x as u32) as usize)
+        Some((y.cast_unsigned() * self.width + x.cast_unsigned()) as usize)
     }
 }

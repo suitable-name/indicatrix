@@ -292,13 +292,13 @@ fn manual_and_event_keys_never_complete_from_state() {
 
 /// The Meets setting a step's "Meets: ..." line tells the learner to choose.
 fn typed_meets(text: &str) -> MeetConstraint {
-    if text == "Unspecified vertex" {
+    if text == "Unspecified Vertex" {
         return MeetConstraint::MeetExisting;
     }
-    if let Some(value) = text.strip_prefix("Exact scale value \u{2014} ") {
+    if let Some(value) = text.strip_prefix("Exact Scale Value \u{2014} ") {
         return MeetConstraint::ScaleReference(value.trim().parse().expect("a scale value"));
     }
-    if let Some(names) = text.strip_prefix("Named facet(s) \u{2014} ") {
+    if let Some(names) = text.strip_prefix("Named Facet(s) \u{2014} ") {
         return MeetConstraint::MeetNamed(
             names
                 .split(',')
@@ -368,7 +368,7 @@ fn scale_of(tier: &ConstraintTier) -> f64 {
 /// The walkthrough has to reach its own "Solve and check" step: the numbers it tells the
 /// learner to type give a design that solves to a closed stone with a girdle band and a
 /// table. The solver needs an exact scale value in each block (crown, pavilion and girdle),
-/// so a design with a Named facet(s) meet as the only crown and pavilion tiers never solves.
+/// so a design with a Named Facet(s) meet as the only crown and pavilion tiers never solves.
 #[test]
 fn the_walkthroughs_typed_values_solve_to_a_closed_stone_with_a_girdle_and_a_table() {
     let tiers = walkthrough_tiers();
@@ -470,7 +470,7 @@ fn an_unspecified_table_would_sink_to_the_girdle_and_cut_the_crown_away() {
     assert!(scale_of(&walkthrough_tiers()[3]) > girdle_top + 0.2);
 }
 
-/// The Simple interface leaves "Exact scale value" out of the Meets list for a new tier, so
+/// The Simple interface leaves "Exact Scale Value" out of the Meets list for a new tier, so
 /// each of the four steps that ask for it unlocks the Advanced controls and says why. The
 /// girdle step also names the preset that fills the entry in, but a learner who types the
 /// girdle by hand needs the full list as much as the others do.
@@ -480,11 +480,11 @@ fn the_steps_that_ask_for_an_exact_scale_value_can_be_done_in_the_simple_interfa
         let asks = step
             .actions
             .iter()
-            .any(|action| action.starts_with("Meets: Exact scale value"));
+            .any(|action| action.starts_with("Meets: Exact Scale Value"));
         assert!(asks, "step {:?} should state its scale value", step.title);
         assert!(
             step.allow.contains(&Group::Advanced),
-            "step {:?} asks for Exact scale value, which Simple hides, and unlocks nothing \
+            "step {:?} asks for Exact Scale Value, which Simple hides, and unlocks nothing \
              that shows it",
             step.title
         );
@@ -498,7 +498,7 @@ fn the_steps_that_ask_for_an_exact_scale_value_can_be_done_in_the_simple_interfa
     let girdle = step_with("tier_named:G1");
     assert!(
         girdle.actions.iter().any(|action| {
-            action.contains("Girdle Facet Preset") && action.contains("Exact scale value 1.0")
+            action.contains("Girdle Facet Preset") && action.contains("Exact Scale Value 1.0")
         }),
         "the girdle step names the preset and what it sets"
     );

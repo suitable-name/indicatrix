@@ -285,6 +285,10 @@ impl MetricsWorker {
     ///
     /// Costs one hash of the facet planes (and tools) and a material comparison on the calling
     /// thread; the material is cloned only when it actually changed.
+    #[expect(
+        clippy::float_cmp,
+        reason = "pose is an exact change detector: any bit difference must resubmit"
+    )]
     pub(super) fn request(
         &mut self,
         planes: &Arc<Vec<GpuFacetPlane>>,

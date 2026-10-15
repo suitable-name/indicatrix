@@ -1,5 +1,23 @@
 # Canonical Gem Chromophore Catalogue
-data_version = 4
+#
+# data_version 4 = the 2026-10-04 primary-data fits (docs/chromophores/research-2026-10-validation.md
+# section 8). The 2026-10-12 review edits (conc_typical / conc_max on eleven chromophores, exact-id
+# relation entries, the tanzanite atom density, the material lists, cordierite commented out) change
+# no band parameter: a stored recipe resolves to the same bands. Bump the version when a band centre,
+# width, coefficient or weight changes, or when a stored recipe otherwise resolves to different bands.
+#
+# data_version 5 (2026-10-12) = the default valence splits of glass (Cu) and quartz (Fe) changed and
+# two treatments were added (reducing_strike, thermal_anneal_550): a stored copper-glass or iron-quartz
+# recipe resolves to different bands (the copper-ruby colloid and the prasiolite Fe2+ now exist only
+# after their treatment). No band centre, width, coefficient or weight changed.
+#
+# Bounds: conc_typical / conc_max are the amounts of the chromophore's driving element(s) in conc_unit
+# as an analysis reports them (element totals), for the stones whose color the chromophore causes. A
+# valence species receives the share of the host's valence_split (after the recipe's treatments). A
+# chromophore with several elements bounds their SUM (the loader scales the elements down together).
+# An element's recipe bound is the largest conc_max of the chromophores it can feed under the recipe's
+# treatments (a species with fraction 0 contributes none).
+data_version = 5
 
 [[host]]
 id = "andalusite"
@@ -21,6 +39,8 @@ total_atom_density_cm3 = 9.364884e+22
   elements = ["V", "Cr"]
   site = "Al1 octahedral"
   conc_unit = "wt_pct_oxide:V2O3"
+  conc_typical = [0.01, 0.15]  # estimate (bounds panel 2026-10-12): V/Cr andalusite (Carlson and Rossman 1988, recalled) trace to a few tenths wt% V2O3 + Cr2O3 (Cr2O3 counts as V2O3, molar masses within 2 %); gem stones <= 0.2
+  conc_max = 0.5  # estimate: ~3x the upper end of ordinary stones; alpha 565 nm A = 3.0 over 10 mm, darker than any real V/Cr andalusite. The bound is on V + Cr together (both are entered in wt% V2O3; the loader scales them down together when their sum exceeds it)
   requires = []
   excludes = []
   quenched_by = []
@@ -53,6 +73,8 @@ total_atom_density_cm3 = 9.364884e+22
   elements = ["Mn"]
   site = "Al1 octahedral (Jahn-Teller, d4)"
   conc_unit = "wt_pct_oxide:Mn2O3"
+  conc_typical = [0.02, 0.5]  # estimate (bounds panel 2026-10-12): gem andalusite 0.02-0.5 wt% Mn2O3; at 1.5 the 702 nm band (27 cm-1 on gamma) is already opaque over 5 mm
+  conc_max = 3.0  # estimate: cut viridine 1-3 wt%, mineral viridine to 8-10 (Smith and Strens 1976, Abs-Wurmbach 1981, unchecked); 3.0 = 0.06 Mn per formula unit, 54 cm-1 at 702 nm, the green window stays open
   requires = []
   excludes = []
   quenched_by = []
@@ -486,6 +508,8 @@ total_atom_density_cm3 = 8.772719e+22
   elements = ["Mn"]
   site = "Al octahedral, Jahn-Teller elongated (report: severely distorted)"
   conc_unit = "wt_pct_oxide:MnO"
+  conc_typical = [0.1, 0.35]  # secondary (bounds panel 2026-10-12): MnO of the stone as analysed (the host's valence split assigns half of it to Mn3+): Utah red beryl ~2000 ppm Mn = 0.26 wt% MnO (Shigley and Foord 1984), 2586 ppm = 0.33 wt% (G&G 2022 EDXRF)
+  conc_max = 0.5  # secondary: the stone's MnO, headroom over the highest analysed stone; after the split 11 cm-1 at 560 nm, darker than real stones
   valence = "Mn3+"
   requires = []
   excludes = ["Fe2+-Fe3+ IVCT (high Fe absent in red beryl)"]
@@ -510,6 +534,8 @@ total_atom_density_cm3 = 8.772719e+22
   elements = ["Mn"]
   site = "Al octahedral (Mn3+, d4), Mn2+ possible"
   conc_unit = "wt_pct_oxide:MnO"
+  conc_typical = [0.005, 0.1]  # estimate (bounds panel 2026-10-12): MnO of the stone as analysed (the host's valence split assigns half of it to Mn2+): morganite EPMA / LA-ICP-MS ~30-600 ppm Mn (0.004-0.08 wt% MnO), strongest Cs-rich stones ~0.15-0.19 (recalled)
+  conc_max = 0.2  # estimate: the stone's MnO, headroom over the strongest morganite; red beryl (0.1-0.5) has its own entry
   valence = "Mn2+"
   requires = []
   excludes = []
@@ -569,7 +595,7 @@ optical = "biaxial"
 axis_mapping_confidence = "verified"  # stored by axis length (cell settings only relabel a/b/c): alpha 4.427, beta 9.404, gamma 5.476 A (Pnma: alpha||c, beta||a, gamma||b; Pbnm: alpha||a, beta||b, gamma||c; Pmnb: alpha||c, beta||b, gamma||a). Ray colors: alpha purple-violet (this fit: violet-blue under A, blue-grey under D65: the alpha shape is the report table's, no primary alpha spectrum exists), beta yellow-orange, gamma blue-green (Schmetzer 2019; Caltech GRR 874). research-2026-10-primary-data §7
 ray_axis_angstrom = { a = 4.427, b = 9.404, g = 5.476 }
 uv_edge_nm = 340.0
-materials = ["Alexandrite"]
+materials = ["Alexandrite", "Chrysoberyl (Yellow)", "Chrysoberyl"]  # the built-in "Chrysoberyl (Yellow)" is Fe3+ chrysoberyl (review 2026-10-12: without this entry its physics host fell back to the alphabetically first host)
 density_g_cm3 = 3.75
 formula_weight_g_mol = 126.97
 sites_per_fu = 2.0
@@ -776,19 +802,24 @@ total_atom_density_cm3 = 1.245028e+23
     confidence = "secondary"
 
 
-[[host]]
-id = "cordierite"
-name = "Cordierite"
-formula = "Mg2Al4Si5O18"
-optical = "biaxial"
-axis_mapping_confidence = "unknown"
-uv_edge_nm = 280.0
-materials = ["Iolite"]
-density_g_cm3 = 2.55
-formula_weight_g_mol = 584.97
-sites_per_fu = 4.0
-cation_site_density_cm3 = 1.050068e+22
-total_atom_density_cm3 = 7.612994e+22
+# Cordierite (iolite) is not a host yet: the Report has no cordierite data
+# (docs/chromophores/beryl_topaz_tourmaline_andalusite.md section 5), and a host without
+# chromophores offered nothing but an empty picker and an unreachable solve (review 2026-10-12).
+# The host header is kept here, commented out, for the day a primary source for the channel
+# Fe2+ and Fe2+-Fe3+ IVCT bands exists.
+# [[host]]
+# id = "cordierite"
+# name = "Cordierite"
+# formula = "Mg2Al4Si5O18"
+# optical = "biaxial"
+# axis_mapping_confidence = "unknown"
+# uv_edge_nm = 280.0
+# materials = ["Iolite"]
+# density_g_cm3 = 2.55
+# formula_weight_g_mol = 584.97
+# sites_per_fu = 4.0
+# cation_site_density_cm3 = 1.050068e+22
+# total_atom_density_cm3 = 7.612994e+22
 
 
 [[host]]
@@ -1655,7 +1686,7 @@ total_atom_density_cm3 = 1.764877e+23
   conc_typical = [10.0, 300.0]
   conc_max = 600.0
   requires = []
-  excludes = ["Boron (type IIb blue)"]
+  excludes = ["Boron acceptor (type IIb blue)"]
   quenched_by = ["aggregation by HPHT/annealing > ~1700 C (-> A/B)"]
   confidence = "secondary"
 
@@ -1690,7 +1721,7 @@ total_atom_density_cm3 = 1.764877e+23
   conc_typical = [100.0, 1500.0]
   conc_max = 3500.0
   requires = ["N aggregates (A/B)"]
-  excludes = ["Boron (type IIb blue)"]
+  excludes = ["Boron acceptor (type IIb blue)"]
   quenched_by = ["HPHT > ~2000 C"]
   confidence = "secondary"
 
@@ -1744,7 +1775,7 @@ total_atom_density_cm3 = 1.764877e+23
   conc_typical = [100.0, 1500.0]
   conc_max = 3500.0
   requires = ["N aggregates (A/B)"]
-  excludes = ["Boron (type IIb blue)", "GR1 (green, radiation)"]
+  excludes = ["Boron acceptor (type IIb blue)", "GR1 (neutral vacancy V0)"]
   quenched_by = ["HPHT > ~1900 C (H4/H3 destroyed; Report p.3)"]
   confidence = "secondary"
 
@@ -1795,7 +1826,7 @@ total_atom_density_cm3 = 1.764877e+23
   conc_typical = [0.05, 1.0]
   conc_max = 10.0
   requires = []
-  excludes = ["C centre / Ns0 (type Ib yellow)", "N3/N2 Cape series", "H3 / H4", "NV (pink)"]
+  excludes = ["C centre / Ns0 (type Ib yellow)", "N3/N2 Cape series (A aggregates + vacancies)", "H3 / H4 (N-V-N, 2N+V; 4N+2V)", "NV0 / NV- (pink)", "550 nm plastic-deformation band (pink/brown)", "Hydrogen-related 480 nm band (chameleon, olive)"]  # exact chromophore ids, listed on both sides: the resolver and the editor match relations by id only (review 2026-10-12)
   quenched_by = []
   confidence = "secondary"
 
@@ -1820,7 +1851,7 @@ total_atom_density_cm3 = 1.764877e+23
   conc_typical = [0.05, 5.0]
   conc_max = 50.0
   requires = []
-  excludes = ["H3 / H4", "NV (pink)"]
+  excludes = ["H3 / H4 (N-V-N, 2N+V; 4N+2V)", "NV0 / NV- (pink)"]
   quenched_by = ["annealing > ~600-700 C (Report p.3)"]
   confidence = "secondary"
   suspect = "sigma vs alpha inconsistent by 10x"
@@ -1850,7 +1881,7 @@ total_atom_density_cm3 = 1.764877e+23
   conc_typical = [0.1, 5.0]
   conc_max = 20.0
   requires = ["C centre / Ns0 (type Ib yellow)"]
-  excludes = ["Boron (type IIb blue)", "GR1 (neutral vacancy V0)"]
+  excludes = ["Boron acceptor (type IIb blue)", "GR1 (neutral vacancy V0)"]
   quenched_by = ["annealing > ~1000 C"]
   confidence = "secondary"
 
@@ -1905,7 +1936,7 @@ total_atom_density_cm3 = 1.764877e+23
   conc_typical = [0.1, 3.0]
   conc_max = 10.0
   requires = []
-  excludes = ["Boron (type IIb blue)"]
+  excludes = ["Boron acceptor (type IIb blue)"]
   quenched_by = ["HPHT > ~2000 C", "annealing > ~1200 C partial"]
   confidence = "secondary"
 
@@ -1938,7 +1969,7 @@ total_atom_density_cm3 = 1.764877e+23
   conc_typical = [0.1, 2.0]
   conc_max = 5.0
   requires = ["N aggregates (A/B)"]
-  excludes = ["Boron (type IIb blue)"]
+  excludes = ["Boron acceptor (type IIb blue)"]
   quenched_by = ["HPHT", "heating ~ 200-300 C reversible in chameleons"]
   confidence = "secondary"
 
@@ -2259,7 +2290,7 @@ name = "Garnet (pyralspite)"
 formula = "(Mg,Fe2+,Mn2+)3(Al,Cr3+,V3+,Fe3+)2Si3O12"
 optical = "isotropic"
 uv_edge_nm = 320.0
-materials = ["Pyrope Garnet", "Almandine Garnet", "Spessartine Garnet"]
+materials = ["Pyrope Garnet", "Almandine Garnet", "Spessartine Garnet", "Color-Change Garnet (Pyrope-Spessartine)", "Rhodolite Garnet", "Malaya Garnet"]  # the built-in color-change garnet is a pyrope-spessartine with V/Cr (review 2026-10-12: without this entry its physics host fell back to the alphabetically first host)
 density_g_cm3 = 3.8
 formula_weight_g_mol = 450.0
 sites_per_fu = 3.0
@@ -2548,12 +2579,24 @@ formula = "SiO2-based glass"
 optical = "isotropic"
 uv_edge_nm = 320.0
 materials = ["Glass (N-BK7)", "Glass (F2)"]
-valence_split = { Cu = { "Cu2+" = 0.95, "Cu0" = 0.05 } }  # estimate: dissolved Cu2+ dominates, colloidal Cu0 is a strike product
+valence_split = { Cu = { "Cu2+" = 1.0, "Cu0" = 0.0 } }  # an oxidising or neutral melt holds copper as Cu2+ (blue-turquoise); the Cu0 colloid of copper ruby exists only after the reducing melt + strike, modelled by the reducing_strike treatment (was a fixed 0.95 / 0.05 estimate that made both species, which exclude each other, present in every copper recipe)
 density_g_cm3 = 2.5
 formula_weight_g_mol = 60.0
 sites_per_fu = 1.0
 cation_site_density_cm3 = 2.509225e+22
 total_atom_density_cm3 = 7.527676e+22
+
+  [[host.treatment]]
+  id = "reducing_strike"
+  name = "Reducing melt + strike (copper ruby)"
+  conditions = "reducing melt (SnO2 -> Sn2+ as reducing agent), then strike at ~550-600 C: Cu2+ -> Cu+ -> Cu0 nanoparticles (Report p.29; the digest's rule that Au/Ag/Cu colloids need a reducing agent and striking heat)"
+  requires = ["Cu"]
+    [[host.treatment.effect]]
+    type = "valence_shift"
+    element = "Cu"
+    from = "Cu2+"
+    to = "Cu0"
+    fraction = 1.0  # estimate: the Report's Cu0 colloid row (coefficient, 500-5000 ppm typical, 10000 max) is per ppm of the glass's copper in a struck ruby glass; the colorless Cu+ remainder is folded into that coefficient, so all copper counts as the colloid species once struck
 
   [[host.chromophore]]
   id = "Co2+ (blue)"
@@ -2608,7 +2651,7 @@ total_atom_density_cm3 = 7.527676e+22
   conc_typical = [0.1, 3.0]
   conc_max = 8.0
   requires = []
-  excludes = ["Cu colloid (copper ruby)"]
+  excludes = ["Cu colloid (copper ruby)"]  # sure: the two are alternative redox states of the same copper; the reducing_strike treatment moves Cu2+ to Cu0, so both are never active together
   quenched_by = ["reducing melt (-> Cu+, Cu0)"]
   confidence = "secondary"
 
@@ -2889,7 +2932,7 @@ total_atom_density_cm3 = 7.527676e+22
   valence = "Cu0"
   conc_typical = [500.0, 5000.0]
   conc_max = 10000.0
-  requires = ["Sn2+ (reducing agent)"]
+  requires = ["Sn2+ (reducing agent)"]  # documentation; the model of this is the reducing_strike treatment (valence_shift Cu2+ -> Cu0)
   excludes = ["Cu2+ (blue-turquoise)"]
   quenched_by = ["oxidising melt"]
   confidence = "secondary"
@@ -3017,6 +3060,8 @@ total_atom_density_cm3 = 6.420529e+22
   elements = ["Ni"]
   site = "octahedral silicate network (Report p.28)"
   conc_unit = "ppm_site"
+  conc_typical = [700.0, 6000.0]  # estimate (bounds panel 2026-10-12): chrysoprase / prase opal ~0.06-0.55 wt% Ni ordinary (1 wt% Ni = 11075 ppm of Si sites through the 65 g/mol hydrous formula unit)
+  conc_max = 15000.0  # estimate: 1.35 wt% Ni, above the richest gem material (~1-1.5 wt% Ni: Szklary, Marlborough, Haneti; recalled, not re-checked)
   requires = []
   excludes = []
   quenched_by = []
@@ -3049,6 +3094,8 @@ total_atom_density_cm3 = 6.420529e+22
   elements = ["Cu"]
   site = "hydrous Cu-silicate (chrysocolla) clusters (Report p.28)"
   conc_unit = "ppm_site"
+  conc_typical = [200.0, 4000.0]  # estimate (bounds panel 2026-10-12): Andean blue opal, Cu as nano-chrysocolla, gem material ~0.02-0.4 wt% Cu (1 wt% Cu = 10230 ppm of Si sites; recalled, no cited analysis)
+  conc_max = 15000.0  # estimate: 1.5 wt% Cu = 1.8 wt% CuO, ~1.5x the richest credible gem material; opaque at 5-10 mm
   requires = []
   excludes = []
   quenched_by = []
@@ -3313,8 +3360,8 @@ name = "Quartz"
 formula = "SiO2"
 optical = "uniaxial"
 uv_edge_nm = 150.0
-materials = ["Quartz", "Amethyst", "Citrine", "Smoky Quartz", "Prasiolite", "Rose Quartz"]
-valence_split = { Fe = { "Fe2+" = 0.1, "Fe3+" = 0.9 } }  # estimate: gem quartz Fe is mostly Fe3+
+materials = ["Quartz", "Amethyst", "Citrine", "Smoky Quartz", "Prasiolite", "Rose Quartz", "Ametrine"]
+valence_split = { Fe = { "Fe2+" = 0.0, "Fe3+" = 1.0 } }  # gem quartz iron is Fe3+ (substitutional and interstitial, nearly colorless until irradiated); the interstitial Fe2+ of prasiolite exists only after the ~550 C anneal (thermal_anneal_550), natural prasiolite being the same state (was a fixed 0.1 / 0.9 estimate that made every iron recipe pale green and raised the prasiolite / amethyst-centre exclusion against itself)
 density_g_cm3 = 2.65
 formula_weight_g_mol = 60.08
 sites_per_fu = 1.0
@@ -3352,6 +3399,22 @@ total_atom_density_cm3 = 7.968712e+22
     from = "Fe"
     fraction = 0.5  # estimate: Fe nanoparticle fraction
 
+  [[host.treatment]]
+  id = "thermal_anneal_550"
+  name = "Thermal anneal (550°C, prasiolite)"
+  conditions = "~550°C: destroys the [FeO4]0 amethyst centre and leaves interstitial Fe2+ (Report p.26-27: heating amethyst of suitable origin, e.g. Montezuma, gives the 720 nm Fe2+ band; natural prasiolite is the same state); > ~700 C turns it citrine/brown (unverified)"
+  requires = ["Fe"]
+    [[host.treatment.effect]]
+    type = "remove_centre"
+    centre_id = "Fe4+ (amethyst centre)"
+    factor = 0.0
+    [[host.treatment.effect]]
+    type = "valence_shift"
+    element = "Fe"
+    from = "Fe3+"
+    to = "Fe2+"
+    fraction = 1.0  # estimate: the prasiolite row's ranges (5-60 ppma typical, 150 max) are the iron of prasiolite stones taken as Fe2+; the fraction that really converts is not measured
+
   [[host.chromophore]]
   id = "Fe4+ (amethyst centre)"
   kind = "color_centre"
@@ -3361,7 +3424,7 @@ total_atom_density_cm3 = 7.968712e+22
   conc_typical = [0.5, 20.0]
   conc_max = 50.0
   requires = ["Fe3+ (interstitial Fe precursor)"]
-  excludes = ["Fe3+ nano-inclusions (citrine, heated)"]
+  excludes = ["Fe3+ (citrine, heated amethyst)"]
   quenched_by = ["heating > ~400 C (Report p.27: bleaches at 400 C; p.26: 400-500 C)"]
   confidence = "secondary"
 
@@ -3513,7 +3576,7 @@ total_atom_density_cm3 = 7.968712e+22
   conc_typical = [5.0, 60.0]
   conc_max = 150.0
   requires = ["Fe"]
-  excludes = ["Fe4+ (amethyst centre)"]
+  excludes = ["Fe4+ (amethyst centre)"]  # sure: the anneal that makes prasiolite destroys the amethyst centre (thermal_anneal_550 removes it)
   quenched_by = ["strong heating (> ~700 C turns it citrine/brown, unverified)"]
   confidence = "secondary"
 
@@ -3574,7 +3637,7 @@ total_atom_density_cm3 = 9.568169e+22
   site = "Ti4+ octahedral site (D2h)"
   conc_unit = "ppma_all"
   conc_typical = [10.0, 5000.0]
-  conc_max = 20000.0
+  conc_max = 20000.0  # bound on the sum of the listed elements (loader scales them down together)
   requires = []
   excludes = []
   quenched_by = []
@@ -3853,7 +3916,7 @@ total_atom_density_cm3 = 9.641432e+22
 [[host]]
 id = "tanzanite"
 name = "Tanzanite"
-formula = "Ca2Al3(SiO4)(Si2O7)(OH)"
+formula = "Ca2Al3(SiO4)(Si2O7)O(OH)"
 optical = "biaxial"
 axis_mapping_confidence = "verified"  # stored by axis length: alpha 5.55, beta 10.0, gamma 16.2 A (Pnma b, c, a; other papers write X||a, Y||b, Z||c = the Pmcn relabelling). Ray colors: alpha red-violet, beta blue, gamma yellow-green (Caltech GRR 1265 headers, Hurlbut 1969). research-2026-10-primary-data §7
 ray_axis_angstrom = { a = 5.55, b = 10.0, g = 16.2 }
@@ -3863,7 +3926,7 @@ density_g_cm3 = 3.35
 formula_weight_g_mol = 454.36
 sites_per_fu = 3.0
 cation_site_density_cm3 = 1.332039e+22
-total_atom_density_cm3 = 1.110032e+23
+total_atom_density_cm3 = 9.768284e+22  # 22 atoms per formula unit (Ca2Al3Si3O13H) x 4.440129e21 formula units per cm3; the earlier 1.110032e+23 (25 atoms) was inconsistent with the formula (review 2026-10-12); no chromophore of this host uses ppma_all, so no recipe changes
 
   [[host.treatment]]
   id = "air_anneal_550"
@@ -4196,6 +4259,8 @@ total_atom_density_cm3 = 1.090572e+23
   elements = ["Cu"]
   site = "Y distorted octahedral (Jahn-Teller, d9)"
   conc_unit = "wt_pct_oxide:CuO"
+  conc_typical = [0.05, 1.2]  # secondary (bounds panel 2026-10-12): cuprian elbaite CuO 0.03-2.3 wt% (Rossman 1991; Brandstaetter 1994; Abduriyim 2006; Ertl 2012); pale Nigerian stones 0.03-0.1 still show blue
+  conc_max = 2.5  # secondary: headroom over the highest analysed Paraiba-type stones (2.0-2.3 wt% CuO); 45 cm-1 at 700 nm E||c, near the deepest real stones
   requires = ["Mn3+ for violet hues (optional)"]
   excludes = ["high Fe2+ (dulls)"]
   quenched_by = []
@@ -4228,6 +4293,8 @@ total_atom_density_cm3 = 1.090572e+23
   elements = ["Mn"]
   site = "Y octahedral, distorted (d4)"
   conc_unit = "wt_pct_oxide:MnO"
+  conc_typical = [0.05, 1.0]  # estimate (bounds panel 2026-10-12): gem elbaite / rubellite total MnO ~0.05-1.0 wt% (Rossman 1991, Abduriyim 2006, recalled); 0.05 already gives a pale pink (A ~0.24 over 5 mm)
+  conc_max = 2.0  # estimate: Paraiba-type stones to ~2 wt% MnO (0.27 Mn apfu, ~9 % of the Y site); all MnO as Mn3+ overstates the absorption: 44 cm-1 at 520 nm
   requires = []
   excludes = ["high Fe2+ (Report p.24: rubellites must be iron-poor; mechanism given by the report is wrong, see Discrepancies)"]
   quenched_by = []
@@ -4252,6 +4319,8 @@ total_atom_density_cm3 = 1.090572e+23
   elements = ["Fe", "Fe"]
   site = "Y-Y and Y-Z edge-sharing octahedra"
   conc_unit = "wt_pct_oxide:FeO"
+  conc_typical = [0.3, 4.0]  # estimate (bounds panel 2026-10-12): gem elbaite / indicolite / verdelite 0.3-4 wt% FeO total (Mattson and Rossman 1987, recalled); the random pair law gives alpha(720) ~0.66 C^2 cm-1, ~10 cm-1 at 4 wt%
+  conc_max = 10.0  # estimate: darkest facetable material ~8 wt% FeO, schorl (10-18) excluded; 10 = 1.3 Fe apfu, ~65 cm-1 at 720 nm
   partners = ["Fe2+", "Fe3+"]
   pairing = "random"
   pair_z = 6.0
@@ -4295,6 +4364,8 @@ total_atom_density_cm3 = 1.090572e+23
   elements = ["Fe", "Ti"]
   site = "Y-Y edge-sharing octahedra"
   conc_unit = "wt_pct_oxide:TiO2"
+  conc_typical = [0.02, 0.8]  # estimate (bounds panel 2026-10-12): gem tourmaline TiO2 ~0.01-0.1 wt% in canary Mn-elbaite, 0.3-1.0 in brown dravite / schorl (Mattson and Rossman 1988; Henry and Dutrow 1990, recalled)
+  conc_max = 1.5  # estimate: headroom above the ~1.2 wt% TiO2 gem top; 2.5 (Ti-rich dravite) is mostly opaque non-gem material
   partners = ["Fe2+", "Ti4+"]
   pairing = "random"
   pair_z = 6.0
@@ -4322,6 +4393,8 @@ total_atom_density_cm3 = 1.090572e+23
   elements = ["Cr", "V"]
   site = "Y/Z octahedral (Z, Y)"
   conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.1, 1.0]  # estimate (bounds panel 2026-10-12): East African Cr/V-dravite ~0.05-1 wt% Cr2O3 + 0.3-2.5 wt% V2O3, Cr2O3-equivalent sum ~0.1-1.2 typical (recalled); at 1 wt% the 600 nm band has optical depth 10 over 5 mm
+  conc_max = 3.0  # estimate: headroom over the ~2.5 wt% highest credible gem sum; 0.38 apfu (4 % of Y+Z), not site-limited. The bound is on Cr + V together (both entered in wt% Cr2O3; the loader scales them down together when their sum exceeds it)
   requires = []
   excludes = []
   quenched_by = []
@@ -4603,7 +4676,7 @@ total_atom_density_cm3 = 9.205193e+22
   conc_typical = [0.2, 1.0]
   conc_max = 1.0
   requires = ["U4+"]
-  excludes = ["brown centre (pre-heat)"]
+  excludes = ["brown centre (natural / LWUV-induced)"]
   quenched_by = ["oxidising heat treatment (centre bleaches)", "UV exposure (bleaches back to brown, Report p.19)"]
   confidence = "secondary"
 
@@ -4690,7 +4763,7 @@ total_atom_density_cm3 = 9.205193e+22
   site = "Zr (8-fold)"
   conc_unit = "ppm_site"
   conc_typical = [10.0, 1000.0]
-  conc_max = 10000.0
+  conc_max = 10000.0  # bound on the sum of the listed elements (loader scales them down together)
   requires = []
   excludes = []
   quenched_by = ["metamictisation", "U/Th radiation"]

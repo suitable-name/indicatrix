@@ -236,8 +236,8 @@ impl Sim {
     /// An orbit edit of the tier called `name`, as the facet chips make it.
     fn orbit(&mut self, name: &str, build: impl FnOnce(&Design, usize) -> Result<Edit, EditError>) {
         let row = self.row(name);
-        let built = build(&self.session.design, row);
-        self.apply_built(built);
+        let outcome = build(&self.session.design, row);
+        self.apply_built(outcome);
     }
 
     /// The inline angle cell: double-click, type `text`, press Enter.

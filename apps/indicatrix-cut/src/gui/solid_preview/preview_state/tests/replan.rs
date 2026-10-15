@@ -511,7 +511,7 @@ fn a_stale_mast_list_on_an_unsolvable_design_does_not_kill_the_plan_worker() {
             tier("C2", 40.0, MeetConstraint::MeetExisting),
         ],
     ));
-    let stale = vec![SolvedTier {
+    let leftover_masts = vec![SolvedTier {
         mast: 0.5,
         strategy: SolveStrategy::ScaleReference,
         detail: "from before the edit".to_string(),
@@ -519,7 +519,7 @@ fn a_stale_mast_list_on_an_unsolvable_design_does_not_kill_the_plan_worker() {
 
     state.set_cut_steps(Some(1));
     state.request_replan(ReplanRequest {
-        last_solved: Some(stale),
+        last_solved: Some(leftover_masts),
         ..replan_request(&unsolvable, 1)
     });
     sink.wait_until("the unsolvable frame", DEADLINE, |c| !c.is_empty());

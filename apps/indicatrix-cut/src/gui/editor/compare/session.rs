@@ -147,6 +147,10 @@ pub(super) fn resolve_metrics_material(design: &Design, custom: &[GemMaterial]) 
 /// compare side and by the snapshot summary, so the figures equal the render. A design without a
 /// girdle diameter is "not set" (0.0).
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the render material's precision; a girdle diameter in mm is in the normal float range"
+)]
 pub(super) fn sized_for_design(
     material: GemMaterial,
     design: &Design,

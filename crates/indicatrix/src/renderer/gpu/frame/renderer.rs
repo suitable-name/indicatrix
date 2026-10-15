@@ -97,6 +97,12 @@ pub struct GpuFrameRenderer {
     /// `Self::next_chunk_pixels` sizes every later chunk toward `TARGET_CHUNK_MS`
     /// from this estimate.
     pub(super) ns_per_tuple_ema: Option<f64>,
+    /// `(width, height, planes hash)` of the scene the EMA above was measured on.
+    /// `Self::prepare_turn` clears the EMA when a turn arrives for a different key: an
+    /// EMA carried into a new design or resolution overshoots `TARGET_CHUNK_MS` by the
+    /// ratio of the two scenes' per-sample costs, while a cleared one starts from the
+    /// bounded `FIRST_DISPATCH_MAX_TUPLES` cap.
+    pub(super) last_scene_key: Option<(u32, u32, u64)>,
     /// Which kernel `Self::dispatch_chunk` dispatches through --
     /// see [`GpuPipelineKind`]'s own doc comment. `Default::default()` (`Megakernel`)
     /// until [`Self::set_pipeline_kind`] is called.
@@ -149,7 +155,7 @@ impl GpuFrameRenderer {
         }
         let info = ctx.adapter.get_info();
         let adapter_label = format!("{} ({:?})", info.name, info.backend);
-        let pipeline_cache = compute::create_pipeline_cache(&ctx.device);
+        let pipeline_cache = compute::create_pipeline_cache(&ctx.device, &info);
         let reduce_pipeline = compute::create_compute_pipeline_cached(
             &ctx.device,
             pipeline_cache.as_ref(),
@@ -176,6 +182,7 @@ impl GpuFrameRenderer {
             xyz_scratch: Vec::new(),
             chunk_budget_bytes: CHUNK_BUDGET_BYTES,
             ns_per_tuple_ema: None,
+            last_scene_key: None,
             pipeline_kind: GpuPipelineKind::default(),
             wavefront_pipelines: None,
             poisoned: false,

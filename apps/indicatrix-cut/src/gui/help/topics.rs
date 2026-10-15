@@ -34,8 +34,14 @@ pub const SOLID_VIEW: &str = "13-solid-inspection-view#the-four-view-modes";
 pub const DIAGRAM_VIEW: &str = "13-solid-inspection-view#diagram-view";
 /// The Live Render viewport.
 pub const LIVE_RENDER: &str = "02-catalogue-and-viewing#the-3d-viewport";
-/// The Live Render settings dialog: quality, resolution, compute, lighting.
-pub const RENDER_SETTINGS: &str = "02-catalogue-and-viewing#quality-resolution-and-gpu-options";
+/// The Parameters dock: how it opens and what its three tabs hold.
+pub const PARAMETERS_DOCK: &str = "02-catalogue-and-viewing#the-parameters-dock";
+/// The dock's Stone tab: material, preview, stone width, material effects.
+pub const STONE_TAB: &str = "02-catalogue-and-viewing#the-stone-tab";
+/// The dock's Lighting & Environment tab. (The slug keeps two hyphens: the `&` is dropped.)
+pub const LIGHTING_TAB: &str = "02-catalogue-and-viewing#the-lighting--environment-tab";
+/// The dock's Render & Output tab: quality, compute, output defaults, thumbnails.
+pub const RENDER_OUTPUT_TAB: &str = "02-catalogue-and-viewing#the-render--output-tab";
 /// The Retarget dialog.
 pub const RETARGET: &str = "14-retarget-snapshot-compare-tilt-curves#retarget";
 /// The before/after Compare window.
@@ -116,7 +122,10 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("SOLID_VIEW", SOLID_VIEW),
     ("DIAGRAM_VIEW", DIAGRAM_VIEW),
     ("LIVE_RENDER", LIVE_RENDER),
-    ("RENDER_SETTINGS", RENDER_SETTINGS),
+    ("PARAMETERS_DOCK", PARAMETERS_DOCK),
+    ("STONE_TAB", STONE_TAB),
+    ("LIGHTING_TAB", LIGHTING_TAB),
+    ("RENDER_OUTPUT_TAB", RENDER_OUTPUT_TAB),
     ("RETARGET", RETARGET),
     ("COMPARE", COMPARE),
     ("MATERIAL_EDITOR", MATERIAL_EDITOR),

@@ -76,6 +76,10 @@ fn fibonacci_sphere(n: usize) -> Vec<Vec3> {
 /// ray sweep through the real round-brilliant geometry, crossed with a spread of
 /// `rounding_radius` values (including `0.0`, the default-off case, and negative, to
 /// pin the early-return path too).
+///
+/// # Panics
+///
+/// Panics if a facet index does not fit in `u32`, which the round brilliant never reaches.
 #[must_use]
 pub fn build_cases() -> Vec<ShadingNormalCase> {
     let planes = StandardGemCuts::standard_round_brilliant();
@@ -95,7 +99,7 @@ pub fn build_cases() -> Vec<ShadingNormalCase> {
         for &radius in &radii {
             cases.push(ShadingNormalCase {
                 hit_point: hit_point.to_array(),
-                hit_facet_idx: hit.facet_idx as u32,
+                hit_facet_idx: u32::try_from(hit.facet_idx).expect("a facet index fits u32"),
                 hit_normal: hit.normal.to_array(),
                 rounding_radius: radius,
             });
@@ -139,6 +143,10 @@ impl ShadingNormalResult {
 }
 
 /// Runs the check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run(ctx: &crate::renderer::gpu::GpuContext) -> ShadingNormalResult {
     let planes = StandardGemCuts::standard_round_brilliant();
@@ -171,7 +179,7 @@ pub fn run(ctx: &crate::renderer::gpu::GpuContext) -> ShadingNormalResult {
         &pipeline,
         &[(0, &planes_buf), (1, &cases_buf), (2, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total).expect("a few cases").div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

@@ -23,7 +23,7 @@ export component MaterialGuessBadge inherits HorizontalLayout {
         border-width: 1px;
         border-color: Theme.accent-amber;
         accessible-role: AccessibleRole.text;
-        accessible-label: "Guessed material: " + EditorModel.material_guess_text;
+        accessible-label: "Guessed Material: " + EditorModel.material_guess_text;
         accessible-description: EditorModel.material_guess_other_candidates_text;
         guess_lbl := Text {
             text: EditorModel.material_guess_text;
@@ -37,7 +37,7 @@ export component MaterialGuessBadge inherits HorizontalLayout {
         Tooltip { text: @markdown("A guess from the refractive index alone: the design does not say which material it is. \{EditorModel.material_guess_other_candidates_text}"); }
     }
     Button {
-        text: "Set material";
+        text: "Set Material";
         accessible-description: "Use the guessed material for this design. You can undo it.";
         // A design-material edit: locked with Design Settings while the
         // worked-example guide runs.

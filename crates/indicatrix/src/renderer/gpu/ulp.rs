@@ -22,7 +22,7 @@ pub fn ulp_distance(a: f32, b: f32) -> u32 {
     }
     let ai = to_ordered(a);
     let bi = to_ordered(b);
-    ai.abs_diff(bi) as u32
+    u32::try_from(ai.abs_diff(bi)).unwrap_or(u32::MAX)
 }
 
 /// Whether `cpu`/`gpu` agree closely enough to not be a bug, under a hybrid rule: EITHER
@@ -57,7 +57,7 @@ pub fn within_tolerance(cpu: f32, gpu: f32, budget: u32, abs_floor: f32) -> bool
 /// only monotonic within same-sign ranges and breaks across the sign boundary (a
 /// ~2^31 jump from `0x7FFF_FFFF` to `0x8000_0000` unrelated to actual step count).
 fn to_ordered(x: f32) -> i64 {
-    let bits = x.to_bits() as i32;
+    let bits = x.to_bits().cast_signed();
     let ordered = if bits < 0 {
         i32::MIN.wrapping_sub(bits)
     } else {

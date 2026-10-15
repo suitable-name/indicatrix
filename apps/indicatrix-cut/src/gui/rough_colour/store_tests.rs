@@ -2,13 +2,12 @@
 //! `gui::rough_plan`: nothing here starts the planner.
 
 use super::store::{
-    AdoptRequest, HostMaterial, adopt_stone, attach_job_zoning, attach_zoning, cached_views,
-    choose_and_save_poses, clear_pose_choices, delete_job_zoning, delete_material_zoning,
-    delete_rough_colour, delete_view_photos, load_material_zoning, load_pose_choices,
-    load_rough_colour, load_view_photos, planner_stone_material, plans_with_rough_colour,
-    posed_stone_pose, prune_orphans, save_job_zoning, save_layout_pose_choices,
-    save_material_zoning, save_relative_material_zoning, save_rough_colour, save_view_photos,
-    with_stored_zoning,
+    AdoptRequest, HostMaterial, adopt_stone, apply_stored_zoning, attach_job_zoning, attach_zoning,
+    attach_zoning_reporting, cached_views, choose_and_save_poses, delete_job_zoning,
+    delete_material_zoning, delete_rough_colour, load_material_zoning, load_pose_choices,
+    load_rough_colour, load_view_photos, planner_stone_material, posed_stone_pose, prune_orphans,
+    save_job_zoning, save_layout_pose_choices, save_material_zoning, save_relative_material_zoning,
+    save_rough_colour, save_rough_colour_with_photos, with_stored_zoning,
 };
 use crate::gui::optics::crystal_optics::gem_material_from_row;
 use glam::DVec3;
@@ -109,7 +108,10 @@ fn a_rough_colour_round_trips_and_is_listed_and_deleted() {
     let stored = colour(watermelon());
     save_rough_colour(&db, 4, &stored).unwrap();
     assert_eq!(load_rough_colour(&db, 4).unwrap(), Some(stored));
-    assert_eq!(plans_with_rough_colour(&db).unwrap().len(), 1);
+    assert_eq!(
+        db.rough_colour_plan_ids().unwrap(),
+        std::collections::BTreeSet::from([4])
+    );
     delete_rough_colour(&db, 4).unwrap();
     assert_eq!(load_rough_colour(&db, 4).unwrap(), None);
 }
@@ -166,16 +168,41 @@ fn view_image() -> ResampledImage {
 #[test]
 fn cached_photos_round_trip_per_view_and_delete_with_the_plan() {
     let db = db();
+    let image = view_image();
     assert_eq!(load_view_photos(&db, 3, 0).unwrap(), None);
-    save_view_photos(&db, 3, 2, &view_image()).unwrap();
-    save_view_photos(&db, 3, 5, &view_image()).unwrap();
+    save_rough_colour_with_photos(&db, 3, &colour(watermelon()), &[(2, &image), (5, &image)])
+        .unwrap();
     assert_eq!(cached_views(&db, 3).unwrap(), vec![2, 5]);
     assert_eq!(load_view_photos(&db, 3, 2).unwrap(), Some(view_image()));
     assert_eq!(load_view_photos(&db, 3, 3).unwrap(), None);
-    assert_eq!(delete_view_photos(&db, 3).unwrap(), 10);
+
+    // A colour stored without photos removes the cached ones.
+    save_rough_colour_with_photos(&db, 3, &colour(watermelon()), &[]).unwrap();
     assert_eq!(cached_views(&db, 3).unwrap(), [] as [u32; 0]);
 
-    save_view_photos(&db, 3, 2, &view_image()).unwrap();
+    save_rough_colour_with_photos(&db, 3, &colour(watermelon()), &[(2, &image)]).unwrap();
+    delete_rough_colour(&db, 3).unwrap();
+    assert_eq!(cached_views(&db, 3).unwrap(), [] as [u32; 0]);
+}
+
+#[test]
+fn accepting_again_replaces_the_colour_and_drops_the_stale_views() {
+    let db = db();
+    let image = view_image();
+    save_rough_colour_with_photos(&db, 3, &colour(watermelon()), &[(2, &image), (5, &image)])
+        .unwrap();
+    assert_eq!(cached_views(&db, 3).unwrap(), vec![2, 5]);
+    assert_eq!(load_view_photos(&db, 3, 5).unwrap(), Some(view_image()));
+
+    // The second Accept prepared only view 2: view 5 must not linger.
+    let mut second = colour(watermelon());
+    second.fit_json = "{\"fit\":\"second\"}".to_string();
+    save_rough_colour_with_photos(&db, 3, &second, &[(2, &image)]).unwrap();
+    assert_eq!(cached_views(&db, 3).unwrap(), vec![2]);
+    assert_eq!(load_rough_colour(&db, 3).unwrap(), Some(second));
+    assert_eq!(load_view_photos(&db, 3, 5).unwrap(), None);
+
+    // Deleting the colour deletes its photos too.
     delete_rough_colour(&db, 3).unwrap();
     assert_eq!(cached_views(&db, 3).unwrap(), [] as [u32; 0]);
 }
@@ -218,7 +245,6 @@ fn the_pose_choice_is_stored_per_stone_and_read_back() {
     choose_and_save_poses(&db, 8, 1, &two, &zoned, PoseGoal::KeepCanonical).unwrap();
     assert!(load_pose_choices(&db, 8).unwrap().is_empty());
     assert!(save_layout_pose_choices(&db, 8, 0, &[0, 4]).is_err());
-    assert_eq!(clear_pose_choices(&db, 8).unwrap(), 0);
 }
 
 // ---- planner preview -------------------------------------------------------------------------
@@ -249,6 +275,7 @@ fn the_planner_previews_a_stone_with_the_plans_zones_in_its_frame() {
 fn request<'a>(rough: &'a ZonedAbsorption, host: HostMaterial<'a>) -> AdoptRequest<'a> {
     AdoptRequest {
         rough_name: "Melon",
+        design_title: "Round",
         rough_zoned: rough,
         placement: StonePlacement {
             pose: pose(2.0),
@@ -265,7 +292,7 @@ fn adopting_a_stone_creates_the_material_row_and_the_zoning_row() {
     let rough = watermelon();
     let host = GemMaterial::by_name("Quartz").unwrap_or_else(GemMaterial::diamond);
     let outcome = adopt_stone(&db, &request(&rough, HostMaterial::BuiltIn(&host))).unwrap();
-    assert_eq!(outcome.material_name, "Melon colour");
+    assert_eq!(outcome.material_name, "Melon - Round color");
     assert!(!outcome.replaced);
     assert!((outcome.stone_width_mm - 7.0).abs() < 1e-12);
 
@@ -273,7 +300,7 @@ fn adopting_a_stone_creates_the_material_row_and_the_zoning_row() {
     let rows = db.get_custom_materials().unwrap();
     let row = rows
         .iter()
-        .find(|r| r.name == "Melon colour")
+        .find(|r| r.name == "Melon - Round color")
         .expect("material row");
     assert!(row.color_recipe_json.is_none());
     let bands = row.absorption_bands_json.as_deref().expect("band rows");
@@ -284,7 +311,7 @@ fn adopting_a_stone_creates_the_material_row_and_the_zoning_row() {
     );
 
     // The zones are in the side table, in mm, not relative to the stone.
-    let stored = load_material_zoning(&db, "melon COLOUR")
+    let stored = load_material_zoning(&db, "melon - ROUND color")
         .unwrap()
         .expect("zoning row");
     assert!(!stored.relative_to_stone);
@@ -314,12 +341,12 @@ fn adopting_from_a_catalogue_host_copies_its_optics() {
     let mut second_request = request(&rough, HostMaterial::Custom(&host_row));
     second_request.rough_name = "Second";
     let second = adopt_stone(&db, &second_request).unwrap();
-    assert_eq!(second.material_name, "Second colour");
+    assert_eq!(second.material_name, "Second - Round color");
     let copy = db
         .get_custom_materials()
         .unwrap()
         .into_iter()
-        .find(|r| r.name == "Second colour")
+        .find(|r| r.name == "Second - Round color")
         .unwrap();
     assert!((copy.refractive_index - host_row.refractive_index).abs() < 1e-6);
     assert_eq!(copy.specific_gravity, host_row.specific_gravity);
@@ -346,13 +373,32 @@ fn adopting_refuses_a_bad_width_and_an_unusable_pose_and_writes_nothing() {
         [] as [indicatrix_vault::model::zoning::MaterialZoningRow; 0]
     );
 
-    // A rough without a usable name still adopts, under the stem "Rough".
+    // A rough without a usable name still adopts, under the stem "Rough", and a design without a
+    // title under the stem "design".
     let mut unnamed = request(&rough, HostMaterial::BuiltIn(&host));
     unnamed.rough_name = " ";
+    unnamed.design_title = "";
     assert_eq!(
         adopt_stone(&db, &unnamed).unwrap().material_name,
-        "Rough colour"
+        "Rough - design color"
     );
+}
+
+#[test]
+fn two_designs_of_one_plan_get_two_materials() {
+    let db = db();
+    let rough = watermelon();
+    let host = GemMaterial::by_name("Quartz").unwrap_or_else(GemMaterial::diamond);
+    let mut oval = request(&rough, HostMaterial::BuiltIn(&host));
+    oval.design_title = "Oval";
+    let first = adopt_stone(&db, &request(&rough, HostMaterial::BuiltIn(&host))).unwrap();
+    let second = adopt_stone(&db, &oval).unwrap();
+    assert_ne!(first.material_name, second.material_name);
+    assert!(
+        !second.replaced,
+        "the second design does not replace the first"
+    );
+    assert_eq!(db.get_custom_materials().unwrap().len(), 2);
 }
 
 #[test]
@@ -389,14 +435,20 @@ fn material_resolution_puts_the_stored_zones_back_on_the_custom_materials() {
         "a plain row load has no zones"
     );
     assert_eq!(attach_zoning(&db, &mut list, 7.0), 1);
-    let zoned = list.iter().find(|m| m.name == "Melon colour").unwrap();
+    let zoned = list
+        .iter()
+        .find(|m| m.name == "Melon - Round color")
+        .unwrap();
     assert_eq!(zoned.zoning.as_ref(), outcome.material.zoning.as_ref());
     assert_eq!(zoned.absorption_unit, AbsorptionUnit::PerMm);
     let plain = list.iter().find(|m| m.name == "Plain").unwrap();
     assert!(plain.zoning.is_none());
 
     // Deleting the zones makes the material plain again.
-    assert_eq!(delete_material_zoning(&db, "Melon colour").unwrap(), 1);
+    assert_eq!(
+        delete_material_zoning(&db, "Melon - Round color").unwrap(),
+        1
+    );
     let mut again: Vec<GemMaterial> = rows.iter().map(gem_material_from_row).collect();
     assert_eq!(attach_zoning(&db, &mut again, 7.0), 0);
 }
@@ -442,6 +494,52 @@ fn a_damaged_zoning_row_leaves_the_material_plain() {
     assert!(load_material_zoning(&db, "Broken").is_err());
     save_material_zoning(&db, "Fine", &watermelon(), false).unwrap();
     assert!(load_material_zoning(&db, "Fine").unwrap().is_some());
+}
+
+#[test]
+fn zones_are_applied_in_place_and_unusable_rows_are_reported() {
+    let db = db();
+    save_material_zoning(&db, "Fine", &watermelon(), false).unwrap();
+    db.save_material_zoning(&indicatrix_vault::model::zoning::MaterialZoningRow {
+        material_name: "Broken".to_string(),
+        zoned_json: "[]".to_string(),
+        relative_to_stone: false,
+        version: ZONING_FORMAT_VERSION,
+    })
+    .unwrap();
+
+    let named = |name: &str| {
+        let mut material = GemMaterial::diamond();
+        material.name = name.to_string();
+        material
+    };
+    let mut fine = named("Fine");
+    assert!(apply_stored_zoning(&db, &mut fine, 7.0).unwrap());
+    assert_eq!(fine.absorption_unit, AbsorptionUnit::PerMm);
+    assert!(fine.zoning.is_some());
+
+    let mut none = named("Nothing stored");
+    assert!(!apply_stored_zoning(&db, &mut none, 7.0).unwrap());
+    assert!(none.zoning.is_none());
+
+    // A damaged row is an error and leaves the material exactly as it was.
+    let mut broken = named("Broken");
+    let before = broken.clone();
+    let message = format!(
+        "{:#}",
+        apply_stored_zoning(&db, &mut broken, 7.0).unwrap_err()
+    );
+    assert!(message.contains("Broken"), "{message}");
+    assert_eq!(broken.zoning, before.zoning);
+    assert_eq!(broken.absorption_unit, before.absorption_unit);
+
+    // The list version names the skipped material instead of only logging it.
+    let mut list = vec![named("Fine"), named("Broken"), named("Plain")];
+    let report = attach_zoning_reporting(&db, &mut list, 7.0);
+    assert_eq!(report.attached, 1);
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].0, "Broken");
+    assert!(list[1].zoning.is_none());
 }
 
 // ---- render jobs -----------------------------------------------------------------------------
@@ -490,10 +588,23 @@ fn a_queued_jobs_zones_are_saved_with_it_and_reattached_when_it_runs() {
     assert!(other.material.zoning.is_none());
 
     // A row that cannot be read fails the job instead of rendering it without its zones.
-    db.save_render_job_zoning(13, "not zones").unwrap();
+    db.save_render_job_zoning(13, ZONING_FORMAT_VERSION, "not zones")
+        .unwrap();
     let mut broken = scene(GemMaterial::diamond());
     let message = format!("{:#}", attach_job_zoning(&db, 13, &mut broken).unwrap_err());
     assert!(message.contains("render job 13"), "{message}");
+
+    // Zones written by a newer build are refused too, not guessed at.
+    db.save_render_job_zoning(
+        14,
+        ZONING_FORMAT_VERSION + 1,
+        &encode_zoned(&watermelon()).unwrap(),
+    )
+    .unwrap();
+    let mut newer = scene(GemMaterial::diamond());
+    let message = format!("{:#}", attach_job_zoning(&db, 14, &mut newer).unwrap_err());
+    assert!(message.contains("render job 14"), "{message}");
+    assert!(newer.material.zoning.is_none());
 
     assert_eq!(delete_job_zoning(&db, 11).unwrap(), 1);
 }
@@ -507,7 +618,7 @@ fn pruning_drops_the_rows_of_deleted_owners_only() {
     save_job_zoning(&db, 77, &GemMaterial::diamond().with_zoning(watermelon())).unwrap();
     assert_eq!(prune_orphans(&db).unwrap(), 2);
     assert_eq!(
-        plans_with_rough_colour(&db)
+        db.rough_colour_plan_ids()
             .unwrap()
             .into_iter()
             .collect::<Vec<_>>(),

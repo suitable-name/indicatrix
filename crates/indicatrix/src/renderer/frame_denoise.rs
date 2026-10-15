@@ -55,6 +55,22 @@ pub fn denoise_and_tonemap_frame_into(
     scratch: &mut DenoiseScratch<'_>,
     rgba: &mut [u8],
 ) {
+    denoise_and_tonemap_frame_with_params_into(frame, scratch, &AtrousParams::default(), rgba);
+}
+
+/// [`denoise_and_tonemap_frame_into`] with caller-chosen filter parameters.
+///
+/// The GUI's display thread passes a reduced `num_passes` while the camera is orbiting
+/// (strides 1, 2, 4 instead of 1..16): a frame that is replaced within a fraction of a
+/// second does not need the widest, most expensive passes (PERF-4). With
+/// `AtrousParams::default()` the output is byte-identical to
+/// [`denoise_and_tonemap_frame_into`].
+pub fn denoise_and_tonemap_frame_with_params_into(
+    frame: FirstHitSnapshot<'_>,
+    scratch: &mut DenoiseScratch<'_>,
+    params: &AtrousParams,
+    rgba: &mut [u8],
+) {
     if frame.current_sample_count == 0 {
         scratch.filtered_buf.clear();
         scratch
@@ -83,7 +99,7 @@ pub fn denoise_and_tonemap_frame_into(
     };
     scratch
         .denoiser
-        .denoise_into(&gbuffers, &AtrousParams::default(), scratch.filtered_buf);
+        .denoise_into(&gbuffers, params, scratch.filtered_buf);
 
     // `filtered_buf` is already averaged and filtered, so no further scaling.
     tonemap_to_rgba_into(scratch.filtered_buf, 1.0, rgba);
@@ -182,7 +198,9 @@ mod tests {
                 let hit = intersect_polyhedron(ray, planes);
                 depth.push(hit.map_or(1.0e6, |h| h.t));
                 normal.push(hit.map_or(Vec3::ZERO, |h| h.normal));
-                facet_id.push(hit.map_or(-1, |h| h.facet_idx as i32));
+                facet_id.push(hit.map_or(-1, |h| {
+                    i32::try_from(h.facet_idx).expect("the facet index fits i32")
+                }));
             }
         }
         (depth, normal, facet_id)
@@ -326,7 +344,7 @@ mod tests {
             .collect();
         let first_hit_normal: Vec<Vec3> = vec![Vec3::Y; pixel_count];
         let first_hit_facet_id: Vec<i32> = (0..pixel_count)
-            .map(|i| (i % width as usize) as i32)
+            .map(|i| i32::try_from(i % width as usize).expect("the column fits i32"))
             .collect();
 
         let mut denoiser = AtrousDenoiser::new();

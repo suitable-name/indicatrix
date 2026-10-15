@@ -57,8 +57,7 @@ pub(crate) struct RayWavelengthCache {
     /// than rebuilding one (the axis frame + `Mat3`) from scratch every bounce.
     pub(crate) tensor_ch: [AbsorptionTensor3; NUM_CHANNELS],
     /// The zoned-absorption tables (kernel plus per-zone tensors); `Some` exactly when
-    /// `material.zoning` is. `zoning` feature only -- see `raytracer::zoned`.
-    #[cfg(feature = "zoning")]
+    /// `material.zoning` is. See `raytracer::zoned`.
     pub(crate) zoned: Option<crate::optics::raytracer::zoned::ZonedCache>,
 }
 

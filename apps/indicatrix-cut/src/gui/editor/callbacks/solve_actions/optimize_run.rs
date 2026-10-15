@@ -362,7 +362,7 @@ fn optimize_target_design(
     else {
         show_toast(
             ui,
-            "Solve first, then Optimize with \"Only selected tiers\".",
+            "Solve first, then Optimize with \"Only Selected Tiers\".",
             "error",
         );
         return None;

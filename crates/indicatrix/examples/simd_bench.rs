@@ -104,9 +104,9 @@ fn main() {
     let start = Instant::now();
     let mut mast_sum = 0.0f64;
     for _ in 0..solves {
-        let solved =
+        let meets =
             indicatrix::geometry::meet_solver::solve_meet_points(schedule.gear_teeth_abs(), &tiers);
-        mast_sum += solved.iter().map(|s| s.mast).sum::<f64>();
+        mast_sum += meets.iter().map(|s| s.mast).sum::<f64>();
     }
     let solver_elapsed = start.elapsed();
     println!(

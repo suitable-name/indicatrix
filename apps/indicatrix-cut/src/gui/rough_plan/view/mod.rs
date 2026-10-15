@@ -28,6 +28,7 @@
 //! kept, which click is waiting out its double-click) live in `state`.
 
 mod compose;
+mod design_info;
 mod design_mesh;
 mod interaction;
 mod picking;
@@ -36,12 +37,16 @@ mod scene;
 mod state;
 mod thumbnails;
 mod workers;
-#[cfg(feature = "zoning")]
 mod zoning_view;
 
-pub(super) use self::state::ViewState;
-#[cfg(feature = "zoning")]
-pub(super) use self::zoning_view::{ColourJob, design_info, redraw};
+#[cfg(feature = "ui-harness")]
+pub(super) use self::design_info::note_holders;
+pub(super) use self::{
+    design_info::{DesignInfo, design_info, release_meshes},
+    scene::rescaled_pose,
+    state::ViewState,
+    zoning_view::{ColourJob, redraw},
+};
 use self::{
     design_mesh::MeshLibrary,
     render::{Hover, RenderOptions, RenderRequest, SharedPick},
@@ -78,6 +83,11 @@ const MAX_FRAME_EDGE: f32 = 1600.0;
 /// [`MAX_FRAME_EDGE`] on its longer side), halved while the view is being moved. `(0, 0)`
 /// until the area is laid out.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "each edge is rounded and at least 1.0, and at most MAX_FRAME_EDGE times a scale of at most 1"
+)]
 fn frame_size(view_size: (f32, f32), scale_factor: f32, interactive: bool) -> (u32, u32) {
     let (width, height) = view_size;
     if !(width > 0.0 && height > 0.0) {
@@ -101,8 +111,8 @@ fn frame_size(view_size: (f32, f32), scale_factor: f32, interactive: bool) -> (u
 /// view's threads.
 pub(super) fn setup_view_callbacks(host: &Rc<Host>) {
     let meshes = Arc::new(MeshLibrary::new(Arc::clone(&host.db)));
-    #[cfg(feature = "zoning")]
-    zoning_view::register_meshes(&meshes);
+    // The planner's actions on the design of a stone ("Open in Editor", "Use Color") read it.
+    design_info::register_meshes(&meshes);
     let picks: SharedPick = Arc::default();
     let window = host.window.as_weak();
     let runtime = Runtime {
@@ -205,8 +215,7 @@ fn frame_ready(host: &Rc<Host>, generation: u64, pixels: render::Pixels) {
         (newer, rehover)
     };
     if newer {
-        // Zoning builds: the handles of the wizard's selected zone are drawn into the frame.
-        #[cfg(feature = "zoning")]
+        // The handles of the wizard's selected zone are drawn into the frame.
         let pixels = {
             let mut pixels = pixels;
             zoning_view::draw_overlay(host, &mut pixels);
@@ -366,7 +375,6 @@ fn show_fit(host: &Rc<Host>, index: usize) {
             rough,
             titles: session.run.titles.clone(),
             mesh_ids: mesh_ids_for(layout, &session.run.statuses),
-            #[cfg(feature = "zoning")]
             colour: super::zoning_hooks::colour_job(index),
         };
         session
@@ -512,9 +520,7 @@ fn start_thumbnails(host: &Rc<Host>) {
                     epoch: session.view.plan_epoch,
                     rough: Arc::clone(rough),
                     titles: run.titles.clone(),
-                    // The zoning build needs each layout's index for its colour job; the
-                    // default build keeps the plain map it always had.
-                    #[cfg(feature = "zoning")]
+                    // Each layout's index is needed for its colour job.
                     items: run
                         .layouts
                         .iter()
@@ -523,15 +529,6 @@ fn start_thumbnails(host: &Rc<Host>) {
                             layout: layout.clone(),
                             mesh_ids: mesh_ids_for(layout, &run.statuses),
                             colour: super::zoning_hooks::colour_job(index),
-                        })
-                        .collect(),
-                    #[cfg(not(feature = "zoning"))]
-                    items: run
-                        .layouts
-                        .iter()
-                        .map(|layout| ThumbnailItem {
-                            layout: layout.clone(),
-                            mesh_ids: mesh_ids_for(layout, &run.statuses),
                         })
                         .collect(),
                 })
@@ -554,9 +551,8 @@ fn start_thumbnails(host: &Rc<Host>) {
 /// design meshes are kept: a worker checks them against the library once for the new plan
 /// and drops those whose design was edited.
 pub(super) fn results_changed(host: &Rc<Host>) {
-    // Zoning builds: the plan's rough colour (if it has one) is read before the scenes and
-    // thumbnails of the new results are asked for.
-    #[cfg(feature = "zoning")]
+    // The plan's rough colour (if it has one) is read before the scenes and thumbnails of the new
+    // results are asked for.
     super::zoning_hooks::refresh(host);
     {
         let mut guard = host.session.borrow_mut();

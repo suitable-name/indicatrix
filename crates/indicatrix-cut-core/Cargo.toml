@@ -17,24 +17,22 @@ description = "Editor-core library for faceting cutting instructions: preform, t
 # The public geometry crate -- see its own crate doc comment. This crate reaches it
 # by relative PATH dependency (via the private workspace's `[workspace.dependencies]`
 # entry), never a copy; see `../../Cargo.toml`'s own note on the public/private split.
-indicatrix = { workspace = true }
+# `serde` because the rough colour (`rough_plan::zoned_plan`) stores `ZonedAbsorption` as JSON in
+# the vault side tables.
+indicatrix = { workspace = true, features = ["serde"] }
 glam = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# `native/convert.rs`'s `stash_schedule_meta`/`unstash_schedule_meta` pack a
-# `ScheduleMeta` into `indicatrix_formats::native::NativeDesignFile::unknown` (a
-# `toml::Table`, the format's own sanctioned "a future build wrote this" extension
-# point) so a self-contained native-only save/load round trip
-# (`save_native_only`/`load_native_only`) has somewhere to carry the `.asc`-only
-# header fields (gear teeth, symmetry, mirror, the GemCad version banner,
-# headers/footnotes) that `indicatrix_formats::native`'s schema itself has no field
-# for. Same `toml` version the workspace already pins for `indicatrix-formats`.
+# The design file's `unknown` tables (`toml::Table`, the format's own sanctioned "a
+# future build wrote this" extension point) are carried through `native/design_file.rs`
+# and `native/unknown_keys.rs`, so a save never drops a key a newer build wrote. Same
+# `toml` version the workspace already pins for `indicatrix-formats`.
 toml = { workspace = true }
 # `.asc` cutting-instructions read/write, AND (via `indicatrix_formats::native`) the on-disk schema,
-# TOML encode/decode, sidecar path rules, and paired-`.asc` fingerprint for the
-# `.indicatrix.toml` native design file (`native/` in this crate holds only the half
+# TOML encode/decode and path rules for the
+# `.isdd` native design file (`native/` in this crate holds only the half
 # of that format that needs `Design`/`MeetConstraint` in scope: the conversions, and
-# `load_paired`/`save_paired` built on top of them -- see `native/mod.rs`'s own module
+# `catalogue_asc` built on top of them -- see `native/mod.rs`'s own module
 # doc comment). `Design` wraps `indicatrix_formats::asc::AscSchedule` directly rather than
 # defining a second tier/schedule type, so this crate's editable schedule and
 # `indicatrix::geometry::cuts::StandardGemCuts::from_asc_schedule`'s input are the
@@ -44,12 +42,19 @@ toml = { workspace = true }
 # in `indicatrix-formats`, so there is no text-file-format or hash-function
 # dependency in this crate either.
 indicatrix-formats = { workspace = true }
-# Zoning only (`rough_plan::photometry`); neither is built without the `zoning` feature.
+# Rough-colour photometry (`rough_plan::photometry`).
 # `rawler` 0.8.0 (published 2026-08-30, LGPL-2.1): pure-Rust RAW/DNG decoder, no C
 # toolchain. Declared directly (not through `[workspace.dependencies]`) so the private
-# workspace, which shares this crate by path, needs no matching entry.
-rawler = { version = "=0.8.0", optional = true }
-image = { workspace = true, optional = true, features = ["png", "jpeg", "tiff"] }
+# workspace, which shares this crate by path, needs no matching entry. Native only (see the
+# target table below).
+image = { workspace = true, features = ["png", "jpeg", "tiff"] }
+
+# The camera RAW decoder is left out of the wasm32 build (the browser app reaches this crate
+# through `indicatrix-web-core`): rawler pulls in `uuid`, which has no randomness source on
+# `wasm32-unknown-unknown`, and a browser has no RAW files on a path to read. There
+# `rough_plan::photometry` decodes JPEG, PNG and TIFF only.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rawler = "=0.8.0"
 
 [dev-dependencies]
 # For `examples/manufacturability_corpus_probe.rs` only -- reads the user's real
@@ -62,34 +67,27 @@ image = { workspace = true, optional = true, features = ["png", "jpeg", "tiff"] 
 # `indicatrix-cut-core`'s own two-dependency (indicatrix, indicatrix-formats)
 # footprint (see `lib.rs`'s crate doc comment) is unchanged for every normal build.
 rusqlite = { workspace = true }
+# Benchmark harness for `benches/candidate_eval.rs` (BLD-2).
+divan = { workspace = true }
+
+[[bench]]
+name = "candidate_eval"
+harness = false
 
 # Zoning validation (lane V1, plan 2026-10-09 section 10): the synthetic test suite and the
-# performance benchmark. Both need the `zoning` feature and are skipped, not built, without it.
+# performance benchmark.
 [[test]]
 name = "zoning_validation"
 path = "tests/zoning_validation/main.rs"
-required-features = ["zoning"]
 
 [[example]]
 name = "zoning_bench"
 path = "examples/zoning_bench.rs"
-required-features = ["zoning"]
 
 [features]
 default = []
-# Rough colour and colour zoning from rig photos (plan 2026-10-09, section 1a): turns on
-# `rough_plan::photometry`, `rough_plan::colour_fit::{forward, solve, zones}` and the
-# zoned-pose evaluation in the planner. Off by default; a build without it is unchanged.
-#
-# Lane P1 (photometry): the same feature pulls in the two optional decoders. `rawler` (RAW
-# and DNG decoding, pure Rust, LGPL-2.1) is pinned to an exact version; `image` (JPEG, PNG
-# and TIFF decoding) is the workspace's own entry with the three decoders this module needs.
-#
-# Lane I1 (planner integration): `indicatrix/serde` is named too, because the rough colour
-# (`rough_plan::zoned_plan`) stores `ZonedAbsorption` as JSON in the vault side tables.
-zoning = ["indicatrix/zoning", "indicatrix/serde", "dep:rawler", "dep:image"]
 physics-color = []
-experimental = ["zoning", "physics-color"]
+experimental = ["physics-color"]
 
 [lints]
 workspace = true

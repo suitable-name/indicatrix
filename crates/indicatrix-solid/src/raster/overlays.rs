@@ -60,11 +60,12 @@ impl SolidRasterizer {
     ) {
         let is_selected = |facet_id: usize| style.selected.get(facet_id).copied().unwrap_or(false);
         let is_pending = |facet_id: usize| style.pending.get(facet_id).copied().unwrap_or(false);
-        let is_hovered = |facet_id: usize| style.hovered == Some(facet_id as u32);
-        let is_selected_facet = |facet_id: usize| style.selected_facet == Some(facet_id as u32);
-        let is_multi_selected = |facet_id: usize| style.multi_selected.contains(&(facet_id as u32));
-        let is_moved = |facet_id: usize| style.moved.contains(&(facet_id as u32));
-        let is_provisional = |facet_id: usize| style.provisional.contains(&(facet_id as u32));
+        let id_u32 = |facet_id: usize| u32::try_from(facet_id).expect("a facet id fits u32");
+        let is_hovered = |facet_id: usize| style.hovered == Some(id_u32(facet_id));
+        let is_selected_facet = |facet_id: usize| style.selected_facet == Some(id_u32(facet_id));
+        let is_multi_selected = |facet_id: usize| style.multi_selected.contains(&id_u32(facet_id));
+        let is_moved = |facet_id: usize| style.moved.contains(&id_u32(facet_id));
+        let is_provisional = |facet_id: usize| style.provisional.contains(&id_u32(facet_id));
 
         for pass in [
             EdgePass::Ordinary,
@@ -150,12 +151,20 @@ impl SolidRasterizer {
             if label.is_empty() {
                 continue;
             }
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a label centroid is a screen position; `as` saturates and the bounds check below rejects anything off the buffer"
+            )]
             let (px, py) = (cx.round() as i32, cy.round() as i32);
-            if px < 0 || py < 0 || px as u32 >= self.width || py as u32 >= self.height {
+            let (Ok(px), Ok(py)) = (u32::try_from(px), u32::try_from(py)) else {
+                continue;
+            };
+            if px >= self.width || py >= self.height {
                 continue;
             }
-            let idx = (py as u32 * self.width + px as u32) as usize;
-            if self.pick[idx] != facet_id as u32 + 1 {
+            let idx = (py * self.width + px) as usize;
+            let facet_u32 = u32::try_from(facet_id).expect("a facet id fits u32");
+            if self.pick[idx] != facet_u32 + 1 {
                 continue; // Occluded at its own centroid -- another facet won here.
             }
             let (label_w, label_h) = diagram2d::text_size(label, 1);

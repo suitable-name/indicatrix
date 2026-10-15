@@ -2,7 +2,9 @@
 //! `Database::migrate_diagram_previews_table`'s doc comment (in `super::migrations`)
 //! for why this is a side table keyed by `entry_id` rather than columns on
 //! `diagram_details`, and `crate::model::preview::PreviewImages` for the read-side
-//! shape this module hands back.
+//! shape this module hands back. The material a design's renders are made in (name,
+//! stone size, provenance) and the staleness scans that compare it with the stored
+//! fingerprints are in `super::preview_material`.
 
 use super::Database;
 use crate::model::{
@@ -261,92 +263,6 @@ impl Database {
             )
             .with_context(|| format!("Failed to delete preview images for entry_id: {entry_id}"))?;
         Ok(())
-    }
-
-    /// Every non-ignored `diagram_entries.id` whose cached preview render is missing or
-    /// was made with other parameters than the current ones. Ordered by id for a stable,
-    /// resumable walk.
-    ///
-    /// A design needs a render when `diagram_previews` has no row for it, the row's
-    /// `preview_generated_at` is `NULL`, EITHER view (`preview_front` / `preview_top`) is
-    /// missing -- [`Self::save_preview_images`] stamps an attempt even when one view's
-    /// render failed, so the stamp alone would call such a half-rendered row current --
-    /// or the row's `params_fingerprint` differs from
-    /// `current_fingerprint(material)` -- the fingerprint a render made NOW would store,
-    /// given the row's persisted `preview_material` (`None` when it has none). A row
-    /// written before fingerprints existed carries `NULL` there and so counts as
-    /// outdated: it is re-rendered once, then tracked like any other. The caller builds
-    /// the string (renderer build, image size, sample count, bounce cap, lighting,
-    /// material); this crate only compares it, so what goes into it never needs a schema
-    /// change.
-    ///
-    /// Replaces the "load every entry's preview images just to test one timestamp"
-    /// scan a startup batch pass used to run (`gui::batch::preview::scan`): that
-    /// pattern loads both 256x256 PNGs for EVERY entry in the catalogue merely to
-    /// check `generated_at.is_none()` -- measured at 4.4s and 447 MB for one pass over
-    /// the real catalogue's 3,299 entries -- when the same test is answered here by a
-    /// `LEFT JOIN` that never selects a blob column at all. The "either view missing"
-    /// test is `preview_front IS NULL OR preview_top IS NULL`, which reads only the
-    /// record header, so the query stays blob-free.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying query fails.
-    pub fn entry_ids_missing_previews(
-        &self,
-        current_fingerprint: impl Fn(Option<&str>) -> String,
-    ) -> Result<Vec<i64>> {
-        self.outdated_entry_ids(
-            "SELECT de.id,
-                    CASE WHEN p.preview_front IS NULL OR p.preview_top IS NULL
-                         THEN NULL ELSE p.preview_generated_at END,
-                    p.params_fingerprint, p.preview_material
-             FROM diagram_entries de
-             LEFT JOIN diagram_previews p ON p.entry_id = de.id
-             WHERE de.ignored = 0
-             ORDER BY de.id",
-            current_fingerprint,
-        )
-        .context("Failed to read entry ids missing previews")
-    }
-
-    /// Runs `sql` -- one row per design to consider, as `(entry id, generated-at stamp,
-    /// stored fingerprint, persisted material)`, each of the last three `NULL` when the
-    /// cache row is absent (the caller may also null the stamp to mark an incomplete
-    /// row, as [`Self::entry_ids_missing_previews`] does for a missing view) -- and returns, in row order, the ids whose cache entry is not
-    /// current: no stamp, or a stored fingerprint other than
-    /// `current_fingerprint(material)`. Shared by
-    /// [`Self::entry_ids_missing_previews`] and
-    /// [`Self::entry_ids_missing_tilt_curves`](Database::entry_ids_missing_tilt_curves),
-    /// which differ only in the cache table they read.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `sql` fails to prepare or run, or a row fails to decode.
-    pub(super) fn outdated_entry_ids(
-        &self,
-        sql: &str,
-        current_fingerprint: impl Fn(Option<&str>) -> String,
-    ) -> Result<Vec<i64>> {
-        let mut stmt = self.conn.prepare(sql)?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?;
-        let mut outdated = Vec::new();
-        for row in rows {
-            let (entry_id, generated_at, stored, material) = row?;
-            let current = generated_at.is_some()
-                && stored.as_deref() == Some(current_fingerprint(material.as_deref()).as_str());
-            if !current {
-                outdated.push(entry_id);
-            }
-        }
-        Ok(outdated)
     }
 }
 
@@ -674,8 +590,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            db.entry_ids_missing_previews(|material| {
-                format!("material={}", material.unwrap_or("none"))
+            db.entry_ids_missing_previews(|state| {
+                format!("material={}", state.name.as_deref().unwrap_or("none"))
             })
             .unwrap(),
             Vec::<i64>::new()

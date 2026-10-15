@@ -1,9 +1,23 @@
 //! Catalogue records and assertions shared by the preview and tilt batch tests of
-//! the design-file-first geometry rule (`super::record_planes_for_batch`).
+//! the design-file-first geometry rule (`super::record_planes_for_batch`) and of the
+//! material and size a design file records (`super::catalogue_material`).
 
 use crate::gui::library::local::test_gem::{SYNTHETIC_GEM_TIERS, encode_gem};
 use indicatrix::geometry::{GpuFacetPlane, cuts::FacetSpec};
-use indicatrix_vault::model::{angle::AngleSetting, entry::FullDiagramRecord, file::AttachedFile};
+use indicatrix_cut_core::{
+    ConstraintTier, Design, PreformSpec, ScheduleMeta,
+    material::MaterialSelection,
+    native::{CustomMaterialSnapshot, DesignExtras, design_to_string},
+};
+use indicatrix_vault::{
+    db::sqlite::Database,
+    model::{
+        angle::AngleSetting,
+        detail::FacetingDiagramDetail,
+        entry::{FacetingDiagramEntry, FullDiagramRecord},
+        file::AttachedFile,
+    },
+};
 
 /// The entry id every record here carries.
 pub const ENTRY_ID: i64 = 7;
@@ -90,6 +104,60 @@ pub fn gem_record() -> FullDiagramRecord {
     )
 }
 
+/// The text of a native design file for a standard round brilliant in `material` at
+/// `girdle_diameter_mm`, carrying `snapshot` as its custom-material snapshot.
+pub fn design_file_text(
+    material: MaterialSelection,
+    girdle_diameter_mm: Option<f64>,
+    snapshot: Option<&CustomMaterialSnapshot>,
+) -> String {
+    let mut design = Design::new(
+        PreformSpec::block(2.0, 1.0, 2.0),
+        ScheduleMeta::standard_round_brilliant(),
+        ConstraintTier::standard_round_brilliant(),
+    );
+    design.material = material;
+    design.girdle_diameter_mm = girdle_diameter_mm;
+    design_to_string(
+        &design,
+        None,
+        &DesignExtras {
+            custom_material: snapshot,
+            ..DesignExtras::default()
+        },
+    )
+    .expect("the design serializes")
+}
+
+/// Stores a catalogue entry in `db` whose only attachment is `content` named `name`, and
+/// returns its entry id -- a design the batch engines can resolve by id.
+pub fn store_design_file(db: &Database, name: &str, content: Vec<u8>) -> i64 {
+    let entry_id = db
+        .save_diagram_entry(
+            &FacetingDiagramEntry {
+                title: "Stored Design".to_string(),
+                url: format!("local://{name}"),
+                design_id: String::new(),
+            },
+            "local-import",
+        )
+        .expect("the entry saves");
+    db.save_diagram_detail(
+        &FacetingDiagramDetail {
+            refractive_index: Some("1.54".to_string()),
+            attached_files: vec![AttachedFile {
+                name: name.to_string(),
+                url: String::new(),
+                content,
+            }],
+            ..FacetingDiagramDetail::default()
+        },
+        entry_id,
+    )
+    .expect("the detail saves");
+    entry_id
+}
+
 /// The planes the angle table alone builds for `full` -- the batches' geometry
 /// before design files were read.
 pub fn angle_table_planes(full: &FullDiagramRecord) -> Vec<GpuFacetPlane> {
@@ -125,6 +193,10 @@ pub fn assert_gem_geometry(planes: &[GpuFacetPlane]) {
         "every plane must have a non-zero mast"
     );
     for &(name, _angle, mast, _indices) in SYNTHETIC_GEM_TIERS {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the plane storage precision; the fixture mast is a small decimal"
+        )]
         let mast = mast as f32;
         assert!(
             has_plane_at(planes, mast),

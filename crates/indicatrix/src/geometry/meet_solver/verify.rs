@@ -270,6 +270,11 @@ pub fn solve_meet_points_verified_with(
     } else {
         VERIFY_MAX_RUNS_CALIBRATED
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a positive budget ratio; `as` saturates (NaN gives 0) and the clamp bounds the run count"
+    )]
     let max_runs =
         ((VERIFY_RUN_BUDGET / (planes * planes * planes * planes)) as usize).clamp(1, run_cap);
     let max_rounds = if adjustable.is_empty() {

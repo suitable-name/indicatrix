@@ -288,7 +288,7 @@ pub fn build_shape_picker_options(
         shapes
             .iter()
             .position(|s| s == current)
-            .map_or(-1, |i| i as i32)
+            .map_or(-1, |i| i32::try_from(i).unwrap_or(i32::MAX))
     };
     (shapes.into_iter().map(SharedString::from).collect(), index)
 }

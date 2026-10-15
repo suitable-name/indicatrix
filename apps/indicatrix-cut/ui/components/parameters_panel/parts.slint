@@ -1,0 +1,219 @@
+import { Slider } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { SettingLabel } from "../settings_dialog/setting_label.slint";
+
+// The small pieces the Parameters dock's three tabs and its footer are built from. They were
+// private to the old Rendering Settings card (`settings_dialog.slint`); the tabs and the panel
+// share them from here.
+
+// One button of the panel's footer: Reset this tab, its Confirm and Cancel. `kind` 0 is a plain
+// button, 1 the main action (the cyan one), 2 a destructive one. Tab reaches it, Space or Enter
+// presses it, a tooltip says what it does.
+export component FooterButton inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <image> icon;
+    in property <int> kind: 0;
+    callback clicked();
+
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: root.kind == 1
+        ? (footer_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan)
+        : (root.kind == 2
+            ? (footer_touch.has-hover ? Theme.accent-ruby.darker(0.25) : Theme.accent-ruby)
+            : (footer_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken));
+    border-width: footer_focus.has-focus ? 2px : (root.kind == 0 ? 1px : 0px);
+    border-color: footer_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-dialog;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    footer_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 5px;
+        // Centred by a layout of its own: a fixed-size Image in the row sits at the top of
+        // its cell (`vertical-alignment` only places the picture inside the Image).
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: Theme.text-secondary;
+                width: 11px;
+                height: 11px;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: root.kind == 1 ? 12px : 11px;
+            font-weight: root.kind == 0 ? 600 : 700;
+            color: root.kind == 1 ? Theme.text-on-accent : (root.kind == 2 ? Theme.text-on-primary : Theme.text-secondary);
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    footer_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A small underlined-on-hover text button inside a settings row ("Reset to 100 %"). Tab
+// reaches it, Space or Enter presses it.
+export component TextLink inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    callback clicked();
+
+    width: link_text.preferred-width + 4px;
+    height: link_text.preferred-height + 4px;
+    border-radius: 2px;
+    border-width: link_focus.has-focus ? 1px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    link_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    link_text := Text {
+        x: 2px;
+        y: 2px;
+        text: root.text;
+        font-size: 10px;
+        color: link_touch.has-hover ? Theme.accent-cyan : Theme.text-muted;
+        vertical-alignment: center;
+    }
+
+    link_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The heading of a group of settings inside a tab ("Quality", "Observer"): small, bold, with a
+// hairline after it. A heading is for sighted users and for the reading order of a screen
+// reader; the controls under it keep their own labels.
+export component GroupHeader inherits HorizontalLayout {
+    in property <string> text;
+    spacing: 8px;
+
+    Text {
+        text: root.text;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+        accessible-role: AccessibleRole.text;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+        }
+    }
+}
+
+// A labelled slider row: the name (with its tooltip) and the current value on one line, the
+// slider below. The value is two-way bound by the caller and `edited` fires on an actual drag or
+// keyboard nudge, never when Rust moves the handle -- the std `Slider`'s own `changed(value)`
+// semantics, which the old card relied on. `link_text` is an optional small link beside the
+// value ("Reset to 100 %"); `step` is only the keyboard nudge (a drag is continuous), and a
+// `step` of 0 nudges by one hundredth of the range.
+//
+//     SliderRow {
+//         text: "Studio Exposure";
+//         hint: "...";
+//         value_text: Math.round(SettingsModel.exposure_val * 100.0) / 100.0 + "x";
+//         minimum: SettingsModel.exposure_min;
+//         maximum: SettingsModel.exposure_max;
+//         value <=> SettingsModel.exposure_val;
+//         edited(val) => { SettingsModel.exposure_changed(val); }
+//     }
+export component SliderRow inherits VerticalLayout {
+    in property <string> text;
+    in property <string> note;
+    in property <string> hint;
+    in property <image> icon;
+    in property <string> value_text;
+    in property <float> minimum: 0.0;
+    in property <float> maximum: 1.0;
+    in property <float> step: 0.0;
+    in property <bool> enabled: true;
+    // The accessible name of the slider itself; the label's text when empty.
+    in property <string> slider_label;
+    // A small link after the value, shown while `link_text` is not empty.
+    in property <string> link_text;
+    in property <string> link_hint;
+    in-out property <float> value;
+    callback edited(float);
+    callback link_clicked();
+
+    spacing: 4px;
+
+    HorizontalLayout {
+        alignment: space-between;
+        spacing: 6px;
+        SettingLabel {
+            text: root.text;
+            note: root.note;
+            hint: root.hint;
+            icon: root.icon;
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            if root.link_text != "": text-link-link-text := TextLink {
+                text: root.link_text;
+                hint: root.link_hint;
+                clicked => { root.link_clicked(); }
+            }
+            Text {
+                text: root.value_text;
+                font-size: 11px;
+                font-weight: 700;
+                color: Theme.accent-cyan;
+                vertical-alignment: center;
+            }
+        }
+    }
+    Slider {
+        minimum: root.minimum;
+        maximum: root.maximum;
+        step: root.step > 0.0 ? root.step : (root.maximum - root.minimum) / 100.0;
+        enabled: root.enabled;
+        accessible-label: root.slider_label != "" ? root.slider_label : root.text;
+        value <=> root.value;
+        changed(val) => { root.edited(val); }
+    }
+}

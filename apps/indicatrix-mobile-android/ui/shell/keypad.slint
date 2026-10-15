@@ -1,0 +1,238 @@
+// The app's own numeric keypad: a large readout above a 4 by 4 grid of 64 px keys
+//
+//     7 8 9 Del
+//     4 5 6 +/-
+//     1 2 3 .
+//     0 C [  OK  ]
+//
+// The Android soft keyboard cannot be asked for a numeric layout from Slint, so every
+// number entry (an angle, an index position) uses this. The component holds no state:
+// the owner keeps the typed text (`indicatrix_mobile_core::design_state::KeypadState`),
+// shows it through `readout`, and reacts to `key(id)` and `ok()`.
+//
+// Key ids: "0" to "9", ".", "sign", "back", "clear".
+import { Theme } from "../theme.slint";
+import { StateLayer } from "state_layer.slint";
+
+component KeypadKey inherits Rectangle {
+    in property <string> text;
+    // 0 digit, 1 action, 2 confirm.
+    in property <int> variant: 0;
+    callback clicked();
+
+    min-width: 64px;
+    height: 64px;
+    border-radius: Theme.radius-lg;
+    background: root.variant == 2 ? Theme.primary : (root.variant == 1 ? Theme.secondary-container : Theme.surface-high);
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    StateLayer {
+        pressed: touch.pressed;
+        hovered: touch.has-hover;
+        tint: root.variant == 2 ? Theme.on-primary : Theme.on-surface;
+        border-radius: root.border-radius;
+    }
+
+    Text {
+        text: root.text;
+        color: root.variant == 2 ? Theme.on-primary : (root.variant == 1 ? Theme.on-secondary-container : Theme.on-surface);
+        font-size: Theme.text-title-large;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component Keypad inherits Rectangle {
+    // The text shown large above the keys, without a unit.
+    in property <string> readout: "0";
+    // Appended to the readout in a quieter color (for example the degree sign).
+    in property <string> unit: "";
+    // True while the readout shows what was typed rather than the current value.
+    in property <bool> typing: false;
+    // A short label above the readout ("Angle", "Index").
+    in property <string> caption: "";
+    callback key(string);
+    callback ok();
+
+    min-width: 4 * 64px + 3 * Theme.space-sm;
+
+    VerticalLayout {
+        spacing: Theme.space-sm;
+
+        Rectangle {
+            height: 72px;
+            background: Theme.surface-highest;
+            border-radius: Theme.radius-lg;
+            accessible-role: AccessibleRole.text;
+            accessible-label: root.caption + " " + root.readout + root.unit;
+
+            Text {
+                x: Theme.space-lg;
+                y: 6px;
+                width: parent.width - 2 * Theme.space-lg;
+                height: 18px;
+                text: root.caption;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-label;
+                visible: root.caption != "";
+            }
+
+            HorizontalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                spacing: 2px;
+                alignment: end;
+
+                Text {
+                    text: root.readout;
+                    color: root.typing ? Theme.primary : Theme.on-surface;
+                    font-size: Theme.text-headline;
+                    font-weight: 500;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+
+                Text {
+                    text: root.unit;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-headline;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        GridLayout {
+            spacing: Theme.space-sm;
+
+            Row {
+                KeypadKey {
+                    text: "7";
+                    clicked => {
+                        root.key("7");
+                    }
+                }
+
+                KeypadKey {
+                    text: "8";
+                    clicked => {
+                        root.key("8");
+                    }
+                }
+
+                KeypadKey {
+                    text: "9";
+                    clicked => {
+                        root.key("9");
+                    }
+                }
+
+                KeypadKey {
+                    text: "Del";
+                    variant: 1;
+                    clicked => {
+                        root.key("back");
+                    }
+                }
+            }
+
+            Row {
+                KeypadKey {
+                    text: "4";
+                    clicked => {
+                        root.key("4");
+                    }
+                }
+
+                KeypadKey {
+                    text: "5";
+                    clicked => {
+                        root.key("5");
+                    }
+                }
+
+                KeypadKey {
+                    text: "6";
+                    clicked => {
+                        root.key("6");
+                    }
+                }
+
+                KeypadKey {
+                    text: "\u{b1}";
+                    variant: 1;
+                    clicked => {
+                        root.key("sign");
+                    }
+                }
+            }
+
+            Row {
+                KeypadKey {
+                    text: "1";
+                    clicked => {
+                        root.key("1");
+                    }
+                }
+
+                KeypadKey {
+                    text: "2";
+                    clicked => {
+                        root.key("2");
+                    }
+                }
+
+                KeypadKey {
+                    text: "3";
+                    clicked => {
+                        root.key("3");
+                    }
+                }
+
+                KeypadKey {
+                    text: ".";
+                    variant: 1;
+                    clicked => {
+                        root.key(".");
+                    }
+                }
+            }
+
+            Row {
+                KeypadKey {
+                    text: "0";
+                    clicked => {
+                        root.key("0");
+                    }
+                }
+
+                KeypadKey {
+                    text: "C";
+                    variant: 1;
+                    clicked => {
+                        root.key("clear");
+                    }
+                }
+
+                KeypadKey {
+                    text: "OK";
+                    variant: 2;
+                    colspan: 2;
+                    clicked => {
+                        root.ok();
+                    }
+                }
+            }
+        }
+    }
+}

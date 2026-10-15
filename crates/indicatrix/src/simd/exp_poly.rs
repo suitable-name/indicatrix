@@ -45,7 +45,12 @@ fn exp_lane(x: f32) -> f32 {
     let p = p.mul_add(z, x) + 1.0;
     // 2^n by exponent-bit construction; n is integral and within the f32
     // exponent range after the clamp above.
-    let pow2n = f32::from_bits((((n as i32) + 127) << 23) as u32);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "n is integral and within the f32 exponent range after the clamp above, so it fits i32 exactly"
+    )]
+    let exponent = n as i32;
+    let pow2n = f32::from_bits(((exponent + 127) << 23).cast_unsigned());
     p * pow2n
 }
 

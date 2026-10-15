@@ -93,7 +93,13 @@ fn index_u32(tag: &RawTag, key: &'static str) -> Result<Option<u32>, GcsParseErr
         return Ok(None);
     };
     if value.is_finite() && (0.0..=f64::from(u32::MAX)).contains(&value) {
-        Ok(Some(value.round() as u32))
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the guard above keeps value finite and within 0..=u32::MAX"
+        )]
+        let index = value.round() as u32;
+        Ok(Some(index))
     } else {
         Err(GcsParseError::IndexAttributeNotNumeric {
             attr: key,

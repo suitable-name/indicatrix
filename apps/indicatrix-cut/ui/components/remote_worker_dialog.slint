@@ -123,9 +123,12 @@ export component RemoteWorkerDialog inherits PopupWindow {
 
         // Escape closes the popup (nothing typed is lost that was not already unsaved), and Tab
         // moves between the controls below.
+        // The popup takes the keyboard as it is built (as the filter panel does), so Esc
+        // reaches it without a click first.
         FocusScope {
             width: 100%;
             height: 100%;
+            init => { self.focus(); }
             key-pressed(event) => {
                 if event.text == Key.Escape {
                     root.close();
@@ -144,7 +147,12 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 HorizontalLayout {
                     horizontal-stretch: 1;
                     spacing: 8px;
-                    Image { source: @image-url("../icons/gem.svg"); colorize: Theme.accent-cyan; width: 15px; height: 15px; vertical-alignment: center; }
+                    // Centred by a layout of its own: a fixed-size Image in the row sits at the
+                    // top of its cell.
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("../icons/gem.svg"); colorize: Theme.accent-cyan; width: 15px; height: 15px; }
+                    }
                     Text { text: "Remote Coordinator"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; accessible-role: AccessibleRole.text; }
                 }
 
@@ -214,7 +222,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
             // `settings::model::AppSettings::denoise_enabled`'s doc comment on why this is
             // one global switch.
             ToggleRow {
-                text: "Denoise merged image";
+                text: "Denoise Merged Image";
                 hint: "Smooth the grain out of the picture that combines this computer's render with the remote's.";
                 label_color: Theme.text-secondary;
                 checked: RemoteWorkerModel.denoise_enabled;
@@ -232,7 +240,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 HorizontalLayout {
                     alignment: space-between;
                     FieldCaption {
-                        text: "Remote lanes for batches";
+                        text: "Remote Lanes for Batches";
                         hint: "How many pictures a preview or tilt batch keeps being drawn on the remote at the same time.";
                     }
                     TipBox {
@@ -242,7 +250,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                             maximum: 32;
                             step-size: 1;
                             value <=> RemoteWorkerModel.remote_batch_lanes;
-                            accessible-label: "Remote lanes for batches";
+                            accessible-label: "Remote Lanes for Batches";
                             edited(lanes) => { RemoteWorkerModel.remote_batch_lanes_changed(lanes); }
                         }
                     }
@@ -265,7 +273,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 HorizontalLayout {
                     alignment: space-between;
                     FieldCaption {
-                        text: "Pictures per preview request";
+                        text: "Pictures per Preview Request";
                         hint: "How many catalogue previews are sent to the remote in one request. The remote keeps its graphics card busy across them.";
                     }
                     TipBox {
@@ -275,7 +283,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                             maximum: 32;
                             step-size: 1;
                             value <=> RemoteWorkerModel.remote_preview_batch_size;
-                            accessible-label: "Pictures per preview request";
+                            accessible-label: "Pictures per Preview Request";
                             edited(size) => { RemoteWorkerModel.remote_preview_batch_size_changed(size); }
                         }
                     }
@@ -325,7 +333,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                     }
                     Text { text: RemoteWorkerModel.endpoint.address; font-size: 10px; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
                     if GuideModel.shows_advanced(): Text {
-                        text: (RemoteWorkerModel.endpoint.transfer_mode_index == 0 ? "Live progressive" : "Final only")
+                        text: (RemoteWorkerModel.endpoint.transfer_mode_index == 0 ? "Live Progressive" : (RemoteWorkerModel.endpoint.transfer_mode_index == 1 ? "Full Data When Finished" : "Final Picture"))
                             + " · " + RemoteWorkerModel.endpoint.cadence_ms + "ms cadence · export transfer: "
                             + (RemoteWorkerModel.endpoint.export_transfer_index == 1 ? "final picture only" : "full data");
                         font-size: 9px;
@@ -336,15 +344,15 @@ export component RemoteWorkerDialog inherits PopupWindow {
 
                     HorizontalLayout {
                         spacing: 6px;
-                        TipButton {
-                            text: RemoteWorkerModel.testing_connection ? "Testing..." : "Test connection";
+                        tip-button-testing-connection := TipButton {
+                            text: RemoteWorkerModel.testing_connection ? "Testing..." : "Test Connection";
                             hint: "Check that this computer can reach the remote coordinator with the saved address and certificates.";
                             enabled: !RemoteWorkerModel.testing_connection;
                             height: 24px;
                             clicked => { RemoteWorkerModel.test_worker_connection(RemoteWorkerModel.endpoint.address, RemoteWorkerModel.endpoint.cert_dir); }
                         }
-                        TipButton {
-                            text: RemoteWorkerModel.mirror_in_progress ? "Cancel mirror" : "Mirror library to local";
+                        tip-button-mirror-in-progress := TipButton {
+                            text: RemoteWorkerModel.mirror_in_progress ? "Cancel Mirror" : "Mirror Library to Local";
                             hint: RemoteWorkerModel.mirror_in_progress
                                 ? "Stop copying the remote library to this computer."
                                 : "Copy the remote coordinator's designs into the library on this computer.";
@@ -370,7 +378,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                         border-radius: 2px;
                         background: Theme.surface-raised;
                         accessible-role: AccessibleRole.progress-indicator;
-                        accessible-label: "Library copy progress";
+                        accessible-label: "Library Copy Progress";
                         accessible-value: Math.round(RemoteWorkerModel.mirror_progress_fraction * 100) + " percent";
                         Rectangle {
                             x: 0px;
@@ -400,7 +408,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
             }
 
             if !RemoteWorkerModel.configured && !root.editing: TipButton {
-                text: "Set up remote coordinator";
+                text: "Set Up Remote Coordinator";
                 hint: "Enter the address and certificates of a remote coordinator to render on it.";
                 clicked => { root.open_form(); }
             }
@@ -411,15 +419,15 @@ export component RemoteWorkerDialog inherits PopupWindow {
             if root.editing: VerticalLayout {
                 spacing: 6px;
                 Rectangle { height: 1px; background: Theme.surface-raised; }
-                Text { text: RemoteWorkerModel.configured ? "Edit remote coordinator" : "Set up remote coordinator"; font-size: 11px; font-weight: 700; color: Theme.text-primary; accessible-role: AccessibleRole.text; }
+                Text { text: RemoteWorkerModel.configured ? "Edit Remote Coordinator" : "Set Up Remote Coordinator"; font-size: 11px; font-weight: 700; color: Theme.text-primary; accessible-role: AccessibleRole.text; }
 
                 TipBox {
                     hint: "A name you will recognise, for example Office coordinator. It may be left empty.";
-                    LineEdit { placeholder-text: "Name (e.g. \"Office coordinator\")"; text <=> root.form_name; accessible-label: "Name of the remote coordinator"; }
+                    LineEdit { placeholder-text: "Name (e.g. \"Office coordinator\")"; text <=> root.form_name; accessible-label: "Name of the Remote Coordinator"; }
                 }
                 TipBox {
                     hint: "Where the coordinator listens, written as host:port.";
-                    LineEdit { placeholder-text: "Address (host:port)"; text <=> root.form_address; accessible-label: "Address of the remote coordinator"; }
+                    LineEdit { placeholder-text: "Address (host:port)"; text <=> root.form_address; accessible-label: "Address of the Remote Coordinator"; }
                 }
                 HorizontalLayout {
                     spacing: 6px;
@@ -429,7 +437,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                         LineEdit {
                             placeholder-text: "Certificate bundle folder (ca.pem / client.pem / client.key)";
                             text <=> root.form_cert_dir;
-                            accessible-label: "Certificate folder";
+                            accessible-label: "Certificate Folder";
                         }
                     }
                     TipButton {
@@ -449,7 +457,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                     LineEdit {
                         placeholder-text: "Enrollment address (host:port, from \"cert issue-token\")";
                         text <=> root.form_enroll_addr;
-                        accessible-label: "Enrollment address";
+                        accessible-label: "Enrollment Address";
                     }
                 }
                 HorizontalLayout {
@@ -460,10 +468,10 @@ export component RemoteWorkerDialog inherits PopupWindow {
                         LineEdit {
                             placeholder-text: "Token (GW1-...)";
                             text <=> root.form_token;
-                            accessible-label: "Enrollment token";
+                            accessible-label: "Enrollment Token";
                         }
                     }
-                    TipButton {
+                    tip-button-claiming-token := TipButton {
                         text: RemoteWorkerModel.claiming_token ? "Redeeming..." : "Redeem";
                         hint: "Use the one-time token to get the certificates this computer needs. The certificate folder is filled in for you.";
                         enabled: !RemoteWorkerModel.claiming_token && root.form_token != "" && root.form_enroll_addr != "";
@@ -488,12 +496,12 @@ export component RemoteWorkerDialog inherits PopupWindow {
                         horizontal-stretch: 1;
                         spacing: 2px;
                         FieldCaption {
-                            text: "Live stream";
-                            hint: "Live progressive shows the image improving as the remote works. Final only waits for the finished result.";
+                            text: "Live Transfer";
+                            hint: "How the remote sends its share while you look at the stone. Progressive shows the image improving as the remote works. Full Data When Finished waits for the finished samples. Final Picture sends only finished, denoised frames: less data, but your own tracing pauses after the handoff.";
                         }
                         TipBox {
                             hint: "How the remote sends pictures while you look around.";
-                            ComboBox { model: ["Live progressive", "Final only"]; current-index <=> root.form_transfer_mode_index; accessible-label: "Live stream"; }
+                            ComboBox { model: ["Progressive (Full Data)", "Full Data, When Finished", "Final Picture (Denoised)"]; current-index <=> root.form_transfer_mode_index; accessible-label: "Live Transfer"; }
                         }
                     }
                     VerticalLayout {
@@ -505,7 +513,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                         }
                         TipBox {
                             hint: "From 50 to 5000 milliseconds between updates.";
-                            SpinBox { minimum: 50; maximum: 5000; step-size: 50; value <=> root.form_cadence_ms; accessible-label: "Cadence in milliseconds"; }
+                            SpinBox { minimum: 50; maximum: 5000; step-size: 50; value <=> root.form_cadence_ms; accessible-label: "Cadence in Milliseconds"; }
                         }
                     }
                 }
@@ -516,12 +524,12 @@ export component RemoteWorkerDialog inherits PopupWindow {
                         horizontal-stretch: 1;
                         spacing: 2px;
                         FieldCaption {
-                            text: "Preview scale";
+                            text: "Preview Scale";
                             hint: "The size of the in-progress pictures compared with the final one. Smaller previews arrive faster.";
                         }
                         TipBox {
                             hint: "Pick how large the in-progress pictures are.";
-                            ComboBox { model: ["Full", "Half", "Quarter", "Custom"]; current-index <=> root.form_preview_scale_index; accessible-label: "Preview scale"; }
+                            ComboBox { model: ["Full", "Half", "Quarter", "Custom"]; current-index <=> root.form_preview_scale_index; accessible-label: "Preview Scale"; }
                         }
                     }
                     if root.form_preview_scale_index == 3: VerticalLayout {
@@ -534,7 +542,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                         }
                         TipBox {
                             hint: "From 1 to 100 percent.";
-                            SpinBox { minimum: 1; maximum: 100; step-size: 5; value <=> root.form_preview_scale_percent; accessible-label: "Custom preview scale in percent"; }
+                            SpinBox { minimum: 1; maximum: 100; step-size: 5; value <=> root.form_preview_scale_percent; accessible-label: "Custom Preview Scale in Percent"; }
                         }
                     }
                 }
@@ -542,19 +550,19 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 if GuideModel.shows_advanced(): VerticalLayout {
                     spacing: 2px;
                     FieldCaption {
-                        text: "Export transfer (default)";
-                        hint: "The starting choice for the export dialog and the tilt video. Full data merges your own computer's samples with the remote's. Final picture only has the coordinator send one finished PNG per image.";
+                        text: "Export Transfer (Default)";
+                        hint: "The starting choice for the export dialog and the tilt video. Full Data merges your own computer's samples with the remote's. Final Picture Only has the coordinator send one finished PNG per image.";
                     }
                     TipBox {
                         hint: "How exports come back from the remote by default.";
-                        ComboBox { model: ["Full data", "Final picture only"]; current-index <=> root.form_export_transfer_index; accessible-label: "Export transfer"; }
+                        ComboBox { model: ["Full Data", "Final Picture Only"]; current-index <=> root.form_export_transfer_index; accessible-label: "Export Transfer"; }
                     }
                 }
 
                 HorizontalLayout {
                     spacing: 6px;
-                    TipButton {
-                        text: RemoteWorkerModel.testing_connection ? "Testing..." : "Test connection";
+                    tip-button-testing-connection-2 := TipButton {
+                        text: RemoteWorkerModel.testing_connection ? "Testing..." : "Test Connection";
                         hint: "Check that this computer can reach the coordinator with the address and certificates above.";
                         enabled: !RemoteWorkerModel.testing_connection && root.form_address != "";
                         clicked => { RemoteWorkerModel.test_worker_connection(root.form_address, root.form_cert_dir); }

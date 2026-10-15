@@ -1,7 +1,5 @@
-// Rough colour and colour zoning from rig photos (plan 2026-10-09). The `zoning` Cargo feature
-// is the only thing that turns this on: Slint has no `cfg!`, so Rust sets `enabled` once per
-// window from `gui::zoning_ui::ZONING_UI`, and every zoning element sits under
-// `if Zoning.enabled`. In a default build it stays `false` and nothing is shown.
+// Rough colour and colour zoning from rig photos (plan 2026-10-09). Always on: the elements that
+// show it read the properties below.
 //
 // A global is instantiated once per top-level window (the main window and the Rough Planner
 // window each have their own), so Rust sets it on each window it builds.
@@ -17,9 +15,7 @@ export struct MaterialZoneRow {
 }
 
 export global Zoning {
-    in property <bool> enabled: false;
-    // The Rough planner's "Rough colour..." button: opens the colour wizard (Rust registers it
-    // only in a `zoning` build).
+    // The Rough planner's "Rough colour..." button: opens the colour wizard.
     callback open_rough_colour();
 
     // --- Rough Planner window instance -----------------------------------------------------
@@ -39,4 +35,11 @@ export global Zoning {
     // --- Main window instance --------------------------------------------------------------
     // The zones of the custom material the material dialog shows; empty for a plain one.
     in property <[MaterialZoneRow]> material_zone_rows;
+    // The material the zones above belong to ("" for a plain one). A save under another name
+    // copies its zones to the new name.
+    in property <string> material_zone_source;
+    // "Zone geometry relative to stone size": the zones scale with the stone width setting. Rust
+    // sets it from the stored zones when the dialog fills; the dialog's checkbox changes it and
+    // Rust reads it when the material is saved.
+    in-out property <bool> material_relative_to_stone;
 }

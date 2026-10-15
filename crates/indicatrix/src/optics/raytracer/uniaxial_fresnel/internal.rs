@@ -91,6 +91,10 @@ pub(crate) struct InternalPolarizationSolution {
 }
 
 #[must_use]
+#[expect(
+    clippy::similar_names,
+    reason = "ordinary/extraordinary and s/p pairs (f_o_bwd/f_e_bwd, es_t/ep_t, flux_ro/flux_re, flux_ts/flux_tp) are the established mode names"
+)]
 pub(crate) fn internal_solve(
     n_mode_inc: f32,
     n_o: f32,

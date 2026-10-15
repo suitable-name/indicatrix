@@ -141,7 +141,7 @@ pub(super) fn facet_rings(
                 .iter()
                 .enumerate()
                 .filter(|(_, w)| w.incident.binary_search(&plane).is_ok())
-                .map(|(i, _)| i as u32)
+                .map(|(i, _)| u32::try_from(i).expect("a welded vertex index fits u32"))
                 .collect();
             order_ring(normal, positions, ring)
         })
@@ -218,7 +218,8 @@ pub(super) fn check_euler(
 
     let face_count = facet_polygons.iter().filter(|p| p.len() >= 3).count();
     let edge_count = edge_counts.len();
-    let euler = vertex_count as i64 - edge_count as i64 + face_count as i64;
+    let count_i64 = |n: usize| i64::try_from(n).expect("mesh element counts fit i64");
+    let euler = count_i64(vertex_count) - count_i64(edge_count) + count_i64(face_count);
     if euler != 2 {
         return Err(BrepError::EulerFormulaFailed {
             vertices: vertex_count,

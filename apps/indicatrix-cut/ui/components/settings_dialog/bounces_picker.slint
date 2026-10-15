@@ -5,41 +5,36 @@ import { SettingLabel } from "setting_label.slint";
 
 // Ray Bounces - Segmented Pill Selector.
 //
-// Ladder is 4/8/12/24/64/128, backed by
-// `crates/indicatrix/examples/bounce_cost.rs` measurements: cost is nearly
-// flat in the cap (an 85x spread from 12 to 1024 costs under 1.4x wall-clock,
-// CPU) because the path population is short-tailed (median 4 bounces, p95 29,
-// only 0.03% ever reach 128). 12 is the default, the sane interactive middle.
-// 64 and 128 are the measured points where the hardest case (Diamond) crosses
-// 99.5% and 99.99% converged against a 1024-bounce reference; nothing above
-// 128 is offered since the measurement shows zero further change up to 1024.
+// The ladder is the one Rust owns: `settings::model::BOUNCE_LADDER` (4/8/12/24/64/128),
+// published as `SettingsModel.bounce_ladder`. This file keeps no copy of it, and neither does
+// the still-export dialog or the tilt-video section. The rungs are backed by
+// `crates/indicatrix/examples/bounce_cost.rs` measurements: cost is nearly flat in the cap (an
+// 85x spread from 12 to 1024 costs under 1.4x wall-clock, CPU) because the path population is
+// short-tailed (median 4 bounces, p95 29, only 0.03% ever reach 128). 12 is the default, the
+// sane interactive middle. 64 and 128 are the measured points where the hardest case (Diamond)
+// crosses 99.5% and 99.99% converged against a 1024-bounce reference; nothing above 128 is
+// offered since the measurement shows zero further change up to 1024.
 //
-// Advanced: Simple mode hides it (`settings_dialog.slint`). The ladder is also in
-// `gui::render::advanced_in_use` (the test table there), which says when the hidden pick is
-// off its default.
+// Advanced: Simple mode hides it (`render_output_tab.slint`). The pill index is also in
+// `gui::render::advanced_in_use`, which says when the hidden pick is off its default.
 export component BouncesPicker inherits VerticalLayout {
-    // The pill index to the bounce cap it stands for.
-    pure function cap_for(idx: int) -> int {
-        return idx == 0 ? 4 : (idx == 1 ? 8 : (idx == 2 ? 12 : (idx == 3 ? 24 : (idx == 4 ? 64 : 128))));
-    }
-
     spacing: 6px;
     SettingLabel {
         text: "Max Ray Bounces (Dispersion Depth)";
-        hint: "Max Ray Bounces: the most times one light path may bounce inside the stone before it is dropped. A higher cap follows long, faint paths and shows more colour play. 12 is a good middle.";
+        hint: "Max Ray Bounces: the most times one light path may bounce inside the stone before it is dropped. A higher cap follows long, faint paths and shows more color play. 12 is a good middle.";
     }
 
     HorizontalLayout {
         spacing: 4px;
 
-        // 12 Bounces is the default; 128 is the ceiling.
-        for label[idx] in ["4", "8", "12", "24", "64", "128"]: SegmentPill {
-            text: label;
-            hint: "Stop a light path after " + label + " bounces.";
+        // 12 Bounces is the default; the last rung is the ceiling.
+        for cap[idx] in SettingsModel.bounce_ladder: SegmentPill {
+            text: "" + cap;
+            hint: "Stop a light path after " + cap + " bounces.";
             selected: SettingsModel.bounce_index == idx;
             picked => {
                 SettingsModel.bounce_index = idx;
-                SettingsModel.bounces_changed(root.cap_for(idx));
+                SettingsModel.bounces_changed(cap);
             }
         }
     }

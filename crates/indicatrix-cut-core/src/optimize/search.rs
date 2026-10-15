@@ -6,7 +6,7 @@
 //! own doc comment ("Why this is three functions, not one") for why.
 
 use super::{
-    candidate::{BaselineWarningCounts, SearchContext, apply_free_angles},
+    candidate::{BaselineWarningCounts, SearchContext, apply_free_angles, preform_volume},
     guard::ShapeGuard,
     objective::{CANONICAL_LIGHTING_PRESET, ObjectiveComponents, ObjectiveWeights},
     options::{OptimizeOptions, OptimizeResult},
@@ -171,7 +171,9 @@ pub(super) fn seeded_permutation(len: usize, seed: u64) -> Vec<usize> {
     let mut order: Vec<usize> = (0..len).collect();
     let mut state = seed;
     for i in (1..len).rev() {
-        let r = (splitmix64_next(&mut state) % (i as u64 + 1)) as usize;
+        // The remainder is below `i + 1`, which is a `usize`, so it always fits.
+        let r = usize::try_from(splitmix64_next(&mut state) % (i as u64 + 1))
+            .expect("a remainder below a usize bound fits in usize");
         order.swap(i, r);
     }
     order
@@ -541,6 +543,7 @@ pub fn optimize_design_with(
         space: &space,
         guard: baseline.guard.as_ref(),
         shape_target: options.shape_target,
+        preform_volume: preform_volume(design),
     };
     let pool = CandidatePool::new(
         options.candidate_capacity(),

@@ -394,6 +394,10 @@ fn solve_and_build_result(
     );
     apply_multi_selection(&mut tiers, multi_selected);
     let solved = solved_result.ok();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "gear reference angle (degrees) is stored as f32 in the panel model"
+    )]
     let gear = (
         design.meta.gear_teeth_abs(),
         design.meta.gear_reference_angle as f32,

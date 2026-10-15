@@ -1,6 +1,6 @@
 # 14. Retarget, Snapshot, Compare, and Tilt Curves
 
-## What you will do
+## What You Will Do
 
 This chapter is a quick map of four related "compare two things" tools
 scattered across the editor, plus one rule worth knowing before you rely
@@ -15,9 +15,11 @@ what would change before you apply anything. It compares your current
 design against a *hypothetical* re-angled version of itself, not against
 another design or an earlier state.
 
+![The Retarget for Material dialog with the proposal compared side by side, path traced.](../../../../assets/retarget_dialog.png)
+
 Three things from that chapter matter when you compare. The table, the
 culet and the girdle keep their angles (the table and culet are listed
-greyed as **Not changed**); with **Allow a thicker girdle (up to +10 %)** on,
+greyed as **Not changed**); with **Allow a Thicker Girdle (up to +10 %)** on,
 the girdle band may grow in thickness (never in outline) when a change would
 otherwise pinch it, and the result text says so. The retargeted stone is judged before you can
 apply it: the dialog shows **Checking...**, then **Valid: ...** with the
@@ -50,31 +52,33 @@ If you click Compare to Snapshot before ever taking one, you get a toast:
 **A snapshot is not saved anywhere.** It lives only in memory for the rest
 of this session — closing the design, closing the app, or clicking
 Snapshot Design again (which replaces it) all lose it. It is not written
-to the `.indicatrix` file, and it is not the same thing as Deep Solve's
+to the `.isdd` file, and it is not the same thing as Deep Solve's
 comparison against the catalogue's printed proportions (Chapter 8) — a
 snapshot only ever compares the current design against your own earlier
 click of Snapshot Design, never against catalogue data.
 
-## Visual before/after comparison
+## Visual Before/After Comparison
 
 The tables above tell you which angles move; the **compare window** shows
 you what the stone looks like before and after. Open it with **Compare…**
 in the Retarget dialog's Comparison row (once a proposal is ready and its
 check has finished), with **Compare…** next to "Preview" in the Optimize tab (once a
-result is waiting for Apply), or with **Compare visually…** at the bottom
+result is waiting for Apply), or with **Compare Visually…** at the bottom
 of the Compare to Snapshot table. It is a separate window you can move and
 resize freely; opening it again replaces whatever it was showing. Both
 sides are solved when it opens, so a large design may read "Solving both
 sides…" for a moment.
 
-Two layouts sit at the top left. **Side by side** shows the two stones next
-to each other; **Split slider** shows one stone with a draggable divider,
+![The comparison window in Overlay mode with Solid shading.](../../../../assets/optimizer__compare_1.png)
+
+Two layouts sit at the top left. **Side by Side** shows the two stones next
+to each other; **Split Slider** shows one stone with a draggable divider,
 the "before" design to its left and the "after" design to its right, both
 rendered at exactly the same pose and size. Dragging in either image (or
 anywhere in the split view) turns both stones together, the mouse wheel
 zooms both, and a double-click resets them to the front view. **Solid**
 (the default) is the Edit tab's flat grey view and updates instantly;
-**Traced** runs the path tracer at a modest fixed quality in the design's
+**Path Traced** runs the path tracer at a modest fixed quality in the design's
 own material (for Retarget, the "after" side uses the target material) and
 starts once you stop turning the stone, showing the solid view meanwhile —
 the status line reads "Tracing… 1 of 2" while it works. A side that does
@@ -89,7 +93,7 @@ status line names the side and the lower count. If a side's concave tiers
 cannot be placed, the status line says so and the flat stone is shown and
 measured instead.
 
-**Keep after** applies the change exactly as the Retarget dialog's or the
+**Keep After** applies the change exactly as the Retarget dialog's or the
 Optimize tab's own Apply button does (one undo step, same checks), then
 closes the window; it is disabled unless both sides solve, and if the
 proposal changed after you opened the window you get a toast asking you to
@@ -102,9 +106,9 @@ you can adjust it and compare again.
 **Close** (or the window's own close button) just closes it. A snapshot
 comparison only offers Close.
 
-### Compare against: the current design or the original
+### Compare Against: The Current Design or the Original
 
-When the comparison is opened from the Optimize tab, a **Compare against:**
+When the comparison is opened from the Optimize tab, a **Compare Against:**
 list in its header picks the "before" side: **Current design** (the default,
 the design as it is now) or **Original (before retarget)**. The second entry
 is offered only after you applied a Retarget in this session; it is the design
@@ -116,7 +120,7 @@ and its accept gate stay tied to the design the search started from; only the
 comparison window changes sides. The Retarget dialog's own comparison has no
 such list.
 
-### The numbers under the pictures
+### The Numbers Under the Pictures
 
 Under the two stones the compare window shows a small table with the optical
 figures of both sides, and a few sentences that say in words what changed. (The
@@ -135,7 +139,7 @@ numbers agree with theirs.
 | **Brilliance** | The share of the light that comes back to your eye | Higher |
 | **Windowing** | The share of the light that leaks out through the pavilion (the see-through look) | Lower |
 | **Extinction** | The share of the light that is lost or trapped (the dark look) | Lower |
-| **Fire** | How strongly the stone splits white light into colours (an index, not a percent) | Higher |
+| **Fire** | How strongly the stone splits white light into colors (an index, not a percent) | Higher |
 | **Scintillation** | How much the stone flashes on and off as it moves | Higher |
 
 For each figure the table shows the value before, the value after, the change, and
@@ -167,7 +171,7 @@ difference." If a side does not solve into a closed stone there is nothing to
 measure, and the strip says which side it is. In the Compare to Snapshot dialog the
 same sentences appear under the title, with "the current design" as the subject.
 
-**Tilt average.** The button next to the sentences adds the average over four
+**Tilt Average.** The button next to the sentences adds the average over four
 directions and 181 tilt angles for both stones (1,448 measurements, a few seconds).
 It runs in the background; the button turns into **Cancel** with the percent done,
 and closing the window or opening another comparison stops it. When it finishes,
@@ -176,13 +180,15 @@ sentence, "Averaged over all tilts, ...". Fire and scintillation are not part of
 tilt sweep. These averages use the viewport lighting, so they can differ a little
 from the curves in the Tilt Performance dialog, which has its own lighting.
 
-## Tilt curves: when a computed result actually persists
+## Tilt Curves: When a Computed Result Actually Persists
 
 The **Compute Tilt Curves** button (and the catalogue-wide batch tool in
 Chapter 2's Advanced Filters panel) always computes the full sweep and
 shows it to you regardless of whether the design is saved. Whether that
 result is then **kept** depends on one thing: does this design already
 have a row in your catalogue?
+
+![The Tilt Performance dialog opened from the Diagram view.](../../../../assets/tilt_performance_cad.png)
 
 - **Design already in the catalogue** (you loaded it from there, or have
   already run Save at least once): the curves are written back to
@@ -207,12 +213,12 @@ The catalogue-wide batch is different from the single-design button: it does
 not show a result, it computes and saves the sweep of every design you chose.
 With a remote coordinator configured and Live Compute including it, the batch
 sends several designs to the remote at once (one request per design, so a
-design's four axes are never split) — **Remote lanes for batches**, Chapter
+design's four axes are never split) — **Remote Lanes for Batches**, Chapter
 10 — while your own computer works through the rest. A design the remote could
 not sweep is computed on your own computer under **Local + Remote**, and
-counted as failed under **Remote only**.
+counted as failed under **Remote Only**.
 
-## Exporting a tilt performance video
+## Exporting a Tilt Performance Video
 
 The Tilt Performance dialog's **Export tilt video** section renders one
 high-quality frame per swept angle (posed exactly like the dialog's own
@@ -220,21 +226,29 @@ hover preview), optionally overlays the swept brilliance/windowing/
 extinction/angle values into each frame, then muxes the numbered PNG
 sequence into an MP4 (or an animated GIF if `ffmpeg` is not on your PATH).
 
+![The Tilt Performance dialog with the Export Tilt Video section unfolded.](../../../../assets/tilt_performance_export.png)
+
+The section opens with the settings of your last video (resolution, samples, bounces,
+color space, transfer and the folder-name template); starting a video remembers the
+ones it used (the tilt video's *output defaults*, Chapter 2). A line in the section
+names the material the frames will be drawn in; during a "Preview As..." session the
+amber **Previewing** badge appears there too (Chapter 6).
+
 Every frame renders through the SAME compute setup as a still-image export
 (Chapter 9): whichever local CPU / CPU+GPU / GPU mode you have chosen in
-Settings, plus the remote coordinator if one is configured. With a remote
+the Render & Output tab, plus the remote coordinator if one is configured. With a remote
 configured the section shows the same **Compute** pills as the export dialog
-(Local only, Remote only, Local + Remote; the starting choice is Local +
+(Local Only, Remote Only, Local + Remote; the starting choice is Local +
 Remote, with the usual graceful fallback to local-only rendering if the remote
-is unreachable). **Remote only** keeps this computer free: nothing is traced
+is unreachable). **Remote Only** keeps this computer free: nothing is traced
 here, no GPU is used, and the program only receives and saves the frames and
 encodes the video, so you can keep working. Because there is nothing to fall
 back to, a remote that is missing or stops answering stops the video with a
 message; the frames already written stay, and a queued video continues with its
 first missing frame when you resume it. Without a remote the video renders
 locally and the Compute pills are not shown. The section also shows the same
-**Transfer** row as the export dialog (Full data, or Final picture only: one
-finished PNG per frame from the remote -- Chapter 10), unless Compute is Local only.
+**Transfer** row as the export dialog (Full Data, or Final Picture Only: one
+finished PNG per frame from the remote -- Chapter 10), unless Compute is Local Only.
 Because a video shares the app's single GPU adapter and the remote
 with the rest of the app, the live viewport pauses for the whole
 video's duration — exactly as it does during a still-image export — and
@@ -245,7 +259,7 @@ earlier step (Chapter 9).
 
 While the video renders, **Run in Background** closes the dialog and lets the export
 go on. The header shows a chip such as "Exporting video -- frame 37 of 181 · about 2
-min left", with a progress bar and a cross that cancels. Under Local only and Local +
+min left", with a progress bar and a cross that cancels. Under Local Only and Local +
 Remote it also says that the live view is paused while exporting. Click the chip to
 open the dialog again with its live progress. When the video is finished, cancelled or
 fails, a message appears even if the dialog is closed. The still-image export dialog
@@ -265,10 +279,10 @@ apply, and the **Resolves to** line under the folder shows the name they produce
 Switch to Advanced to change them. The round **?** in the dialog's title bar opens the
 manual page about the graph, and every chip and button in the dialog has a hover note.
 
-## Stale results
+## Stale Results
 
 Retarget's held proposal and the Tilt Performance curves both carry a small
-amber **Stale: design changed** badge whenever the result on screen no
+amber **Stale: Design Changed** badge whenever the result on screen no
 longer matches what the design currently looks like:
 
 - **Retarget**: badged the instant a further edit lands on top of an
@@ -291,7 +305,7 @@ The path-traced viewport (Chapter 5) carries the same badge too, over the
 live render, with its "Recompute" action running a full Solve — the only
 thing that can ever refresh a trace.
 
-## Next steps
+## Next Steps
 
 Chapter 6 covers Retarget in full; Chapter 8 covers Deep Solve's own,
 catalogue-proportion-based comparison; Chapter 11 covers Save and

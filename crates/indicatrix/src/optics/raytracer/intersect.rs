@@ -115,22 +115,14 @@ pub(crate) fn intersect_polyhedron_soa(
             } else if t_near > 1e-4 {
                 Some(HitRecord {
                     t: t_near,
-                    normal: if near_idx >= 0 {
-                        soa.normal(near_idx as usize)
-                    } else {
-                        Vec3::ZERO
-                    },
-                    facet_idx: if near_idx >= 0 { near_idx as usize } else { 0 },
+                    normal: usize::try_from(near_idx).map_or(Vec3::ZERO, |idx| soa.normal(idx)),
+                    facet_idx: usize::try_from(near_idx).unwrap_or(0),
                 })
             } else if t_far > 1e-4 {
                 Some(HitRecord {
                     t: t_far,
-                    normal: if far_idx >= 0 {
-                        soa.normal(far_idx as usize)
-                    } else {
-                        Vec3::ZERO
-                    },
-                    facet_idx: if far_idx >= 0 { far_idx as usize } else { 0 },
+                    normal: usize::try_from(far_idx).map_or(Vec3::ZERO, |idx| soa.normal(idx)),
+                    facet_idx: usize::try_from(far_idx).unwrap_or(0),
                 })
             } else {
                 None
@@ -447,7 +439,7 @@ mod edge_rounding_tests {
             for ix in 0..6usize {
                 let ray = camera.generate_ray(ix as f32, iy as f32, 6.0, 6.0, 0.5, 0.5);
                 for s in 0..4u32 {
-                    let pixel_id = (iy as u32) * 6 + (ix as u32);
+                    let pixel_id = u32::try_from(iy * 6 + ix).expect("a 6 x 6 grid");
                     let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0x2468_ACE0));
                     let hero_rand = (hash_u32(seed) as f32) / 4_294_967_295.0;
                     let a = trace_spectral_ray(
@@ -505,7 +497,7 @@ mod edge_rounding_tests {
                 let ray =
                     camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
                 for s in 0..SAMPLES_PER_PIXEL {
-                    let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
+                    let pixel_id = u32::try_from(iy * GRID + ix).expect("a small grid");
                     let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0xF00D_CAFE));
                     let hero_rand = (hash_u32(seed) as f32) / 4_294_967_295.0;
                     sum_sharp +=
@@ -580,7 +572,7 @@ mod edge_rounding_tests {
                 let ray =
                     camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
                 for s in 0..SAMPLES_PER_PIXEL {
-                    let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
+                    let pixel_id = u32::try_from(iy * GRID + ix).expect("a small grid");
                     let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0xABAD_1DEA));
                     sum += trace_spectral_ray(
                         ray,

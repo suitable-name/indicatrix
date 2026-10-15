@@ -461,12 +461,15 @@ fn partial_start(
         }
     }
     Ok(match best {
-        Some((fraction, attempt)) => (
-            attempt,
-            StartPoint::Partial {
-                percent: (fraction * 100.0).round() as u32,
-            },
-        ),
+        Some((fraction, attempt)) => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "fraction is a bisection point within 0..=1, so the percentage is within 0..=100"
+            )]
+            let percent = (fraction * 100.0).round() as u32;
+            (attempt, StartPoint::Partial { percent })
+        }
         None => (
             Attempt::unchanged(inputs.design, original),
             StartPoint::Unchanged,

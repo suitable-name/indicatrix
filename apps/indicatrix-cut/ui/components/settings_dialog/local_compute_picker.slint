@@ -6,7 +6,7 @@ import { SettingLabel } from "setting_label.slint";
 // Local Compute: which engine(s) the LOCAL (non-remote) render loop uses. Only
 // shown by the caller on a GPU-capable build (`SettingsModel.gpu_build`),
 // since the choice is meaningless without a `gpu` feature to route through.
-// Advanced: Simple mode hides it (`settings_dialog.slint`).
+// Advanced: Simple mode hides it (the Parameters panel).
 export component LocalComputePicker inherits VerticalLayout {
     spacing: 6px;
     SettingLabel {
@@ -38,7 +38,7 @@ export component LocalComputePicker inherits VerticalLayout {
         }
 
         SegmentPill {
-            text: "GPU only";
+            text: "GPU Only";
             hint: "Trace the live picture on the graphics card only. A scene the card cannot take falls back to the processor.";
             selected: SettingsModel.local_compute_target_index == 2;
             picked => {
@@ -49,7 +49,7 @@ export component LocalComputePicker inherits VerticalLayout {
     }
 
     Text {
-        text: "Which engine(s) trace the live viewport. \"GPU only\" still falls back to the CPU tracer for a scene the GPU declines (no adapter, or a scene too large for it), so nothing ever fails to render.";
+        text: "Which engine(s) trace the live viewport. \"GPU Only\" still falls back to the CPU tracer for a scene the GPU declines (no adapter, or a scene too large for it), so nothing ever fails to render.";
         font-size: 11px;
         color: Theme.text-muted;
         wrap: word-wrap;

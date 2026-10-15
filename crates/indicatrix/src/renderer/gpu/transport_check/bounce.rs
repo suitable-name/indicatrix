@@ -132,6 +132,10 @@ fn cpu_cosine_hemisphere(c: &CosineHemisphereCase) -> [f32; 3] {
 }
 
 /// Runs the cosine hemisphere check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_cosine_hemisphere(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -162,7 +166,9 @@ pub fn run_cosine_hemisphere(
         &pipeline,
         &[(26, &in_buf), (27, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -477,6 +483,10 @@ fn cpu_frosted_bounce(case: &FrostedBounceCase, material: &GemMaterial) -> Frost
 }
 
 /// Runs the frosted bounce check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_frosted_bounce(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -508,7 +518,9 @@ pub fn run_frosted_bounce(
         &pipeline,
         &[(28, &in_buf), (29, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

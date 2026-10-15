@@ -22,7 +22,7 @@ use crate::{
     LocateWindow, MainWindow,
     gui::pickers::{PickerFilter, PickerKind, PickerRequest, pick},
     locate_io::{
-        axes::{AXIS_NAMES, DEFAULT_AXES, NUDGE_LABELS, Nudge, start_transform},
+        axes::{AXIS_NAMES, DEFAULT_AXES, NUDGE_LABELS, Nudge, axis_frame, start_transform},
         marks::{ClickMode, MarkSet, ViewMarks},
         overlay::{locate_drawing, to_pixel},
         pipeline::{self, Found, Solution},
@@ -169,6 +169,12 @@ fn with_locate<R>(f: impl FnOnce(&Rc<LocateHost>) -> R) -> Option<R> {
     Some(f(&host))
 }
 
+/// The locate window when it exists. UI harness only.
+#[cfg(feature = "ui-harness")]
+pub fn harness_window() -> Option<LocateWindow> {
+    with_locate(|host| host.window.clone_strong())
+}
+
 /// [`with_locate`] for callbacks that return nothing.
 fn on_locate(f: impl FnOnce(&Rc<LocateHost>)) {
     let _ = with_locate(f);
@@ -179,8 +185,7 @@ pub(super) fn rigs_changed() {
     on_locate(reload_rigs);
 }
 
-/// The alignment, the rig it was made with and the loaded photos (`zoning` feature).
-#[cfg(feature = "zoning")]
+/// The alignment, the rig it was made with and the loaded photos.
 pub(super) fn alignment_snapshot()
 -> Option<crate::gui::rough_colour::wizard::context::AlignmentSnapshot> {
     with_locate(|host| {
@@ -266,6 +271,7 @@ fn wire(host: &Rc<LocateHost>) {
     window.on_undo_click(|| on_locate(|host| edit_marks(host, Edit::Undo)));
     window.on_clear_view(|| on_locate(|host| edit_marks(host, Edit::Clear)));
     window.on_nudge_edited(|index, text| on_locate(|host| nudge_edited(host, index, &text)));
+    window.on_axes_changed(|| on_locate(axes_changed));
     window.on_align(|| on_locate(start_align));
     window.on_solve(|| on_locate(start_solve));
     window.on_accept_inclusion(|| on_locate(accept));
@@ -421,7 +427,7 @@ fn reload_rigs(host: &Rc<LocateHost>) {
     }
     let none = host.state.borrow().rigs.is_empty();
     if none {
-        set_status(host, "No camera rig yet. Press Edit rigs... to create one.");
+        set_status(host, "No camera rig yet. Press Edit Rigs... to create one.");
     }
     push_all(host);
 }
@@ -454,7 +460,7 @@ fn load_photo(host: &Rc<LocateHost>, view: i32) {
     set_error(host, "");
     let request = PickerRequest {
         kind: PickerKind::OpenFile,
-        title: Some("Load the photo of this view".to_string()),
+        title: Some("Load the Photo of This View".to_string()),
         filters: vec![PickerFilter {
             label: "Photos (PNG, JPEG)".to_string(),
             extensions: ["png", "jpg", "jpeg"].map(str::to_string).to_vec(),
@@ -589,6 +595,25 @@ fn nudge_edited(host: &Rc<LocateHost>, index: i32, text: &str) {
     }
 }
 
+/// One of the two axis dropdowns changed. The picks only seed the next Align, so nothing is
+/// recomputed here: two picks along the same mesh axis are reported at once (Align would refuse
+/// them), and an alignment made with the old picks is pointed out as such.
+fn axes_changed(host: &Rc<LocateHost>) {
+    let axis = |index: i32| usize::try_from(index).unwrap_or(usize::MAX);
+    let picked = axis_frame(
+        axis(host.window.get_axis_z_index()),
+        axis(host.window.get_axis_x_index()),
+    );
+    match picked {
+        Err(message) => set_error(host, &message),
+        Ok(_) if host.state.borrow().alignment.is_some() => set_status(
+            host,
+            "The axes changed: press Align again to align the mesh with the new axes.",
+        ),
+        Ok(_) => set_status(host, ""),
+    }
+}
+
 // --- Jobs ----------------------------------------------------------------------------------
 
 /// Starts `work` on a worker thread and runs `done` with its result on the UI thread, unless
@@ -648,7 +673,7 @@ fn picked_rig(host: &LocateHost) -> Result<RigProfile, String> {
         .borrow()
         .rig()
         .cloned()
-        .ok_or_else(|| "Pick or create a camera rig first (Edit rigs...).".to_owned())
+        .ok_or_else(|| "Pick or create a camera rig first (Edit Rigs...).".to_owned())
 }
 
 // --- Align -----------------------------------------------------------------------------------
@@ -696,11 +721,11 @@ fn prepare_align(host: &LocateHost) -> Result<AlignInputs, String> {
     let nudge = Nudge::from_texts(&nudges)?;
     let id = planner_mesh_id()?;
     let axis = |index: i32| usize::try_from(index).unwrap_or(usize::MAX);
-    let axes = (
+    let picks = (
         axis(host.window.get_axis_z_index()),
         axis(host.window.get_axis_x_index()),
     );
-    Ok((rig, outlines, id, axes, nudge))
+    Ok((rig, outlines, id, picks, nudge))
 }
 
 fn align_done(

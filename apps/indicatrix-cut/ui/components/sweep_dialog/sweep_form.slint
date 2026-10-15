@@ -17,13 +17,15 @@ component SweepNumberField inherits Rectangle {
     callback edited();
 
     width: 92px;
-    height: 50px;
+    height: 54px;
 
     VerticalLayout {
         spacing: 3px;
         FieldCaption { text: root.caption; hint: root.hint; }
+        // 32px: the std `LineEdit` is that tall; its own 160px minimum width (hence
+        // `min-width: 0px` below) used to push it over its neighbours.
         Rectangle {
-            height: 30px;
+            height: 32px;
             background: Theme.surface-raised;
             border-radius: Theme.radius-sm;
             border-width: 1px;
@@ -33,6 +35,7 @@ component SweepNumberField inherits Rectangle {
                 height: 100%;
                 hint: root.hint;
                 LineEdit {
+                    min-width: 0px;
                     text <=> root.value;
                     placeholder-text: root.placeholder;
                     enabled: root.enabled;
@@ -114,6 +117,8 @@ component SweepCheck inherits Rectangle {
                     colorize: Theme.text-on-accent;
                     width: 11px;
                     height: 11px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
                 }
             }
         }
@@ -147,7 +152,7 @@ export component SweepForm inherits VerticalLayout {
                 hint: "The tier whose angle is tried. Every other tier keeps its angle.";
             }
             Rectangle {
-                height: 30px;
+                height: 32px;
                 background: Theme.surface-raised;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
@@ -157,17 +162,18 @@ export component SweepForm inherits VerticalLayout {
                     height: 100%;
                     hint: "The tier whose angle is tried. Every other tier keeps its angle.";
                     ComboBox {
+                        min-width: 0px;
                         model: SweepModel.tier_names;
                         current-index <=> SweepModel.tier_index;
                         enabled: !SweepModel.running;
-                        accessible-label: "Tier to sweep";
+                        accessible-label: "Tier to Sweep";
                         selected(value) => { SweepModel.tier_changed(); }
                     }
                 }
             }
         }
 
-        SweepNumberField {
+        sweep-number-field-l172 := SweepNumberField {
             caption: "From (degrees)";
             hint: "One end of the range, in degrees from flat. Use a positive number: the crown or pavilion side comes from the tier. You can type a sum such as 41.5 - 3.";
             placeholder: "from";
@@ -175,7 +181,7 @@ export component SweepForm inherits VerticalLayout {
             enabled: !SweepModel.running;
             edited => { SweepModel.form_changed(); }
         }
-        SweepNumberField {
+        sweep-number-field-l180 := SweepNumberField {
             caption: "To (degrees)";
             hint: "The other end of the range, in degrees from flat. The table lists the angles from the flattest to the steepest. You can type a sum such as 41.5 + 3.";
             placeholder: "to";
@@ -183,7 +189,7 @@ export component SweepForm inherits VerticalLayout {
             enabled: !SweepModel.running;
             edited => { SweepModel.form_changed(); }
         }
-        SweepNumberField {
+        sweep-number-field-l188 := SweepNumberField {
             caption: "Step (degrees)";
             hint: "The gap between two angles, in degrees. A smaller step gives more rows and takes longer.";
             placeholder: "step";
@@ -194,9 +200,9 @@ export component SweepForm inherits VerticalLayout {
 
         VerticalLayout {
             alignment: end;
-            SweepButton {
+            sweep-button-running := SweepButton {
                 width: 120px;
-                text: SweepModel.running ? "Cancel" : "Run sweep";
+                text: SweepModel.running ? "Cancel" : "Run Sweep";
                 hint: root.run_hint;
                 icon: SweepModel.running ? @image-url("../../icons/close.svg") : @image-url("../../icons/play.svg");
                 primary: !SweepModel.running;
@@ -215,7 +221,7 @@ export component SweepForm inherits VerticalLayout {
     HorizontalLayout {
         spacing: 16px;
         SweepCheck {
-            label: "Also average the tilt performance (slower)";
+            label: "Also Average the Tilt Performance (Slower)";
             hint: "Also work out the tilt performance of every angle and average it, so the table and chart can show it. It gives a fuller picture but makes the sweep much slower.";
             checked <=> SweepModel.tilt_average;
             enabled: !SweepModel.running;
@@ -247,7 +253,7 @@ export component SweepForm inherits VerticalLayout {
         border-radius: 3px;
         background: Theme.surface-chip;
         accessible-role: AccessibleRole.progress-indicator;
-        accessible-label: "Sweep progress";
+        accessible-label: "Sweep Progress";
         accessible-value: Math.round(Math.clamp(SweepModel.progress, 0.0, 1.0) * 100) + " percent";
         Rectangle {
             x: 0px;

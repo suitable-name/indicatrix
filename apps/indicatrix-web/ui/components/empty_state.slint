@@ -66,7 +66,7 @@ export component EmptyState inherits Rectangle {
         spacing: 14px;
 
         Text {
-            text: "No design loaded";
+            text: "No Design Loaded";
             font-size: 16px;
             font-weight: 700;
             color: Theme.text-primary;
@@ -90,8 +90,8 @@ export component EmptyState inherits Rectangle {
                 clicked => { GalleryModel.open = true; }
             }
             Card {
-                title: "Open file...";
-                body: ".indicatrix, .asc, older pair (.asc + .indicatrix.toml), .gem, .gcs";
+                title: "Open File...";
+                body: ".isdd, .indicatrix, .asc, .gem, .gcs";
                 enabled: GuideModel.allows-file-ops();
                 clicked => { AppModel.open-file(); }
             }
@@ -123,7 +123,7 @@ export component EmptyState inherits Rectangle {
         }
 
         Text {
-            text: "You can also drop files onto this window. Several files can be opened together, e.g. an .asc with an older .indicatrix.toml sidecar.";
+            text: "You can also drop a file onto this window.";
             font-size: 10px;
             color: Theme.text-muted;
             horizontal-alignment: center;

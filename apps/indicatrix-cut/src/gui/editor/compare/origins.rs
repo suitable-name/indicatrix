@@ -88,7 +88,7 @@ pub(super) struct ReferenceOffer {
 /// The picker's entries: always "Current design", plus the original when one is held.
 #[must_use]
 pub(super) fn reference_options(offer: &ReferenceOffer) -> Vec<String> {
-    let mut options = vec!["Current design".to_string()];
+    let mut options = vec!["Current Design".to_string()];
     if let Some(label) = &offer.original_label {
         options.push(format!("Original ({label})"));
     }
@@ -148,7 +148,7 @@ pub(super) fn retarget_request(
         reference: ReferenceOffer::default(),
         origin: CompareOrigin::Retarget,
         guard: KeepGuard::Retarget(Box::new(inputs.guard)),
-        before: side(inputs.current, "Current design".to_string(), &custom),
+        before: side(inputs.current, "Current Design".to_string(), &custom),
         after: side(inputs.candidate, inputs.after_label, &custom),
     })
 }
@@ -170,12 +170,12 @@ pub(super) fn pick_before(
             };
             match wanted {
                 Reference::Original => (design, format!("Original \"{label}\""), offer),
-                Reference::Current => (current.clone(), "Current design".to_string(), offer),
+                Reference::Current => (current.clone(), "Current Design".to_string(), offer),
             }
         }
         None => (
             current.clone(),
-            "Current design".to_string(),
+            "Current Design".to_string(),
             ReferenceOffer::default(),
         ),
     }
@@ -216,7 +216,7 @@ pub(super) fn optimize_request(
             generation,
         },
         before: side(before_design, before_label, &custom),
-        after: side(candidate, "Optimize candidate".to_string(), &custom),
+        after: side(candidate, "Optimize Candidate".to_string(), &custom),
     })
 }
 
@@ -237,7 +237,7 @@ pub(super) fn snapshot_request(
         origin: CompareOrigin::Snapshot,
         guard: KeepGuard::Snapshot,
         before: side(snapshot, format!("Snapshot \"{label}\""), &custom),
-        after: side(st.design.clone(), "Current design".to_string(), &custom),
+        after: side(st.design.clone(), "Current Design".to_string(), &custom),
     })
 }
 

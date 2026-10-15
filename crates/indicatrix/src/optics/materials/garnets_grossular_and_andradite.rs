@@ -45,7 +45,6 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
-                #[cfg(feature = "zoning")]
                 zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
@@ -77,7 +76,6 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
-                #[cfg(feature = "zoning")]
                 zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },

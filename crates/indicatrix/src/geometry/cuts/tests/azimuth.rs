@@ -126,8 +126,16 @@ fn from_asc_schedule_zero_reference_angle_reproduces_the_previous_mapping_bit_fo
     assert_eq!(planes.len(), indices.len());
 
     let theta = 41.0f32.to_radians();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "GpuFacetPlane stores f32; the mast is a small distance"
+    )]
     let d = -(mast.abs() as f32);
     for (&idx, plane) in indices.iter().zip(&planes) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the pre-fix formula worked in f32; an index is a small whole number"
+        )]
         let phi = 2.0 * PI * (idx as f32) / gear_teeth; // the pre-fix formula, verbatim
         let expected = GpuFacetPlane::new(
             Vec3::new(
@@ -172,6 +180,10 @@ fn from_asc_schedule_asymmetric_indices_map_to_expected_azimuths_with_reference_
 
     let theta = 40.0f32.to_radians();
     for (&idx, plane) in indices.iter().zip(&planes) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the planes are f32; an index and a reference angle are small numbers"
+        )]
         let phi = 2.0 * PI * (idx as f32 + reference_angle as f32) / gear_teeth;
         let expected = [
             theta.sin() * phi.cos(),
@@ -223,6 +235,10 @@ fn from_asc_schedule_symmetric_design_is_globally_rotated_by_reference_angle() {
     assert_eq!(planes_base.len(), planes_rotated.len());
     assert_eq!(planes_base.len(), indices.len());
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the planes are f32; the reference angle is a small number of teeth"
+    )]
     let delta = 2.0 * PI * reference_angle as f32 / gear_teeth;
     let (sin_delta, cos_delta) = (delta.sin(), delta.cos());
     for base_plane in &planes_base {

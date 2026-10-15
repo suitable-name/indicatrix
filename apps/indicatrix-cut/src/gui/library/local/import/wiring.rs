@@ -68,8 +68,10 @@ fn spawn_import(
             had_notes,
         } = import_path(&db, &path, recurse, move |done, total| {
             let _ = progress_ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.global::<LibraryModel>().set_import_done(done as i32);
-                ui.global::<LibraryModel>().set_import_total(total as i32);
+                ui.global::<LibraryModel>()
+                    .set_import_done(i32::try_from(done).unwrap_or(i32::MAX));
+                ui.global::<LibraryModel>()
+                    .set_import_total(i32::try_from(total).unwrap_or(i32::MAX));
                 ui.global::<LibraryModel>()
                     .set_import_progress(done as f32 / total as f32);
                 ui.global::<LibraryModel>()
@@ -199,7 +201,7 @@ pub fn setup_import_callback(
                 kind: crate::gui::pickers::PickerKind::OpenFile,
                 title: None,
                 filters: vec![crate::gui::pickers::PickerFilter {
-                    label: "Faceting design (.asc, .gem, .gcs)".to_string(),
+                    label: "Faceting Design (.asc, .gem, .gcs)".to_string(),
                     extensions: vec!["asc".to_string(), "gem".to_string(), "gcs".to_string()],
                 }],
                 default_file_name: None,

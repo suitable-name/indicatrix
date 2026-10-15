@@ -1,35 +1,37 @@
 # 23. Render Jobs
 
-## What you will do
+## What You Will Do
 
 Collect still pictures and tilt videos as render jobs, then let the program render them one after another while you keep working, or overnight. You can pause, resume, restart, reorder and cancel jobs at any time. You can also export the jobs as a script and render them on another computer with the command-line tool.
 
-## Adding a job
+## Adding a Job
 
 You can add a job from two places:
 
 - the export dialog (Chapter 9): set everything as you would for an export, then press **Add to Queue** instead of **Start Export**;
-- the **Export tilt video** section of the Tilt Performance dialog (Chapter 14): press **Add to Queue** instead of **Start Video Export**.
+- the **Export Tilt Video** section of the Tilt Performance dialog (Chapter 14): press **Add to Queue** instead of **Start Video Export**.
 
 **Add to Queue** sits next to the button that renders at once. The two do not replace each other. **Start Export** and **Start Video Export** still render immediately. **Add to Queue** saves a render job and renders nothing yet. A message tells you how many jobs were added and where to start them.
 
-### What a job keeps
+### What a Job Keeps
 
-A job keeps a frozen copy of everything it needs: the finished stone, the material and its colour, the lighting, the camera, the size, the samples and the other export settings. If you change the design afterwards, the job still renders what you saw when you added it.
+A job keeps a frozen copy of everything it needs: the finished stone, its width and material effects, the material and its color (the preview material, if you were previewing one), the lighting, the camera, the size, the samples and the other export settings. If you change the design afterwards, the job still renders what you saw when you added it.
 
 The job does not freeze the remote worker. Its address and certificates are read from Settings when the job runs (see Limitations). The job does remember your choices about where to render: local only, local and remote, or remote only, and the transfer.
 
-A tilt video has the same **Compute** pills as a still picture. **Remote only** keeps this computer free: the video's frames are drawn entirely by the remote worker, and this computer only receives and saves them and encodes the video, using almost no CPU or GPU. If the remote is missing or stops answering, the job fails with a message instead of drawing the frames here; resume it once the remote is back and it continues with its first missing frame. On the command line, `indicatrix-cli tilt-video` takes the same choice from the job file, or from `--compute local`, `remote` or `both`.
+A tilt video has the same **Compute** pills as a still picture. **Remote Only** keeps this computer free: the video's frames are drawn entirely by the remote worker, and this computer only receives and saves them and encodes the video, using almost no CPU or GPU. If the remote is missing or stops answering, the job fails with a message instead of drawing the frames here; resume it once the remote is back and it continues with its first missing frame. On the command line, `indicatrix-cli tilt-video` takes the same choice from the job file, or from `--compute local`, `remote` or `both`.
 
-### One job per picture
+### One Job per Picture
 
-With presets ticked under **Also Render With These Presets**, each picture becomes its own job: one for the current view and one for every ticked preset.
+With saved lighting ticked under **Also Render With Saved Lighting**, each picture becomes its own job: one for the current view and one for every ticked lighting.
 
-### File names
+### File Names
 
 The file name is worked out when you add the job, from the folder and the name template of the export dialog. If a file with that name exists by the time the job runs, or another job already uses the name, " (2)" is added to the name. A date or time in the template is the date and time of **Add to Queue**, not of the render.
 
 ## The Render Jobs window
+
+![The Render Jobs window with two queued pictures.](../../../../assets/render_jobs.png)
 
 Open it in one of two ways:
 
@@ -38,7 +40,7 @@ Open it in one of two ways:
 
 Each row shows the job's number, its name, its state and what it renders, then its progress. The states are **Queued**, **Running**, **Paused**, **Done**, **Failed** and **Cancelled**. The list is kept in your library, so the jobs are still there the next time you start the program. The window has a round **?** button that opens this chapter, and **Close**. Closing the window does not stop a job that is rendering.
 
-## Starting and pausing the queue
+## Starting and Pausing the Queue
 
 **Start Queue** renders the waiting jobs from the top of the list down, one job at a time. While the queue runs, the button reads **Pause Queue**. It stops the job that is rendering and keeps the rest waiting.
 
@@ -68,7 +70,7 @@ Two more buttons sit at the top of the window.
 
 **Delete** and **Clear Finished** never delete pictures, videos or frames. Only the list entry goes.
 
-## What pausing keeps
+## What Pausing Keeps
 
 Pausing works frame by frame.
 
@@ -79,13 +81,13 @@ A paused video keeps its frames on disk until it is finished or you delete the f
 
 **Restart** throws the finished frames of a video away and starts at frame one.
 
-### Closing the program while a job renders
+### Closing the Program While a Job Renders
 
 If you close the program while a job renders, the program asks first, in the same dialog it uses for unsaved work. If you go on, the job stops and waits as **Paused**. A tilt video keeps its finished frames. The queue is stopped, so nothing starts by itself when you open the program again.
 
 If the program stops without asking (a crash or a power cut), the job is found as **Paused** the next time the program starts, with a note on its row that the program closed while it was rendering. At most one frame is rendered twice.
 
-## Exporting a script
+## Exporting a Script
 
 **Export Script...** writes the jobs that are not finished, in queue order, to a new folder. The section at the foot of the window has these choices:
 
@@ -112,7 +114,7 @@ The button is dimmed when no job is unfinished. Copy the whole folder to the com
 
 The script runs `indicatrix-cli` once per job. If the tool is not on the PATH, set the environment variable `INDICATRIX_CLI` to its full path first. At the top of the script you can change the engines, the remote address and the certificate folder. A tilt video that stopped part way continues where it stopped when you run the script again.
 
-## Running a job file by hand
+## Running a Job File by Hand
 
 The jobs of a script are job files (`*.job.json`). You can run one yourself:
 
@@ -145,7 +147,7 @@ The tool prints one line on standard output: the path of the finished file (for 
 | 3 | A file could not be read or written. |
 | 5 | The render failed or was stopped. |
 
-## Same picture, or nearly the same
+## Same Picture, or Nearly the Same
 
 A render done only on the CPU, or only on the GPU of one computer, gives the same picture every time. A render that splits its work between the CPU and the GPU, or that uses a remote worker, is only the same statistically. Each run shares the samples out by measured speed, so a few samples land on a different engine, and the noise differs a little from run to run. Both pictures are equally correct.
 
@@ -160,6 +162,6 @@ A render done only on the CPU, or only on the GPU of one computer, gives the sam
 - Deleting a job never deletes files.
 - The command-line tool needs the same kind of computer as the program. Without a GPU build it renders on the processor.
 
-## Next steps
+## Next Steps
 
 Chapter 9 explains every export setting, Chapter 10 sets up a remote worker, and Chapter 14 covers the tilt video. Chapter 12 lists what to do when a job fails.

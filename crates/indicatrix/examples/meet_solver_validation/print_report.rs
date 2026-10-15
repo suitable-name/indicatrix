@@ -227,6 +227,11 @@ fn print_percentiles(sorted: &[f64]) {
         return;
     }
     let n = sorted.len();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "p is a quantile in 0..=1, so the index is non-negative and capped at n - 1"
+    )]
     let at = |p: f64| sorted[((n as f64 * p) as usize).min(n - 1)];
     println!(
         "  p10={:.4} p25={:.4} median={:.4} p75={:.4} p90={:.4} p99={:.4} max={:.4}",

@@ -233,7 +233,7 @@ fn import_orbit_edit_export_reimport_round_trips() {
          a -30.000000 0.60000000 0 1 2 G Set stone size\n";
     let schedule = indicatrix_formats::asc::parse_asc(text).expect("must parse");
     let preform = PreformSpec::block(2.0, 1.0, 2.0);
-    let mut design = Design::from_asc_schedule(preform, &schedule);
+    let mut design = Design::from_asc_schedule(preform.clone(), &schedule);
     // Both tiers stated an explicit anchor, so this is fully solved
     // before any orbit edit -- the partial orbit (indices `0 1 2`
     // against `sym=4`'s expected 4) is a data fact, not a solver gap.
@@ -288,7 +288,7 @@ fn non_orbit_design_exports_unchanged_without_an_explicit_edit() {
          a -30.000000 0.60000000 0 3 G Set stone size\n";
     let schedule = indicatrix_formats::asc::parse_asc(text).expect("must parse");
     let preform = PreformSpec::block(2.0, 1.0, 2.0);
-    let design = Design::from_asc_schedule(preform, &schedule);
+    let design = Design::from_asc_schedule(preform.clone(), &schedule);
 
     // step = gear_teeth_abs/symmetry_order = 8/4 = 2; indices 0 and 3
     // land on residues 0 and 1 respectively -- two different,

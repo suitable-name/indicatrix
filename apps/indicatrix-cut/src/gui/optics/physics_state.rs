@@ -9,7 +9,7 @@
 //! only way the stored bands change.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     sync::{
         Arc,
@@ -250,9 +250,18 @@ pub fn typical_amount(host: &HostData, id: &str) -> f64 {
     if best > 0.0 { best.min(max) } else { 0.1 * max }
 }
 
+/// The host's valence split under the recipe's treatments, an element counting as present when
+/// its amount is positive: the one definition of "the recipe's split" every bound below uses (a
+/// species whose fraction is 0 in it cannot absorb and contributes no bound).
+fn recipe_split(host: &HostData, recipe: &ColorRecipe) -> BTreeMap<String, BTreeMap<String, f64>> {
+    host.treated_split(&recipe.treatments, &|x| recipe.amount(x) > 0.0)
+}
+
 /// Why `id` cannot be added to the recipe right now (`None`: it can). Derived only from the
-/// catalogue: a missing usable range, a full end-member budget, a chromophore whose `requires` /
-/// `excludes` name another chromophore of the host by id, or a centre only a treatment creates.
+/// catalogue and the recipe: a missing usable range (under the recipe's treatments), a full
+/// end-member budget, partner elements that already fill a range they share with `id`, a
+/// chromophore whose `requires` / `excludes` name another chromophore of the host by id, or a
+/// centre only a treatment creates.
 #[must_use]
 pub fn impossible_reason(host: &HostData, recipe: &ColorRecipe, id: &str) -> Option<String> {
     let chromos: Vec<&ChromophoreData> = host
@@ -260,7 +269,7 @@ pub fn impossible_reason(host: &HostData, recipe: &ColorRecipe, id: &str) -> Opt
         .iter()
         .filter(|c| c.is_offered() && drivers(c).iter().any(|d| d == id))
         .collect();
-    if chromos.is_empty() || host.element_conc_max(id) <= 0.0 {
+    if chromos.is_empty() || host.element_conc_max_split(id, &recipe_split(host, recipe)) <= 0.0 {
         return Some("no usable concentration range in the data".to_string());
     }
     let present: BTreeSet<&str> = recipe
@@ -279,6 +288,12 @@ pub fn impossible_reason(host: &HostData, recipe: &ColorRecipe, id: &str) -> Opt
         if sum >= 1.0 - 1e-9 {
             return Some("end-member fractions already add up to 100 %".to_string());
         }
+    }
+    if host
+        .summed_room(id, &|x| recipe.amount(x))
+        .is_some_and(|room| room <= 0.0)
+    {
+        return Some("its partner elements already fill the shared range".to_string());
     }
     let chromophore_present = |other: &ChromophoreData| -> bool {
         absorbers(other)
@@ -449,6 +464,10 @@ pub struct Prefill {
 
 /// The prefill from a host's built-in material.
 fn builtin_prefill(host: &HostData, b: &GemMaterial) -> Prefill {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the storage precision of the Prefill fields; densities are in the normal float range"
+    )]
     let sg = host
         .materials
         .iter()
@@ -479,11 +498,16 @@ fn generic_prefill(host: &HostData) -> Prefill {
         }
         _ => CrystalSystem::Hexagonal,
     };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the storage precision of the Prefill fields; density is in the normal float range"
+    )]
+    let specific_gravity = host.density_g_cm3 as f32;
     Prefill {
         ri: 1.6,
         dispersion: 0.015,
         birefringence: 0.0,
-        specific_gravity: host.density_g_cm3 as f32,
+        specific_gravity,
         crystal_system_idx: crystal_system_to_index(cs),
         optical_character_idx: optical_character_to_index(oc),
         biaxial_delta: 0.0,
@@ -507,8 +531,13 @@ pub fn host_prefill(host: &HostData, recipe: Option<&ColorRecipe>) -> Prefill {
         if let Some(fractions) = fractions {
             let refs: Vec<(&str, f64)> = fractions.iter().map(|(k, v)| (k.as_str(), *v)).collect();
             let (ri, sg) = garnet_optics(&refs);
-            out.ri = ri as f32;
-            out.specific_gravity = sg as f32;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the storage precision of the Prefill fields; values are in the normal float range"
+            )]
+            let (ri32, sg32) = (ri as f32, sg as f32);
+            out.ri = ri32;
+            out.specific_gravity = sg32;
         }
     }
     out
@@ -780,10 +809,25 @@ impl PhysicsState {
 
     // ---- recipe edits ----
 
+    /// The upper bound of `id`'s amount under the recipe's treatments: a species whose fraction
+    /// is 0 in the treated split does not count (copper of a struck ruby glass is bounded by the
+    /// colloid, not by the blue Cu2+ ion). Without a recipe the untreated bound.
     fn max_for(&self, id: &str, catalogue: &ChromophoreCatalogue) -> f64 {
-        catalogue
-            .host(&self.host_id)
-            .map_or(0.0, |h| h.element_conc_max(id))
+        let Some(host) = catalogue.host(&self.host_id) else {
+            return 0.0;
+        };
+        self.recipe().map_or_else(
+            || host.element_conc_max(id),
+            |recipe| host.element_conc_max_split(id, &recipe_split(host, recipe)),
+        )
+    }
+
+    /// The room the partner elements leave `id` in a range they share with it (a chromophore of
+    /// several elements has one `conc_max` for their sum); `None` when `id` shares none.
+    fn partner_room(&self, id: &str, catalogue: &ChromophoreCatalogue) -> Option<f64> {
+        let host = catalogue.host(&self.host_id)?;
+        let recipe = self.recipe()?;
+        host.summed_room(id, &|x| recipe.amount(x))
     }
 
     /// The largest amount an end member can take: what the others leave of 1.
@@ -805,11 +849,17 @@ impl PhysicsState {
     /// A drag step of the log slider of `id` to position `pos` (no history entry until
     /// [`Self::release`]).
     pub fn set_amount_pos(&mut self, id: &str, pos: f64, catalogue: &ChromophoreCatalogue) {
-        let mut max = self.max_for(id, catalogue);
+        // The slider keeps its log scale over the element's whole range; the amount is capped by
+        // what the other end members and the partner elements leave.
+        let full = self.max_for(id, catalogue);
+        let mut max = full;
         if let Some(room) = self.end_member_room(id, catalogue) {
             max = max.min(room);
         }
-        let amount = pos_to_amount(pos, self.max_for(id, catalogue)).min(max);
+        if let Some(room) = self.partner_room(id, catalogue) {
+            max = max.min(room);
+        }
+        let amount = pos_to_amount(pos, full).min(max);
         self.begin_drag();
         let recipe = self.recipe_mut(catalogue);
         if recipe.set_amount(id, amount) {
@@ -866,7 +916,7 @@ impl PhysicsState {
                 (
                     k.clone(),
                     u * typical_amount(host, k),
-                    host.element_conc_max(k),
+                    self.max_for(k, catalogue),
                 )
             })
             .collect();
@@ -943,6 +993,11 @@ impl PhysicsState {
         self.push_history();
         let mut amount = typical_amount(host, id);
         if let Some(room) = self.end_member_room(id, catalogue) {
+            amount = amount.min(room);
+        }
+        // Never fill more of a shared range than the partners leave, so the refresh below does
+        // not have to scale the partners down.
+        if let Some(room) = self.partner_room(id, catalogue) {
             amount = amount.min(room);
         }
         let recipe = self.recipe_mut(catalogue);
@@ -1242,9 +1297,10 @@ impl PhysicsState {
             })
             .collect();
         let total: f64 = units.iter().map(|(_, u)| u).sum();
+        let split = recipe_split(host, recipe);
         for e in &recipe.entries {
             let unit = item_unit(host, &e.id);
-            let max = host.element_conc_max(&e.id);
+            let max = host.element_conc_max_split(&e.id, &split);
             let (confidence, sources) = item_sources(host, &e.id);
             let share = units
                 .iter()
@@ -1348,6 +1404,16 @@ impl PhysicsState {
     }
 }
 
+/// A 0..=1 channel as a byte (clamped, rounded).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value clamped to 0..=1 and scaled to 0..=255 before the cast"
+)]
+fn unit_to_byte(c: f32) -> u8 {
+    (c.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 /// The fluorescence readout and the two analytic UV glow swatches (fluorescence plan section 5),
 /// from the recipe's emitters (`fluorescence_report`) at its reference path: nothing is traced.
 fn fill_glow(view: &mut PhysicsView, catalogue: &ChromophoreCatalogue, recipe: &ColorRecipe) {
@@ -1355,7 +1421,7 @@ fn fill_glow(view: &mut PhysicsView, catalogue: &ChromophoreCatalogue, recipe: &
     let path = recipe.reference_path_mm;
     let (glow365, glow395) = (report.glow(UV365_NM, path), report.glow(UV395_NM, path));
     let swatch = |glow: &UvGlow| GlowSwatch {
-        srgb: glow.srgb.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
+        srgb: glow.srgb.map(unit_to_byte),
         level: (glow.photon_yield / GLOW_LEVEL_FULL).clamp(0.0, 1.0),
         text: glow_caption(glow),
     };
@@ -1498,6 +1564,10 @@ pub struct TreatmentView {
 
 /// Everything the physics section shows, as plain data.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "plain-data mirror of the Slint physics model; fields are independent switches"
+)]
 pub struct PhysicsView {
     /// Physics is the active mode.
     pub active: bool,

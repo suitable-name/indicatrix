@@ -118,6 +118,8 @@ mod callbacks;
 // The visual before/after compare window (Retarget, Optimize, Snapshot) -- see
 // that module's own doc comment.
 mod compare;
+#[cfg(feature = "ui-harness")]
+pub use compare::harness_window as harness_compare_window;
 mod cut_sheet;
 // Cutting mode: the cutting instructions one step per page, with done marks kept in the
 // library -- see that module's own doc comment.
@@ -202,6 +204,31 @@ mod view;
 
 // Called wherever the main window hides, so the compare window never outlives it.
 pub(in crate::gui) use compare::close_compare_window;
+
+/// Lets go of the handles (database, editor state, compare window) the editor's thread-locals kept
+/// for a previous main window. See `gui::window_release`.
+pub(in crate::gui) fn release_window_state() {
+    variants::release_window_state();
+    cutting_mode::release_window_state();
+    compare::release_window_state();
+    callbacks::planned_stone::release_window_state();
+    callbacks::release_snapshot();
+    native_io::release_window_state();
+}
+
+/// Names the editor holders that are still set. See `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui) fn note_holders(out: &mut Vec<&'static str>) {
+    variants::note_holders(out);
+    cutting_mode::note_holders(out);
+    native_io::note_holders(out);
+    if compare::window_is_kept() {
+        out.push("editor::compare COMPARE (pop-out window, live session)");
+    }
+}
+// A stone the Rough Planner hands to the editor: the design is loaded through Load Selected and
+// the planned piece, width and colour are applied to it -- see that module's own doc comment.
+pub(in crate::gui) use callbacks::planned_stone;
 // The high-resolution export, the tilt video, the tilt curves and the tilt hover preview ask
 // for it before they capture the scene; none of them solves on the UI thread.
 pub(in crate::gui) use finished_stone::{
@@ -279,6 +306,9 @@ pub fn setup_editor_callbacks(
     // background-solve/Deep Solve/Optimize dispatch) is wired up -- see
     // `activity::ActivityRegistry`'s own doc comment.
     let activity = activity::ActivityRegistry::new(ui);
+    // A second main window in the same thread (the UI harness builds one per scenario) must not
+    // inherit the first one's save listeners or design location.
+    native_io::reset_for_new_window();
     // Before any callback (and therefore any possible background-solve dispatch) is
     // wired up -- see `auto_solve::init`'s own doc comment for why this module needs
     // these handles up front rather than reading them off `EditorState`.
@@ -379,8 +409,6 @@ pub fn setup_editor_callbacks(
     // above (see `templates.rs`'s own doc comment).
     guide::setup_guide(ui, &state, db, source);
     cutting_mode::setup_cutting_mode(ui, &state, db);
-    shortcuts::setup_shortcuts_overlay(ui);
-    templates::setup_template_gallery(ui);
     setup_editor_secondary_callbacks(
         ui,
         &state,
@@ -404,6 +432,8 @@ fn setup_editor_secondary_callbacks(
     // See [`setup_editor_callbacks`]'s own matching parameter doc comment.
     solid_pick_state: &SolidPickState,
 ) {
+    shortcuts::setup_shortcuts_overlay(ui);
+    templates::setup_template_gallery(ui);
     // Apply preform Y offset.
     callbacks::setup_apply_preform_y_offset_callback(
         ui,
@@ -450,7 +480,8 @@ fn setup_editor_secondary_callbacks(
         preview_state,
         solid_last_solved,
     );
-    callbacks::setup_viewport_material_linked_changed_callback(ui, state, render_ctx);
+    callbacks::setup_stone_tab_callbacks(ui, state, render_ctx, preview_state, solid_last_solved);
+    callbacks::setup_printed_proportions_callback(ui, state, render_ctx);
     // The Live Render toolbar's quick "Color" control (the open design's colour, or a
     // view-only colour).
     render_color::setup_render_color_callbacks(
@@ -703,4 +734,4 @@ pub fn note_provisional_frame_planes(planes: &[(glam::Vec3, f32)]) {
 // The one resolution of a catalogue record's facet planes (design file first, angle
 // table as the fallback) -- the detail view's 3D preview and both batch engines
 // call it. See `loading::catalogue_planes`' own module doc comment.
-pub use loading::{CataloguePlanesSource, resolve_catalogue_planes};
+pub use loading::{CataloguePlanes, CataloguePlanesSource, resolve_catalogue_planes};

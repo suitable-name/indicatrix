@@ -94,6 +94,10 @@ fn exposures_of(inputs: &[HdrInput<'_>]) -> Result<Vec<f64>, PhotometryError> {
 ///
 /// [`PhotometryError::NoFrames`] for fewer than two inputs; [`PhotometryError::SizeMismatch`]
 /// for mixed sizes; [`PhotometryError::MissingExposure`] when an exposure is unknown.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the pixel/variance storage precision; the merged values are normal-range floats"
+)]
 pub fn merge_hdr(
     inputs: &[HdrInput<'_>],
     noise: &NoiseModel,

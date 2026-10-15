@@ -9,7 +9,8 @@
 
 use super::{
     DiagramFrame, DiagramStyle, LEADER_LINE_LENGTH, LEADER_LINE_MIN_SPAN, MIN_LABEL_SPAN,
-    fill::draw_edge, layout::PanelLayout,
+    fill::{draw_edge, to_px},
+    layout::PanelLayout,
 };
 use crate::pixel_font::{GLYPH_HEIGHT, GLYPH_WIDTH, glyph};
 
@@ -33,10 +34,10 @@ pub fn draw_panel_labels(
         if label.is_empty() {
             continue;
         }
-        let Some(idx) = frame.idx(cx.round() as i32, cy.round() as i32) else {
+        let Some(idx) = frame.idx(to_px(cx.round()), to_px(cy.round())) else {
             continue;
         };
-        if frame.pick[idx] != facet_id as u32 + 1 {
+        if frame.pick[idx] != u32::try_from(facet_id).expect("a facet id fits in u32") + 1 {
             continue;
         }
 
@@ -45,7 +46,7 @@ pub fn draw_panel_labels(
         // label, so a cutter can still trace it back to its facet. Reuses the
         // facet's own depth so the leader is occluded by anything truly in front
         // of it but always wins against the (f32::INFINITY) background.
-        let (label_cx, label_cy) = if w < MIN_LABEL_SPAN || h < MIN_LABEL_SPAN {
+        let (label_mid_x, label_mid_y) = if w < MIN_LABEL_SPAN || h < MIN_LABEL_SPAN {
             let (dir_x, dir_y) = {
                 let (dx, dy) = (cx - layout.center_x, cy - layout.center_y);
                 let dist = dx.hypot(dy).max(1e-3);
@@ -72,8 +73,8 @@ pub fn draw_panel_labels(
         let (label_w, label_h) = text_size(label, 1);
         draw_text(
             frame,
-            label_cx - label_w as f32 / 2.0,
-            label_cy - label_h as f32 / 2.0,
+            label_mid_x - label_w as f32 / 2.0,
+            label_mid_y - label_h as f32 / 2.0,
             label,
             1,
             style.edge_color,
@@ -89,12 +90,14 @@ pub fn draw_panel_labels(
 /// orientation-marker/facet-label overlay needs the same measurement to center
 /// its own labels.
 pub fn text_size(text: &str, scale: u32) -> (u32, u32) {
-    let len = text.chars().count() as u32;
+    let len = u32::try_from(text.chars().count()).expect("a label's length fits in u32");
+    let glyph_height = u32::try_from(GLYPH_HEIGHT).expect("the glyph height fits in u32");
     if len == 0 {
-        return (0, (GLYPH_HEIGHT as u32) * scale);
+        return (0, glyph_height * scale);
     }
-    let width = (len * (GLYPH_WIDTH as u32 + 1) - 1) * scale;
-    (width, (GLYPH_HEIGHT as u32) * scale)
+    let glyph_width = u32::try_from(GLYPH_WIDTH).expect("the glyph width fits in u32");
+    let width = (len * (glyph_width + 1) - 1) * scale;
+    (width, glyph_height * scale)
 }
 
 /// Draws `text` with its top-left at `(x, y)`, one glyph pixel per `scale`
@@ -158,10 +161,11 @@ pub fn draw_text_into_buffer(
         width,
         height,
     } = canvas;
-    let clip = clip.unwrap_or((0, 0, width as i32 - 1, height as i32 - 1));
-    let scale = scale.max(1) as i32;
-    let mut pen_x = x.round() as i32;
-    let pen_y = y.round() as i32;
+    let clip = clip.unwrap_or_else(|| (0, 0, width.cast_signed() - 1, height.cast_signed() - 1));
+    let scale = scale.max(1).cast_signed();
+    let glyph_width = i32::try_from(GLYPH_WIDTH).expect("the glyph width fits in i32");
+    let mut pen_x = to_px(x.round());
+    let pen_y = to_px(y.round());
     for ch in text.chars() {
         let rows = glyph(ch);
         for (row, bits) in rows.iter().enumerate() {
@@ -169,18 +173,24 @@ pub fn draw_text_into_buffer(
                 if bits & (1 << (GLYPH_WIDTH - 1 - col)) == 0 {
                     continue;
                 }
-                let px0 = pen_x + col as i32 * scale;
-                let py0 = pen_y + row as i32 * scale;
+                let col_offset = i32::try_from(col).expect("a glyph column fits in i32");
+                let row_offset = i32::try_from(row).expect("a glyph row fits in i32");
+                let px0 = pen_x + col_offset * scale;
+                let py0 = pen_y + row_offset * scale;
                 for sy in 0..scale {
                     for sx in 0..scale {
                         let (px, py) = (px0 + sx, py0 + sy);
                         if px < clip.0 || py < clip.1 || px > clip.2 || py > clip.3 {
                             continue;
                         }
-                        if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
+                        if px < 0
+                            || py < 0
+                            || px.cast_unsigned() >= width
+                            || py.cast_unsigned() >= height
+                        {
                             continue;
                         }
-                        let idx = (py as u32 * width + px as u32) as usize;
+                        let idx = (py.cast_unsigned() * width + px.cast_unsigned()) as usize;
                         let o = idx * 4;
                         color_buf[o] = color[0];
                         color_buf[o + 1] = color[1];
@@ -190,6 +200,6 @@ pub fn draw_text_into_buffer(
                 }
             }
         }
-        pen_x += (GLYPH_WIDTH as i32 + 1) * scale;
+        pen_x += (glyph_width + 1) * scale;
     }
 }

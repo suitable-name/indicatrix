@@ -166,9 +166,9 @@ fn is_local_minimum(values: &[f64], side: usize, index: usize) -> bool {
         return false;
     }
     let (row, col, side) = (
-        (index / side) as isize,
-        (index % side) as isize,
-        side as isize,
+        (index / side).cast_signed(),
+        (index % side).cast_signed(),
+        side.cast_signed(),
     );
     (-1..=1).all(|d_row| {
         (-1..=1).all(|d_col| {
@@ -176,7 +176,7 @@ fn is_local_minimum(values: &[f64], side: usize, index: usize) -> bool {
             let outside = near_row < 0 || near_col < 0 || near_row >= side || near_col >= side;
             outside
                 || (d_row == 0 && d_col == 0)
-                || here <= values[(near_row * side + near_col) as usize]
+                || here <= values[(near_row * side + near_col).cast_unsigned()]
         })
     })
 }

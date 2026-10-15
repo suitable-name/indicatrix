@@ -11,6 +11,7 @@ use indicatrix_editor::view_model::yield_report::{
     preform_mm_texts_from_solved, proportion_verdicts, proportions_texts_from_solved,
     yield_report_texts_from_solved,
 };
+use indicatrix_web_core::rows::schedule_notes;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 /// One refresh of the read-only figures.
@@ -125,11 +126,14 @@ fn push_schedule(pcx: &PushCtx<'_>, model: &InspectorModel<'_>) {
     let rows: Vec<ScheduleRow> = pcx.solved.map_or_else(Vec::new, |solved| {
         cutting_instructions_rows(pcx.design, solved)
             .into_iter()
-            .map(|row| ScheduleRow {
-                facet: row.facet.into(),
-                angle: row.angle.into(),
-                index_val: row.index_val.into(),
-                notes: row.notes.into(),
+            .map(|row| {
+                let notes = schedule_notes(&row);
+                ScheduleRow {
+                    facet: row.facet.into(),
+                    angle: row.angle.into(),
+                    index_val: row.index_val.into(),
+                    notes: notes.into(),
+                }
             })
             .collect()
     });

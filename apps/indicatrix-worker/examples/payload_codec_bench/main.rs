@@ -90,6 +90,10 @@ LINK MODEL (per frame, per link):
 ";
 
 /// Parsed command line.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the command-line flags; fields are independent switches"
+)]
 struct Args {
     quick: bool,
     large: bool,

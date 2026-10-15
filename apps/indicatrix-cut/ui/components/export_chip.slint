@@ -75,7 +75,7 @@ export component ExportChip inherits Rectangle {
             image-fit: contain;
         }
         cancel_touch := TouchButton {
-            label: "Cancel the export";
+            label: "Cancel the Export";
             hint: "Stop the export that is running. Files already finished are kept.";
             clicked => { ExportRunModel.cancel_direct(); }
         }

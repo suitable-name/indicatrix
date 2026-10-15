@@ -523,7 +523,7 @@ mod tests {
     fn built(tilt: bool) -> Built {
         let mut design = testing::template();
         design.meta.headers = vec!["Round".to_string()];
-        let loaded = Loaded::in_memory(design, "round.indicatrix");
+        let loaded = Loaded::in_memory(design, "round.isdd");
         build(
             &loaded,
             &Catalogue::default(),
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn end_to_end_metrics_prints_json() {
-        let input = testing::write_design("metrics-e2e.indicatrix", &testing::template());
+        let input = testing::write_design("metrics-e2e.isdd", &testing::template());
         let outcome = testing::run(&["metrics", &input, "--ri", "1.76", "--json"]);
         assert_eq!(outcome.exit, EXIT_OK, "{}", outcome.stderr);
         assert_eq!(outcome.files.len(), 0);
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn end_to_end_metrics_writes_csv_to_a_file() {
-        let input = testing::write_design("metrics-e2e-csv.indicatrix", &testing::template());
+        let input = testing::write_design("metrics-e2e-csv.isdd", &testing::template());
         let target = testing::temp_path("metrics-e2e.csv")
             .to_string_lossy()
             .into_owned();
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn end_to_end_metrics_with_tilt_adds_the_tilt_averages() {
-        let input = testing::write_design("metrics-e2e-tilt.indicatrix", &testing::template());
+        let input = testing::write_design("metrics-e2e-tilt.isdd", &testing::template());
         let outcome = testing::run(&["metrics", &input, "--ri", "1.76", "--tilt", "--json"]);
         assert_eq!(outcome.exit, EXIT_OK, "{}", outcome.stderr);
         let value: Value = serde_json::from_str(&outcome.stdout).expect("valid JSON");
@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn an_unknown_material_is_a_usage_error() {
-        let input = testing::write_design("metrics-e2e-unknown.indicatrix", &testing::template());
+        let input = testing::write_design("metrics-e2e-unknown.isdd", &testing::template());
         let outcome = testing::run(&["metrics", &input, "--material", "Unobtainium"]);
         assert_eq!(outcome.exit, EXIT_USAGE);
         assert!(
@@ -700,14 +700,14 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_an_io_error_and_an_empty_design_a_design_error() {
-        let outcome = testing::run(&["metrics", "no-such-file.indicatrix", "--ri", "1.76"]);
+        let outcome = testing::run(&["metrics", "no-such-file.isdd", "--ri", "1.76"]);
         assert_eq!(outcome.exit, crate::outcome::EXIT_IO, "{}", outcome.stderr);
         let design = Design::new(
             indicatrix_cut_core::PreformSpec::block(2.0, 1.0, 4.0),
             indicatrix_cut_core::ScheduleMeta::standard_round_brilliant(),
             Vec::new(),
         );
-        let input = testing::write_design("metrics-e2e-empty.indicatrix", &design);
+        let input = testing::write_design("metrics-e2e-empty.isdd", &design);
         let outcome = testing::run(&["metrics", &input, "--ri", "1.76"]);
         assert_eq!(outcome.exit, EXIT_DESIGN, "{}", outcome.stderr);
         assert_eq!(outcome.stdout, "");

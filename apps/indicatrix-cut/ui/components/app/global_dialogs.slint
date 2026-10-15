@@ -91,14 +91,19 @@ export component GlobalDialogsOverlay inherits Rectangle {
         }
     }
 
-    if RetargetModel.is_open: FocusScope {
+    // Also for the snapshot comparison alone (Compare on the command bar sets only
+    // `compare_open`): `RetargetDialog` shows its Compare pane then, and without this host
+    // the button opened nothing.
+    if RetargetModel.is_open || RetargetModel.compare_open: FocusScope {
         width: 100%;
         height: 100%;
         z: 400;
         init => { self.focus(); }
         key-pressed(event) => {
             if event.text == Key.Escape {
-                if !RetargetModel.is_busy {
+                if RetargetModel.compare_open {
+                    RetargetModel.compare_close();
+                } else if !RetargetModel.is_busy {
                     RetargetModel.is_open = false;
                     RetargetModel.close();
                 }
@@ -288,12 +293,12 @@ export component GlobalDialogsOverlay inherits Rectangle {
         width: 100%;
         height: 100%;
         z: 400;
-        heading: "Color changed by an older version";
+        heading: "Color Changed by an Older Version";
         message: "The material \"" + PhysicscolorModel.color_conflict_name
             + "\" has a physical color recipe, but its color was edited in an older version of Indicatrix Cut after the recipe was saved. Keep the physics recipe, or use the edited color?";
-        primary_label: "Keep physics recipe";
+        primary_label: "Keep Physics Recipe";
         primary_hint: "Keep the physics recipe: the color is worked out from it.";
-        secondary_label: "Use edited color";
+        secondary_label: "Use Edited Color";
         secondary_hint: "Use the color that was edited in the older version, and leave the recipe out.";
         primary => { PhysicscolorModel.color_conflict_resolved(true); }
         secondary => { PhysicscolorModel.color_conflict_resolved(false); }
@@ -314,8 +319,8 @@ export component GlobalDialogsOverlay inherits Rectangle {
     // appears at startup, when none of the others can be open.
     if EditorModel.startup_restore_path != "": ConfirmActionDialog {
         heading: EditorModel.startup_restore_is_autosave
-            ? "Recover unsaved work?"
-            : "Reopen last design?";
+            ? "Recover Unsaved Work?"
+            : "Reopen Last Design?";
         message: EditorModel.startup_restore_is_autosave
             ? "The previous session ended without saving. A recovery file is still on disk:\n" + EditorModel.startup_restore_path
             : EditorModel.startup_restore_path;
@@ -323,7 +328,7 @@ export component GlobalDialogsOverlay inherits Rectangle {
         primary_hint: EditorModel.startup_restore_is_autosave
             ? "Open the recovery file, with the work of the session that ended without saving."
             : "Open the design you were working on last time.";
-        secondary_label: "Not now";
+        secondary_label: "Not Now";
         secondary_hint: "Do not open it now.";
         // Only a leftover AUTOSAVE is ever safe to delete outright here -- an
         // ordinary recent file is the cutter's own real save, not a recovery
@@ -351,26 +356,6 @@ export component GlobalDialogsOverlay inherits Rectangle {
         cancel => {
             EditorModel.unsaved_dialog_open = false;
             EditorModel.unsaved_dialog_cancel();
-        }
-    }
-
-    // The older-sidecar fingerprint-mismatch choice -- see
-    // `EditorModel.mismatch_dialog_*`'s own doc comment.
-    if EditorModel.mismatch_dialog_open: ConfirmActionDialog {
-        width: 100%;
-        height: 100%;
-        z: 500;
-        heading: "Older Sidecar Out of Sync";
-        message: "The paired .asc file was changed outside the editor since this older .indicatrix.toml sidecar was last saved, so its per-tier meet constraints and detached facets can no longer be trusted to line up by position. Apply them anyway, or continue with the .asc alone?";
-        primary_label: EditorModel.mismatch_dialog_can_apply ? "Apply Sidecar Anyway" : "";
-        primary_hint: "Apply the sidecar's per-tier settings to the tiers by position, even though they may no longer line up.";
-        secondary_label: "Use .asc Only";
-        secondary_hint: "Open the .asc alone, without the sidecar's constraints and detached facets.";
-        primary => { EditorModel.mismatch_dialog_apply_anyway(); }
-        secondary => { EditorModel.mismatch_dialog_asc_only(); }
-        cancel => {
-            EditorModel.mismatch_dialog_open = false;
-            EditorModel.mismatch_dialog_cancel();
         }
     }
 

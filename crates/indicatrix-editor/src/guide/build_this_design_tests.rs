@@ -169,7 +169,7 @@ fn dialog_design(target: &Design) -> EditorSession {
         symmetry_order: target.meta.symmetry_order,
         mirror: target.meta.mirror,
         material: MaterialSelection::none(),
-        preform: target.preform,
+        preform: target.preform.clone(),
     })
 }
 
@@ -456,7 +456,7 @@ fn a_tier_step_lists_what_to_type_and_waits_for_the_tier() {
         girdle.actions[1],
         "Angle (deg): 90.0 (or click Girdle Facet Preset, which also sets Meets)"
     );
-    assert_eq!(girdle.actions[2], "Meets: Exact scale value -- 1.0");
+    assert_eq!(girdle.actions[2], "Meets: Exact Scale Value -- 1.0");
     assert_eq!(girdle.actions[3], "Name: Girdle");
     assert!(
         girdle.actions[4].starts_with("Indices: 0 x16 (that is 0, 6, 12, 18"),
@@ -475,7 +475,7 @@ fn a_tier_step_lists_what_to_type_and_waits_for_the_tier() {
             Group::Advanced,
             Group::History
         ],
-        "an Exact scale value step unlocks the Advanced controls, which show that Meets entry"
+        "an Exact Scale Value step unlocks the Advanced controls, which show that Meets entry"
     );
     let Goal::TierMatches {
         name,
@@ -794,7 +794,7 @@ fn a_meet_with_a_tier_cut_later_is_stated_as_an_exact_depth() {
     let plan = plan_of(&target);
     let step = step_titled(&plan.guide, "Add C2 Crown Main (crown main)");
     assert!(step.why.contains("cut later in the lesson"), "{}", step.why);
-    assert_eq!(step.actions[2], "Meets: Exact scale value -- 0.59");
+    assert_eq!(step.actions[2], "Meets: Exact Scale Value -- 0.59");
 }
 
 #[test]
@@ -817,7 +817,7 @@ fn a_design_of_many_tiers_states_every_depth_directly() {
 // The Simple interface
 // ---------------------------------------------------------------------------------------
 
-/// Whether `goal` needs a tier whose Meets kind is "Exact scale value".
+/// Whether `goal` needs a tier whose Meets kind is "Exact Scale Value".
 fn needs_exact_scale(goal: &Goal) -> bool {
     match goal {
         Goal::TierMatches {
@@ -837,7 +837,7 @@ fn is_tier_goal(goal: &Goal) -> bool {
     }
 }
 
-/// Whether an action line tells the learner to choose the Meets entry "Exact scale value",
+/// Whether an action line tells the learner to choose the Meets entry "Exact Scale Value",
 /// which the Simple interface leaves out of the Meets list of a new tier.
 fn names_the_exact_entry(action: &str) -> bool {
     let lower = action.to_ascii_lowercase();
@@ -862,13 +862,13 @@ fn a_build_step_that_asks_for_exact_scale_value_unlocks_the_advanced_controls() 
                     .iter()
                     .any(|action| names_the_exact_entry(action)),
                 exact,
-                "{:?}: the text and the goal disagree about Exact scale value",
+                "{:?}: the text and the goal disagree about Exact Scale Value",
                 step.title
             );
             assert_eq!(
                 step.allow.contains(&Group::Advanced),
                 exact,
-                "{:?}: the Advanced controls are unlocked exactly when Exact scale value is asked for",
+                "{:?}: the Advanced controls are unlocked exactly when Exact Scale Value is asked for",
                 step.title
             );
             assert_eq!(
@@ -894,7 +894,7 @@ fn a_build_step_that_asks_for_exact_scale_value_unlocks_the_advanced_controls() 
     }
 }
 
-/// Steps outside the Build lessons that tell the learner to pick "Exact scale value" and need
+/// Steps outside the Build lessons that tell the learner to pick "Exact Scale Value" and need
 /// no Advanced unlock, with the reason.
 const EXACT_ENTRY_ALREADY_LISTED: &[(&str, &str)] = &[
     // The Rich Teaching Design pins every depth, so its Table already uses the entry and the
@@ -930,7 +930,7 @@ fn every_step_that_names_the_exact_scale_entry_can_be_done_in_simple_mode() {
                 EXACT_ENTRY_ALREADY_LISTED.contains(&(guide.id.as_str(), step.title.as_str()));
             assert!(
                 step.allow.contains(&Group::Advanced) || preset || listed,
-                "{}, {:?}: Simple mode does not list Exact scale value, so this step needs the \
+                "{}, {:?}: Simple mode does not list Exact Scale Value, so this step needs the \
                  Advanced group, the Girdle Facet Preset, or a listed exception",
                 guide.id,
                 step.title
@@ -948,7 +948,7 @@ fn the_girdle_step_names_the_preset_that_fills_in_angle_and_meets() {
     assert!(
         girdle
             .why
-            .contains("Girdle Facet Preset fills in Angle 90 and Meets Exact scale value 1"),
+            .contains("Girdle Facet Preset fills in Angle 90 and Meets Exact Scale Value 1"),
         "{}",
         girdle.why
     );
@@ -969,7 +969,7 @@ fn the_girdle_step_names_the_preset_that_fills_in_angle_and_meets() {
     let guide = guide_of(&wide);
     let girdle = step_titled(&guide, "Add G1 (girdle)");
     assert!(
-        girdle.why.contains("change the Scale value to 0.8"),
+        girdle.why.contains("change the Scale Value to 0.8"),
         "{}",
         girdle.why
     );
@@ -1284,7 +1284,7 @@ fn a_build_id_is_the_prefix_and_a_visible_key() {
 fn the_browser_lists_a_lesson_under_built_from_the_library_and_marks_it_done() {
     assert_eq!(
         GuideCategory::BuildThisDesign.label(),
-        "Built from the library"
+        "Built from the Library"
     );
     let mut catalog = GuideCatalog::new();
     let guide = guide_of(&rbc());

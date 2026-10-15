@@ -134,7 +134,7 @@ fn classify_feasibility_avx2(planes: &PlanesSoA64, v: DVec3, eps: f64) -> Feasib
                 i,
             )
         };
-        let mut bits = diff_mask as u32;
+        let mut bits = diff_mask.cast_unsigned();
         while bits != 0 {
             let lane = bits.trailing_zeros() as usize;
             bits &= bits - 1;
@@ -342,7 +342,7 @@ mod tests {
             let n = DVec3::new(next(), next(), next()).normalize();
             let owner = match i % 7 {
                 0 => BLANK_OWNER,
-                k => (k as u32) % 3,
+                k => u32::try_from(k).expect("k is below 7") % 3,
             };
             soa.push(n, next().abs() + 0.2, owner);
         }

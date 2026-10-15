@@ -44,11 +44,28 @@ export global ViewportModel {
     // to have actually changed since the last one.
     callback selected_material_changed_for_editor_prefill();
     changed selected_material_index => { selected_material_changed_for_editor_prefill(); }
-    // While the Edit sub-tab is active, "linked to design" (default on) makes the
-    // Render Material dropdown follow the design's own material instead of an
-    // independent selection (`gui::editor::view::refresh_design_settings`). Off makes
-    // it a plain display override again.
+    // The design's own traced material name, pushed on every editor refresh
+    // (`gui::editor::view::refresh_design_settings`); meaningful while `shows_editor_design`.
+    // "Preview as..." compares its pick with this, not with what the view currently traces.
+    in-out property <string> design_material_name: "";
+    // Now the "following the design" state: true (default) = the picture uses the design's own
+    // material; false = the person chose "Preview as..." in the Stone tab. Only the Stone tab's
+    // Preview picker (and an explicit "Save & Apply" in the material editor) turn it off, and
+    // "Back to design" turns it on; nothing unlinks silently.
     in-out property <bool> viewport_material_linked: true;
+    // The view shows a material other than the design's, by the person's own choice. Drives the
+    // amber "Previewing" badge in the Stone tab, both viewport toolbars and the export dialogs.
+    out property <bool> previewing: !viewport_material_linked && shows_editor_design;
+    // The material the picture is traced with (what the Preview picker shows).
+    out property <string> traced_material_name: material_options[selected_material_index];
+    // "Preview as..." picked a material (name). Starts a preview; never fires implicitly.
+    callback preview_material_chosen(string);
+    // The Stone tab's "Material" pick while a LIBRARY design is on the viewport (`!shows_editor_design`):
+    // a library design is not editable, so this is only the view selection, remembered as the app
+    // preference `selected_material`. It starts no preview (`previewing` stays false).
+    callback library_material_chosen(string);
+    // "Back to design": stop previewing, show the design's own material and colour again.
+    callback preview_back_to_design();
 
     // The path-traced image describes the planes last pushed to
     // the render thread, which an ordinary tier edit does NOT refresh -- the trace
@@ -59,7 +76,6 @@ export global ViewportModel {
     // `RenderContext::traced_planes_are_stale`), so it is true exactly while the
     // two disagree.
     in property <bool> trace_stale: false;
-    callback viewport_material_linked_changed(bool);
 
     // Whether the live viewport shows the Edit tab's own design (true) or something else: a
     // Library row opened in Live Render, or the built-in placeholder (false). Live Render
@@ -128,18 +144,26 @@ export global ViewportModel {
     // Canonical poses for the shared orbit camera: 0 = Front, 1 = Top. Yaw resets to
     // index 0; distance and lighting are kept.
     callback set_view(int);
-    callback material_changed(string);
     // Carries the selected preset's INDEX into `lighting_options`/`LightingPreset::ALL`,
     // not its label text.
     callback lighting_changed(int);
     callback save_lighting_preset(string);
+    // The name offered when saving a lighting: "<rig> - <date>", made unique among the saved
+    // lightings (`gui::render::lighting_presets`). Answered by Rust so the date and the
+    // uniqueness check live in one place; the Lighting tab calls it when its save row opens.
+    pure callback suggest_lighting_name() -> string;
+    // The Lighting tab's "Reset this tab": puts the lighting rig, light direction, exposure,
+    // glare, backdrop, head shadow and the HDR map back to the built-in defaults
+    // (`LightingValues::default()`). Camera pose untouched. Handled in
+    // `gui::render::camera_lighting`.
+    callback reset_lighting_tab();
     // The renderer's own "Save as preset" button -- captures the FULL current view
     // (lighting AND camera pose), unlike `save_lighting_preset` above (lighting only).
     callback save_view_preset(string);
     callback apply_lighting_preset(int);
     callback rename_lighting_preset(int, string);
     callback delete_lighting_preset(int);
-    // The settings dialog's "usable for export" checkbox next to a preset row.
+    // The Parameters panel's "usable for export" checkbox next to a preset row.
     callback toggle_preset_export_usable(int, bool);
     callback copy_metrics();
     // name, ri, dispersion, birefringence, color_idx, crystal_system_idx,
@@ -234,6 +258,8 @@ export global ViewportModel {
     // greyed out and says why.
     in property <bool> render_color_enabled: true;
     in property <bool> render_color_physics: false;
+    // True while the traced material has colour zones (colour zoning): no colour applies to it.
+    in property <bool> render_color_zoned: false;
     // True while a pick edits the open design, false while it only changes the view.
     in property <bool> render_color_targets_design: false;
     // A custom colour is being matched to the closest colour the material model can
@@ -248,7 +274,7 @@ export global ViewportModel {
     // Asks Rust to recompute everything above; the control calls it when it appears and
     // when a design, material or link change could have moved the answer.
     callback render_color_refresh();
-    // "Linked to design" changed (from either toggle, or the dropdown unlinking it): the
+    // Following the design changed (the Stone tab's "Preview as..." picker or "Back to design"): the
     // render pipeline mirrors it so it can tell a design-driven view from a free one.
     callback render_color_context_changed();
     changed viewport_material_linked => { render_color_context_changed(); }

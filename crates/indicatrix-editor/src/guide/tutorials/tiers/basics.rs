@@ -27,7 +27,7 @@ const EDITED_NAME: &str = "P1";
 fn add_a_tier() -> Guide {
     Guide::new(
         "tiers-add-a-tier",
-        "Add a tier",
+        "Add a Tier",
         "Add a girdle, a pavilion and a crown tier with the Tier form: angle, Meets, name and indices.",
         GuideCategory::Tiers,
     )
@@ -58,7 +58,7 @@ fn add_a_tier() -> Guide {
             "Click Add Tier.",
         ])
         .check("a G1 row in the tier table, with G1 in the CODE column.")
-        .why("The preset sets Angle to 90 and Meets to Exact scale value 1, the one pair that makes a real girdle. A 0 degree tier would be a second table.")
+        .why("The preset sets Angle to 90 and Meets to Exact Scale Value 1, the one pair that makes a real girdle. A 0 degree tier would be a second table.")
         .goal(
             Goal::tier("G1", 90.0)
                 .with_indices(&MAIN)
@@ -76,13 +76,13 @@ fn add_a_tier() -> Guide {
         .actions([
             "Click + Add Tier.",
             "Angle (deg): 41",
-            "Meets: Named facet(s), Facet names: G1",
+            "Meets: Named Facet(s), Facet Names: G1",
             "Name: P1",
             "Indices: 0, 12, 24, 36, 48, 60, 72, 84",
             "Click Add Tier.",
         ])
         .check("a P1 row with P1 in the CODE column and meets G1 in the Meets column.")
-        .why("Named facet(s) closes the pavilion against the girdle: the solver finds its depth for you. To solve, though, the pavilion and the crown still need one tier each with an exact scale value, as the girdle has.")
+        .why("Named Facet(s) closes the pavilion against the girdle: the solver finds its depth for you. To solve, though, the pavilion and the crown still need one tier each with an exact scale value, as the girdle has.")
         .goal(
             Goal::tier("P1", -41.0)
                 .with_indices(&MAIN)
@@ -100,7 +100,7 @@ fn add_a_tier() -> Guide {
         .actions([
             "Click + Add Tier.",
             "Angle (deg): 34.5",
-            "Meets: Named facet(s), Facet names: G1",
+            "Meets: Named Facet(s), Facet Names: G1",
             "Name: C1",
             "Indices: 0, 12, 24, 36, 48, 60, 72, 84",
             "Click Add Tier.",
@@ -124,7 +124,7 @@ fn add_a_tier() -> Guide {
         .actions([
             "Add Tier writes a new row; Save Tier, shown when you pick a row, changes that row.",
             "Press Ctrl+Z to undo a tier you did not mean to add.",
-            "Continue with Edit a tier, Index shorthands and Quick add.",
+            "Continue with Edit a tier, Index Shorthands and Quick Add.",
         ])
         .why("Every control is unlocked again. Reopen this lesson any time from the tutorial browser."),
     )
@@ -133,7 +133,7 @@ fn add_a_tier() -> Guide {
 fn edit_a_tier() -> Guide {
     Guide::new(
         "tiers-edit-a-tier",
-        "Edit a tier",
+        "Edit a Tier",
         "Select a row, change its angle, name and Meets in the Tier tab, save, and undo.",
         GuideCategory::Tiers,
     )
@@ -175,12 +175,12 @@ fn edit_a_tier() -> Guide {
             "Meets decides how the depth is found. The teaching design pins every depth by hand; a named facet lets the solver find it.",
         )
         .actions([
-            "Set Meets to Named facet(s).",
-            "Facet names: Girdle",
+            "Set Meets to Named Facet(s).",
+            "Facet Names: Girdle",
             "Click Save Tier.",
         ])
         .check("P1's Meets column reads meets Girdle, and the status strip says: Pavilion has no anchor: add a tier with an exact scale value.")
-        .why("Exact scale value states the depth outright. Named facet(s) closes this tier against the facets you name. P1 is the only tier of the pavilion, so with its scale value gone the pavilion has nothing exact to hang its depths on, and the solver says so. That message is expected here: the next step undoes the change.")
+        .why("Exact Scale Value states the depth outright. Named Facet(s) closes this tier against the facets you name. P1 is the only tier of the pavilion, so with its scale value gone the pavilion has nothing exact to hang its depths on, and the solver says so. That message is expected here: the next step undoes the change.")
         .goal(
             Goal::tier(EDITED_NAME, -41.0).with_meet(MeetKind::Named),
             "P1 meeting a named facet",
@@ -219,7 +219,7 @@ fn edit_a_tier() -> Guide {
 fn index_shorthands() -> Guide {
     Guide::new(
         "tiers-index-shorthands",
-        "Index shorthands",
+        "Index Shorthands",
         "Type 0:12:96 or 12 x8 in the Indices field instead of listing every position.",
         GuideCategory::Tiers,
     )
@@ -266,7 +266,7 @@ fn index_shorthands() -> Guide {
         .actions([
             "Click + Add Tier.",
             "Angle (deg): 41",
-            "Meets: Named facet(s), Facet names: G1",
+            "Meets: Named Facet(s), Facet Names: G1",
             "Name: P1",
             "Indices: 12 x8",
             "Click Add Tier.",
@@ -290,7 +290,7 @@ fn index_shorthands() -> Guide {
         .actions([
             "Click + Add Tier.",
             "Angle (deg): 34.5",
-            "Meets: Named facet(s), Facet names: G1",
+            "Meets: Named Facet(s), Facet Names: G1",
             "Name: C1",
             "Indices: 6 x8",
             "Click Add Tier.",
@@ -334,7 +334,7 @@ fn facet_chips() -> Guide {
 
     Guide::new(
         "tiers-facet-chips",
-        "Facet chips",
+        "Facet Chips",
         "Add, remove, detach, rotate and mirror single facets of a tier with the chips under Facets.",
         GuideCategory::Tiers,
     )
@@ -443,19 +443,19 @@ fn facet_chips() -> Guide {
 fn quick_add() -> Guide {
     Guide::new(
         "tiers-quick-add",
-        "Quick add",
-        "Add a girdle, a table and a culet with one click each from the Quick add buttons.",
+        "Quick Add",
+        "Add a girdle, a table and a culet with one click each from the Quick Add buttons.",
         GuideCategory::Tiers,
     )
     .starting(StartingState::NewEmpty)
     .step(
         GuideStep::new(
             "Quick add a girdle",
-            "The Quick add buttons under the tier table's toolbar add a common first tier with one click.",
+            "The Quick Add buttons under the tier table's toolbar add a common first tier with one click.",
         )
-        .actions(["Click Girdle next to Quick add."])
+        .actions(["Click Girdle next to Quick Add."])
         .check("a Girdle row with G1 in the CODE column, pinned to scale 1.")
-        .why("Quick add pins the tier to an exact scale value, so the design has something to solve from. 90 degrees is a girdle.")
+        .why("Quick Add pins the tier to an exact scale value, so the design has something to solve from. 90 degrees is a girdle.")
         .goal(
             Goal::tier("Girdle", 90.0).with_meet(MeetKind::ExactScale),
             "a Girdle tier at 90.0",
@@ -468,7 +468,7 @@ fn quick_add() -> Guide {
             "Quick add a table",
             "The table is the flat facet on top of the crown.",
         )
-        .actions(["Click Table next to Quick add."])
+        .actions(["Click Table next to Quick Add."])
         .check("a Table row at 0.00, pinned to scale 0.32.")
         .why("A table is a crown facet at 0 degrees. Change its scale value in the Tier tab when you know the size you want.")
         .goal(
@@ -483,7 +483,7 @@ fn quick_add() -> Guide {
             "Quick add a culet",
             "The culet is the small flat facet at the bottom of the pavilion.",
         )
-        .actions(["Click Culet next to Quick add."])
+        .actions(["Click Culet next to Quick Add."])
         .check("a Culet row with Culet in the CODE column, pinned to scale 0.88.")
         .why("The culet is also 0 degrees, but it belongs to the pavilion and not the crown: the table's code is T, the culet's is Culet, and the minus sign on its zero angle puts it on the pavilion side.")
         .goal(
@@ -502,7 +502,7 @@ fn quick_add() -> Guide {
     .step(
         GuideStep::new(
             "Make them yours",
-            "Each Quick add tier is a single facet with a starting value, not a finished design.",
+            "Each Quick Add tier is a single facet with a starting value, not a finished design.",
         )
         .actions([
             "Pick a row and change its angle, name or scale value in the Tier tab.",
@@ -515,7 +515,7 @@ fn quick_add() -> Guide {
 fn inline_angle() -> Guide {
     Guide::new(
         "tiers-inline-angle",
-        "Inline angle and nudging",
+        "Inline Angle and Nudging",
         "Edit an angle right in the tier table, and nudge it with the keys and the mouse wheel.",
         GuideCategory::Tiers,
     )

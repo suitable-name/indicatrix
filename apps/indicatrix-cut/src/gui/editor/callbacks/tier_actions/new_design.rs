@@ -344,9 +344,10 @@ pub(super) fn do_new_design_create(
     ui.global::<EditorModel>().set_selected_tier_index(-1);
     bump_form_reset_pulse(ui);
     ui.global::<EditorModel>().set_new_dialog_open(false);
-    // Explicit, same reasoning as `native_io::commit_loaded_native`'s own matching
-    // line: a freshly `fresh_from_spec` design starts clean by construction.
-    ui.global::<EditorModel>().set_is_dirty(false);
+    // A freshly created design is unsaved by decision (`install_new_design`), so the
+    // model mirrors the state instead of forcing `false`.
+    ui.global::<EditorModel>()
+        .set_is_dirty(state.borrow().is_dirty());
     // A brand-new design has no file behind it yet, so the window title drops the
     // name entirely rather than keeping whatever was open before.
     ui.set_loaded_design_name(SharedString::new());
@@ -379,6 +380,8 @@ pub(super) fn do_new_design_create(
 pub(super) fn install_prepared_design(st: &mut EditorState, session: EditorSession) {
     st.replace_wholesale(EditorState::fresh_from_session(session));
     st.has_design = true;
+    // A design the user just created is unsaved until the first Save.
+    st.session.mark_unsaved();
 }
 
 /// The state half of [`do_new_design_create`], with no window involved: replaces
@@ -404,10 +407,13 @@ pub(super) fn install_new_design(st: &mut EditorState, spec: FreshDesignSpec, te
     // design's starting state, not an edit to it, so it must not be undoable back to
     // an empty schedule the cutter never saw (see
     // `indicatrix_editor::EditorSession::from_template`, which also refuses a
-    // negative/stale index instead of panicking). The replacement is marked saved,
-    // so the new design still reads as clean. It also arrives with its own fresh
-    // design UUID (`EditorState::design_uuid`), which the first Save writes to the file.
+    // negative/stale index instead of panicking). `replace_wholesale` marks the
+    // replacement saved; it is then marked UNSAVED again, because a design the user
+    // created has no file yet (closing, replacing or quitting asks first). It also
+    // arrives with its own fresh design UUID (`EditorState::design_uuid`), which the
+    // first Save writes to the file.
     st.replace_wholesale(EditorState::fresh_from_template(spec, template_index));
+    st.session.mark_unsaved();
     // `fresh_from_spec` already says so; restated here because this is the promise
     // the empty-state overlay depends on.
     st.has_design = true;

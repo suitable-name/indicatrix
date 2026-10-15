@@ -20,7 +20,7 @@ pub const BIRGE_THRESHOLD: f64 = 1.2;
 pub enum ModelKind {
     /// A: log-amounts of the host's catalogue chromophores.
     Chromophore,
-    /// B: the seven-band body-colour basis with a smoothness prior.
+    /// B: the fourteen-band fit basis with a smoothness prior.
     SmoothBasis,
 }
 
@@ -59,10 +59,11 @@ pub struct ZonePrediction {
     /// cannot see; a spread above the accuracy target means the target is a metamer limit of the
     /// data, not an error of the fit. An estimate from a deterministic search, not a bound.
     ///
-    /// Round 3, D3: every candidate is VERIFIED with the full nonlinear data chi-square
-    /// (`Delta chi2_data <= 1`, or the Birge ratio when that is above 1.2), has a non-negative
-    /// absorption at the basis centres and on a 5 nm grid from 400 to 700 nm, and is shrunk by
-    /// bisection until it passes instead of being dropped.
+    /// Round 5, ZC-4: the spread is the largest CIEDE2000 from `lab` among the verified end
+    /// points of the constrained extremisation of `+-L*, +-a*, +-b*` and of the distance from the
+    /// fit over `{chi2_data + 2 gain_prior <= optimum + Delta}` (`Delta` is 1, or the Birge ratio
+    /// when that is above 1.2), every end point re-checked with the full nonlinear chi-square
+    /// and non-negative on a 5 nm grid from 400 to 700 nm.
     #[serde(default)]
     pub metamer_spread: f64,
     /// The same search before the verification of round 3, D3 (the quadratic-model candidates
@@ -102,11 +103,13 @@ pub struct ModelFit {
     /// The robust (Huber) data term alone; `cost - data_cost` is the prior part (round 3, D1.3).
     #[serde(default)]
     pub data_cost: f64,
-    /// The prior part of `cost` by term, `(name, value)`: gain, smoothness, magnitude, l1, zone
-    /// pull (round 3, D1.3).
+    /// The prior part of `cost` by term, `(name, value)`: gain, smoothness, magnitude, l1,
+    /// zone pull (round 3, D1.3).
     #[serde(default)]
     pub prior_terms: Vec<(String, f64)>,
-    /// The Birge ratio `chi2 / (n_data - effective_params)` (round 3, D4.1). When it exceeds
+    /// The Birge ratio `chi2_robust / (erf(k / sqrt 2) (n_data - effective_params))` with the
+    /// Huber-weighted chi-square (round 5, ZC-18; the plain ratio is
+    /// `chi2 / (n_data - effective_params)`). When it exceeds
     /// [`BIRGE_THRESHOLD`] the covariance and the predictions' radii are inflated by it: the
     /// noise model was too small. 1 for a fit that was never scored.
     #[serde(default = "one")]
@@ -119,8 +122,15 @@ pub struct ModelFit {
     pub effective_params: f64,
     /// Akaike information criterion with the common noise scale of the comparison.
     pub aic: f64,
-    /// Levenberg-Marquardt iterations of the winning start.
+    /// Levenberg-Marquardt iterations of the winning start, summed over its stages (so it can
+    /// exceed the per-stage cap; see `iterations_per_stage`).
     pub iterations: usize,
+    /// The iterations of each stage on its own: the multi-start's first stage (absent when a
+    /// structured start won), the three staged runs of the winner, one entry per reweighted L1
+    /// round (one entry for a warm start). Empty
+    /// in fits saved before this field existed.
+    #[serde(default)]
+    pub iterations_per_stage: Vec<usize>,
     /// Whether the iteration stopped on its tolerance.
     pub converged: bool,
     /// The objective of every start after the first stage, in seed order.
@@ -299,6 +309,10 @@ pub enum WarningKind {
     /// The fit's Birge ratio is above [`BIRGE_THRESHOLD`]: the photos scatter more than the
     /// noise model says, and the uncertainties were inflated accordingly (round 3, D4.1).
     NoiseUnderestimated,
+    /// The fitted spectrum of the smooth basis (14 bands) was refitted onto the 7-band GPU basis
+    /// and the refit changes a face-up colour noticeably (round 5, ZC-6). The message carries the
+    /// largest CIEDE2000 and absorption difference.
+    ExportRefit,
 }
 
 /// A warning with its text.

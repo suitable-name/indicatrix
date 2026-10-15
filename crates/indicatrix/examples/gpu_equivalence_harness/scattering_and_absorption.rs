@@ -108,19 +108,18 @@ pub fn run_p1_absorption_path_scale_checks(ctx: &GpuContext) -> bool {
     )
 }
 
-/// Zoned-absorption GPU checks (`zoning` feature): the zone-table layout echo, then one
+/// Zoned-absorption GPU checks: the zone-table layout echo, then one
 /// Tier 3 CPU-vs-GPU image comparison per `ZonedImageCase`.
 ///
-/// OWNER: the first run with `--features zoning` records these as the zoned goldens. Each
+/// OWNER: the first run records these as the zoned goldens. Each
 /// comparison passes or fails on `ImageComparisonResult::passed` (the same z-score and
 /// cluster criteria as every other Tier 3 check); the soft cases are the ones to read before
 /// lowering `renderer::buffers::GPU_SOFT_SUBDIV`.
-#[cfg(feature = "zoning")]
 pub fn run_zoning_checks(ctx: &GpuContext) -> bool {
     use indicatrix::renderer::gpu::{layout_check, zoned_cases::ZonedImageCase};
 
     println!();
-    println!("== Zoned absorption (zoning feature) ==");
+    println!("== Zoned absorption ==");
     print!("[Tier 1] zone-table struct-layout echo test (GpuZoneTable) ... ");
     let layout = layout_check::run_zone_table(ctx);
     let mut all_passed = layout.passed();

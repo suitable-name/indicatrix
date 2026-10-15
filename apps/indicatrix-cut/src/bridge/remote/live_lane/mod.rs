@@ -55,6 +55,11 @@ pub const MAX_CONSECUTIVE_CHUNK_FAILURES: u32 = 2;
 /// How many samples the next chunk should cover given the lane's current rate estimate
 /// (samples/second), `None` before the first measurement.
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "target is finite and within the MIN..=MAX u32 sample bounds checked before the cast"
+)]
 pub fn live_chunk_samples(rate_samples_per_sec: Option<f64>) -> u32 {
     let Some(rate) = rate_samples_per_sec else {
         return LIVE_FIRST_CHUNK_SAMPLES;

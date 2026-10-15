@@ -62,12 +62,16 @@ export component SweepButton inherits Rectangle {
         spacing: 6px;
         padding-left: 12px;
         padding-right: 12px;
-        if root.icon.width > 0: Image {
-            source: root.icon;
-            colorize: root.primary ? Theme.text-on-accent : Theme.text-secondary;
-            width: 13px;
-            height: 13px;
-            vertical-alignment: center;
+        // Centred by a layout of its own: a fixed-size Image in the row sits at the top of
+        // its cell (`vertical-alignment` only places the picture inside the Image).
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: root.primary ? Theme.text-on-accent : Theme.text-secondary;
+                width: 13px;
+                height: 13px;
+            }
         }
         Text {
             text: root.text;

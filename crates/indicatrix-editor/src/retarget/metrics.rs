@@ -54,7 +54,14 @@ pub fn measure_column(
 ) -> MetricColumn {
     let gpu: Vec<GpuFacetPlane> = planes
         .iter()
-        .map(|&(normal, offset)| GpuFacetPlane::new(normal.as_vec3(), -offset as f32))
+        .map(|&(normal, offset)| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 is the GPU plane precision; offsets are in the normal float range"
+            )]
+            let d = -offset as f32;
+            GpuFacetPlane::new(normal.as_vec3(), d)
+        })
         .collect();
     let components = evaluate_objective_under(&gpu, gem, ObjectiveFidelity::Fast, lighting);
     MetricColumn {

@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------------
-// Zoned absorption, unit 2 of 3: the path-length kernel. `zoning` feature only.
+// Zoned absorption, unit 2 of 3: the path-length kernel.
 //
 // A function-by-function port of `k32` in `optics/zoning/kernels.rs` (the f32 kernel, itself
 // the same source as the f64 reference): same operation order, same breakpoint array sizes,
@@ -361,8 +361,19 @@ fn zone_sort_bp(bp: ptr<function, array<f32, 38>>, nb: u32) {
 
 // Sharp lengths as fractions of the segment, in the zone frame.
 fn zone_fractions_sharp(p0: vec3<f32>, dv: vec3<f32>, count: u32) -> array<f32, 5> {
+    // Every function-scope array in these units is initialised explicitly: the transport
+    // megakernel, compiled on at least one device, did not honour WGSL's implicit zero
+    // initialisation of `var` arrays (measured 2026-10-12: the GPU zoned bicolour was 5-7 %
+    // off the CPU; the standalone echo shader was unaffected). `bp[0]`, the segment start,
+    // is one of the entries that is read without ever being written.
     var spans: array<ZSpans, 4>;
+    for (var s: u32 = 0u; s < 4u; s = s + 1u) {
+        spans[s] = zs_empty();
+    }
     var bp: array<f32, 38>;
+    for (var s: u32 = 0u; s < ZONE_BP_CAP; s = s + 1u) {
+        bp[s] = 0.0;
+    }
     bp[1] = 1.0;
     var nb: u32 = 2u;
     for (var j: u32 = 0u; j < count; j = j + 1u) {
@@ -376,6 +387,9 @@ fn zone_fractions_sharp(p0: vec3<f32>, dv: vec3<f32>, count: u32) -> array<f32, 
     }
     zone_sort_bp(&bp, nb);
     var out: array<f32, 5>;
+    for (var s: u32 = 0u; s < 5u; s = s + 1u) {
+        out[s] = 0.0;
+    }
     for (var i: u32 = 0u; i + 1u < nb; i = i + 1u) {
         let a = max(bp[i], 0.0);
         let b = min(bp[i + 1u], 1.0);
@@ -399,7 +413,11 @@ fn zone_fractions_soft(p0: vec3<f32>, dv: vec3<f32>, count: u32) -> array<f32, 5
     let softness = material.zones.header.softness;
     let half_w = 0.5 * softness;
     let inv_width = 1.0 / softness;
+    // Explicit zeros, as in `zone_fractions_sharp`: `bp[0]` is read without being written.
     var bp: array<f32, 38>;
+    for (var s: u32 = 0u; s < ZONE_BP_CAP; s = s + 1u) {
+        bp[s] = 0.0;
+    }
     bp[1] = 1.0;
     var nb: u32 = 2u;
     for (var j: u32 = 0u; j < count; j = j + 1u) {
@@ -442,7 +460,11 @@ fn zone_fractions_soft(p0: vec3<f32>, dv: vec3<f32>, count: u32) -> array<f32, 5
     zone_sort_bp(&bp, nb);
 
     let subdiv = max(material.zones.header.soft_subdiv, 1u);
+    // The accumulator is read-modify-written from its first use, so it must start at zero.
     var acc: array<f32, 5>;
+    for (var s: u32 = 0u; s < 5u; s = s + 1u) {
+        acc[s] = 0.0;
+    }
     for (var i: u32 = 0u; i + 1u < nb; i = i + 1u) {
         let a = max(bp[i], 0.0);
         let b = min(bp[i + 1u], 1.0);
@@ -466,6 +488,7 @@ fn zone_fractions_soft(p0: vec3<f32>, dv: vec3<f32>, count: u32) -> array<f32, 5
             for (var g: u32 = 0u; g < 8u; g = g + 1u) {
                 let t = centre + 0.5 * h * ZONE_GL_X[g];
                 let wgt = 0.5 * h * ZONE_GL_W[g];
+                // Only `w[0..count]` is ever read, and every one of those is written here first.
                 var w: array<f32, 4>;
                 for (var j: u32 = 0u; j < count; j = j + 1u) {
                     w[j] = zone_smoothstep_weight(
@@ -488,12 +511,19 @@ fn zone_fractions_soft(p0: vec3<f32>, dv: vec3<f32>, count: u32) -> array<f32, 5
 
 // Per-zone lengths of the segment p0 -> p0 + dv, both in the zone frame.
 fn zone_lengths_local(p0: vec3<f32>, dv: vec3<f32>) -> array<f32, 5> {
+    // Explicit zeros, as in `zone_fractions_sharp`: the degenerate-segment return reads them all.
     var out: array<f32, 5>;
+    for (var s: u32 = 0u; s < 5u; s = s + 1u) {
+        out[s] = 0.0;
+    }
     let len = sqrt(dot(dv, dv));
     if (!(len > 0.0)) {
         return out;
     }
-    let count = material.zones.header.zone_count;
+    // The host validates the table (`GpuZoneTable::encode`); the clamp keeps a corrupt count
+    // from indexing the fixed `array<_, 4>` locals below out of range.
+    let count = min(material.zones.header.zone_count, ZONE_MAX);
+    // Both branches assign the whole array before it is read.
     var frac: array<f32, 5>;
     if (material.zones.header.softness > 0.0) {
         frac = zone_fractions_soft(p0, dv, count);

@@ -59,13 +59,13 @@ pub fn parse_angle_only_with_names(
 /// its own "not a number" error the normal way.
 fn parse_colon_sequence(token: &str, gear_teeth_abs_f64: f64) -> Option<Vec<f64>> {
     let parts: Vec<&str> = token.split(':').collect();
-    let [start, step, stop] = parts.as_slice() else {
+    let [start, step, end] = parts.as_slice() else {
         return None;
     };
     let start: f64 = start.trim().parse().ok()?;
     let step: f64 = step.trim().parse().ok()?;
-    let stop: f64 = stop.trim().parse().ok()?;
-    if step == 0.0 || !(start.is_finite() && step.is_finite() && stop.is_finite()) {
+    let end: f64 = end.trim().parse().ok()?;
+    if step == 0.0 || !(start.is_finite() && step.is_finite() && end.is_finite()) {
         return None;
     }
     let mut values = Vec::new();
@@ -75,7 +75,7 @@ fn parse_colon_sequence(token: &str, gear_teeth_abs_f64: f64) -> Option<Vec<f64>
     // index gear has anywhere near this many teeth, so the bound is never
     // reached by a legitimate sequence.
     for _ in 0..10_000 {
-        if (step > 0.0 && current >= stop) || (step < 0.0 && current <= stop) {
+        if (step > 0.0 && current >= end) || (step < 0.0 && current <= end) {
             break;
         }
         values.push(if gear_teeth_abs_f64 > 0.0 {

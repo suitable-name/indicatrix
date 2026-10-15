@@ -286,7 +286,7 @@ mod tests {
     }
 
     fn template_report(material: Option<MaterialArg>) -> Report {
-        let loaded = Loaded::in_memory(testing::template(), "round.indicatrix");
+        let loaded = Loaded::in_memory(testing::template(), "round.isdd");
         judge(&loaded, &Catalogue::default(), &args(material, false)).expect("judges")
     }
 
@@ -309,7 +309,7 @@ mod tests {
     fn without_a_material_the_optics_are_left_out_and_the_notes_say_so() {
         let mut design = testing::template();
         design.material = indicatrix_cut_core::MaterialSelection::default();
-        let loaded = Loaded::in_memory(design, "round.indicatrix");
+        let loaded = Loaded::in_memory(design, "round.isdd");
         let report = judge(&loaded, &Catalogue::default(), &args(None, false)).expect("judges");
         assert!(report.optics.is_none());
         assert!(report.material.is_none());
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn a_design_that_does_not_solve_is_a_problem_with_exit_code_4() {
-        let loaded = Loaded::in_memory(unsolvable(), "lonely.indicatrix");
+        let loaded = Loaded::in_memory(unsolvable(), "lonely.isdd");
         let outcome = execute(
             &loaded,
             &Catalogue::default(),
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn the_json_verdict_matches_the_exit_code() {
-        let loaded = Loaded::in_memory(unsolvable(), "lonely.indicatrix");
+        let loaded = Loaded::in_memory(unsolvable(), "lonely.isdd");
         let outcome = execute(
             &loaded,
             &Catalogue::default(),
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn the_exit_code_follows_the_verdict_level() {
-        let loaded = Loaded::in_memory(testing::template(), "round.indicatrix");
+        let loaded = Loaded::in_memory(testing::template(), "round.isdd");
         let outcome = execute(
             &loaded,
             &Catalogue::default(),
@@ -393,7 +393,7 @@ mod tests {
             "{line}"
         );
         assert!(
-            line.ends_with("Fix in the editor: Snap to teeth."),
+            line.ends_with("Fix in the editor: Snap to Teeth."),
             "{line}"
         );
     }
@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn end_to_end_validate_writes_a_report_file_and_keeps_the_verdict_exit() {
-        let input = testing::write_design("validate-e2e.indicatrix", &testing::template());
+        let input = testing::write_design("validate-e2e.isdd", &testing::template());
         let target = testing::temp_path("validate-e2e.json")
             .to_string_lossy()
             .into_owned();

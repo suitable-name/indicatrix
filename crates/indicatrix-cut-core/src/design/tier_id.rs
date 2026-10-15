@@ -32,7 +32,7 @@
 pub struct TierId(pub u64);
 
 impl TierId {
-    /// The raw counter value -- for display/debugging and for the native sidecar
+    /// The raw counter value -- for display/debugging and for the design file
     /// mirror (`indicatrix_formats::native`), which stores this as a plain `u64`.
     #[must_use]
     pub const fn value(self) -> u64 {

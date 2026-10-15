@@ -59,7 +59,7 @@ component SavedPlanCard inherits Rectangle {
                 LineEdit {
                     min-width: 0px;
                     text <=> root.new_name;
-                    accessible-label: "New name of " + root.plan.name;
+                    accessible-label: "New Name of "+ root.plan.name;
                     init => {
                         self.focus();
                         self.select-all();
@@ -130,14 +130,14 @@ component SavedPlanCard inherits Rectangle {
             }
 
             if root.confirming_delete: Text {
-                text: "Delete plan?";
+                text: "Delete Plan?";
                 font-size: 10px;
                 color: Theme.danger;
                 vertical-alignment: center;
             }
 
             if root.confirming_delete: RoughPill {
-                text: "Yes, delete";
+                text: "Yes, Delete";
                 hint: "Delete this saved plan for good.";
                 clicked => {
                     RoughPlanModel.delete_saved(root.plan.id);
@@ -173,7 +173,7 @@ export component SavedList inherits VerticalLayout {
             background: back_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
 
             accessible-role: AccessibleRole.button;
-            accessible-label: "Back to the results";
+            accessible-label: "Back to the Results";
             accessible-description: "Close the saved plans and show the results again.";
             accessible-action-default => { RoughPlanModel.saved_open = false; }
 
@@ -275,7 +275,7 @@ export component SavedList inherits VerticalLayout {
             alignment: start;
             spacing: 6px;
 
-            for plan in RoughPlanModel.saved_plans: SavedPlanCard {
+            for plan in RoughPlanModel.saved_plans: saved-plan-card-l278 := SavedPlanCard {
                 plan: plan;
             }
         }

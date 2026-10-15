@@ -1,0 +1,61 @@
+// The properties pane of a medium or expanded window: 360 to 480 px wide on the
+// trailing edge, collapsible to a 48 px rail. Its children become the pane body and
+// stay alive while it is collapsed (so scroll positions and edits survive).
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { IconButton } from "icon_button.slint";
+
+export component SidePane inherits Rectangle {
+    in property <string> title: "";
+    in-out property <bool> collapsed: false;
+    // Requested width when open; clamped to 360..480.
+    in property <length> preferred-open-width: 400px;
+    out property <length> pane-width: root.collapsed ? 48px : min(480px, max(360px, root.preferred-open-width));
+
+    width: root.pane-width;
+    background: Theme.surface-container;
+
+    animate width {
+        duration: 180ms;
+        easing: ease-out;
+    }
+
+    // The separator along the pane's leading edge.
+    Rectangle {
+        x: 0px;
+        width: 1px;
+        background: Theme.outline-variant;
+    }
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: Theme.touch;
+            padding-left: root.collapsed ? 0px : Theme.space-lg;
+
+            if !root.collapsed: Text {
+                text: root.title;
+                color: Theme.on-surface;
+                font-size: Theme.text-title;
+                font-weight: 500;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            IconButton {
+                icon: root.collapsed ? Icons.chevron-left : Icons.chevron-right;
+                label: root.collapsed ? "Expand Panel" : "Collapse Panel";
+                clicked => {
+                    root.collapsed = !root.collapsed;
+                }
+            }
+        }
+
+        Rectangle {
+            visible: !root.collapsed;
+            clip: true;
+
+            @children
+        }
+    }
+}

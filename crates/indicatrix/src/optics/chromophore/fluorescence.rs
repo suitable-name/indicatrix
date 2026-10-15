@@ -223,6 +223,15 @@ pub fn uv_glow(
     none
 }
 
+/// A catalogue value (`f64` in the data files) as the `f32` the band types hold.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "bands, yields and hues are stored as f32; the values are wavelengths, fractions and angles in the normal float range"
+)]
+const fn f32_of(value: f64) -> f32 {
+    value as f32
+}
+
 /// CIELAB hue angle (degrees) of `xyz` scaled to a relative luminance of [`HUE_REFERENCE_Y`]
 /// against the D65 white.
 fn lab_hue_deg(xyz: Vec3) -> f32 {
@@ -235,7 +244,7 @@ fn lab_hue_deg(xyz: Vec3) -> f32 {
         ],
         [0.950_47, 1.0, 1.088_83],
     );
-    (lab[2].atan2(lab[1]).to_degrees().rem_euclid(360.0)) as f32
+    f32_of(lab[2].atan2(lab[1]).to_degrees().rem_euclid(360.0))
 }
 
 /// sRGB swatch of a glow: the chromaticity gamut-clipped to full brightness, darkened with the
@@ -344,7 +353,7 @@ fn report_impl(
         let weight = emitter.excitation.iter().map(|b| b.peak).sum::<f32>() * phi;
         let report = EmitterReport {
             chromophore: chromo.id.clone(),
-            quantum_yield_0: entry.quantum_yield.unwrap_or(0.0) as f32,
+            quantum_yield_0: f32_of(entry.quantum_yield.unwrap_or(0.0)),
             quantum_yield: phi,
             quenchers,
         };
@@ -402,9 +411,9 @@ fn excitation_bands(
         let peak = coeff_mm * w;
         if peak.is_finite() && peak > 1e-12 {
             out.push(AbsorptionBand::energy(
-                band.centre_nm as f32,
-                fwhm as f32,
-                peak as f32,
+                f32_of(band.centre_nm),
+                f32_of(fwhm),
+                f32_of(peak),
             ));
         }
     }
@@ -457,17 +466,17 @@ fn emission_bands(entry: &FluorescenceData) -> Vec<EmissionBand> {
                 .copied()
                 .unwrap_or_else(|| MIN_EMISSION_FWHM_NM.into());
             EmissionBand::new(
-                centre as f32,
-                (fwhm as f32).max(MIN_EMISSION_FWHM_NM),
-                (line_weights[i] * line_share) as f32,
+                f32_of(centre),
+                f32_of(fwhm).max(MIN_EMISSION_FWHM_NM),
+                f32_of(line_weights[i] * line_share),
             )
         })
         .collect();
     if let Some(s) = entry.sideband {
         out.push(EmissionBand::new(
-            s.centre_nm as f32,
-            (s.fwhm_nm as f32).max(MIN_EMISSION_FWHM_NM),
-            s.weight as f32,
+            f32_of(s.centre_nm),
+            f32_of(s.fwhm_nm).max(MIN_EMISSION_FWHM_NM),
+            f32_of(s.weight),
         ));
     }
     out
@@ -486,10 +495,10 @@ fn effective_yield(
         let factor = quench_factor(host, q, amounts);
         phi *= factor;
         if factor < 1.0 - 1e-6 {
-            quenchers.push((q.by.clone(), factor as f32));
+            quenchers.push((q.by.clone(), f32_of(factor)));
         }
     }
-    (phi.clamp(0.0, 1.0) as f32, quenchers)
+    (f32_of(phi.clamp(0.0, 1.0)), quenchers)
 }
 
 /// `1 / (1 + (c_q / c_half)^n)` for one quencher: `c_q` is the recipe amount of the element
@@ -660,12 +669,11 @@ mod tests {
         r.treatments = vec!["irradiation_anneal_nv".to_string()];
         let nv = fluorescence_report(cat(), &r);
         assert_eq!(nv.fluorescence.emitters().len(), 2, "N3 and NV");
-        assert!(
-            nv.fluorescence
-                .emitters()
+        assert!(nv.fluorescence.emitters().iter().any(|e| {
+            e.emission
                 .iter()
-                .any(|e| e.emission.iter().any(|b| b.centre_nm == 637.0))
-        );
+                .any(|b| (b.centre_nm - 637.0).abs() < 1e-3)
+        }));
     }
 
     #[test]

@@ -1,0 +1,23 @@
+// Every icon the shell uses, as one global so a component can say `Icons.back`.
+// The SVGs in `icons/` are 24x24 line icons drawn in black; `Icon` (shell/icon.slint)
+// recolors them with `colorize`, so they follow the theme.
+export global Icons {
+    out property <image> library: @image-url("icons/library.svg");
+    out property <image> design: @image-url("icons/design.svg");
+    out property <image> cut: @image-url("icons/cut.svg");
+    out property <image> more: @image-url("icons/more.svg");
+    out property <image> overflow: @image-url("icons/overflow.svg");
+    out property <image> back: @image-url("icons/back.svg");
+    out property <image> close: @image-url("icons/close.svg");
+    out property <image> add: @image-url("icons/add.svg");
+    out property <image> open: @image-url("icons/open.svg");
+    out property <image> share: @image-url("icons/share.svg");
+    out property <image> settings: @image-url("icons/settings.svg");
+    out property <image> info: @image-url("icons/info.svg");
+    out property <image> help: @image-url("icons/help.svg");
+    out property <image> remote: @image-url("icons/remote.svg");
+    out property <image> check: @image-url("icons/check.svg");
+    out property <image> chevron-left: @image-url("icons/chevron-left.svg");
+    out property <image> chevron-right: @image-url("icons/chevron-right.svg");
+    out property <image> licenses: @image-url("icons/licenses.svg");
+}

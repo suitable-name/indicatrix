@@ -1,6 +1,6 @@
 # 20. Cutting Mode
 
-## What you will do
+## What You Will Do
 
 **Cutting mode** is the cutting instructions made for the bench. It takes the design's
 steps in the order you cut them and shows **one step per page**, large enough to read
@@ -16,7 +16,7 @@ This chapter covers opening cutting mode, reading a step, the keys, the done mar
 index ticks, what happens when the design changes under your marks, where the marks are
 kept, and how to start over.
 
-## Opening cutting mode
+## Opening Cutting Mode
 
 Open a design in the editor and solve it (Chapter 5), then start cutting mode in any of
 three ways:
@@ -38,7 +38,7 @@ instead of failing silently. Cutting mode is also one of the advanced tools, so 
 dim while the guided walkthrough (Help menu, Guide: New Design Walkthrough) has them
 locked.
 
-## Reading a step
+## Reading a Step
 
 On a desktop window (1100 pixels wide or more) the page has a header, a body in two
 columns and a bar of buttons at the bottom. The header holds the design's name, the
@@ -46,6 +46,8 @@ columns and a bar of buttons at the bottom. The header holds the design's name, 
 **step strip**: the progress line ("4 of 12 steps done") and one small segment for each
 step, green when done, amber when changed since it was marked, grey when still to cut;
 the current step is outlined in cyan. Click a segment to jump to that step.
+
+![Cutting Mode on the third step of a design.](../../../../assets/cutting_mode.png)
 
 On the left is the step itself:
 
@@ -87,8 +89,8 @@ height; the index wheel stands beside it (below it in a narrower window):
   divisions only, so a gear with many teeth stays readable. In a small wheel
   the scale numbers thin out; the marked indices are always numbered.
 
-At the bottom are **Previous**, **Mark step done** and **Next** grouped in the middle,
-**Reset progress** at the right, and the key reminder under them.
+At the bottom are **Previous**, **Mark Step Done** and **Next** grouped in the middle,
+**Reset Progress** at the right, and the key reminder under them.
 
 In a window narrower than 1100 pixels the blocks are stacked in one column that
 scrolls: the step, the stone, the index wheel and the schedule.
@@ -96,20 +98,20 @@ scrolls: the step, the stone, the index wheel and the schedule.
 The stone is drawn at the size it is shown, so it stays sharp when the window is big.
 When you leave cutting mode the editor's viewport gets its own size back.
 
-## Moving between steps
+## Moving Between Steps
 
 | Button | Key |
 | --- | --- |
 | **Previous** | Left arrow, Page Up |
 | **Next** | Right arrow, Page Down |
-| **Mark step done** | Space or D (also goes on to the next step) |
+| **Mark Step Done** | Space or D (also goes on to the next step) |
 | Close | Esc |
 
 Previous and Next only look. They do not mark anything, and you can go back to any
 step to read it again. The keys are also listed in Appendix B.
 
-The **Mark step done** button marks the step and stays on its page; press it again
-(it then reads **Mark not done**) to take the mark back. Space and D are for the
+The **Mark Step Done** button marks the step and stays on its page; press it again
+(it then reads **Mark Not Done**) to take the mark back. Space and D are for the
 rhythm of cutting: they mark the step done and go on to the next one in one press. On
 a step that is already done they just go on, and they never take a mark back. On the
 last step they mark it and stay, because there is no step after it; the progress line
@@ -119,12 +121,12 @@ A key pressed together with Ctrl, Alt or the Windows key does nothing in cutting
 Cutting mode keeps the keyboard while it is open, and the tier list and the other
 panels are covered, so Esc is the way out.
 
-## Done marks and index ticks
+## Done Marks and Index Ticks
 
 There are two kinds of mark, and both are kept for the design:
 
-- A **step done** mark means you have cut the whole step. **Mark step done** sets it,
-  and the same button then reads **Mark not done**, which takes the mark back. A
+- A **step done** mark means you have cut the whole step. **Mark Step Done** sets it,
+  and the same button then reads **Mark Not Done**, which takes the mark back. A
   finished step shows a **Done** badge in the header of the screen.
 - An **index tick** means you have cut that one index. Click a chip to tick it; click
   it again to take the tick back. Ticks are for a step with many indices that you cut
@@ -137,7 +139,7 @@ is lost. Taking the done mark back from a step clears its ticks.
 
 The **step strip** and the progress line count the steps marked done.
 
-## When the design changes
+## When the Design Changes
 
 A mark belongs to the step as you cut it. If you change the step afterwards, the
 mark no longer says anything true, so cutting mode does not trust it. Every mark
@@ -159,17 +161,17 @@ Cutting mode watches the design while it is open. If you undo or redo, or open a
 design, the steps are built again, and the page stays on the same tier if it is still
 there.
 
-## Starting again
+## Starting Again
 
-**Reset progress**, at the bottom of the screen, removes every mark of the design you are
+**Reset Progress**, at the bottom of the screen, removes every mark of the design you are
 cutting: all the done marks and all the ticks. It asks first ("Remove every mark for
-this design?"); **Reset** goes ahead and **Keep my marks** cancels. Esc also cancels
+this design?"); **Reset** goes ahead and **Keep My Marks** cancels. Esc also cancels
 the question. After a reset the page goes back to step 1.
 
-Reset progress touches only the design shown at the top of the screen. Other designs
+Reset Progress touches only the design shown at the top of the screen. Other designs
 keep their marks.
 
-## Where your marks are kept
+## Where Your Marks Are Kept
 
 Marks are kept in **your library on this computer**, filed under the design's
 identity. They are **not** written into the design file. That has three effects:

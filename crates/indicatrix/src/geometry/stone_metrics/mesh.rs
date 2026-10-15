@@ -49,6 +49,10 @@ use super::{
 /// see that function's doc comment for the full reasoning (identical here).
 /// A design whose own scale already rounds to `2^0` builds a bit-identical
 /// mesh to before this normalisation existed.
+///
+/// # Panics
+///
+/// Panics if the mesh has more than `u32::MAX` vertices, which a convex stone never reaches.
 #[must_use]
 pub fn build_solid_mesh(planes: &[(DVec3, f64)]) -> SolidStatus {
     let deduped = dedup_planes(planes);
@@ -89,7 +93,7 @@ pub fn build_solid_mesh(planes: &[(DVec3, f64)]) -> SolidStatus {
             continue;
         };
         let facet_idx = origin[i];
-        let base = mesh.positions.len() as u32;
+        let base = u32::try_from(mesh.positions.len()).expect("a mesh's vertex count fits in u32");
 
         // Centroid vertex first, then the ring in angular order -- see this
         // function's doc comment for why the fan pivots on the centroid
@@ -106,7 +110,7 @@ pub fn build_solid_mesh(planes: &[(DVec3, f64)]) -> SolidStatus {
             mesh.facet_id.push(facet_idx);
         }
 
-        let k = ring.len() as u32;
+        let k = u32::try_from(ring.len()).expect("a facet ring's vertex count fits in u32");
         for e in 0..k {
             let a = base + 1 + e;
             let b = base + 1 + (e + 1) % k;

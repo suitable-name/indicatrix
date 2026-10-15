@@ -70,7 +70,7 @@ pub(super) fn confirm_collisions_then(
     }
     crate::gui::editor::native_io::ask_write_confirm(
         ui,
-        "Replace existing design(s)?",
+        "Replace Existing Design(s)?",
         format!(
             "{collisions} of {total} file(s) have the same name as a design already in \
              the catalogue and will REPLACE it (filename-only match, not a content \

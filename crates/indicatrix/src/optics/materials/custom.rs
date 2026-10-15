@@ -103,7 +103,6 @@ impl GemMaterial {
             edge_rounding_radius: 0.0,
             absorption_path_scale: 1.0,
             absorption_unit: AbsorptionUnit::ModelUnit,
-            #[cfg(feature = "zoning")]
             zoning: None,
             uniaxial_extraordinary_dispersion: None,
         }
@@ -239,9 +238,9 @@ impl GemMaterial {
             // haze (cloud inclusions) rather than a strong directional character.
             "Diamond" => Some((0.02, 0.0)),
             // Typically eye-clean once faceted (heat-treated zircon in particular).
-            // Ordinary (non-color-change) chrysoberyl, amethyst, citrine, pyrope,
-            // spessartine, benitoite and andalusite share this same light-default tier:
-            // they are likewise typically eye-clean.
+            // Ordinary (non-color-change) chrysoberyl, amethyst, citrine, ametrine
+            // (bicolour amethyst/citrine quartz, pyrope, spessartine, benitoite and andalusite share
+            // this same light-default tier: they are likewise typically eye-clean.
             "Zircon"
             | "Alexandrite"
             | "Topaz"
@@ -250,6 +249,7 @@ impl GemMaterial {
             | "Chrysoberyl (Yellow)"
             | "Amethyst"
             | "Citrine"
+            | "Ametrine"
             | "Pyrope Garnet"
             | "Spessartine Garnet"
             | "Color-Change Garnet (Pyrope-Spessartine)"
@@ -323,10 +323,17 @@ impl GemMaterial {
     ///
     /// The triple's numbers are per model unit, tuned for a 7 mm stone, so the material becomes
     /// [`AbsorptionUnit::ModelUnit`] (whatever the base was).
+    ///
+    /// A color variant also drops any color zones: it replaces the color,
+    /// and a zoned material's color is its zones (a zoned stone left as `ModelUnit` would break
+    /// the zoned tracer's per-millimetre rule).
     #[must_use]
     pub fn with_body_color(mut self, absorption_rgb: [f32; 3]) -> Self {
         self.absorption = AbsorptionTensor::isotropic(legacy_rgb_bands(absorption_rgb));
         self.absorption_unit = AbsorptionUnit::ModelUnit;
+        {
+            self.zoning = None;
+        }
         self
     }
 
@@ -340,6 +347,9 @@ impl GemMaterial {
     /// only matters to a caller that traces the material without that step. Rows with a
     /// non-positive or non-finite amplitude, width or centre are dropped; an empty result is a
     /// colourless stone.
+    ///
+    /// This also drops any color zones, like [`Self::with_body_color`]: a
+    /// color variant replaces the color, and a zoned material's color is its zones.
     #[must_use]
     pub fn with_body_color_bands(mut self, rows: &[[f32; 3]], path_scale: f32) -> Self {
         let bands = rows
@@ -359,6 +369,9 @@ impl GemMaterial {
         self.absorption_unit = AbsorptionUnit::PerMm;
         if path_scale.is_finite() && path_scale > 0.0 {
             self.absorption_path_scale = path_scale;
+        }
+        {
+            self.zoning = None;
         }
         self
     }

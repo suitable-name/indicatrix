@@ -1,0 +1,78 @@
+// A centered icon, title, explanation and up to two buttons, for a page that has
+// nothing to show yet. An empty button label hides that button.
+import { Theme } from "../theme.slint";
+import { Icon } from "icon.slint";
+import { PrimaryButton, TonalButton } from "buttons.slint";
+
+export component EmptyState inherits Rectangle {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> body;
+    in property <string> primary-text: "";
+    in property <image> primary-icon;
+    in property <string> secondary-text: "";
+    in property <image> secondary-icon;
+    callback primary-clicked();
+    callback secondary-clicked();
+
+    // The content is a centered column at most 560 px wide, so the text stays readable on a
+    // tablet.
+    HorizontalLayout {
+        alignment: center;
+
+        VerticalLayout {
+            max-width: 560px;
+            horizontal-stretch: 1;
+            alignment: center;
+            padding: Theme.space-xl;
+            spacing: Theme.space-lg;
+
+            Rectangle {
+                height: 72px;
+
+                Icon {
+                    source: root.icon;
+                    tint: Theme.outline;
+                    glyph: 64px;
+                }
+            }
+
+            Text {
+                text: root.title;
+                color: Theme.on-surface;
+                font-size: Theme.text-headline-small;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+
+            Text {
+                text: root.body;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-body-large;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.space-md;
+
+                if root.primary-text != "": PrimaryButton {
+                    text: root.primary-text;
+                    icon: root.primary-icon;
+                    clicked => {
+                        root.primary-clicked();
+                    }
+                }
+
+                if root.secondary-text != "": TonalButton {
+                    text: root.secondary-text;
+                    icon: root.secondary-icon;
+                    clicked => {
+                        root.secondary-clicked();
+                    }
+                }
+            }
+        }
+    }
+}

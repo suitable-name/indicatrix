@@ -426,7 +426,7 @@ export struct OpticalMetricsData {
 // Named lighting presets: only what the row UI needs to display and reference a
 // preset -- the full numeric payload lives in Rust's `settings::LightingPreset` and is
 // applied/captured there. Slint just needs the name, whether it's a built-in (to hide
-// the rename/delete affordances), `export_usable` (the settings dialog's checkbox
+// the rename/delete affordances), `export_usable` (the Parameters panel's checkbox
 // state, and the export dialog's fan-out filter), and `has_env_map` (an
 // export-dialog-only hint that the preset carries an HDR environment map; the GPU
 // renders it, and only a very large map falls back to the CPU).
@@ -436,7 +436,7 @@ export struct LightingPresetItem {
     export_usable: bool,
     has_env_map: bool,
     // Export-dialog-only, transient checkbox state -- unused/always `false` in the
-    // settings dialog's own preset list. See `GemViewportView.export_fanout_presets`
+    // Parameters panel's own preset list. See `GemViewportView.export_fanout_presets`
     // for the separate, dialog-scoped list this actually matters on.
     selected: bool,
 }
@@ -447,7 +447,10 @@ export struct WorkerItem {
     name: string,
     address: string,
     cert_dir: string,
-    // 0 = LiveProgressive, 1 = FinalOnly -- matches `indicatrix_net::messages::TransferMode`.
+    // The merged live transfer: 0 = LiveProgressive, 1 = FinalOnly (both with full data, matching
+    // `indicatrix_net::messages::TransferMode`), 2 = final picture (`settings::LiveTransfer::
+    // FinalPicture`, finished denoised frames). The old "Live stream" and "Live transfer"
+    // controls are this one value.
     transfer_mode_index: int,
     cadence_ms: int,
     // 0 = Full, 1 = Half, 2 = Quarter, 3 = Custom -- matches `settings::PreviewScale`.

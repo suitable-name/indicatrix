@@ -1,0 +1,152 @@
+// One 64 px row of the instruction list, and the section header above its first row.
+//
+//   [code] [ 41.00° ] name                      [check]  [>]
+//                     96-08-16
+//
+// A done row is dimmed and carries a check. On a phone a tap opens Cutting Mode at the
+// row's step; on a wider window a tap selects the row (the diagram highlights its tier)
+// and the trailing arrow opens Cutting Mode.
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "../shell/icon.slint";
+import { IconButton } from "../shell/icon_button.slint";
+import { StateLayer } from "../shell/state_layer.slint";
+import { CutRowData } from "cut_model.slint";
+
+export component SectionHeader inherits Rectangle {
+    in property <string> text;
+
+    height: 40px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    Text {
+        x: Theme.space-lg;
+        width: parent.width - 2 * Theme.space-lg;
+        height: parent.height;
+        text: root.text;
+        color: Theme.primary;
+        font-size: Theme.text-label-large;
+        font-weight: 600;
+        vertical-alignment: bottom;
+        overflow: elide;
+    }
+}
+
+export component CutRowItem inherits Rectangle {
+    in property <CutRowData> data;
+    // True on Medium and larger windows: a tap selects, the arrow opens.
+    in property <bool> wide: false;
+    in property <bool> selected: false;
+    callback tapped();
+    callback open();
+
+    height: 64px;
+    background: root.selected ? Theme.secondary-container : transparent;
+    // A done row recedes.
+    opacity: root.data.done ? 0.6 : 1.0;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.data.code + ", " + root.data.angle + ", " + root.data.index-text + ", " + root.data.name + (root.data.done ? ", done" : "");
+    accessible-action-default => {
+        root.tapped();
+    }
+
+    StateLayer {
+        pressed: body-touch.pressed;
+        hovered: body-touch.has-hover;
+    }
+
+    body-touch := TouchArea {
+        clicked => {
+            root.tapped();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-sm;
+        padding-right: Theme.space-xs;
+        spacing: Theme.space-sm;
+
+        // The code.
+        Rectangle {
+            width: 44px;
+
+            Text {
+                text: root.data.code;
+                color: Theme.on-surface-variant;
+                font-size: Theme.text-label-large;
+                font-weight: 700;
+                overflow: elide;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // The angle: the big number.
+        Rectangle {
+            width: 92px;
+
+            Rectangle {
+                height: 48px;
+                border-radius: Theme.radius-md;
+                background: Theme.surface-high;
+                border-width: 1px;
+                border-color: Theme.outline-variant;
+
+                Text {
+                    text: root.data.angle;
+                    color: Theme.primary;
+                    font-size: Theme.text-title-large;
+                    font-weight: 500;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.data.name;
+                color: Theme.on-surface;
+                font-size: Theme.text-body-large;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.data.changed ? root.data.index-text + "  \u{2022}  Changed since marked" : root.data.index-text;
+                color: root.data.changed ? Theme.error : Theme.on-surface-variant;
+                font-size: Theme.text-label;
+                overflow: elide;
+            }
+        }
+
+        // The done check.
+        Rectangle {
+            width: 28px;
+
+            if root.data.done: Icon {
+                source: Icons.check;
+                tint: Theme.primary;
+                glyph: 24px;
+            }
+        }
+
+        if root.wide: IconButton {
+            icon: Icons.chevron-right;
+            label: "Start Cutting at " + root.data.code;
+            tint: Theme.on-surface;
+            clicked => {
+                root.open();
+            }
+        }
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.outline-variant;
+    }
+}

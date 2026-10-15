@@ -1,19 +1,18 @@
-//! Conversions between a [`Design`] and the self-contained `.indicatrix` design file
-//! ([`indicatrix_formats::native::design::DesignFile`]), plus the helper that turns an
-//! already-loaded paired design (a `.asc` and its overlay sidecar) into that file.
+//! Conversions between a [`Design`] and the self-contained `.isdd` design file
+//! ([`indicatrix_formats::native::design::DesignFile`]; files saved as `.indicatrix`
+//! before are read the same way).
 //!
-//! The per-field conversions are the ones the paired sidecar already uses
-//! ([`super::convert`]), so a design survives `Design -> file -> Design` unchanged,
-//! including one that came from a paired `.asc`. Every tier is written in full with
-//! its stable tier id; notes, cheater offsets and targets travel inside the tier's own
-//! record, never matched to a tier by array position.
+//! The per-field conversions live in [`super::convert`], so a design survives
+//! `Design -> file -> Design` unchanged, including one that came from a catalogue
+//! `.asc`. Every tier is written in full with its stable tier id; notes, cheater
+//! offsets and targets travel inside the tier's own record, never matched to a tier by
+//! array position.
 
 use super::{
     convert::{
-        CONCAVE_FLAT_FINGERPRINT_KEY, CONCAVE_TIERS_STASH_KEY, SELF_CONTAINED_META_KEY, SaveExtras,
-        concave_tier_tables, external_proportions_from_source, material_selection_from_table,
-        material_table_from_selection, preform_spec_from_table, preform_table_from_spec,
-        source_table_from_proportions, tier_table_from_tier,
+        SaveExtras, concave_tier_tables, external_proportions_from_source,
+        material_selection_from_table, material_table_from_selection, preform_spec_from_table,
+        preform_table_from_spec, source_table_from_proportions, tier_table_from_tier,
     },
     load::{
         MaterialResolution, apply_tier_ids_and_targets, apply_tier_relations,
@@ -23,13 +22,13 @@ use super::{
     },
     unknown_keys::UnknownFileKeys,
 };
-use crate::design::{Design, ScheduleMeta, TierId, TierRelation};
+use crate::design::{Design, ScheduleMeta, StoneRenderEffects, TierId, TierRelation};
 use indicatrix::geometry::stone_metrics::ExternalProportions;
 use indicatrix_formats::native::{
-    CustomMaterialSnapshot, HistoryTable, NativeDesignFile, SourceTable,
+    CustomMaterialSnapshot, HistoryTable, SourceTable,
     design::{
-        self, AttachmentBlob, DesignFile, DesignFileError, DesignMetadata, ScheduleTable,
-        attachment_blobs,
+        self, AttachmentBlob, DesignFile, DesignFileError, DesignMetadata, RenderEffectsTable,
+        ScheduleTable, attachment_blobs,
     },
 };
 use std::{fmt, sync::Arc};
@@ -99,7 +98,7 @@ impl std::error::Error for DesignLoadError {}
 /// proportions: the custom-material snapshot, the history trail, the `[meta]`
 /// descriptive table and the byte-exact attachments.
 ///
-/// `Default` is "none of it". Convert from the paired-save extras with
+/// `Default` is "none of it". Convert from [`SaveExtras`] with
 /// `DesignExtras::from(&save_extras)` (which carries the snapshot and history only).
 #[derive(Debug, Clone, Default)]
 pub struct DesignExtras<'a> {
@@ -176,6 +175,30 @@ fn schedule_meta_from_table(table: &ScheduleTable) -> ScheduleMeta {
     }
 }
 
+fn render_effects_table(effects: &StoneRenderEffects) -> RenderEffectsTable {
+    RenderEffectsTable {
+        inclusion_sigma_s: effects.inclusion_sigma_s,
+        c_axis_override_enabled: effects.c_axis_override_enabled,
+        c_axis_tilt_deg: effects.c_axis_tilt_deg,
+        c_axis_azimuth_deg: effects.c_axis_azimuth_deg,
+        girdle_frosted: effects.girdle_frosted,
+        edge_rounding_radius: effects.edge_rounding_radius,
+        unknown: toml::Table::new(),
+    }
+}
+
+fn render_effects_from_table(table: &RenderEffectsTable) -> StoneRenderEffects {
+    StoneRenderEffects {
+        inclusion_sigma_s: table.inclusion_sigma_s,
+        c_axis_override_enabled: table.c_axis_override_enabled,
+        c_axis_tilt_deg: table.c_axis_tilt_deg,
+        c_axis_azimuth_deg: table.c_axis_azimuth_deg,
+        girdle_frosted: table.girdle_frosted,
+        edge_rounding_radius: table.edge_rounding_radius,
+    }
+    .sanitised()
+}
+
 /// The newest [`DESIGN_HISTORY_LIMIT`] entries of `entries`.
 fn bounded_history(entries: &[String]) -> Vec<String> {
     let start = entries.len().saturating_sub(DESIGN_HISTORY_LIMIT);
@@ -216,8 +239,9 @@ fn build_file(
             )
         })
         .collect();
-    // `DesignFile::new` picks version 3 when a tier has a relation; the concave
-    // list below only ever raises the version to 2 for a file without relations.
+    // `DesignFile::new` picks version 4 for a plane-set preform and version 3 when a
+    // tier has a relation; the concave list below only ever raises the version to 2
+    // for a file with neither.
     let file = DesignFile::new(
         preform_table_from_spec(&design.preform, design.preform_y_offset),
         material_table_from_selection(&design.material).with_custom(custom.cloned()),
@@ -226,6 +250,8 @@ fn build_file(
         tiers,
     )
     .with_history(HistoryTable::new(bounded_history(history)))
+    // Written only when an effect is on, so a design without effects keeps its bytes.
+    .with_render_effects(render_effects_table(&design.render_effects))
     // Also sets `version = 2` and the frame, and only when the list is non-empty.
     .with_concave_tiers(concave_tier_tables(design));
     let file = with_unknown_keys(file, design);
@@ -292,7 +318,7 @@ pub fn design_to_file(
     .with_attachments(extras.attachments)
 }
 
-/// [`design_to_file`] plus [`design::to_string`]: the text to write to a `.indicatrix`
+/// [`design_to_file`] plus [`design::to_string`]: the text to write to a `.isdd`
 /// file.
 ///
 /// # Errors
@@ -332,6 +358,7 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
         schedule,
         source,
         history,
+        render_effects,
         tiers,
         concave_tiers,
         meta,
@@ -370,11 +397,14 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
         constraint_tiers,
     );
     design.girdle_diameter_mm = girdle_diameter_mm;
+    design.render_effects = render_effects
+        .as_ref()
+        .map_or_else(StoneRenderEffects::default, render_effects_from_table);
     design.preform_y_offset = preform.y_offset;
     design.material = material_selection_from_table(&material);
     design.tier_notes = notes;
     design.cheater_offsets_deg = offsets;
-    apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets, true);
+    apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets);
     apply_tier_relations(&mut design, &raw_relations)
         .map_err(|(index, reason)| DesignLoadError::Relation { index, reason })?;
     restore_concave_tiers(&mut design, concave_tiers)
@@ -421,7 +451,7 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
 }
 
 /// [`design::parse`] plus [`design_from_file`]: the one call that opens a
-/// `.indicatrix` file's text.
+/// `.isdd` (or legacy `.indicatrix`) file's text.
 ///
 /// # Errors
 ///
@@ -429,40 +459,4 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
 /// newer major version), or the error [`design_from_file`] returns.
 pub fn design_from_str(text: &str) -> Result<LoadedDesign, DesignLoadError> {
     design_from_file(design::parse(text).map_err(DesignLoadError::File)?)
-}
-
-/// Turns an already-loaded paired design into a design file.
-///
-/// `design` is what [`super::load_paired`] (or [`super::load_native_only`]) produced
-/// from the `.asc` and `sidecar`. The sidecar contributes what the design itself does
-/// not hold: its `[source]` proportions, custom-material snapshot, history trail and
-/// draft flag, plus the unknown keys it carried at the top level and in `[preform]`
-/// and `[material]`. `[meta]` and the attachments are left empty (a sidecar has
-/// neither); fill them with [`DesignFile::with_meta`] and
-/// [`DesignFile::with_attachments`]. Tiers are rebuilt from `design`, so unknown keys
-/// inside a sidecar tier are not carried (they cannot be tied to a tier except by array position). The
-/// `.asc` file name, its hash and the catalogue entry id are dropped.
-#[must_use]
-pub fn migrate_sidecar_to_file(design: &Design, sidecar: &NativeDesignFile) -> DesignFile {
-    let history = sidecar
-        .history
-        .as_ref()
-        .map_or(&[][..], |h| h.entries.as_slice());
-    let mut file = build_file(
-        design,
-        sidecar.source,
-        sidecar.material.custom.as_ref(),
-        history,
-    )
-    .with_draft(sidecar.draft);
-    file.unknown = sidecar.unknown.clone();
-    file.unknown.remove(SELF_CONTAINED_META_KEY);
-    // The design already supplies its concave tiers (see `build_file`); the
-    // sidecar's stash of the same list, and the fingerprint written next to it, must
-    // not also be written back as unknown keys.
-    file.unknown.remove(CONCAVE_TIERS_STASH_KEY);
-    file.unknown.remove(CONCAVE_FLAT_FINGERPRINT_KEY);
-    file.preform.unknown = sidecar.preform.unknown.clone();
-    file.material.unknown = sidecar.material.unknown.clone();
-    file
 }

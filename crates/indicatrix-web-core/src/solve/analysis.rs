@@ -488,7 +488,7 @@ pub fn run_optimize(
     let defaulted_ri = default_optimize_material_ri(design, &mut selection, custom);
     let target_design = match restricted_design(design, params) {
         Ok(d) => d,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let free = free_tier_indices(&target_design).len();
     let config = params.config();
@@ -503,7 +503,10 @@ pub fn run_optimize(
 
 /// `design`, or (for `only_tiers`) the clone with every other free tier pinned at its
 /// solved mast; the error answer when that solve fails.
-fn restricted_design(design: &Design, params: &OptimizeParams) -> Result<Design, SolveResponse> {
+fn restricted_design(
+    design: &Design,
+    params: &OptimizeParams,
+) -> Result<Design, Box<SolveResponse>> {
     let Some(only) = &params.only_tiers else {
         return Ok(design.clone());
     };
@@ -513,7 +516,7 @@ fn restricted_design(design: &Design, params: &OptimizeParams) -> Result<Design,
     let keep: BTreeSet<usize> = only.iter().map(|&i| i as usize).collect();
     match design.solve() {
         Ok(solved) => Ok(pin_non_selected_free_tiers(design, &solved, &keep)),
-        Err(error) => Err(analysis_failed(&error)),
+        Err(error) => Err(Box::new(analysis_failed(&error))),
     }
 }
 

@@ -126,7 +126,7 @@ export component VerdictPopover inherits PopupWindow {
                     spacing: 8px;
                     HorizontalLayout {
                         spacing: 8px;
-                        Text { text: "Overall verdict"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                        Text { text: "Overall Verdict"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
                         Text {
                             text: VerdictModel.word;
                             font-size: 12px;
@@ -153,7 +153,7 @@ export component VerdictPopover inherits PopupWindow {
                             border-width: close_focus.has-focus ? 2px : 0px;
                             border-color: Theme.accent-cyan-hover;
                             accessible-role: AccessibleRole.button;
-                            accessible-label: "Close the verdict";
+                            accessible-label: "Close the Verdict";
                             accessible-action-default => { root.close(); }
                             close_focus := FocusScope {
                                 key-pressed(event) => {
@@ -166,7 +166,7 @@ export component VerdictPopover inherits PopupWindow {
                             }
                             close_touch := TouchArea { clicked => { root.close(); } }
                             Tooltip { text: @markdown("Close (Esc)"); }
-                            Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                         }
                     }
                 }
@@ -238,7 +238,7 @@ export component VerdictPopover inherits PopupWindow {
 
                                 if r.tier >= 0: VerdictAction {
                                     label: "Show";
-                                    reader_label: "Show the tier for reason " + (idx + 1);
+                                    reader_label: "Show the Tier for Reason "+ (idx + 1);
                                     hint: "Select this tier in the tier table.";
                                     clicked => {
                                         EditorModel.selected_tier_index = r.tier;
@@ -248,9 +248,9 @@ export component VerdictPopover inherits PopupWindow {
                                     }
                                 }
 
-                                if r.fix_label != "": VerdictAction {
+                                if r.fix_label != "": verdict-action-fix-label := VerdictAction {
                                     label: r.fix_label;
-                                    reader_label: r.fix_label + " for reason " + (idx + 1);
+                                    reader_label: r.fix_label + " for Reason " + (idx + 1);
                                     primary: root.fix_ready;
                                     active: root.fix_ready;
                                     hint: root.fix_ready ? (r.fix_hint + " One undo step.") : root.fix_wait_hint;

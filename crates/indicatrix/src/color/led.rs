@@ -1,4 +1,4 @@
-//! The CIE 15:2018 LED illuminants (the `zoning` feature).
+//! The CIE 15:2018 LED illuminants.
 //!
 //! Nine relative spectral power distributions representing typical LED lamps: five
 //! phosphor-converted blue-pumped whites (`B1` to `B5`), one blue-hybrid (`BH1`), one RGB mix
@@ -6,14 +6,14 @@
 //! of the rig photos when the owner has no measured spectrum (plan section 4.4).
 //!
 //! Reached through [`Illuminant::Led`](super::body_color::Illuminant::Led), which carries a
-//! [`LedKind`]. The variant (and this module) exist only with the `zoning` feature, so the
-//! default build's `Illuminant` is unchanged.
+//! [`LedKind`]. The variant is appended last, so the earlier `Illuminant` variants keep
+//! their serialised indices.
 //!
 //! # Data
 //!
 //! `data/cie_illum_leds_5nm.csv`: 81 rows, 380 to 780 nm in 5 nm steps, columns in the order
 //! of [`LedKind::ALL`]. It is every fifth row of the CIE's 1 nm dataset (source, DOI, licence
-//! note and retrieval caveat are in the file header). Values are relative; they are not
+//! note and the verification against the CIE file are in the file header). Values are relative; they are not
 //! normalised to a common level by the CIE, so [`LedKind::spectral_power`] normalises each
 //! curve to a peak of 1.
 //!
@@ -156,6 +156,11 @@ impl LedKind {
             return 0.0;
         }
         let col = &t.columns[self.column()];
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "pos is checked to lie in 0..=LED_SAMPLES-1 above, so the floor is a valid index"
+        )]
         let lo = (pos.floor() as usize).min(LED_SAMPLES - 2);
         let frac = pos - lo as f64;
         let value = col[lo].mul_add(1.0 - frac, col[lo + 1] * frac);
@@ -225,6 +230,10 @@ mod tests {
     fn xy(kind: LedKind) -> (f64, f64) {
         let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
         for (i, &s) in kind.samples().iter().enumerate() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the CMF table is evaluated in f32; wavelengths are 380..780 nm"
+            )]
             let cmf = cie_1931_cmf(sample_wavelength_nm(i) as f32);
             x = s.mul_add(f64::from(cmf[0]), x);
             y = s.mul_add(f64::from(cmf[1]), y);
@@ -257,6 +266,102 @@ mod tests {
         // First and last published values of LED-B1 (1 nm file rows 380 and 780).
         assert!((LedKind::B1.samples()[0] - 0.002_748_895_001_264_59).abs() < 1e-15);
         assert!((LedKind::B1.samples()[LED_SAMPLES - 1] - 0.609_884_583_683_814).abs() < 1e-12);
+    }
+
+    /// Pins every column against the CIE's own 1 nm file (`CIE_illum_LEDs_1nm.csv`, MD5
+    /// `99d1bc3974902d5e02e4c3fe539bea3d`, checked 2026-10-12): the sum of the 81 rows at 5 nm and
+    /// the values at 450, 555 and 650 nm, as published. A changed digit anywhere in a column moves
+    /// its sum.
+    #[test]
+    fn columns_match_the_cie_1nm_file() {
+        // (kind, sum over the 5 nm rows, value at 450 nm, at 555 nm, at 650 nm)
+        let pins: [(LedKind, f64, f64, f64, f64); 9] = [
+            (
+                LedKind::B1,
+                641.659_054_681_656_9,
+                7.891_599_953_127_1,
+                13.276_285_851_067,
+                14.488_494_896_633,
+            ),
+            (
+                LedKind::B2,
+                637.332_425_547_059_8,
+                10.562_541_485_842_7,
+                13.859_803_431_901_2,
+                13.421_680_572_985_7,
+            ),
+            (
+                LedKind::B3,
+                631.148_836_464_729_6,
+                18.865_121_147_440_8,
+                14.683_852_738_764_3,
+                9.848_369_131_422,
+            ),
+            (
+                LedKind::B4,
+                626.549_564_330_727_5,
+                25.907_382_636_688_8,
+                16.332_699_154_647_9,
+                7.511_811_962_965_35,
+            ),
+            (
+                LedKind::B5,
+                655.235_127_290_358_8,
+                32.341_863_962_104_4,
+                16.134_666_686_645_2,
+                6.254_833_212_288_54,
+            ),
+            (
+                LedKind::Bh1,
+                579.304_722_399_321,
+                7.744_849_357_410_76,
+                14.273_509_595_273_3,
+                5.584_711_263_522_24,
+            ),
+            (
+                LedKind::Rgb1,
+                686.365_238_415_092_1,
+                5.841_671_193_219_73,
+                9.113_541_789_262_57,
+                15.499_350_588_132_9,
+            ),
+            (
+                LedKind::V1,
+                849.684_184_241_486_8,
+                2.680_088_466_500_93,
+                12.296_965_503_798_9,
+                22.812_596_774_952_8,
+            ),
+            (
+                LedKind::V2,
+                812.067_720_922_642_6,
+                6.970_731_089_092_67,
+                13.261_756_599_664_4,
+                15.724_774_605_514_7,
+            ),
+        ];
+        // Row index of a wavelength on the 5 nm grid starting at 380 nm.
+        let row = |nm: usize| (nm - 380) / 5;
+        for (kind, sum, v450, v555, v650) in pins {
+            let s = kind.samples();
+            let got: f64 = s.iter().sum();
+            // Summation order may differ from the reference script's; 1e-12 relative is far
+            // below one changed digit in any value.
+            assert!(
+                (got - sum).abs() < 1e-12 * sum,
+                "{}: sum {got} vs {sum}",
+                kind.name()
+            );
+            for (nm, want) in [(450, v450), (555, v555), (650, v650)] {
+                assert_eq!(
+                    s[row(nm)].to_bits(),
+                    want.to_bits(),
+                    "{} at {nm} nm: {} vs {want}",
+                    kind.name(),
+                    s[row(nm)]
+                );
+            }
+        }
     }
 
     #[test]

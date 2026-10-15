@@ -1,4 +1,5 @@
 import { LightingPresetItem } from "../types.slint";
+import { RemoteWorkerModel } from "remote_worker.slint";
 
 // High-resolution render export, independent of the live viewport
 // (`bridge::export_thread`). `ExportDialog` reads this directly; `GemViewportView`
@@ -21,18 +22,32 @@ export global ExportModel {
     in-out property <int> selected_color_space_index: 0;
 
     // Whether a configured worker was confirmed reachable and render-capable the last
-    // time `check_remote_availability` ran. `false` disables the Remote/Local+Remote
-    // pills WITH a reason shown, never silently hides them.
-    in property <bool> remote_available: false;
-    // Human-readable reason `remote_available` is `false` -- distinguishes "no worker
+    // time `check_remote_availability` ran is `RemoteWorkerModel.availability.
+    // reachable_render_capable` (the one remote-availability value). `false` disables the
+    // Remote/Local+Remote pills WITH a reason shown, never silently hides them.
+    //
+    // Human-readable reason that is `false` -- distinguishes "no worker
     // configured" / "worker unreachable" / "worker is library-only" (see
     // `bridge::export_thread::remote::RemoteUnavailable::message`), rather than one
     // generic "unavailable".
     in property <string> remote_unavailable_reason: "";
+    // The dialog's Compute pill: 0 = Local only, 1 = Remote only, 2 = Local + Remote. This is
+    // the person's CHOICE, seeded from the last-used value (`AppSettings::output.still`) every
+    // time the dialog opens and written back when an export starts; it survives a remote that
+    // is down at the moment.
+    in-out property <int> compute_target_index: 2;
+    // What the export actually uses: the choice while a usable remote exists, Local only
+    // otherwise (the pills for the remote are greyed out then, with the reason shown).
+    out property <int> effective_compute_target: RemoteWorkerModel.availability.reachable_render_capable ? root.compute_target_index : 0;
+    // The Max Ray Bounces pill: an index into `SettingsModel.bounce_ladder`, seeded and
+    // remembered like `compute_target_index` -- the export's OWN cap, independent of the live
+    // viewport's.
+    in-out property <int> bounce_index: 2;
     // "Transfer": 0 = Full data (float radiance, merged with the
     // local lanes), 1 = Final picture only (the remote renders AND tone-maps; one PNG
-    // comes back, the local lanes stay idle). Reset from the remote endpoint's own
-    // default every time the dialog opens (`populate_fanout_presets`); read by Rust
+    // comes back, the local lanes stay idle). Seeded every time the dialog opens
+    // (`populate_fanout_presets`) from the last-used choice, or from the remote
+    // endpoint's own default while none was made yet; read by Rust
     // when the export starts. Only shown while a remote is available and the Compute
     // pill includes it.
     in-out property <int> transfer_index: 0;

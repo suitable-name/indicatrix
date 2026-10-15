@@ -105,7 +105,11 @@ fn render_xyz_with(
             LIGHT_PITCH_DEG.to_radians(),
         )
         .with_backdrop(BACKDROP_GREY);
-    let salt = hash_u32(0x9E37_79B9 ^ preset.index() as u32 ^ hash_u32(view.name.len() as u32));
+    let salt = hash_u32(
+        0x9E37_79B9
+            ^ preset.index().cast_unsigned()
+            ^ hash_u32(u32::try_from(view.name.len()).expect("a view name is short")),
+    );
     let threads = std::thread::available_parallelism().map_or(4, usize::from);
     let dim = size as f32;
     let inv_spp = 1.0 / samples_per_pixel as f32;
@@ -118,7 +122,8 @@ fn render_xyz_with(
             let (planes, plane_soa, material, camera) = (&planes, &plane_soa, &material, &camera);
             handles.push(scope.spawn(move || {
                 let mut rows = Vec::new();
-                for y in (t as u32..size).step_by(threads) {
+                for y in (u32::try_from(t).expect("a worker index fits u32")..size).step_by(threads)
+                {
                     let mut row = Vec::with_capacity(size as usize);
                     for x in 0..size {
                         let pixel = y * size + x;
@@ -481,6 +486,11 @@ mod png_tools {
         let n = lums.len().max(1) as f32;
         let mean_rgb = [sum[0] / n, sum[1] / n, sum[2] / n];
         lums.sort_by(f32::total_cmp);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "q is in 0..=1, so the index is a non-negative position within the slice"
+        )]
         let pick = |q: f32| {
             lums.get(((lums.len() as f32 - 1.0) * q) as usize)
                 .copied()

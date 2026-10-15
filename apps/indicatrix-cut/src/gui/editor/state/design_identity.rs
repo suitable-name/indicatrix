@@ -6,9 +6,9 @@
 //! design's `[meta].id` ([`super::DesignFileExtras`]), which is also what a Save and an
 //! autosave write into the file: there is no second copy that could drift.
 //!
-//! - A `.indicatrix` file that has an id keeps it.
-//! - A file without one (written by an older version), an `.asc`/`.gem`/`.gcs` opened
-//!   from disk and an older sidecar pair get a deterministic UUID made from the file's
+//! - A `.isdd` (or legacy `.indicatrix`) file that has an id keeps it.
+//! - A file without one (written by an older version) and an `.asc`/`.gem`/`.gcs` opened
+//!   from disk get a deterministic UUID made from the file's
 //!   own location ([`file_design_url`]), so opening the same file again finds its side
 //!   data again before the first Save writes the id into it. A recovered autosave
 //!   snapshot, a remote design and a new design get a fresh random one instead: none of
@@ -42,7 +42,7 @@ pub(in crate::gui::editor) fn fresh_design_uuid() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut bytes = [0u8; 16];
     for (half, chunk) in bytes.chunks_mut(8).enumerate() {
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn a_file_id_beats_the_catalogue_entry_it_was_loaded_through() {
         assert_eq!(
-            resolve_design_uuid(FILE_ID, Some("local://capps.indicatrix"), never),
+            resolve_design_uuid(FILE_ID, Some("local://capps.isdd"), never),
             FILE_ID
         );
     }
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn a_file_id_beats_the_file_location() {
-        let path = Path::new("somewhere/ring.indicatrix");
+        let path = Path::new("somewhere/ring.isdd");
         assert_eq!(resolve_file_design_uuid(FILE_ID, path, never), FILE_ID);
         let upper = FILE_ID.to_ascii_uppercase();
         assert_eq!(

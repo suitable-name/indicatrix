@@ -221,6 +221,11 @@ fn resample_outline(outline: &[DVec2], target: usize) -> Vec<DVec2> {
     let mut samples = Vec::new();
     for i in 0..count {
         let (from, to) = (outline[i], outline[(i + 1) % count]);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "ceil of a non-negative edge length over the spacing, floored at 1.0; a small piece count"
+        )]
         let pieces = ((to - from).length() / spacing).ceil().max(1.0) as usize;
         for piece in 0..pieces {
             samples.push(from + (to - from) * (piece as f64 / pieces as f64));

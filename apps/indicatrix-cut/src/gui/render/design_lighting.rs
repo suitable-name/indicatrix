@@ -2,7 +2,7 @@
 //!
 //! The design file holds the design and nothing else, so a lighting set-up the cutter
 //! likes for one design lives in the local library, keyed by the design's UUID
-//! (`indicatrix_vault`'s `design_lighting` table). Two buttons in the settings dialog
+//! (`indicatrix_vault`'s `design_lighting` table). Two buttons in the Parameters panel
 //! write it ("Use this lighting for this design") and clear it ("Forget for this
 //! design"); opening a design that has some shows it in the live view.
 //!
@@ -40,8 +40,9 @@
 //! # What is stored
 //!
 //! [`LightingValues`] as JSON: the lighting rig, the light's position, exposure, surface
-//! glare, backdrop and the HDR environment map path, if one is in use. The camera is not
-//! part of it. The decisions (what a stored row means, what to do when a design opens)
+//! glare, backdrop, head shadow and the HDR environment map path, if one is in use. A row
+//! stored before the head shadow existed reads the default for it. The camera is not part
+//! of a design's lighting (the shared struct can carry one, and this row never does). The decisions (what a stored row means, what to do when a design opens)
 //! are pure functions, tested without a window; the rest is thin glue over Slint.
 
 mod opening;
@@ -150,7 +151,7 @@ struct Handles {
     settings_store: Arc<SettingsPersister>,
 }
 
-/// The HDR controls' state: what the settings dialog shows about the environment map.
+/// The HDR controls' state: what the Parameters panel shows about the environment map.
 #[derive(Clone)]
 struct EnvUi {
     loaded: bool,
@@ -180,7 +181,7 @@ struct Session {
     /// or an HDR decode started for an earlier number is stale when it lands and is dropped.
     open_generation: u64,
     /// The HDR map the lighting now showing names while a thread is still decoding it. The
-    /// settings dialog keeps showing the earlier map until the decode lands, so "Use this
+    /// Parameters panel keeps showing the earlier map until the decode lands, so "Use this
     /// lighting for this design" reads the map from here first ([`env_path_to_store`]).
     /// Cleared when the decode answers, fails to start, or any newer opening or reset begins,
     /// or when the cutter loads or clears a map by hand ([`env_map_chosen`]).
@@ -199,6 +200,22 @@ thread_local! {
     /// The window's session. Slint callbacks and the editor run on one thread, so a
     /// thread-local needs no lock, the same way the editor's other per-window state works.
     static SESSION: RefCell<Session> = RefCell::new(Session::default());
+}
+
+/// Forgets what a previous main window left behind: the handles (database, render context,
+/// settings writer) and the remembered lighting. See `gui::window_release`.
+pub(in crate::gui) fn release_window_state() {
+    let old = SESSION.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    drop(old);
+}
+
+/// Names this module's holder in `out` while it is still set. See
+/// `gui::window_release::live_holders`.
+#[cfg(feature = "ui-harness")]
+pub(in crate::gui) fn note_holders(out: &mut Vec<&'static str>) {
+    if SESSION.with(|cell| cell.borrow().handles.is_some()) {
+        out.push("render::design_lighting SESSION (vault, render context)");
+    }
 }
 
 fn handles() -> Option<Handles> {
@@ -286,7 +303,7 @@ fn generation_is_current(asked: u64) -> bool {
     SESSION.with(|session| answer_is_current(asked, session.borrow().open_generation))
 }
 
-/// Wires the settings dialog's two buttons and remembers the handles the open hook
+/// Wires the Parameters panel's two buttons and remembers the handles the open hook
 /// ([`design_opened`]) needs. Called once, when the window is built.
 pub(in crate::gui) fn setup_design_lighting_callbacks(
     ui: &MainWindow,
@@ -513,7 +530,7 @@ fn apply_values(ui: &MainWindow, handles: &Handles, values: &LightingValues, gen
     }
 }
 
-/// The path of the HDR map in use: the one in the settings dialog's field, but only while a
+/// The path of the HDR map in use: the one in the Parameters panel's field, but only while a
 /// map is actually loaded (see [`env_path_for_capture`]).
 fn loaded_env_path(ui: &MainWindow, handles: &Handles) -> Option<String> {
     let has_map = RenderContext::lock(&handles.render_ctx).env_map.is_some();
@@ -637,6 +654,7 @@ const fn push_values_to_context(
     ctx.lighting_preset = rig;
     ctx.surface_glare = values.surface_glare;
     ctx.backdrop = values.backdrop;
+    ctx.head_shadow_deg = values.head_shadow_deg;
 }
 
 /// The controls half of showing `values`: the sliders, the backdrop pills and the
@@ -649,11 +667,12 @@ fn push_values_to_controls(ui: &MainWindow, values: &LightingValues, rig: Lighti
     settings.set_exposure_val(values.exposure);
     settings.set_surface_glare_pct(percent_from_surface_glare(values.surface_glare));
     settings.set_backdrop_index(values.backdrop.index());
+    settings.set_head_shadow_deg(values.head_shadow_deg);
     ui.global::<ViewportModel>()
         .set_selected_lighting_index(rig.index());
 }
 
-/// Tells the settings dialog what it may offer for the open design.
+/// Tells the Parameters panel what it may offer for the open design.
 fn publish_model(ui: &MainWindow, design_open: bool, lookup: &Lookup) {
     let model = ui.global::<DesignLightingModel>();
     model.set_available(design_open);

@@ -17,7 +17,7 @@
 //!
 //! The report is always printed (what was asked, the verdict, and for an accepted change the
 //! tiers that moved and the optical figures). `--out FILE` saves the retargeted design as a
-//! `.indicatrix` file with the new material; without it nothing is written, which makes the
+//! `.isdd` file with the new material; without it nothing is written, which makes the
 //! command a dry run.
 
 mod report;
@@ -240,7 +240,7 @@ fn execute(loaded: &Loaded, catalogue: &Catalogue, args: &RetargetArgs) -> Comma
     notes.extend(target.note.clone());
     notes.extend(decision.notes.clone());
     let saved = match (&result, &args.out) {
-        (Ok(after), Some(path)) => Some((path.clone(), loaded.indicatrix_text(after, catalogue)?)),
+        (Ok(after), Some(path)) => Some((path.clone(), loaded.design_text(after, catalogue)?)),
         _ => None,
     };
     let report = Report {
@@ -326,7 +326,7 @@ mod tests {
     }
 
     fn loaded() -> Loaded {
-        Loaded::in_memory(testing::brilliant_at_172(), "brilliant.indicatrix")
+        Loaded::in_memory(testing::brilliant_at_172(), "brilliant.isdd")
     }
 
     fn validity(status: ValidityStatus, reasons: Vec<InvalidReason>) -> RetargetValidity {
@@ -365,7 +365,7 @@ mod tests {
             &args(
                 MaterialArg::Ri(1.7681),
                 SAPPHIRE_CROWN,
-                Some("sapphire.indicatrix"),
+                Some("sapphire.isdd"),
             ),
         )
         .expect("retargets");
@@ -380,8 +380,8 @@ mod tests {
             "{}",
             outcome.stdout
         );
-        let saved = testing::file_text(&outcome, "sapphire.indicatrix").expect("saved");
-        let again = from_bytes("sapphire.indicatrix", saved.as_bytes()).expect("opens");
+        let saved = testing::file_text(&outcome, "sapphire.isdd").expect("saved");
+        let again = from_bytes("sapphire.isdd", saved.as_bytes()).expect("opens");
         assert_eq!(
             again.design.material.refractive_index_override,
             Some(1.7681)
@@ -419,7 +419,7 @@ mod tests {
                 &args(
                     MaterialArg::Ri(ri),
                     CrownShift::default(),
-                    Some("refused.indicatrix"),
+                    Some("refused.isdd"),
                 ),
             )
             .expect("an outcome, not an error");
@@ -518,7 +518,7 @@ mod tests {
             Vec::new(),
         );
         let error = execute(
-            &Loaded::in_memory(empty, "empty.indicatrix"),
+            &Loaded::in_memory(empty, "empty.isdd"),
             &Catalogue::default(),
             &args(MaterialArg::Ri(1.7), CrownShift::default(), None),
         )
@@ -528,8 +528,8 @@ mod tests {
 
     #[test]
     fn end_to_end_a_named_material_is_retargeted_or_refused_consistently() {
-        let input = testing::write_design("retarget-e2e.indicatrix", &testing::brilliant_at_172());
-        let target = testing::temp_path("retarget-e2e-out.indicatrix")
+        let input = testing::write_design("retarget-e2e.isdd", &testing::brilliant_at_172());
+        let target = testing::temp_path("retarget-e2e-out.isdd")
             .to_string_lossy()
             .into_owned();
         let outcome = testing::run(&[
@@ -552,16 +552,15 @@ mod tests {
         assert_eq!(outcome.files.is_empty(), refused);
         if !refused {
             let saved = testing::file_text(&outcome, &target).expect("saved");
-            let again = from_bytes("out.indicatrix", saved.as_bytes()).expect("opens");
+            let again = from_bytes("out.isdd", saved.as_bytes()).expect("opens");
             assert_eq!(again.design.material.name.as_deref(), Some("Sapphire"));
         }
     }
 
     #[test]
     fn end_to_end_optimize_mode_follows_the_same_rule() {
-        let input =
-            testing::write_design("retarget-e2e-opt.indicatrix", &testing::brilliant_at_172());
-        let target = testing::temp_path("retarget-e2e-opt-out.indicatrix")
+        let input = testing::write_design("retarget-e2e-opt.isdd", &testing::brilliant_at_172());
+        let target = testing::temp_path("retarget-e2e-opt-out.isdd")
             .to_string_lossy()
             .into_owned();
         let outcome = testing::run(&[
@@ -596,8 +595,7 @@ mod tests {
 
     #[test]
     fn no_keep_look_reaches_the_search_and_the_report() {
-        let input =
-            testing::write_design("retarget-e2e-look.indicatrix", &testing::brilliant_at_172());
+        let input = testing::write_design("retarget-e2e-look.isdd", &testing::brilliant_at_172());
         let outcome = testing::run(&[
             "retarget",
             &input,

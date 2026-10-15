@@ -290,6 +290,9 @@ fn a_custom_material_wins_over_the_catalogue_like_the_desktop() {
         absorption_rgb: None,
         color_recipe: None,
         absorption_bands: Vec::new(),
+        crystal_system: String::new(),
+        optical_character: String::new(),
+        biaxial_delta_beta_alpha: None,
     };
     let desktop_custom = vec![spec.to_gem_material()];
     let web_custom = desktop_custom.clone();
@@ -331,6 +334,52 @@ fn a_custom_material_spec_keeps_its_snapshots_body_color() {
     }
     .to_gem_material();
     assert_ne!(colored.absorption, clear.absorption);
+}
+
+#[test]
+fn a_custom_material_spec_keeps_a_biaxial_snapshots_crystal_optics() {
+    use indicatrix::optics::materials::{CrystalSystem, OpticalCharacter};
+
+    let snapshot =
+        CustomMaterialSnapshot::new(1.70, 0.02, 0.009, None, "Orthorhombic", "BiaxialPositive")
+            .with_biaxial_delta(Some(0.004));
+    let spec = CustomMaterialSpec::from_snapshot("Biaxial", &snapshot);
+    assert_eq!(spec.crystal_system, "Orthorhombic");
+    assert_eq!(spec.optical_character, "BiaxialPositive");
+    assert_eq!(spec.biaxial_delta_beta_alpha, Some(0.004));
+
+    // The three fields come back out of the spec's own snapshot ...
+    let back = spec.to_snapshot();
+    assert_eq!(back.crystal_system, "Orthorhombic");
+    assert_eq!(back.optical_character, "BiaxialPositive");
+    assert_eq!(back.biaxial_delta_beta_alpha, Some(0.004));
+
+    // ... and the material built through the spec has the biaxial optics.
+    let material = spec.to_gem_material();
+    assert_eq!(material.crystal_system, CrystalSystem::Orthorhombic);
+    assert_eq!(
+        material.optical_character,
+        OpticalCharacter::BiaxialPositive
+    );
+    let delta = material
+        .biaxial_delta_beta_alpha
+        .expect("the biaxial delta is restored");
+    assert!((f64::from(delta) - 0.004).abs() < 1e-6, "{delta}");
+
+    // A spec with empty names and no delta (the shape before the fields existed) infers the
+    // optics from the birefringence, as ever.
+    let inferred = CustomMaterialSpec {
+        crystal_system: String::new(),
+        optical_character: String::new(),
+        biaxial_delta_beta_alpha: None,
+        ..spec
+    }
+    .to_gem_material();
+    assert_eq!(
+        inferred.optical_character,
+        OpticalCharacter::UniaxialPositive
+    );
+    assert_eq!(inferred.biaxial_delta_beta_alpha, None);
 }
 
 #[test]
@@ -439,6 +488,85 @@ fn bad_specs_are_errors_not_substitutions() {
     ));
 }
 
+/// A spec at the default surface glare (`1.0`) builds the very scene it built before the
+/// control existed: the environment equals the old formula's and a traced frame matches
+/// bit for bit.
+#[test]
+fn the_default_surface_glare_is_the_old_scene_bit_for_bit() {
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let spec = SceneSpec {
+        planes: planes_to_data(&planes),
+        finishes: FinishSpec::AllPolished,
+        material: MaterialSpec::catalogue("Diamond"),
+        camera: CameraSpec {
+            yaw: 0.6,
+            pitch: 0.35,
+            distance: 4.2,
+        },
+        lighting: LightingSpec::new(
+            LightingPreset::LightTent,
+            1.0,
+            0.4,
+            0.35,
+            Backdrop::Grey,
+            16.0,
+        ),
+        max_bounces: 6,
+        width: 12,
+        height: 8,
+        hdr_id: None,
+    };
+    assert_eq!(spec.lighting.surface_glare.to_bits(), 1.0f32.to_bits());
+    let new = OwnedScene::build(&spec, None).expect("builds");
+    // The environment as the web built it before `surface_glare` existed.
+    let old_env = LightingPreset::LightTent
+        .studio(1.0, 0.4, 0.35)
+        .with_backdrop(Backdrop::Grey.level())
+        .with_head_shadow(16.0);
+    assert_eq!(new.frame_scene().environment.surface_glare(), 1.0);
+    let old_frame = FrameScene {
+        environment: old_env,
+        ..new.frame_scene()
+    };
+    assert_eq!(trace_bits(&new.frame_scene()), trace_bits(&old_frame));
+}
+
+/// A dialled-in glare reaches the built environment, clamped; 0 % differs from the
+/// default; an HDR scene ignores it.
+#[test]
+fn the_surface_glare_reaches_the_environment() {
+    let spec = |glare: f32| {
+        LightingSpec::new(
+            LightingPreset::LightTent,
+            1.0,
+            0.4,
+            0.35,
+            Backdrop::Grey,
+            16.0,
+        )
+        .with_surface_glare(glare)
+    };
+    assert_eq!(spec(0.0).studio_environment().surface_glare(), 0.0);
+    assert_eq!(spec(0.35).studio_environment().surface_glare(), 0.35);
+    assert_eq!(spec(-4.0).studio_environment().surface_glare(), 0.0);
+    assert_eq!(spec(9.0).studio_environment().surface_glare(), 1.0);
+    assert_ne!(
+        spec(0.0).studio_environment().surface_glare(),
+        spec(1.0).studio_environment().surface_glare()
+    );
+    // The head shadow survives the glare call (the desktop's call order).
+    let EnvironmentSource::Studio {
+        surface_glare,
+        head_shadow_deg,
+        ..
+    } = spec(0.5).studio_environment()
+    else {
+        panic!("a studio spec builds a studio environment");
+    };
+    assert_eq!(surface_glare, 0.5);
+    assert_eq!(head_shadow_deg, 16.0);
+}
+
 #[test]
 fn planes_survive_the_plain_data_round_trip_bit_for_bit() {
     let planes = StandardGemCuts::standard_round_brilliant();
@@ -489,6 +617,9 @@ fn a_custom_materials_bands_colour_the_restored_material() {
         absorption_rgb: Some([0.25, 0.5, 1.5]),
         color_recipe: None,
         absorption_bands: vec![[460.0, 45.0, 0.25]],
+        crystal_system: String::new(),
+        optical_character: String::new(),
+        biaxial_delta_beta_alpha: None,
     };
     let banded = spec.to_gem_material();
     let triple_only = CustomMaterialSpec {

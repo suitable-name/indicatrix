@@ -28,8 +28,13 @@ pub(super) struct ApertureSampleContext<'a> {
     pub(super) cam_up: Vec3,
     /// Where the fan's rays start, scaled to the stone.
     pub(super) fan: FanGeometry,
-    /// The illumination an exit direction is judged against.
-    pub(super) lighting: ExitLighting<'a>,
+    /// The illumination an exit direction is judged against, shared by every pose of a
+    /// sweep (built once, see `PreparedEval`).
+    pub(super) lighting: &'a ExitLighting<'a>,
+    /// Whether returned rays also get the Fire F/C companion traces. Off for the sweep and
+    /// the optimiser, which read only brilliance/extinction/windowing: those counters
+    /// come from the d-line trace alone, so they are identical either way.
+    pub(super) want_fire: bool,
 }
 
 /// How one grid-cell aperture-sample ray was classified. `Returned` carries the
@@ -66,7 +71,7 @@ pub(super) struct ReturnedRay {
 }
 
 /// Fires a single grid-cell aperture-sample ray at screen-space coordinates `(u, v)`
-/// (in `[-1, 1]`) with sub-aperture jitter `(dx_sub, dz_sub)`, refracts and traces it
+/// (in `[-1, 1]`) with sub-aperture jitter `(sub_right, sub_up)`, refracts and traces it
 /// through the stone at the d-line (and, if it qualifies, replays the same entry
 /// point/direction at the F-line and C-line indices for the Fire measurement), and
 /// classifies the result. Returns `None` if the ray misses the stone geometry entirely.
@@ -76,10 +81,10 @@ pub(super) fn classify_aperture_sample(
     ctx: &ApertureSampleContext,
     u: f32,
     v: f32,
-    dx_sub: f32,
-    dz_sub: f32,
+    sub_right: f32,
+    sub_up: f32,
 ) -> Option<RayClassification> {
-    let ray_dir = (ctx.cam_forward + dx_sub * ctx.cam_right + dz_sub * ctx.cam_up).normalize();
+    let ray_dir = (ctx.cam_forward + sub_right * ctx.cam_right + sub_up * ctx.cam_up).normalize();
     let ray_origin = ctx
         .fan
         .origin(ctx.cam_forward, ctx.cam_right, ctx.cam_up, u, v);
@@ -109,69 +114,16 @@ pub(super) fn classify_aperture_sample(
             let transmittance = exit_d.transmittance;
             // Directional Extinction Analysis: head-shadow cone vs. the environment's
             // light sources (see `ray_is_visibly_returned`).
-            if !ray_is_visibly_returned(exit_dir, ctx.cam_forward, &ctx.lighting) {
+            if !ray_is_visibly_returned(exit_dir, ctx.cam_forward, ctx.lighting) {
                 return Some(RayClassification::Extinct);
             }
 
-            // Fire: replay the same entry point/direction at the hydrogen F-line and
-            // C-line indices, for rays that pass the same illumination test as
-            // brilliance. An unweighted mean over surviving rays would let a
-            // badly-leaking cut win via a handful of near-critical-angle survivors, so
-            // each ray's angular contribution is weighted by transmittance (energy
-            // actually delivered) and normalized by TOTAL incident rays, not just the
-            // qualifying count (see fire_index below). Considered only if BOTH F-line
-            // and C-line companion traces also exit upward -- a ray whose F or C image
-            // is lost to TIR or pavilion leakage contributes no Fire sample.
-            let fate_f =
-                trace_wavelength(hit_point_entry, ray.dir, n_entry, cos_i, ctx.stone, ctx.n_f);
-            let fate_c =
-                trace_wavelength(hit_point_entry, ray.dir, n_entry, cos_i, ctx.stone, ctx.n_c);
-            let fire = match (fate_f, fate_c) {
-                (RayFate::ExitedUpward(exit_f), RayFate::ExitedUpward(exit_c)) => {
-                    // F/C bifurcation gate: when the F-line and C-line traces exit
-                    // through a different facet or bounce count, their critical angles
-                    // straddled a TIR threshold at different points -- physically
-                    // disjoint paths, so acos(dir_f . dir_c) would measure unrelated
-                    // exit directions, not dispersion. These bifurcated pairs carried
-                    // 45-98% of the weighted Fire sum wherever a step cut wrongly
-                    // out-scored a brilliant -- a sampling artifact, not a real optical
-                    // effect. Rejected a capped-credit alternative (a small fixed
-                    // separation instead of discarding): it put Quartz above Sapphire
-                    // on the emerald cut, when strict-discard matches independently
-                    // measured SRB reference readings.
-                    if exit_f.facet_idx != exit_c.facet_idx || exit_f.bounces != exit_c.bounces {
-                        None
-                    } else {
-                        let transmittance_f = exit_f.transmittance;
-                        let transmittance_c = exit_c.transmittance;
-                        let exit_cos_f = exit_f.exit_cos_theta;
-                        let exit_cos_c = exit_c.exit_cos_theta;
-                        let cos_sep = exit_f.dir.dot(exit_c.dir).clamp(-1.0, 1.0);
-                        let angle_deg = cos_sep.acos().to_degrees();
-                        // Weight by the PRODUCT of all three wavelengths' transmittances,
-                        // not just the d-line's: near a critical angle, angular
-                        // sensitivity to a small index change diverges at almost the same
-                        // rate the d-line's Fresnel transmittance vanishes, so
-                        // angle * transmittance_d alone plateaus at a nonzero residual.
-                        // Multiplying in transmittance_f/_c breaks that near-cancellation,
-                        // so a ray only registers strongly when all three wavelengths are
-                        // comfortably transmitted.
-                        //
-                        // Transmittance alone is still not enough: acos(dir_f . dir_c)
-                        // has a near-singularity at grazing exit, which low-index stones
-                        // hit more often, and transmittance falls off too slowly to
-                        // outrun it. The missing factor is radiance: light leaving at
-                        // grazing incidence is smeared across a larger solid angle before
-                        // reaching a fixed-aperture observer, so the F-line/C-line exit
-                        // cosines are multiplied in too -- at grazing, exit_cos -> 0 and
-                        // cancels the acos divergence.
-                        let energy_weight = transmittance * transmittance_f * transmittance_c;
-                        let radiance_weight = exit_cos_f.max(0.0) * exit_cos_c.max(0.0);
-                        let weight = energy_weight * radiance_weight;
-                        Some((angle_deg, weight))
-                    }
-                }
-                _ => None,
+            // The Fire measurement costs two more full traces per returned ray; the sweep
+            // and the optimiser never read it, so they switch it off (`want_fire`).
+            let fire = if ctx.want_fire {
+                fire_sample(ctx, hit_point_entry, ray.dir, n_entry, cos_i, transmittance)
+            } else {
+                None
             };
             Some(RayClassification::Returned(ReturnedRay {
                 fire,
@@ -181,4 +133,75 @@ pub(super) fn classify_aperture_sample(
         }
         RayFate::Absorbed => Some(RayClassification::Extinct),
     }
+}
+
+/// The Fire sample of one visibly returned ray: `(angle_deg, weight)`, or `None` when the
+/// F-line/C-line companion traces do not both exit upward through the same facet.
+///
+/// A pure extraction of the tail of [`classify_aperture_sample`] (same operations, same
+/// order), so the Fire-less fast path can skip the two companion traces without touching
+/// any arithmetic the d-line counters depend on. `transmittance` is the d-line trace's.
+fn fire_sample(
+    ctx: &ApertureSampleContext,
+    hit_point_entry: Vec3,
+    dir: Vec3,
+    n_entry: Vec3,
+    cos_i: f32,
+    transmittance: f32,
+) -> Option<(f32, f32)> {
+    // Fire: replay the same entry point/direction at the hydrogen F-line and
+    // C-line indices, for rays that pass the same illumination test as
+    // brilliance. An unweighted mean over surviving rays would let a
+    // badly-leaking cut win via a handful of near-critical-angle survivors, so
+    // each ray's angular contribution is weighted by transmittance (energy
+    // actually delivered) and normalized by TOTAL incident rays, not just the
+    // qualifying count (see fire_index below). Considered only if BOTH F-line
+    // and C-line companion traces also exit upward -- a ray whose F or C image
+    // is lost to TIR or pavilion leakage contributes no Fire sample.
+    let fate_f = trace_wavelength(hit_point_entry, dir, n_entry, cos_i, ctx.stone, ctx.n_f);
+    let fate_c = trace_wavelength(hit_point_entry, dir, n_entry, cos_i, ctx.stone, ctx.n_c);
+    let (RayFate::ExitedUpward(exit_f), RayFate::ExitedUpward(exit_c)) = (fate_f, fate_c) else {
+        return None;
+    };
+    // F/C bifurcation gate: when the F-line and C-line traces exit
+    // through a different facet or bounce count, their critical angles
+    // straddled a TIR threshold at different points -- physically
+    // disjoint paths, so acos(dir_f . dir_c) would measure unrelated
+    // exit directions, not dispersion. These bifurcated pairs carried
+    // 45-98% of the weighted Fire sum wherever a step cut wrongly
+    // out-scored a brilliant -- a sampling artifact, not a real optical
+    // effect. Rejected a capped-credit alternative (a small fixed
+    // separation instead of discarding): it put Quartz above Sapphire
+    // on the emerald cut, when strict-discard matches independently
+    // measured SRB reference readings.
+    if exit_f.facet_idx != exit_c.facet_idx || exit_f.bounces != exit_c.bounces {
+        return None;
+    }
+    let transmittance_f = exit_f.transmittance;
+    let transmittance_c = exit_c.transmittance;
+    let exit_cos_f = exit_f.exit_cos_theta;
+    let exit_cos_c = exit_c.exit_cos_theta;
+    let cos_sep = exit_f.dir.dot(exit_c.dir).clamp(-1.0, 1.0);
+    let angle_deg = cos_sep.acos().to_degrees();
+    // Weight by the PRODUCT of all three wavelengths' transmittances,
+    // not just the d-line's: near a critical angle, angular
+    // sensitivity to a small index change diverges at almost the same
+    // rate the d-line's Fresnel transmittance vanishes, so
+    // angle * transmittance_d alone plateaus at a nonzero residual.
+    // Multiplying in transmittance_f/_c breaks that near-cancellation,
+    // so a ray only registers strongly when all three wavelengths are
+    // comfortably transmitted.
+    //
+    // Transmittance alone is still not enough: acos(dir_f . dir_c)
+    // has a near-singularity at grazing exit, which low-index stones
+    // hit more often, and transmittance falls off too slowly to
+    // outrun it. The missing factor is radiance: light leaving at
+    // grazing incidence is smeared across a larger solid angle before
+    // reaching a fixed-aperture observer, so the F-line/C-line exit
+    // cosines are multiplied in too -- at grazing, exit_cos -> 0 and
+    // cancels the acos divergence.
+    let energy_weight = transmittance * transmittance_f * transmittance_c;
+    let radiance_weight = exit_cos_f.max(0.0) * exit_cos_c.max(0.0);
+    let weight = energy_weight * radiance_weight;
+    Some((angle_deg, weight))
 }

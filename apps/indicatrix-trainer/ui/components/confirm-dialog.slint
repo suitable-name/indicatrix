@@ -1,0 +1,87 @@
+import { Button } from "std-widgets.slint";
+import { TrainerTheme } from "../theme.slint";
+
+// A modal dialog over the whole window: scrim, card, up to three buttons. Escape cancels.
+// `primary_text` is the main action (colored by `danger`), `secondary_text` an optional
+// second action (empty hides it), `cancel_text` always dismisses.
+export component ConfirmDialog inherits Rectangle {
+    in property <string> heading;
+    in property <string> body;
+    in property <string> primary_text: "OK";
+    in property <string> secondary_text;
+    in property <string> cancel_text: "Cancel";
+    in property <bool> danger: false;
+    callback primary();
+    callback secondary();
+    callback cancel();
+
+    background: TrainerTheme.scrim;
+    accessible-role: groupbox;
+    accessible-label: root.heading;
+    accessible-description: root.body;
+
+    // Swallow every mouse event behind the dialog.
+    TouchArea {
+        clicked => { }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+        init => { self.focus(); }
+    }
+    Rectangle {
+        width: min(460px, parent.width - 48px);
+        height: content.preferred-height + 40px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: TrainerTheme.bg-surface;
+        border-radius: TrainerTheme.radius;
+        border-width: 1px;
+        border-color: root.danger ? TrainerTheme.accent-amber : TrainerTheme.border-medium;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: TrainerTheme.scrim;
+
+        content := VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+            Text {
+                text: root.heading;
+                color: TrainerTheme.text-primary;
+                font-size: 16px;
+                font-weight: 700;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.body;
+                color: TrainerTheme.text-secondary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Button {
+                    text: root.cancel_text;
+                    accessible-label: root.cancel_text;
+                    clicked => { root.cancel(); }
+                }
+                if root.secondary_text != "": Button {
+                    text: root.secondary_text;
+                    accessible-label: root.secondary_text;
+                    clicked => { root.secondary(); }
+                }
+                Button {
+                    text: root.primary_text;
+                    primary: true;
+                    accessible-label: root.primary_text;
+                    clicked => { root.primary(); }
+                }
+            }
+        }
+    }
+}

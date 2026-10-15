@@ -269,7 +269,7 @@ impl Design {
     /// `indices` -- see [`Self::cheater_offsets_deg`]'s own doc comment for why:
     /// `.asc`/`GemCAD` have no field for a cheater/azimuth angle at all, so the
     /// only way an authored offset survives opening this exact `.asc` file in
-    /// software that has never heard of this crate's own native sidecar is to
+    /// software that has never heard of this crate's own design file is to
     /// fold it into the one thing `.asc` DOES carry per facet -- its index-wheel
     /// position. The shift is `offset_deg / 360 * gear_teeth` (the fraction of a
     /// full index-wheel rotation `offset_deg` covers, in the same tooth-position
@@ -279,9 +279,9 @@ impl Design {
     /// convention `design::export::planes::apply_cheater_offsets` documents and
     /// applies to the rendered geometry. A tier without indices (a single facet
     /// with no azimuth of its own) has nothing to shift, so its offset appears only
-    /// in the geometry and the native sidecar, not in the exported `.asc`.
+    /// in the geometry and the design file, not in the exported `.asc`.
     ///
-    /// Only [`crate::native::save_paired`] (the real file-writing path) should
+    /// Only [`crate::native::catalogue_asc`] (the real file-writing path) should
     /// call this. [`Self::planes_from_solved`]/[`Self::planes_through_tier`] --
     /// and every OTHER `to_asc_schedule*`/`try_to_asc_schedule*` entry point in
     /// this module -- build the same kind of schedule for rendering/measurement
@@ -505,7 +505,7 @@ fn legacy_footnotes(tier: &ConcaveTier) -> [String; 2] {
 /// equal to what it would have written for that tier). Anything else is a user's footnote
 /// and stays, in order -- including one shaped exactly like a tool line.
 ///
-/// A paired load runs this on the footnotes an earlier export left in the `.asc`, so edited
+/// Every `.asc` export runs this on the footnotes an earlier export left in the schedule, so edited
 /// tiers cannot leave stale lines behind that contradict the new ones. A line an old
 /// version wrote for a tier that has since been edited can no longer be told from a note
 /// the user typed, so it is kept.

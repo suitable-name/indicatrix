@@ -13,15 +13,19 @@ use crate::gui::rough_colour::handles::{Handle, handles_for};
 use glam::DVec2;
 use indicatrix::{color::led::LedKind, optics::zoning::ZonedAbsorption};
 use indicatrix_cut_core::rough_plan::{
-    colour_fit::zones::{
-        OverlayOptions, ZoneEdit, ZoneEditError, ZoneLocks, ZoneSuggestion, apply_with_locks,
-        project_overlay,
+    colour_fit::{
+        solve::ColourFit,
+        zones::{
+            OverlayOptions, ZoneEdit, ZoneEditError, ZoneLocks, ZoneSuggestion, apply_with_locks,
+            project_overlay,
+        },
     },
     locate::{RigProfile, ViewPolyline},
-    photometry::PixelMask,
+    photometry::{PixelMask, ResampledImage},
 };
 use std::{
     collections::BTreeSet,
+    fmt::Write as _,
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -171,6 +175,12 @@ pub struct State {
     pub suggestions: Vec<ZoneSuggestion>,
     /// The fit and its renders.
     pub fit: Option<FitOutput>,
+    /// Whether `fit` is stored with the saved plan (accepted, or restored from it). A fit that is
+    /// not accepted is lost when the Rough Planner closes.
+    pub fit_accepted: bool,
+    /// The saved plan whose stored colour was offered for restoring already, so reopening the
+    /// window never overwrites later work with the stored colour.
+    pub restore_tried_for: Option<i64>,
     /// The centre of the compare zoom, as fractions.
     pub compare_centre: [f64; 2],
     /// The running job.
@@ -183,6 +193,55 @@ pub struct State {
     scene: Option<Arc<SceneData>>,
     /// The outlines of the zones in every view, in working pixels of that view.
     overlay: Option<Vec<ViewOverlay>>,
+}
+
+/// The stored colour of a saved plan, read from the vault on a worker thread.
+#[derive(Debug, Clone)]
+pub struct RestoredColour {
+    /// The stored zones (rough frame, mm).
+    pub zoned: ZonedAbsorption,
+    /// The stored fit report, `None` when it could not be read (see `problems`).
+    pub fit: Option<ColourFit>,
+    /// The cached working-resolution photos `(rig view, image)`.
+    pub views: Vec<(u32, ResampledImage)>,
+    /// Sentences about stored parts that could not be used.
+    pub problems: Vec<String>,
+}
+
+/// What [`State::adopt_restored`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoreSummary {
+    /// The names of the views now showing their cached photo.
+    pub views: Vec<String>,
+    /// Whether the stored fit is in the window.
+    pub fit: bool,
+    /// Parts of the stored colour that could not be used.
+    pub problems: Vec<String>,
+}
+
+impl RestoreSummary {
+    /// The status sentence for the window: what came back and from where.
+    #[must_use]
+    pub fn sentence(&self) -> String {
+        let mut text = String::from("Restored the rough color stored with this plan");
+        if self.views.is_empty() {
+            text.push_str(" (no cached photos).");
+        } else {
+            let _ = write!(
+                text,
+                ". {} come from the cached photos of the plan, not from your original files; load the originals and prepare again to change them.",
+                self.views.join(", ")
+            );
+        }
+        if self.fit {
+            text.push_str(" The fit report and the zones are shown; the render is not stored, so run the fit again to compare it with the photos.");
+        }
+        for problem in &self.problems {
+            text.push(' ');
+            text.push_str(problem);
+        }
+        text
+    }
 }
 
 /// The outline polylines of one view's zones, as `(zone, polyline)` pairs.
@@ -215,6 +274,8 @@ impl State {
             pending_first: None,
             suggestions: Vec::new(),
             fit: None,
+            fit_accepted: false,
+            restore_tried_for: None,
             compare_centre: [0.5, 0.5],
             job: None,
             drag_origin: None,
@@ -273,6 +334,75 @@ impl State {
         self.overlay = None;
     }
 
+    /// Forgets the zone geometry with its locks, selection, undo list and outlines (the zones of
+    /// another rough must not stay behind when a different plan is shown).
+    pub fn forget_zones(&mut self) {
+        self.geometry = None;
+        self.locks = ZoneLocks::new();
+        self.selected_zone = 0;
+        self.zone_undo.clear();
+        self.drag_origin = None;
+        self.forget_overlay();
+    }
+
+    /// Takes the saved-plan facts of the planner's live context: the plan was saved while the
+    /// window was open (Accept needs the id), or saved under another name. Only for the same
+    /// rough (`mesh_id`); another rough is [`refresh_from_planner`](super::actions::refresh_from_planner)'s
+    /// business. Returns whether anything changed.
+    pub fn adopt_plan_id(&mut self, live: &PlannerContext) -> bool {
+        match self.context.as_mut() {
+            Some(known)
+                if known.mesh_id == live.mesh_id
+                    && (known.plan_id != live.plan_id || known.rough_name != live.rough_name) =>
+            {
+                known.plan_id = live.plan_id;
+                known.rough_name.clone_from(&live.rough_name);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Puts the stored colour of a saved plan into the window: the cached working-resolution
+    /// photos become prepared views (a view that already has its original prepared keeps it), the
+    /// zones become the geometry and a stored fit report becomes the fit, shown in the Compare
+    /// step. Nothing already worked on is replaced: the zones and the fit are taken only into an
+    /// empty window.
+    pub fn adopt_restored(&mut self, restored: RestoredColour) -> RestoreSummary {
+        let mut summary = RestoreSummary {
+            problems: restored.problems,
+            ..RestoreSummary::default()
+        };
+        let places = self.prepared.len();
+        for (view, image) in restored.views {
+            let index = usize::try_from(view).unwrap_or(usize::MAX);
+            let name = self.view_name(index);
+            match self.prepared.get_mut(index) {
+                Some(slot) if slot.is_none() => {
+                    *slot = Some(PreparedView::from_cache(index, &name, image));
+                    summary.views.push(name);
+                }
+                Some(_) => {}
+                None => summary.problems.push(format!(
+                    "The cached photo of view {} has no place in this rig ({places} views).",
+                    index.saturating_add(1)
+                )),
+            }
+        }
+        if self.fit.is_none() && self.geometry.is_none() {
+            self.forget_zones();
+            self.geometry = Some(restored.zoned.clone());
+            if let Some(fit) = restored.fit {
+                self.fit = Some(FitOutput::from_stored(restored.zoned, fit));
+                self.fit_accepted = true;
+                self.compare_centre = [0.5, 0.5];
+                self.step = Step::Compare;
+                summary.fit = true;
+            }
+        }
+        summary
+    }
+
     /// Whether the locate alignment belongs to the picked rig and the planner's rough.
     #[must_use]
     pub fn aligned(&self) -> bool {
@@ -315,6 +445,7 @@ impl State {
             prepared_views: self.prepared.iter().flatten().count(),
             calibration_applied: self.calibration.is_some(),
             fit_done: self.fit.is_some(),
+            fit_without_render: self.fit.as_ref().is_some_and(|f| !f.has_render()),
             busy: self.job.is_some(),
         }
     }
@@ -322,13 +453,19 @@ impl State {
     /// The mean white-frame colour over the prepared views, for the automatic backlight.
     #[must_use]
     pub fn mean_white_rgb(&self) -> Option<[f64; 3]> {
-        let views: Vec<_> = self.prepared.iter().flatten().collect();
+        // A view restored from the plan's cache has no white frame and does not count.
+        let views: Vec<[f64; 3]> = self
+            .prepared
+            .iter()
+            .flatten()
+            .filter_map(|v| v.white_rgb)
+            .collect();
         if views.is_empty() {
             return None;
         }
         let mut sum = [0.0; 3];
         for v in &views {
-            for (total, channel) in sum.iter_mut().zip(v.white_rgb) {
+            for (total, channel) in sum.iter_mut().zip(*v) {
                 *total += channel;
             }
         }
@@ -356,9 +493,28 @@ impl State {
             .calibration
             .clone()
             .ok_or_else(|| "Apply the calibration first.".to_owned())?;
-        let views: Vec<PreparedView> = self.prepared.iter().flatten().cloned().collect();
+        // A view restored from the plan's cache cannot be fitted: its white frame is not cached.
+        let views: Vec<PreparedView> = self
+            .prepared
+            .iter()
+            .flatten()
+            .filter(|v| !v.is_cached())
+            .cloned()
+            .collect();
         if views.len() < 2 {
-            return Err("Prepare at least two views first.".to_owned());
+            let restored = self
+                .prepared
+                .iter()
+                .flatten()
+                .filter(|v| v.is_cached())
+                .count();
+            return Err(if restored > 0 {
+                format!(
+                    "Prepare at least two views from their original photos first ({restored} view(s) come from the saved plan's cache and cannot be fitted again)."
+                )
+            } else {
+                "Prepare at least two views first.".to_owned()
+            });
         }
         Ok(FitSetup {
             data: (*data).clone(),
@@ -910,6 +1066,166 @@ mod tests {
         assert!(!state.paints_on_mesh(0));
         state.step = Step::Masks;
         assert!(!state.paints_on_mesh(1));
+    }
+
+    fn cached_image() -> ResampledImage {
+        use indicatrix_cut_core::rough_plan::photometry::WorkingGrid;
+        let grid = WorkingGrid::fit([0, 0, 4, 3], 4).unwrap();
+        let n = grid.width * grid.height;
+        ResampledImage {
+            grid,
+            values: vec![[0.4; 3]; n],
+            variance: vec![[0.01; 3]; n],
+            coverage: vec![1.0; n],
+            mask: PixelMask::new(grid.width, grid.height),
+        }
+    }
+
+    fn one_zone() -> ZonedAbsorption {
+        use crate::gui::rough_colour::wizard::zone_rows::{
+            ShapeKind, default_shape, placeholder_zone,
+        };
+        use indicatrix_cut_core::rough_plan::colour_fit::zones::apply;
+        let empty = State::new().geometry_or_empty();
+        apply(
+            &empty,
+            &ZoneEdit::Add {
+                zone: placeholder_zone(default_shape(ShapeKind::Cylinder, glam::DVec3::ZERO, 12.0)),
+                position: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cached_photos_come_back_as_prepared_views_and_the_zones_as_the_geometry() {
+        let mut state = State::new();
+        let summary = state.adopt_restored(RestoredColour {
+            zoned: one_zone(),
+            fit: None,
+            views: vec![
+                (1, cached_image()),
+                (3, cached_image()),
+                (40, cached_image()),
+            ],
+            problems: vec!["One report line.".to_owned()],
+        });
+        assert_eq!(summary.views, ["View 2", "View 4"]);
+        assert!(!summary.fit);
+        assert_eq!(
+            summary.problems.len(),
+            2,
+            "the view the rig lacks is reported"
+        );
+        assert!(summary.problems[1].contains("view 41"));
+        assert!(state.prepared[1].as_ref().unwrap().is_cached());
+        assert!(state.prepared[0].is_none());
+        assert_eq!(state.facts().prepared_views, 2);
+        assert_eq!(state.geometry.as_ref().unwrap().zones.len(), 1);
+        // The window says where each view comes from.
+        let sentence = summary.sentence();
+        assert!(sentence.contains("View 2, View 4 come from the cached photos"));
+        assert!(sentence.contains("One report line."));
+        // No white frame is cached: the backlight cannot be read from these views.
+        assert!(state.mean_white_rgb().is_none());
+    }
+
+    #[test]
+    fn a_view_that_is_already_prepared_is_not_replaced_by_the_cache() {
+        let mut state = State::new();
+        state.prepared[1] = Some(PreparedView::from_cache(1, "Mine", cached_image()));
+        let summary = state.adopt_restored(RestoredColour {
+            zoned: one_zone(),
+            fit: None,
+            views: vec![(1, cached_image())],
+            problems: Vec::new(),
+        });
+        assert!(summary.views.is_empty(), "the view was already prepared");
+        assert_eq!(state.prepared[1].as_ref().unwrap().name, "Mine");
+    }
+
+    #[test]
+    fn restoring_never_overwrites_zones_that_are_being_worked_on() {
+        let mut state = State::new();
+        let mine = one_zone();
+        state.geometry = Some(mine.clone());
+        let mut other = one_zone();
+        other.boundary_softness_mm = 3.0;
+        let summary = state.adopt_restored(RestoredColour {
+            zoned: other,
+            fit: None,
+            views: Vec::new(),
+            problems: Vec::new(),
+        });
+        assert!(!summary.fit);
+        assert_eq!(state.geometry.as_ref(), Some(&mine));
+        assert!(summary.sentence().contains("no cached photos"));
+    }
+
+    #[test]
+    fn a_cached_view_is_not_fitted_and_never_counts_towards_the_fit() {
+        let mut state = State::new();
+        state.adopt_restored(RestoredColour {
+            zoned: one_zone(),
+            fit: None,
+            views: vec![(0, cached_image()), (1, cached_image())],
+            problems: Vec::new(),
+        });
+        // The facts count them as prepared, but a fit needs the originals.
+        assert_eq!(state.facts().prepared_views, 2);
+        assert!(state.prepared.iter().flatten().all(PreparedView::is_cached));
+    }
+
+    fn cube() -> indicatrix_cut_core::rough_plan::shape::RoughMesh {
+        let h = 5.0;
+        let points: Vec<glam::DVec3> = (0..8)
+            .map(|i| {
+                glam::DVec3::new(
+                    if i & 1 == 0 { -h } else { h },
+                    if i & 2 == 0 { -h } else { h },
+                    if i & 4 == 0 { -h } else { h },
+                )
+            })
+            .collect();
+        let quads: [[u32; 4]; 6] = [
+            [1, 3, 7, 5],
+            [0, 4, 6, 2],
+            [2, 6, 7, 3],
+            [0, 1, 5, 4],
+            [4, 5, 7, 6],
+            [0, 2, 3, 1],
+        ];
+        let tris: Vec<[u32; 3]> = quads
+            .iter()
+            .flat_map(|q| [[q[0], q[1], q[2]], [q[0], q[2], q[3]]])
+            .collect();
+        indicatrix_cut_core::rough_plan::shape::RoughMesh::new(&points, &tris)
+            .expect("a closed cube")
+    }
+
+    fn context(mesh_id: u64, plan_id: Option<i64>) -> PlannerContext {
+        PlannerContext {
+            mesh_id,
+            mesh: Arc::new(cube()),
+            rough_name: "Rough".to_owned(),
+            plan_id,
+            host_material: String::new(),
+        }
+    }
+
+    #[test]
+    fn saving_the_plan_while_the_window_is_open_gives_accept_its_plan_id() {
+        let mut state = State::new();
+        state.context = Some(context(7, None));
+        assert!(!state.adopt_plan_id(&context(7, None)), "nothing changed");
+        assert!(state.adopt_plan_id(&context(7, Some(12))));
+        assert_eq!(state.context.as_ref().unwrap().plan_id, Some(12));
+        // Another rough is refresh_from_planner's business.
+        assert!(!state.adopt_plan_id(&context(8, Some(99))));
+        assert_eq!(state.context.as_ref().unwrap().plan_id, Some(12));
+        // Without any context there is nothing to update.
+        let mut empty = State::new();
+        assert!(!empty.adopt_plan_id(&context(7, Some(1))));
     }
 
     #[test]

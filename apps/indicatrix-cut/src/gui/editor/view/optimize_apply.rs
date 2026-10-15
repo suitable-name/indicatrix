@@ -268,7 +268,9 @@ fn draw_ghost(ui: &MainWindow, pending: &PendingGhost, solved: &[SolvedTier]) {
         distance: ctx.distance,
     };
     let design_gear = ctx.design_gear;
-    let view_mode = ui.global::<crate::SolidPreviewModel>().get_view_mode() as u8;
+    let view_mode = crate::gui::render::camera_lighting::view_mode_index(
+        ui.global::<crate::SolidPreviewModel>().get_view_mode(),
+    );
     let size = crate::gui::render::camera_lighting::contained_request_size(
         view_mode,
         scaled_viewport_size(ui),

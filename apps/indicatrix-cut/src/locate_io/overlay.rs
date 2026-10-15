@@ -77,7 +77,15 @@ pub fn display_size(full: [u32; 2]) -> [u32; 2] {
         return full;
     }
     let scale = f64::from(MAX_DISPLAY_SIDE) / f64::from(longest);
-    full.map(|side| ((f64::from(side) * scale).round() as u32).max(1))
+    full.map(|side| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the scaled side is non-negative and at most MAX_DISPLAY_SIDE, so it fits u32"
+        )]
+        let scaled = (f64::from(side) * scale).round() as u32;
+        scaled.max(1)
+    })
 }
 
 /// The pixel of a photo of `size` at a click at `fraction` of the picture, clamped into the
@@ -97,7 +105,12 @@ pub fn to_fraction(pixel: [f64; 2], size: [u32; 2]) -> Option<[f32; 2]> {
     }
     let along = |value: f64, side: u32| {
         let fraction = value / f64::from(side);
-        (0.0..=1.0).contains(&fraction).then_some(fraction as f32)
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the UI fraction precision; the value is within 0..=1"
+        )]
+        let narrowed = fraction as f32;
+        (0.0..=1.0).contains(&fraction).then_some(narrowed)
     };
     Some([along(pixel[0], size[0])?, along(pixel[1], size[1])?])
 }

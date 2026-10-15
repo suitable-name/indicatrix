@@ -64,7 +64,7 @@ fn saving_the_concave_fixture_records_its_concave_tiers_and_tool_lines() {
     let design = Design::concave_fixture();
     let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
     let mut imported =
-        indicatrix_vault::local::import_native_design("fixture.indicatrix", text.as_bytes())
+        indicatrix_vault::local::import_native_design("fixture.isdd", text.as_bytes())
             .expect("imports");
     let flat_rows = imported.detail.angle_settings_table.len();
     apply_measured_metadata(&mut imported.detail);

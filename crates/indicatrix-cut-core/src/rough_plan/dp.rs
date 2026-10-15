@@ -23,6 +23,11 @@ use super::{
     types::{CandidateDesign, CutOrder, LayoutGroup, PlanProgress, RoughLayout, clamp_count},
 };
 
+/// A stored argmax (a run length or a piece count) as one byte.
+fn arg_byte(value: usize) -> u8 {
+    u8::try_from(value).expect("a run is at most 48 cells and a count at most 99 pieces")
+}
+
 /// Candidates kept per cut order (after dedup and the same-design-set cap).
 pub const MAX_PER_ORDER: usize = 24;
 /// Leave-one-out rounds.
@@ -87,7 +92,7 @@ fn bar_dp(shape: &Shape<'_>, base: usize, t: &mut [f64], arg: &mut [u8]) {
                 }
             }
             t[gc * w + n] = best;
-            arg[gc * w + n] = best_g as u8;
+            arg[gc * w + n] = arg_byte(best_g);
         }
     }
 }
@@ -109,8 +114,8 @@ fn slab_dp(shape: &Shape<'_>, bar_vals: &[f64], s: &mut [f64], arg_g: &mut [u8],
                 }
             }
             s[gb * w_s + n] = best;
-            arg_g[gb * w_s + n] = best_g as u8;
-            arg_m[gb * w_s + n] = best_m as u8;
+            arg_g[gb * w_s + n] = arg_byte(best_g);
+            arg_m[gb * w_s + n] = arg_byte(best_m);
         }
     }
 }
@@ -199,8 +204,8 @@ fn root_dp(
                 }
             }
             dp.root_val[ga * w_r + n] = best;
-            dp.root_arg_g[ga * w_r + n] = best_g as u8;
-            dp.root_arg_m[ga * w_r + n] = best_m as u8;
+            dp.root_arg_g[ga * w_r + n] = arg_byte(best_g);
+            dp.root_arg_m[ga * w_r + n] = arg_byte(best_m);
         }
         if !progress() {
             return None;

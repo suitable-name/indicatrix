@@ -13,7 +13,8 @@ use glam::Vec3;
 use indicatrix::{
     color::metrics::GemOpticalMetrics,
     renderer::{
-        denoise::AtrousDenoiser, frame_denoise::denoise_and_tonemap_frame_into,
+        denoise::{AtrousDenoiser, AtrousParams},
+        frame_denoise::denoise_and_tonemap_frame_with_params_into,
         tonemap::tonemap_to_rgba_into,
     },
 };
@@ -138,6 +139,16 @@ impl DisplayWork {
         }
         self.metrics_snapshot = metrics_snapshot;
     }
+
+    /// Adds a remote contribution straight into this cycle's accumulator copy and counts
+    /// its samples, returning the remote sample count `add` reported. Doing it here
+    /// rather than in a separate scratch buffer drops one full-frame copy (12 B/px) per
+    /// combined display cycle; the summed bytes are identical.
+    pub(super) fn add_remote(&mut self, add: impl FnOnce(&mut [Vec3]) -> u32) -> u32 {
+        let done = add(&mut self.accum);
+        self.current_sample_count += done;
+        done
+    }
 }
 
 /// The render loop's handle onto the dedicated display thread: hands off a cycle,
@@ -213,6 +224,21 @@ impl Drop for InFlightGuard<'_> {
     }
 }
 
+/// A-Trous passes run while the camera is orbiting. The two widest passes (strides 8 and
+/// 16) are 40 % of the denoiser's cost and only refine a frame that the next orbit step
+/// replaces within a fraction of a second; they run again once the camera settles.
+const MOVING_DENOISE_PASSES: u32 = 3;
+
+/// The filter parameters for one display cycle: the defaults, with the widest passes
+/// skipped while `camera_moving`.
+fn display_params(camera_moving: bool) -> AtrousParams {
+    let mut params = AtrousParams::default();
+    if camera_moving {
+        params.num_passes = MOVING_DENOISE_PASSES;
+    }
+    params
+}
+
 /// Spawns the dedicated display thread and returns the render loop's [`DisplayHandle`].
 ///
 /// The display thread owns the `AtrousDenoiser`, its scratch buffers, and the
@@ -282,7 +308,7 @@ where
                     // no intermediate byte vector and no second copy.
                     let image = fb_transfer.fill_with(|rgba| {
                         if work.denoise_enabled {
-                            denoise_and_tonemap_frame_into(
+                            denoise_and_tonemap_frame_with_params_into(
                                 FirstHitSnapshot {
                                     width: work.width,
                                     height: work.height,
@@ -298,6 +324,7 @@ where
                                     avg_color_buf: &mut avg_color_buf,
                                     filtered_buf: &mut filtered_buf,
                                 },
+                                &display_params(work.activity_flags.camera_moving),
                                 rgba,
                             );
                         } else {

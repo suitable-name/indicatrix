@@ -181,6 +181,10 @@ fn cpu_hg_phase(c: &HgPhaseCase) -> f32 {
 }
 
 /// Runs the hg phase check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_hg_phase(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<HgPhaseCase> {
     let cases = build_hg_phase_cases();
@@ -205,7 +209,9 @@ pub fn run_hg_phase(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<Hg
         &pipeline,
         &[(30, &in_buf), (31, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -333,6 +339,10 @@ fn cpu_hg_sample(c: &HgSampleCase) -> [f32; 3] {
 }
 
 /// Runs the hg sample check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_hg_sample(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<HgSampleCase> {
     let cases = build_hg_sample_cases();
@@ -361,7 +371,9 @@ pub fn run_hg_sample(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<H
         &pipeline,
         &[(32, &in_buf), (33, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,
@@ -534,6 +546,10 @@ fn cpu_scatter_or_extinguish(
 }
 
 /// Runs the scatter or extinguish check against the CPU reference.
+///
+/// # Panics
+///
+/// Panics if the number of cases does not fit in `u32`, which the fixed case table never reaches.
 #[must_use]
 pub fn run_scatter_or_extinguish(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -564,7 +580,9 @@ pub fn run_scatter_or_extinguish(
         &pipeline,
         &[(34, &in_buf), (35, &out_buf)],
     );
-    let workgroups = (total as u32).div_ceil(64);
+    let workgroups = u32::try_from(total)
+        .expect("the dispatched case count fits in u32")
+        .div_ceil(64);
     compute::dispatch_and_wait(
         &ctx.device,
         &ctx.queue,

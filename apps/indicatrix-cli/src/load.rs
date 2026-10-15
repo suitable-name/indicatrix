@@ -1,15 +1,15 @@
-//! Opening a design file: `.indicatrix`, `.asc`, `.gem` and `.gcs`, through the same shared
-//! entry points the desktop's Open uses.
+//! Opening a design file: `.isdd` (or a legacy `.indicatrix`), `.asc`, `.gem` and `.gcs`,
+//! through the same shared entry points the desktop's Open uses.
 //!
 //! | File | Path |
 //! |---|---|
-//! | `.indicatrix` | `indicatrix_cut_core::native::design_from_str` |
+//! | `.isdd`, `.indicatrix` | `indicatrix_cut_core::native::design_from_str` |
 //! | `.asc` | `indicatrix_formats::asc::decode_asc_bytes`, then `indicatrix_editor::loading::design_from_asc_text` |
 //! | `.gem`, `.gcs` | `indicatrix_editor::files::convert_foreign_design`, then the `.asc` path |
 //!
-//! A `.indicatrix` file carries more than the design: the printed proportions of the catalogue
+//! A `.isdd` file carries more than the design: the printed proportions of the catalogue
 //! row it came from, a custom-material snapshot, a history trail, the `[meta]` table and its
-//! attachments. [`Loaded`] keeps all of it, and [`Loaded::indicatrix_text`] writes it back
+//! attachments. [`Loaded`] keeps all of it, and [`Loaded::design_text`] writes it back
 //! unchanged around whatever design a command produced, so `solve --out` and `retarget --out`
 //! never drop what the file held. Nothing is minted: no new id and no timestamp, which is what
 //! keeps the output deterministic.
@@ -28,10 +28,10 @@ use indicatrix_editor::{
     files::{InputFileKind, convert_foreign_design},
     loading::design_from_asc_text,
 };
-use indicatrix_formats::asc::decode_asc_bytes;
+use indicatrix_formats::{asc::decode_asc_bytes, native::design::DESIGN_EXTENSION_DOTTED};
 use std::path::Path;
 
-/// What a `.indicatrix` file holds besides the design itself.
+/// What a `.isdd` file holds besides the design itself.
 #[derive(Debug, Default)]
 struct Kept {
     printed_proportions: Option<ExternalProportions>,
@@ -50,7 +50,8 @@ pub struct Loaded {
     pub name: String,
     /// The file's own name, without its folder.
     pub file_name: String,
-    /// The kind of file it was: `.indicatrix`, `.asc`, `.gem` or `.gcs`.
+    /// The kind of file it was: `.isdd` (also for a legacy `.indicatrix`), `.asc`, `.gem` or
+    /// `.gcs`.
     pub source: &'static str,
     /// What the reader noted: a draft flag, converter warnings.
     pub notes: Vec<String>,
@@ -101,7 +102,7 @@ impl Loaded {
         Self::new(
             design,
             file_name,
-            ".indicatrix",
+            DESIGN_EXTENSION_DOTTED,
             Vec::new(),
             Kept::default(),
         )
@@ -116,7 +117,7 @@ impl Loaded {
         Some(gem_material_from_custom_snapshot(name, snapshot))
     }
 
-    /// The header words of a printed cutting sheet for this file: the `.indicatrix` file's own
+    /// The header words of a printed cutting sheet for this file: the `.isdd` file's own
     /// title, designer, shape and notes where it has them, else the design's `.asc` header and
     /// footnote lines (the only source for any other kind of file). `date_text` is printed as
     /// given; the sheet never reads a clock.
@@ -134,7 +135,7 @@ impl Loaded {
         Catalogue::open(db, self.file_material())
     }
 
-    /// The text of a `.indicatrix` file holding `design` and everything this file held.
+    /// The text of a `.isdd` file holding `design` and everything this file held.
     ///
     /// The custom-material snapshot written is the one of the library material `design` names
     /// (`catalogue`, built as the desktop's Save builds it: see [`crate::materials`]), else the
@@ -146,11 +147,7 @@ impl Loaded {
     ///
     /// [`CliError::design`] when the design cannot be written (a `[meta]` value or attachment
     /// the file format refuses).
-    pub fn indicatrix_text(
-        &self,
-        design: &Design,
-        catalogue: &Catalogue,
-    ) -> Result<String, CliError> {
+    pub fn design_text(&self, design: &Design, catalogue: &Catalogue) -> Result<String, CliError> {
         let same_material = match (&design.material.name, &self.design.material.name) {
             (Some(now), Some(then)) => now.eq_ignore_ascii_case(then),
             _ => false,
@@ -172,7 +169,7 @@ impl Loaded {
         };
         design_to_string(design, self.kept.printed_proportions.as_ref(), &extras).map_err(|error| {
             CliError::design(format!(
-                "the design cannot be written as a .indicatrix file: {error}"
+                "the design cannot be written as a {DESIGN_EXTENSION_DOTTED} file: {error}"
             ))
         })
     }
@@ -195,7 +192,7 @@ pub fn load_path(path: &Path) -> Result<Loaded, CliError> {
 }
 
 /// Opens a design from `bytes` under the name `file_name` (which decides what kind of file it
-/// is, except that a `.indicatrix` or `.toml` is judged by its header).
+/// is, except that a `.toml` is judged by its header).
 ///
 /// # Errors
 ///
@@ -204,18 +201,13 @@ pub fn load_path(path: &Path) -> Result<Loaded, CliError> {
 pub fn from_bytes(file_name: &str, bytes: &[u8]) -> Result<Loaded, CliError> {
     let Some(kind) = InputFileKind::classify(file_name, bytes) else {
         return Err(CliError::design(format!(
-            "{file_name}: not a design file this tool opens (expected .indicatrix, .asc, .gem or .gcs)"
+            "{file_name}: not a design file this tool opens (expected {DESIGN_EXTENSION_DOTTED}, .asc, .gem or .gcs)"
         )));
     };
     match kind {
         InputFileKind::Asc => from_asc(file_name, bytes),
         InputFileKind::Design => from_native(file_name, bytes),
         InputFileKind::Gem | InputFileKind::Gcs => from_foreign(file_name, kind, bytes),
-        InputFileKind::Sidecar => Err(CliError::design(format!(
-            "{file_name}: an older .indicatrix.toml sidecar is read together with its .asc, which \
-             this tool does not do. Open the .asc, or re-save the pair as a .indicatrix file in \
-             the desktop editor"
-        ))),
         InputFileKind::Hdr => Err(CliError::design(format!(
             "{file_name}: a Radiance .hdr file is an environment map, not a design"
         ))),
@@ -269,7 +261,7 @@ fn from_foreign(file_name: &str, kind: InputFileKind, bytes: &[u8]) -> Result<Lo
 fn from_native(file_name: &str, bytes: &[u8]) -> Result<Loaded, CliError> {
     let text = std::str::from_utf8(bytes).map_err(|_| {
         CliError::design(format!(
-            "{file_name}: a .indicatrix file is UTF-8 text, and this one is not"
+            "{file_name}: a {DESIGN_EXTENSION_DOTTED} file is UTF-8 text, and this one is not"
         ))
     })?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -292,7 +284,7 @@ fn from_native(file_name: &str, bytes: &[u8]) -> Result<Loaded, CliError> {
     Ok(Loaded::new(
         loaded.design,
         file_name,
-        ".indicatrix",
+        DESIGN_EXTENSION_DOTTED,
         notes,
         kept,
     ))
@@ -305,6 +297,7 @@ mod tests {
         outcome::{EXIT_DESIGN, EXIT_IO},
         testing,
     };
+    use indicatrix_formats::native::design::LEGACY_DESIGN_EXTENSION_DOTTED;
 
     const TINY_ASC: &str =
         "GemCad 5.0\ng 96 0.0\ny 4 y\nI 1.54\na -41.000000 0.64991234 92 n 1 84\n";
@@ -338,35 +331,50 @@ mod tests {
     #[test]
     fn a_design_file_round_trips_its_tiers_and_material() {
         let design = testing::template();
-        let first = Loaded::in_memory(design.clone(), "stone.indicatrix");
+        let first = Loaded::in_memory(design.clone(), "stone.isdd");
         let none = Catalogue::default();
-        let text = first.indicatrix_text(&design, &none).expect("writes");
-        let again = from_bytes("stone.indicatrix", text.as_bytes()).expect("opens");
-        assert_eq!(again.source, ".indicatrix");
+        let text = first.design_text(&design, &none).expect("writes");
+        let again = from_bytes("stone.isdd", text.as_bytes()).expect("opens");
+        assert_eq!(again.source, DESIGN_EXTENSION_DOTTED);
         assert_eq!(testing::shape(&again.design), testing::shape(&design));
         assert_eq!(again.design.material.name, design.material.name);
         // Writing it again gives the same bytes: nothing is minted.
         let second = again
-            .indicatrix_text(&again.design, &none)
+            .design_text(&again.design, &none)
             .expect("writes again");
         assert_eq!(text, second);
     }
 
     #[test]
+    fn a_legacy_indicatrix_file_opens_like_an_isdd_file() {
+        let design = testing::template();
+        let text = Loaded::in_memory(design.clone(), "old.isdd")
+            .design_text(&design, &Catalogue::default())
+            .expect("writes");
+        let legacy = from_bytes(
+            &format!("old{LEGACY_DESIGN_EXTENSION_DOTTED}"),
+            text.as_bytes(),
+        )
+        .expect("a legacy file opens");
+        assert_eq!(legacy.source, DESIGN_EXTENSION_DOTTED);
+        assert_eq!(testing::shape(&legacy.design), testing::shape(&design));
+    }
+
+    #[test]
     fn a_byte_order_mark_is_tolerated() {
         let design = testing::template();
-        let text = Loaded::in_memory(design.clone(), "s.indicatrix")
-            .indicatrix_text(&design, &Catalogue::default())
+        let text = Loaded::in_memory(design.clone(), "s.isdd")
+            .design_text(&design, &Catalogue::default())
             .expect("writes");
         let mut bytes = vec![0xEF, 0xBB, 0xBF];
         bytes.extend_from_slice(text.as_bytes());
-        let loaded = from_bytes("s.indicatrix", &bytes).expect("opens with a BOM");
+        let loaded = from_bytes("s.isdd", &bytes).expect("opens with a BOM");
         assert_eq!(testing::shape(&loaded.design), testing::shape(&design));
     }
 
     #[test]
     fn a_design_file_that_is_not_text_is_refused() {
-        let error = from_bytes("bad.indicatrix", &[0xFF, 0xFE, 0x00, 0x01]).expect_err("not text");
+        let error = from_bytes("bad.isdd", &[0xFF, 0xFE, 0x00, 0x01]).expect_err("not text");
         assert_eq!(error.code, EXIT_DESIGN);
     }
 
@@ -380,8 +388,13 @@ mod tests {
         );
         let hdr = from_bytes("sky.hdr", b"#?RADIANCE").expect_err("environment map");
         assert!(hdr.message.contains("environment map"), "{}", hdr.message);
+        // An older sidecar is no design file any more: a plain "not a design file" refusal.
         let sidecar = from_bytes("old.indicatrix.toml", b"[preform]\n").expect_err("sidecar");
-        assert!(sidecar.message.contains("sidecar"), "{}", sidecar.message);
+        assert!(
+            sidecar.message.contains("not a design file"),
+            "{}",
+            sidecar.message
+        );
         for error in [unknown, hdr, sidecar] {
             assert_eq!(error.code, EXIT_DESIGN);
         }
@@ -389,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_an_io_error() {
-        let error = load_path(&testing::temp_path("absent.indicatrix")).expect_err("absent");
+        let error = load_path(&testing::temp_path("absent.isdd")).expect_err("absent");
         assert_eq!(error.code, EXIT_IO);
         assert!(error.message.contains("cannot read"), "{}", error.message);
     }
@@ -406,7 +419,7 @@ mod tests {
 
     #[test]
     fn the_file_material_is_only_there_when_the_file_had_a_snapshot() {
-        let loaded = Loaded::in_memory(testing::template(), "s.indicatrix");
+        let loaded = Loaded::in_memory(testing::template(), "s.isdd");
         assert!(loaded.file_material().is_none());
         assert_eq!(
             loaded.catalogue(None).expect("no library").custom().len(),

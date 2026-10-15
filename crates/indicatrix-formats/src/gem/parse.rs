@@ -246,7 +246,7 @@ fn parse_facets(reader: &mut Reader<'_>) -> Result<Vec<GemFacet>, GemParseError>
         let py = reader.f64("a facet plane's y")?;
         let pz = reader.f64("a facet plane's z")?;
         let plane = [px, py, pz];
-        if plane.iter().any(|c| !c.is_finite()) || plane == [0.0; 3] {
+        if plane.iter().any(|c| !c.is_finite()) || plane.iter().all(|c| *c == 0.0) {
             return Err(GemParseError::InvalidPlane { offset });
         }
         let tier = reader.i32("a facet's tier number")?;

@@ -16,7 +16,7 @@ use indicatrix::optics::raytracer::DEFAULT_POSE;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-// Defaults mirror `RenderContext::default()` and `settings_dialog.slint`'s property
+// Defaults mirror `RenderContext::default()` and the Parameters panel's property
 // initializers, with ONE deliberate exception: `DEFAULT_LIGHTING_RIG` ("Light tent +
 // black cards") does not match `RenderContext::default()`'s `lighting_preset`
 // (`LightingPreset::RingLights`) -- the 2026-09-16 lighting rework changed the
@@ -157,7 +157,7 @@ impl Backdrop {
         self.to_indicatrix().level()
     }
 
-    /// Index into the settings dialog's pill row (`SettingsModel.backdrop_index`).
+    /// Index into the Parameters panel's pill row (`SettingsModel.backdrop_index`).
     #[must_use]
     pub const fn index(self) -> i32 {
         self.to_indicatrix().index()
@@ -260,6 +260,10 @@ pub const DEFAULT_EDITOR_INSPECTOR_HEIGHT: f32 = 340.0;
 /// save.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the settings.toml file; the boolean fields are independent switches"
+)]
 pub struct AppSettings {
     /// The user's progressive-accumulation target sample count, replacing the old
     /// four-tier `quality_preset` string (which TOML silently drops on load).
@@ -512,11 +516,16 @@ pub struct AppSettings {
     pub editor_layout_touched: bool,
     /// The Edit sub-tab's "Open Recent" list: up to
     /// [`MAX_RECENT_NATIVE_FILES`] design-file paths, most-recently-used first --
-    /// `.indicatrix` design files, plus older `.indicatrix.toml`/`.gemcut.toml`
-    /// sidecars that are still openable. Design-file paths only (never a bare
-    /// `.asc`, and never a row in the read-only catalogue database, which this list
-    /// deliberately has nothing to do with) -- see [`Self::record_recent_native_file`].
-    #[serde(default)]
+    /// `.isdd` design files (or legacy `.indicatrix` ones, which still open). Design-file
+    /// paths only (never a bare `.asc`, and never a row in the read-only catalogue
+    /// database, which this list deliberately has nothing to do with) -- see
+    /// [`Self::record_recent_native_file`]. Entries of a settings file written by an
+    /// earlier version that name a removed sidecar (`.indicatrix.toml`) are pruned
+    /// silently when the file is read.
+    #[serde(
+        default,
+        deserialize_with = "super::recent_files::deserialize_recent_native_files"
+    )]
     pub recent_native_files: Vec<String>,
     /// Keys of the in-window `ConfirmActionDialog` prompts the cutter has ticked
     /// "Don't ask again" on (`ui/components/confirm_action_dialog.slint`'s
@@ -569,14 +578,47 @@ pub struct AppSettings {
     /// not remembered: it changes what a left-drag does.
     #[serde(default = "default_slice_symmetric")]
     pub slice_symmetric: bool,
-    /// The Live Render toolbar's colour choice for a view that does not show the linked
-    /// open design (a library design, or the render material unlinked): the absorption
+    /// The Stone tab's colour choice for a view that does not show the linked
+    /// open design (a library design, or "Preview as..." chosen): the absorption
     /// triple `GemMaterial::with_body_color` takes, `None` for "Material default". A view
     /// setting only -- never written to a design or a catalogue entry. A value that is
     /// not three finite numbers loads as `None`; each channel is limited to zero up to
     /// [`MAX_RENDER_BODY_COLOR_CHANNEL`].
     #[serde(default, deserialize_with = "deserialize_render_body_color")]
     pub render_body_color_override: Option<[f32; 3]>,
+    /// The Render & Output tab's persisted output defaults (still export and tilt video),
+    /// seeded into the export dialogs when they open and written back when an export
+    /// starts. A file without the table loads the defaults.
+    #[serde(default)]
+    pub output: super::output_settings::OutputSettings,
+    /// One-shot migration flag for the stone effects that moved from app-level settings
+    /// into the design (`inclusion_sigma_s`, the crystal-axis trio, `girdle_frosted`,
+    /// `edge_rounding_radius`, `stone_width_mm`). A file without the key predates the move
+    /// and loads `false` (so [`Self::legacy_stone_defaults`] offers the old values once);
+    /// a brand-new install starts `true`, with nothing to migrate. Those six fields stay in
+    /// the file as read-only legacy values and are no longer read for rendering.
+    #[serde(default = "default_migrated_stone_effects")]
+    pub migrated_stone_effects: bool,
+    /// Whether the Parameters dock (Stone / Lighting & Environment / Render & Output) is
+    /// expanded, remembered across runs. A file without the key loads `false`: the dock starts
+    /// folded into its thin rail, so the views look as they did before it existed.
+    #[serde(default)]
+    pub parameters_dock_open: bool,
+    /// The Parameters dock's open tab: `0` Stone, `1` Lighting & Environment, `2` Render &
+    /// Output (`ui/models/parameters.slint`). Any other value loads as the Stone tab
+    /// (`gui::parameters_dock`).
+    #[serde(default)]
+    pub parameters_dock_tab: u8,
+    /// The new-version check: whether the user agreed to it, when it last ran and which
+    /// version they skipped. A file without the table (every existing install, and a brand-new
+    /// one) loads as "not asked yet", so the question is put once.
+    #[serde(default)]
+    pub update_check: indicatrix_update::UpdatePreferences,
+}
+
+/// What a settings file WITHOUT `migrated_stone_effects` loads: `false`.
+const fn default_migrated_stone_effects() -> bool {
+    false
 }
 
 /// The largest absorption value one channel of
@@ -765,6 +807,12 @@ impl Default for AppSettings {
             manipulate_snap_off: false,
             slice_symmetric: true,
             render_body_color_override: None,
+            output: super::output_settings::OutputSettings::default(),
+            // A brand-new install has no old per-app stone effects to carry over.
+            migrated_stone_effects: true,
+            parameters_dock_open: false,
+            parameters_dock_tab: 0,
+            update_check: indicatrix_update::UpdatePreferences::default(),
         }
     }
 }
@@ -801,13 +849,11 @@ impl AppSettings {
     /// otherwise, and truncates back to [`MAX_RECENT_NATIVE_FILES`] entries. Called on
     /// every successful Save/Open -- see this field's own doc comment.
     ///
-    /// Both file kinds are accepted. Recording a `.indicatrix` design file drops the
-    /// older `.indicatrix.toml`/`.gemcut.toml` entry of the same folder and name, so
-    /// the list prefers the new extension once a design has been saved in it.
+    /// Both design-file extensions are accepted (`.isdd` and the legacy `.indicatrix`);
+    /// a legacy file and its `.isdd` successor are separate entries.
     pub fn record_recent_native_file(&mut self, path: String) {
-        self.recent_native_files.retain(|existing| {
-            existing != &path && !super::recent_files::is_superseded_sidecar(existing, &path)
-        });
+        self.recent_native_files
+            .retain(|existing| existing != &path);
         self.recent_native_files.insert(0, path);
         self.recent_native_files.truncate(MAX_RECENT_NATIVE_FILES);
     }

@@ -141,7 +141,7 @@ pub fn is_asc_safe_tier_name(name: &str) -> bool {
 ///
 /// This is the sanitising counterpart of the rejection [`is_asc_safe_tier_name`]
 /// merely detects: the true, human-typed name (e.g. `"Crown Main"`) still lives in
-/// the native `.indicatrix.toml` sidecar, which restores it on load -- a plain
+/// the native `.isdd` design file, which restores it on load -- a plain
 /// `.asc` export is the only place this sanitised, single-token form is ever seen.
 #[must_use]
 pub fn asc_safe_tier_name(name: &str) -> Cow<'_, str> {
@@ -186,7 +186,7 @@ pub fn asc_safe_tier_name(name: &str) -> Cow<'_, str> {
 /// A tier name is sanitised via [`asc_safe_tier_name`] before being written as the
 /// `n` marker's token -- e.g. `"Crown Main"` is written as `Crown_Main` -- so a
 /// plain `.asc` export never carries the true, human-typed name for a tier whose
-/// name has embedded whitespace; only the native `.indicatrix.toml` sidecar does,
+/// name has embedded whitespace; only the native `.isdd` design file does,
 /// and restores it on load. A name that is already [`is_asc_safe_tier_name`] is
 /// written unchanged. A name that sanitises to nothing (only whitespace) would leave
 /// the `n` marker bare, so the next index would be read back as the name; it is
@@ -231,7 +231,7 @@ pub fn to_asc_string(schedule: &AscSchedule) -> Result<String, AscWriteError> {
     let mut c_count = 0usize;
     let mut p_count = 0usize;
     for tier in &schedule.tiers {
-        let block_ordinal = if tier.angle_deg.abs() == 90.0 {
+        let block_ordinal = if is_girdle(tier) {
             g_count += 1;
             g_count
         } else if tier.angle_deg > 0.0 {
@@ -315,11 +315,20 @@ fn validate_writable(schedule: &AscSchedule) -> Result<(), AscWriteError> {
     Ok(())
 }
 
+/// Whether `tier` is a girdle tier (`|angle| = 90` exactly, as the format writes it).
+#[expect(
+    clippy::float_cmp,
+    reason = "the format marks a girdle by the literal angle 90; the angle is parsed or stored exactly"
+)]
+fn is_girdle(tier: &AscTier) -> bool {
+    tier.angle_deg.abs() == 90.0
+}
+
 /// The label written for a facet name that sanitises to nothing: the tier's block
 /// letter and `block_ordinal`. `G` for a girdle (`|angle| = 90`), `C` for a crown
 /// tier, `P` for a pavilion tier or the culet, `Table` for the table.
 fn auto_tier_name(tier: &AscTier, block_ordinal: usize) -> String {
-    let letter = if tier.angle_deg.abs() == 90.0 {
+    let letter = if is_girdle(tier) {
         'G'
     } else if tier.angle_deg > 0.0 {
         'C'

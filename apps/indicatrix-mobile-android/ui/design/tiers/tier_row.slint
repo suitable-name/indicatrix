@@ -1,0 +1,346 @@
+// One row of the tier list. Medium and expanded windows get a 64 px one-line row
+//
+//   [code] [ 41.00° ] name                [badge]  [⋯]
+//                     indices  mast       [badge]
+//
+// and a compact window (a phone) a 56 px two-line row, so the full name and the indices
+// are not truncated:
+//
+//   [code] [ 41.00° ] name                        [⋯]
+//                     indices  mast  [badge]
+//
+// Tapping the body selects (a second tap on the selected row opens the tier sheet);
+// tapping the angle opens the angle sheet; the overflow button opens the tier sheet; a
+// long press starts Select mode. In Select mode the code gives way to a check box and a
+// tap toggles the row.
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { Shell } from "../../models.slint";
+import { Icon } from "../../shell/icon.slint";
+import { IconButton } from "../../shell/icon_button.slint";
+import { StateLayer } from "../../shell/state_layer.slint";
+import { TierRowData } from "tiers_model.slint";
+
+// A short colored mark. Level: 0 good, 1 check, 2 problem, 3 info.
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <int> level: 3;
+    // The width the label needs, for a pill that sizes to its label.
+    out property <length> natural-width: label.preferred-width + 12px;
+
+    height: 20px;
+    border-radius: 10px;
+    background: root.level <= 2 ? Theme.verdict-container(root.level) : Theme.secondary-container;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    label := Text {
+        x: 6px;
+        width: parent.width - 12px;
+        text: root.text;
+        color: root.level <= 2 ? Theme.verdict-content(root.level) : Theme.on-secondary-container;
+        font-size: Theme.text-label;
+        font-weight: 500;
+        overflow: elide;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+// The code, or a check box in Select mode.
+component CodeCell inherits Rectangle {
+    in property <TierRowData> data;
+    in property <bool> select-mode: false;
+
+    width: Shell.window-class == 0 ? 36px : 44px;
+
+    if root.select-mode: Rectangle {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        border-width: 2px;
+        border-color: root.data.multi ? Theme.primary : Theme.outline;
+        background: root.data.multi ? Theme.primary : transparent;
+
+        if root.data.multi: Icon {
+            source: Icons.check;
+            tint: Theme.on-primary;
+            glyph: 18px;
+        }
+    }
+
+    if !root.select-mode: Text {
+        text: root.data.code;
+        color: Theme.on-surface-variant;
+        font-size: Theme.text-label-large;
+        font-weight: 700;
+        overflow: elide;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// The angle: the big, tappable number.
+component AngleCell inherits Rectangle {
+    in property <TierRowData> data;
+    callback tapped();
+
+    width: Shell.window-class == 0 ? 84px : 92px;
+
+    Rectangle {
+        height: Shell.window-class == 0 ? 44px : 48px;
+        border-radius: Theme.radius-md;
+        background: Theme.surface-high;
+        border-width: 1px;
+        border-color: root.data.concave ? transparent : Theme.outline-variant;
+
+        Text {
+            text: root.data.angle;
+            color: root.data.concave ? Theme.on-surface-variant : Theme.primary;
+            font-size: Theme.text-title-large;
+            font-weight: 500;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    angle-touch := TouchArea {
+        enabled: !root.data.concave;
+        clicked => {
+            root.tapped();
+        }
+    }
+}
+
+// A pill that sizes to its label (at most 84 px), vertically centered in its line.
+component FitPill inherits Rectangle {
+    in property <string> text;
+    in property <int> level: 3;
+
+    width: min(pill.natural-width, 84px);
+
+    pill := Pill {
+        y: (parent.height - self.height) / 2;
+        text: root.text;
+        level: root.level;
+    }
+}
+
+export component TierRowItem inherits Rectangle {
+    in property <TierRowData> data;
+    in property <bool> select-mode: false;
+    callback tapped();
+    callback long-pressed();
+    callback angle-tapped();
+    callback more-tapped();
+
+    // A press that has not moved or ended yet; the timer turns it into a long press.
+    property <bool> armed: false;
+    property <bool> fired: false;
+    property <bool> compact: Shell.window-class == 0;
+
+    height: root.compact ? 56px : 64px;
+    background: root.data.multi ? Theme.primary-container : (root.data.selected ? Theme.secondary-container : transparent);
+    opacity: root.data.concave ? 0.7 : 1.0;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.data.code + ", " + root.data.angle + ", " + root.data.name;
+    accessible-checkable: true;
+    accessible-checked: root.data.selected || root.data.multi;
+    accessible-action-default => {
+        root.tapped();
+    }
+
+    Timer {
+        interval: 500ms;
+        running: root.armed;
+        triggered => {
+            root.armed = false;
+            root.fired = true;
+            root.long-pressed();
+        }
+    }
+
+    StateLayer {
+        pressed: body-touch.pressed;
+        hovered: body-touch.has-hover;
+    }
+
+    body-touch := TouchArea {
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left) {
+                if (event.kind == PointerEventKind.down) {
+                    root.armed = true;
+                    root.fired = false;
+                } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                    root.armed = false;
+                }
+            }
+        }
+
+        moved => {
+            if (self.mouse-x - self.pressed-x > 12px || self.pressed-x - self.mouse-x > 12px || self.mouse-y - self.pressed-y > 12px || self.pressed-y - self.mouse-y > 12px) {
+                root.armed = false;
+            }
+        }
+
+        clicked => {
+            if (!root.fired) {
+                root.tapped();
+            }
+            root.fired = false;
+        }
+    }
+
+    // The compact row: two lines of text between the angle and the overflow button.
+    if root.compact: HorizontalLayout {
+        padding-left: Theme.space-sm;
+        padding-right: Theme.space-xs;
+        spacing: Theme.space-sm;
+
+        CodeCell {
+            data: root.data;
+            select-mode: root.select-mode;
+        }
+
+        AngleCell {
+            data: root.data;
+            tapped => {
+                root.angle-tapped();
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.data.name;
+                color: Theme.on-surface;
+                font-size: Theme.text-body-large;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: Theme.space-xs;
+
+                Text {
+                    text: root.data.concave ? root.data.summary : root.data.indices;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-label;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: root.data.mast;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-label;
+                    vertical-alignment: center;
+                    opacity: root.data.stale ? 0.5 : 1.0;
+                }
+
+                if root.data.pill-a != "": FitPill {
+                    text: root.data.pill-a;
+                    level: root.data.pill-a-level;
+                }
+            }
+        }
+
+        Rectangle {
+            width: Theme.touch;
+
+            if !root.data.concave: IconButton {
+                icon: Icons.overflow;
+                label: "Tier Options";
+                clicked => {
+                    root.more-tapped();
+                }
+            }
+        }
+    }
+
+    // The one-line row of the larger windows.
+    if !root.compact: HorizontalLayout {
+        padding-left: Theme.space-sm;
+        padding-right: Theme.space-xs;
+        spacing: Theme.space-sm;
+
+        CodeCell {
+            data: root.data;
+            select-mode: root.select-mode;
+        }
+
+        AngleCell {
+            data: root.data;
+            tapped => {
+                root.angle-tapped();
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.data.name;
+                color: Theme.on-surface;
+                font-size: Theme.text-body-large;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: Theme.space-sm;
+
+                Text {
+                    text: root.data.concave ? root.data.summary : root.data.indices;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-label;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: root.data.mast;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-label;
+                    opacity: root.data.stale ? 0.5 : 1.0;
+                }
+            }
+        }
+
+        VerticalLayout {
+            width: 84px;
+            alignment: center;
+            spacing: 2px;
+
+            if root.data.pill-a != "": Pill {
+                text: root.data.pill-a;
+                level: root.data.pill-a-level;
+            }
+
+            if root.data.pill-b != "": Pill {
+                text: root.data.pill-b;
+                level: root.data.pill-b-level;
+            }
+        }
+
+        Rectangle {
+            width: Theme.touch;
+
+            if !root.data.concave: IconButton {
+                icon: Icons.overflow;
+                label: "Tier Options";
+                clicked => {
+                    root.more-tapped();
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.outline-variant;
+    }
+}

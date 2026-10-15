@@ -1,0 +1,76 @@
+// More > About: version information, the `AboutSlint` badge (required by Slint's
+// royalty-free license) and the way to the license texts.
+import { AboutSlint } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Shell, About } from "../models.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { Icon } from "../shell/icon.slint";
+
+export component AboutPage inherits Rectangle {
+    VerticalLayout {
+        TopBar {
+            title: "About";
+            show-back: true;
+            back-clicked => {
+                Shell.handle-back();
+            }
+        }
+
+        PageScroll {
+            VerticalLayout {
+                padding: Theme.space-xl;
+                spacing: Theme.space-xs;
+
+                Text {
+                    text: About.app-name;
+                    color: Theme.on-surface;
+                    font-size: Theme.text-headline;
+                    font-weight: 500;
+                }
+
+                Text {
+                    text: "Version " + About.app-version;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-body-large;
+                }
+            }
+
+            ListRow {
+                title: "Indicatrix Library";
+                supporting: About.indicatrix-version;
+                tappable: false;
+            }
+
+            ListRow {
+                title: "Build";
+                supporting: About.build-id;
+                tappable: false;
+            }
+
+            ListRow {
+                icon: Icons.licenses;
+                title: "Licenses";
+                supporting: "Indicatrix and Slint";
+                clicked => {
+                    Shell.more-page = 3;
+                }
+
+                Icon {
+                    source: Icons.chevron-right;
+                    tint: Theme.on-surface-variant;
+                }
+            }
+
+            // Slint's royalty-free license requires this badge to be reachable from the
+            // top-level menu (More > About).
+            Rectangle {
+                min-height: 140px;
+
+                AboutSlint { }
+            }
+        }
+    }
+}

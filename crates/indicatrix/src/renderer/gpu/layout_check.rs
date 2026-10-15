@@ -58,6 +58,11 @@ impl LayoutCheckResult {
     }
 }
 
+/// A small test index as the `u32` the GPU structs store.
+fn small(index: usize) -> u32 {
+    u32::try_from(index).expect("a small test index")
+}
+
 /// Builds a [`GpuGemMaterial`] with distinct, non-zero, non-symmetric values in every
 /// field.
 ///
@@ -92,7 +97,7 @@ pub fn sample_material() -> GpuGemMaterial {
             peak: (i as f32).mul_add(0.1, 1.0),
             // Alternating discriminant: proves the echo round-trips BOTH `shape`
             // values, not just whichever one happens to be the zeroed default.
-            shape: (i % 2) as u32,
+            shape: small(i % 2),
         };
     }
     for (i, band) in m.e_ray_bands.iter_mut().enumerate() {
@@ -100,7 +105,7 @@ pub fn sample_material() -> GpuGemMaterial {
             center_nm: 500.0 + i as f32,
             width_nm: 30.0 + i as f32,
             peak: (i as f32).mul_add(0.1, 2.0),
-            shape: ((i + 1) % 2) as u32,
+            shape: small((i + 1) % 2),
         };
     }
     // Distinct, non-zero, non-symmetric values for the new
@@ -118,7 +123,7 @@ pub fn sample_material() -> GpuGemMaterial {
             center_nm: 600.0 + i as f32,
             width_nm: 40.0 + i as f32,
             peak: (i as f32).mul_add(0.1, 3.0),
-            shape: (i % 2) as u32,
+            shape: small(i % 2),
         };
     }
 
@@ -619,19 +624,17 @@ const _: () = assert!(size_of::<DispersionParams>() == 96);
 const _: () = assert!(MAX_ABSORPTION_BANDS == 8);
 
 // ---------------------------------------------------------------------------------
-// Zone table (`zoning` feature): the WGSL twin of `renderer::buffers::GpuZoneTable`.
+// Zone table: the WGSL twin of `renderer::buffers::GpuZoneTable`.
 // ---------------------------------------------------------------------------------
 
 /// The echo shader followed by the zone-table struct declarations it copies (the table
 /// unit is the very file the transport shaders are built from).
-#[cfg(feature = "zoning")]
 const ZONE_TABLE_SHADER_SRC: &str = concat!(
     include_str!("../shaders/zoning/zone_table_echo.wgsl"),
     include_str!("../shaders/zoning/01_zone_table.wgsl"),
 );
 
 // The table sits at the end of `GpuGemMaterial`; the byte offsets the echo is judged against.
-#[cfg(feature = "zoning")]
 const _: () = {
     use crate::renderer::buffers::{GpuZoneAbsorption, GpuZoneHeader, GpuZoneShape, GpuZoneTable};
     assert!(size_of::<GpuZoneHeader>() == 80);
@@ -643,9 +646,91 @@ const _: () = {
     assert!(size_of::<GpuGemMaterial>() == 576 + size_of::<GpuZoneTable>());
 };
 
+/// The zone-kernel echo shader, the table declarations and the kernel under test (the
+/// transport shaders' own `01_zone_table.wgsl` and `02_zone_kernel.wgsl`).
+const ZONE_KERNEL_SHADER_SRC: &str = concat!(
+    include_str!("../shaders/zoning/zone_kernel_echo.wgsl"),
+    include_str!("../shaders/zoning/01_zone_table.wgsl"),
+    include_str!("../shaders/zoning/02_zone_kernel.wgsl"),
+);
+
+/// One segment of [`run_zone_kernel_echo`]: `from` and `to` in stone millimetres (`w` unused),
+/// the 32-byte `EchoSegment` of `zone_kernel_echo.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ZoneEchoSegment {
+    /// Segment start, `.w` unused.
+    pub from: [f32; 4],
+    /// Segment end, `.w` unused.
+    pub to: [f32; 4],
+}
+
+/// Evaluates the WGSL zone kernel (`zone_lengths` of `02_zone_kernel.wgsl`) for every segment
+/// against `table` and returns the five per-zone lengths of each, in segment order.
+///
+/// The twin check of the kernel: compare the result with `ZoneKernelF32::lengths` (see
+/// `gpu_backend::zoned_tests`). The shader file is the one the transport shaders embed, so this
+/// measures the production code, not a copy.
+///
+/// # Panics
+///
+/// On `wgpu` API misuse, like [`run`].
+#[must_use]
+pub fn run_zone_kernel_echo(
+    ctx: &crate::renderer::gpu::GpuContext,
+    table: &crate::renderer::buffers::GpuZoneTable,
+    segments: &[ZoneEchoSegment],
+) -> Vec<[f32; 5]> {
+    if segments.is_empty() {
+        return Vec::new();
+    }
+    let pipeline = compute::create_compute_pipeline(
+        &ctx.device,
+        "zone_kernel_echo",
+        ZONE_KERNEL_SHADER_SRC,
+        "main",
+    );
+    let table_buf = compute::upload(
+        &ctx.device,
+        "zone_kernel_echo table",
+        std::slice::from_ref(table),
+        wgpu::BufferUsages::STORAGE,
+    );
+    let segment_buf = compute::upload(
+        &ctx.device,
+        "zone_kernel_echo segments",
+        segments,
+        wgpu::BufferUsages::STORAGE,
+    );
+    let out_buf = compute::zeroed_buffer::<[f32; 8]>(
+        &ctx.device,
+        "zone_kernel_echo lengths",
+        segments.len(),
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    );
+    let bind_group = compute::bind_buffers(
+        &ctx.device,
+        "zone_kernel_echo bind group",
+        &pipeline,
+        &[(0, &table_buf), (1, &segment_buf), (2, &out_buf)],
+    );
+    // One 64-wide workgroup per 64 segments (`@workgroup_size(64)` in the shader).
+    let groups = u32::try_from(segments.len().div_ceil(64)).expect("segment count fits u32");
+    compute::dispatch_and_wait(
+        &ctx.device,
+        &ctx.queue,
+        &pipeline,
+        &bind_group,
+        (groups, 1, 1),
+    );
+    let raw: Vec<[f32; 8]> = compute::readback(&ctx.device, &ctx.queue, &out_buf, segments.len());
+    raw.into_iter()
+        .map(|r| [r[0], r[1], r[2], r[3], r[4]])
+        .collect()
+}
+
 /// A [`GpuZoneTable`] with distinct, non-zero values in every named field (padding left
 /// zero), so a swapped or shifted field cannot echo back identical.
-#[cfg(feature = "zoning")]
 #[must_use]
 pub fn sample_zone_table() -> crate::renderer::buffers::GpuZoneTable {
     use crate::renderer::buffers::GpuZoneTable;
@@ -661,9 +746,9 @@ pub fn sample_zone_table() -> crate::renderer::buffers::GpuZoneTable {
         [0.31, 0.32, 0.33, 0.34],
     ];
     for (i, shape) in t.shapes.iter_mut().enumerate() {
-        shape.kind = 1 + i as u32;
-        shape.n_sides = 3 + 2 * i as u32;
-        shape.flags = 1 + (i as u32 % 3);
+        shape.kind = 1 + small(i);
+        shape.n_sides = 3 + 2 * small(i);
+        shape.flags = 1 + small(i) % 3;
         shape.p = [f(10.0, i), f(11.0, i), f(12.0, i), f(13.0, i)];
         shape.d = [f(20.0, i), f(21.0, i), f(22.0, i), f(23.0, i)];
         shape.u = [f(30.0, i), f(31.0, i), f(32.0, i), f(33.0, i)];
@@ -672,16 +757,16 @@ pub fn sample_zone_table() -> crate::renderer::buffers::GpuZoneTable {
         shape.e = [f(60.0, i), f(61.0, i), f(62.0, i), f(63.0, i)];
     }
     for (i, zone) in t.absorption.iter_mut().enumerate() {
-        zone.o_ray_band_count = 1 + i as u32;
-        zone.e_ray_band_count = 2 + i as u32;
-        zone.has_beta_ray = (i as u32) % 2;
-        zone.beta_ray_band_count = 3 + i as u32;
+        zone.o_ray_band_count = 1 + small(i);
+        zone.e_ray_band_count = 2 + small(i);
+        zone.has_beta_ray = small(i) % 2;
+        zone.beta_ray_band_count = 3 + small(i);
         for (b, band) in zone.o_ray_bands.iter_mut().enumerate() {
             *band = GpuAbsorptionBand {
                 center_nm: f(100.0f32.mul_add(i as f32, 400.0), b),
                 width_nm: f(20.0 + i as f32, b),
                 peak: f(1.0 + i as f32, b),
-                shape: (b % 2) as u32,
+                shape: small(b % 2),
             };
         }
         for (b, band) in zone.e_ray_bands.iter_mut().enumerate() {
@@ -689,7 +774,7 @@ pub fn sample_zone_table() -> crate::renderer::buffers::GpuZoneTable {
                 center_nm: f(100.0f32.mul_add(i as f32, 500.0), b),
                 width_nm: f(30.0 + i as f32, b),
                 peak: f(2.0 + i as f32, b),
-                shape: ((b + 1) % 2) as u32,
+                shape: small((b + 1) % 2),
             };
         }
         for (b, band) in zone.beta_ray_bands.iter_mut().enumerate() {
@@ -697,7 +782,7 @@ pub fn sample_zone_table() -> crate::renderer::buffers::GpuZoneTable {
                 center_nm: f(100.0f32.mul_add(i as f32, 600.0), b),
                 width_nm: f(40.0 + i as f32, b),
                 peak: f(3.0 + i as f32, b),
-                shape: (b % 2) as u32,
+                shape: small(b % 2),
             };
         }
     }
@@ -714,7 +799,6 @@ pub fn sample_zone_table() -> crate::renderer::buffers::GpuZoneTable {
 /// # Panics
 ///
 /// On `wgpu` API misuse, like [`run`].
-#[cfg(feature = "zoning")]
 #[must_use]
 pub fn run_zone_table(ctx: &crate::renderer::gpu::GpuContext) -> LayoutCheckResult {
     use crate::renderer::buffers::GpuZoneTable;

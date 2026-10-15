@@ -147,7 +147,7 @@ pub(super) fn write_synced(path: &Path, contents: &str) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// `path`'s `.bak` sibling -- e.g. `design.indicatrix` -> `design.indicatrix.bak`. One generation of backup only:
+/// `path`'s `.bak` sibling -- e.g. `design.isdd` -> `design.isdd.bak`. One generation of backup only:
 /// a second save in a row overwrites the `.bak` from the first, matching "keep the
 /// PREVIOUS version" rather than an ever-growing history.
 fn backup_sibling(path: &Path) -> PathBuf {

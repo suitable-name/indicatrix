@@ -277,6 +277,10 @@ pub fn parse_optimize_weights(
     yield_weight: f32,
     tone: f32,
 ) -> Result<ObjectiveWeights, String> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the objective-weight storage precision; a weight is a small number"
+    )]
     fn parse_weight(label: &str, text: &str) -> Result<f32, String> {
         let trimmed = text.trim();
         let value: f32 = match trimmed.parse::<f32>() {
@@ -362,16 +366,16 @@ pub fn tone_scale_note(
     lighting: LightingPreset,
 ) -> String {
     if !material_has_body_color(material) {
-        return "The material has no body colour, so the tone objective has nothing to work on. \
-                Pick a colour in Design settings."
+        return "The material has no body color, so the tone objective has nothing to work on. \
+                Pick a color in Design Settings."
             .to_string();
     }
     let size = match design.girdle_diameter_mm {
         Some(mm) if mm > 0.0 && mm.is_finite() => {
-            format!("Face-up colour is worked out for a {mm:.1} mm stone (Design settings)")
+            format!("Face-up color is worked out for a {mm:.1} mm stone (Design Settings)")
         }
-        _ => "No stone size set: one model unit of path counts as one unit of colour strength, \
-              the swatch convention; set the girdle diameter in Design settings to size it"
+        _ => "No stone size set: one model unit of path counts as one unit of color strength, \
+              the swatch convention; set the girdle diameter in Design Settings to size it"
             .to_string(),
     };
     let environment = lighting.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
@@ -417,13 +421,13 @@ pub fn tone_result_rows(
     };
     vec![
         tone_row(
-            "Face-up lightness L*",
+            "Face-Up Lightness L*",
             before.l_star,
             after.l_star,
             lightness_judged,
         ),
         tone_row(
-            "Face-up colour strength C*",
+            "Face-Up Color Strength C*",
             before.chroma,
             after.chroma,
             chroma_judged,

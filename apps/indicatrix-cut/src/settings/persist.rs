@@ -29,7 +29,11 @@ const DEBOUNCE: Duration = Duration::from_millis(600);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How long [`SettingsPersister::flush`] waits for the worker to confirm the write. A
 /// settings file is a few kilobytes, so this only matters when the disk is wedged, and
-/// it bounds how long closing the window can be held up then.
+/// it bounds how long closing the window can be held up then. In normal operation the
+/// worker acknowledges right after the write (milliseconds), so the 3 s is never reached;
+/// it stays a blocking wait on purpose, because closing without it would let the process
+/// exit with the final snapshot still queued and lose the last change (perf review UI-8:
+/// reviewed, deliberately not made non-blocking).
 const FLUSH_WAIT: Duration = Duration::from_secs(3);
 
 enum Msg {
@@ -353,7 +357,7 @@ mod tests {
 
         persister.update(|s| {
             s.settings
-                .record_recent_native_file("saved-this-session.indicatrix.toml".to_owned());
+                .record_recent_native_file("saved-this-session.isdd".to_owned());
         });
         persister.flush();
 
@@ -361,7 +365,7 @@ mod tests {
         let on_disk = store::load_or_default(&path);
         assert_eq!(
             on_disk.settings.recent_native_files,
-            vec!["saved-this-session.indicatrix.toml".to_owned()]
+            vec!["saved-this-session.isdd".to_owned()]
         );
     }
 
@@ -375,7 +379,7 @@ mod tests {
         let mut direct = SettingsFile::default();
         direct
             .settings
-            .record_recent_native_file("written-directly.indicatrix.toml".to_owned());
+            .record_recent_native_file("written-directly.isdd".to_owned());
         store::save(&path, &direct).unwrap();
         persister.flush();
 

@@ -15,9 +15,10 @@ use super::{
     dto::{
         BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, DesignShape, HeaderDto,
         INCLUSION_SCHEMA_VERSION, MAX_LAYOUTS, MAX_NAME_CHARS, MAX_PAYLOAD_BYTES,
-        MESH_SCHEMA_VERSION, ROUGH_PLAN_FORMAT, SavedDesignDto, SavedLayoutDto, SavedPlanDto,
-        SummaryDto,
+        MESH_SCHEMA_VERSION, PoseChoiceDto, ROUGH_PLAN_FORMAT, RoughColourDto, SavedDesignDto,
+        SavedLayoutDto, SavedPlanDto, SummaryDto,
     },
+    sections::check_sections,
 };
 use indicatrix_cut_core::rough_plan::{PlanSettings, RoughLayout, RoughModel};
 use indicatrix_vault::model::solid_extents::{SOLID_EXTENTS_VERSION, SolidExtents};
@@ -52,6 +53,13 @@ pub struct LoadedPlan {
     pub designs: Vec<SavedDesignDto>,
     /// The saved layouts, best rank first.
     pub layouts: Vec<RoughLayout>,
+    /// The rough colour the file carries (schema version 4), as the file has it. It has
+    /// been checked to be usable by the import. The
+    /// library stores it beside the plan, not in the plan's payload (see `saved/sections.rs`).
+    pub colour: Option<RoughColourDto>,
+    /// The stone orientation choices the file carries (schema version 4), each checked against
+    /// `layouts`.
+    pub pose_choices: Vec<PoseChoiceDto>,
 }
 
 /// `value` rounded to `digits` significant digits (through its decimal text, so the
@@ -198,15 +206,17 @@ pub fn payload_version_of(text: &str) -> Option<u32> {
 
 /// Brings the text of a plan written with schema `version` up to the current schema.
 ///
-/// Version 3 is the current schema and needs nothing. Version 2 differs only by the
-/// optional `rough.inclusions` tables, and version 1 also by the optional `rough.mesh` table,
-/// which their files do not have, so their text reads as it is. A later format change adds an
-/// arm here that rewrites the older text, so the DTOs only ever describe the newest schema.
+/// Version 4 is the current schema and needs nothing. Version 3 differs only by the optional
+/// `colour` table and `pose_choices` tables, version 2 also by the optional `rough.inclusions`
+/// tables, and version 1 also by the optional `rough.mesh` table, which their files do not
+/// have, so their text reads as it is. A later format change adds an arm here that rewrites
+/// the older text, so the DTOs only ever describe the newest schema.
 fn migrate(text: &str, version: u32) -> Result<Cow<'_, str>, String> {
     match version {
-        BASE_SCHEMA_VERSION | MESH_SCHEMA_VERSION | CURRENT_SCHEMA_VERSION => {
-            Ok(Cow::Borrowed(text))
-        }
+        BASE_SCHEMA_VERSION
+        | MESH_SCHEMA_VERSION
+        | INCLUSION_SCHEMA_VERSION
+        | CURRENT_SCHEMA_VERSION => Ok(Cow::Borrowed(text)),
         older => Err(format!(
             "This build cannot bring a version {older} plan up to version {CURRENT_SCHEMA_VERSION}."
         )),
@@ -310,6 +320,7 @@ fn plan_from_dto(dto: SavedPlanDto, version: u32) -> Result<LoadedPlan, String> 
     };
     let layouts = layouts_from_dto(&dto.layouts, &frame)?;
     check_design_use(&dto.designs, &layouts)?;
+    check_sections(version, dto.colour.as_ref(), &dto.pose_choices, &layouts)?;
     Ok(LoadedPlan {
         version,
         name: dto.name,
@@ -322,6 +333,8 @@ fn plan_from_dto(dto: SavedPlanDto, version: u32) -> Result<LoadedPlan, String> 
         candidate_source,
         designs: dto.designs,
         layouts,
+        colour: dto.colour,
+        pose_choices: dto.pose_choices,
     })
 }
 
@@ -478,18 +491,9 @@ pub fn serialize_plan_to_toml(input: &SerializeInput<'_>) -> Result<String, Stri
         input.settings.specific_gravity,
         input.weighed_ct,
     );
-    // Only a plan with a mesh needs the newer schema, and one with inclusions the newest:
-    // every other plan is what it always was, byte for byte.
-    let version = if !rough.inclusions.is_empty() {
-        INCLUSION_SCHEMA_VERSION
-    } else if rough.mesh.is_some() {
-        MESH_SCHEMA_VERSION
-    } else {
-        BASE_SCHEMA_VERSION
-    };
-    let doc = SavedPlanDto {
+    let mut doc = SavedPlanDto {
         format: ROUGH_PLAN_FORMAT.to_string(),
-        version,
+        version: BASE_SCHEMA_VERSION,
         name: input.name.to_string(),
         created_at: input.created_at,
         library_id: input.library_id,
@@ -501,7 +505,12 @@ pub fn serialize_plan_to_toml(input: &SerializeInput<'_>) -> Result<String, Stri
             .iter()
             .map(|ranked| layout_to_dto(ranked.layout, ranked.rank))
             .collect(),
+        colour: None,
+        pose_choices: Vec::new(),
     };
+    // Only a plan with a mesh needs the newer schema, and one with inclusions the newest: every
+    // other plan is what it always was, byte for byte.
+    doc.version = doc.content_version();
     toml::to_string_pretty(&doc).map_err(|e| format!("Could not write the plan: {e}"))
 }
 

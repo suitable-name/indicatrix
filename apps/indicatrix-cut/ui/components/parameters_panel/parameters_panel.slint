@@ -1,0 +1,232 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { ViewportModel } from "../../models/viewport.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { ParametersModel } from "../../models/parameters.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { HelpTopics } from "../../models/help.slint";
+import { HelpButton } from "../help_button.slint";
+import { IconButton } from "../icon_button.slint";
+import { ModePill } from "../pill_button.slint";
+import { FooterButton } from "parts.slint";
+import { StoneTab } from "stone_tab.slint";
+import { LightingTab } from "lighting_tab.slint";
+import { RenderOutputTab } from "render_output_tab.slint";
+
+// The Parameters panel: the three tabs -- Stone, Lighting & Environment, Render & Output -- under
+// a header (title, manual "?" and collapse button), with a "Reset this tab" footer. It is the
+// card that replaced the Live Render view's old "Rendering Settings" dialog and it shows in both
+// views: docked beside the viewport (`ParametersDock`), or floating over the window where there
+// is no room to dock (`floating`, mounted by `app.slint`).
+//
+// The open tab and whether the panel is expanded live in `ParametersModel` and persist. Each
+// tab is its own `ScrollView`, so switching tabs also puts the scroll position back to the top.
+//
+// "Reset this tab" is two steps (the first press only asks). Confirming calls
+// `ParametersModel.reset_tab(tab)`; Rust (`gui::render::reset_tab`, on top of
+// `settings::model::reset_tab` and the `Default` impls of the settings structs) puts the tab back
+// to its defaults and re-pushes its controls. No default is written in this file.
+export component ParametersPanel inherits Rectangle {
+    // The panel floats over the window instead of sitting in a layout: it gets a heavier edge and
+    // a shadow, the close button says "Close", and it swallows the pointer events over it so a
+    // click never reaches the viewport underneath.
+    in property <bool> floating: false;
+
+    property <bool> confirming_reset: false;
+    property <int> tab: ParametersModel.active_tab;
+    // The tab shown before the latest switch. A plain property seeded once in `init` (a binding to
+    // `active_tab` would always read the NEW tab until its first assignment).
+    property <int> last_tab;
+    init => { root.last_tab = root.tab; }
+    // Leaving a tab unmounts its fields, and a destroyed field never runs its `changed has-focus`:
+    // clear the shared text-focus flag here, and keep a Stone width typed but not applied. The
+    // hand-over only runs when the typed text differs from the design's width as a number too, so
+    // an unchanged "7" against "7.0000" makes no Rust call.
+    changed tab => {
+        root.confirming_reset = false;
+        if root.last_tab == 0
+            && EditorModel.girdle_diameter_mm != EditorModel.design_girdle_diameter_text
+            && (EditorModel.girdle_diameter_mm == ""
+                || EditorModel.design_girdle_diameter_text == ""
+                || EditorModel.girdle_diameter_mm.to-float() != EditorModel.design_girdle_diameter_text.to-float()) {
+            EditorModel.apply_stone_width(EditorModel.girdle_diameter_mm);
+        }
+        EditorModel.text_focus = false;
+        root.last_tab = root.tab;
+    }
+
+    // The one reset path: Rust owns the defaults of all three tabs (Stone: the per-design render
+    // effects only, never the material or the geometry, which are design edits with their own
+    // undo; Lighting & Environment: the rig, light, exposure, backdrop, glare, head shadow and the
+    // HDR map; Render & Output: quality, compute, output defaults and thumbnails).
+    function reset_active() {
+        if root.tab == 1 {
+            // The Lighting lane's own reset (handler in `gui/render/camera_lighting.rs`).
+            ViewportModel.reset_lighting_tab();
+        } else {
+            // Stone (0) and Render & Output (2): Rust's `reset_tab` dispatch.
+            ParametersModel.reset_tab(root.tab);
+        }
+    }
+
+    background: root.floating ? Theme.popup-surface : Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: root.floating ? Theme.border-dialog : Theme.border-subtle;
+    drop-shadow-blur: root.floating ? 24px : 0px;
+    drop-shadow-color: Theme.shadow-heavy;
+    drop-shadow-offset-y: root.floating ? 6px : 0px;
+
+    // Behind everything: a floating panel must not let a click or a scroll through to the
+    // viewport. The controls above it still get their own events.
+    TouchArea {
+        enabled: root.floating;
+        // The wheel over the header or footer must not zoom the viewport beneath either.
+        scroll-event(event) => { return accept; }
+    }
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        // Header: the open tab's name, the manual's "?" and the collapse button.
+        HorizontalLayout {
+            spacing: 8px;
+            height: 26px;
+
+            // Centred by a layout of its own: a fixed-size Image in the row sits at the top of
+            // its cell (`vertical-alignment` only places the picture inside the Image).
+            VerticalLayout {
+                alignment: center;
+                Image {
+                    source: root.tab == 0
+                        ? @image-url("../../icons/gem.svg")
+                        : (root.tab == 1 ? @image-url("../../icons/lightbulb.svg") : @image-url("../../icons/gear.svg"));
+                    colorize: Theme.accent-cyan;
+                    width: 15px;
+                    height: 15px;
+                }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: ParametersModel.tab_title(root.tab);
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            VerticalLayout {
+                alignment: center;
+                HelpButton {
+                    topic: root.tab == 0 ? HelpTopics.stone-tab : (root.tab == 1 ? HelpTopics.lighting-tab : HelpTopics.render-output-tab);
+                    hint: "Open the manual page on this tab of the parameters panel";
+                }
+            }
+            icon-button-floating := IconButton {
+                icon: root.floating ? @image-url("../../icons/close.svg") : @image-url("../../icons/chevron-right.svg");
+                glyph: 12px;
+                hint: root.floating ? "Close the parameters panel" : "Fold the parameters panel away to its rail";
+                clicked => { ParametersModel.collapse(); }
+            }
+        }
+
+        // The three tabs.
+        HorizontalLayout {
+            spacing: 4px;
+            ModePill {
+                horizontal-stretch: 1;
+                text: "Stone";
+                hint: "Stone: its material and color, its width and the material effects.";
+                selected: root.tab == 0;
+                highlighted: GuideModel.highlight_target == "stone_tab" || GuideModel.highlight_target == "design_settings";
+                picked => { ParametersModel.active_tab = 0; }
+            }
+            ModePill {
+                horizontal-stretch: 1;
+                text: "Lighting";
+                hint: "Lighting and environment: the light, the exposure, the backdrop, the HDR map and the saved lightings.";
+                selected: root.tab == 1;
+                highlighted: GuideModel.highlight_target == "lighting_tab";
+                picked => { ParametersModel.active_tab = 1; }
+            }
+            ModePill {
+                horizontal-stretch: 1;
+                text: "Render";
+                hint: "Render and output: picture quality, resolution, compute, ray bounces and thumbnails.";
+                selected: root.tab == 2;
+                highlighted: GuideModel.highlight_target == "render_output_tab";
+                picked => { ParametersModel.active_tab = 2; }
+            }
+        }
+
+        // The tab's controls. `min-height: 0px` lets the panel shrink with the window; the
+        // `ScrollView` makes what is past the edge reachable.
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: 0px;
+            clip: true;
+
+            if root.tab == 0: ScrollView {
+                width: 100%;
+                height: 100%;
+                StoneTab { padding-right: 10px; padding-bottom: 8px; }
+            }
+            if root.tab == 1: ScrollView {
+                width: 100%;
+                height: 100%;
+                LightingTab { padding-right: 10px; padding-bottom: 8px; }
+            }
+            if root.tab == 2: ScrollView {
+                width: 100%;
+                height: 100%;
+                RenderOutputTab { padding-right: 10px; padding-bottom: 8px; }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border-subtle;
+        }
+
+        // Footer: a two-step reset of the open tab. The first press only opens the question;
+        // nothing is reset until "Confirm".
+        HorizontalLayout {
+            spacing: 8px;
+            height: 30px;
+
+            if !root.confirming_reset: FooterButton {
+                width: 130px;
+                icon: @image-url("../../icons/reset.svg");
+                text: "Reset This Tab";
+                hint: "Put every setting on this tab back to its default. Stone effects can be undone; the other two tabs cannot.";
+                clicked => { root.confirming_reset = true; }
+            }
+            if root.confirming_reset: Text {
+                text: "Reset " + ParametersModel.tab_title(root.tab) + "?";
+                font-size: 11px;
+                color: Theme.accent-amber;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.confirming_reset: FooterButton {
+                width: 64px;
+                kind: 2;
+                text: "Confirm";
+                hint: "Yes, put every setting on this tab back to its default.";
+                clicked => {
+                    root.confirming_reset = false;
+                    root.reset_active();
+                }
+            }
+            if root.confirming_reset: FooterButton {
+                width: 60px;
+                text: "Cancel";
+                hint: "Keep the settings as they are.";
+                clicked => { root.confirming_reset = false; }
+            }
+            if !root.confirming_reset: Rectangle { horizontal-stretch: 1; }
+        }
+    }
+}

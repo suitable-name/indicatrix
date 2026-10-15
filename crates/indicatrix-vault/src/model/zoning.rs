@@ -1,4 +1,4 @@
-//! Rows of the rough-colour side tables (`zoning` feature only).
+//! Rows of the rough-colour side tables.
 //!
 //! The vault never parses these payloads: `zoned_json` / `fit_json` are opaque JSON text and
 //! the photo `data` is an opaque blob whose layout `encoding` names. The application

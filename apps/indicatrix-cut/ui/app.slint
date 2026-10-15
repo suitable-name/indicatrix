@@ -19,7 +19,7 @@ import { RoughPlannerWindow } from "rough_planner_window.slint";
 // `rig_window.slint` and `components/locate/photo_canvas.slint`.
 import { LocateWindow } from "locate_window.slint";
 import { RigWindow, RigViewRow } from "rig_window.slint";
-// The Rough colour wizard window (`zoning` feature) -- see `rough_colour_window.slint`.
+// The Rough colour wizard window -- see `rough_colour_window.slint`.
 import { RoughColourWindow, ImportSlot, ViewRow, ZoneListRow, ParamEditRow, ChipItem, LegendRow } from "rough_colour_window.slint";
 import { CanvasMarker, CanvasPath, PhotoSlot, ReportRow } from "components/locate/photo_canvas.slint";
 import { EditorView } from "components/editor_view.slint";
@@ -49,7 +49,13 @@ import { DispersionEditorModel, DispersionView } from "models/dispersion_editor.
 import { RetargetModel, RetargetCandidateItem } from "models/retarget.slint";
 import { ExportModel } from "models/export.slint";
 import { SettingsModel } from "models/settings.slint";
-import { RemoteWorkerModel } from "models/remote_worker.slint";
+// The Parameters dock (Stone / Lighting & Environment / Render & Output), docked beside the Live
+// Render viewport and the Edit view's inspector, or floating over the window where there is no
+// room -- see `models/parameters.slint` and `components/parameters_panel/`.
+import { ParametersModel } from "models/parameters.slint";
+import { ParametersDock, ParametersDockMetrics } from "components/parameters_panel/parameters_dock.slint";
+import { ParametersPanel } from "components/parameters_panel/parameters_panel.slint";
+import { RemoteWorkerModel, RemoteAvailabilityItem } from "models/remote_worker.slint";
 import { BatchModel } from "models/batch.slint";
 import { TiltModel, TiltVideoExportModel } from "models/tilt.slint";
 import { LibraryModel } from "models/library.slint";
@@ -71,7 +77,7 @@ import { CommandPaletteModel, PaletteRow } from "models/command_palette.slint";
 // The overall Good / Check / Problem verdict in the status strip -- see `models/verdict.slint`.
 import { VerdictModel, VerdictReasonData } from "models/verdict.slint";
 import { TemplateGalleryModel, TemplateCardData } from "models/templates.slint";
-// A design's own remembered lighting (settings dialog) -- see `models/design_lighting.slint`.
+// A design's own remembered lighting (Parameters panel) -- see `models/design_lighting.slint`.
 import { DesignLightingModel } from "models/design_lighting.slint";
 // The Inspector's History tab (undo history with pictures, jump to a step) -- see `models/history.slint`.
 import { HistoryModel, HistoryRowData, HistoryThumb } from "models/history.slint";
@@ -113,8 +119,11 @@ import { CuttingModeScreen } from "components/cutting_mode/cutting_mode_screen.s
 import { RenderJobsModel, RenderJobRow } from "models/render_jobs.slint";
 // "Is an export running?" and the header export indicator's text -- see `models/export_run.slint`.
 import { ExportRunModel } from "models/export_run.slint";
-// The `zoning` feature's UI switch (set from Rust, `false` in a default build) -- see `models/zoning.slint`.
+// The rough color and color zoning state -- see `models/zoning.slint`.
 import { Zoning, MaterialZoneRow } from "models/zoning.slint";
+// The new-version check: the question, the Preferences switch and the notice -- see `models/update.slint`.
+import { UpdateModel } from "models/update.slint";
+import { UpdateBanner } from "components/update_banner.slint";
 
 export {
     DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData,
@@ -123,6 +132,10 @@ export {
     PhysicscolorModel, PhysicsRow, PhysicsAddOption, PhysicsTreatment,
     DispersionEditorModel, DispersionView,
     SolidPreviewModel, ManipulateModel, ViewportModel, RetargetModel, RetargetCandidateItem, ExportModel, SettingsModel,
+    // The Parameters dock's open/tab state -- see ui/models/parameters.slint.
+    ParametersModel,
+    // The one remote-availability value (configured / reachable and render-capable).
+    RemoteAvailabilityItem,
     RemoteWorkerModel, BatchModel, TiltModel, TiltVideoExportModel, LibraryModel, EditorModel, UndoRedoLabels,
     // ActivityModel: the app's background-activity/status model -- see ui/models/activity.slint.
     ActivityModel, ActivityItem,
@@ -179,8 +192,10 @@ export {
     RenderJobsModel, RenderJobRow,
     // The running-export flag and the header indicator's text -- see ui/models/export_run.slint.
     ExportRunModel,
-    // The `zoning` feature's UI switch and the material dialog's zone row -- see ui/models/zoning.slint.
-    Zoning, MaterialZoneRow
+    // The rough color and color zoning state and the material dialog's zone row -- see ui/models/zoning.slint.
+    Zoning, MaterialZoneRow,
+    // The new-version check's state and callbacks -- see ui/models/update.slint.
+    UpdateModel
 }
 
 // --- Sizing notes -----------------------------------------------------------
@@ -295,10 +310,58 @@ export component MainWindow inherits Window {
         EditorModel.dock_width = clamp(
             EditorModel.dock_width,
             600px,
-            min(1000px, max(600px, available - 380px - 6px - 24px - (GuideModel.open ? 272px : 0px)))
+            min(1000px, max(600px, available - 380px - 6px - 24px - (GuideModel.open ? 272px : 0px) - root.params_edit_extent))
         );
         EditorModel.layout_changed();
     }
+
+    // Brings the 3D tab forward and shows tab `tab` of the Parameters dock: the View menu and the
+    // keyboard shortcuts (the palette does the same in Rust, `gui::commands::run`).
+    function show_parameters(tab: int) {
+        if root.params_reachable {
+            if root.active_tab != 0 {
+                root.active_tab = 0;
+                root.active_tab_changed(0);
+            }
+            ParametersModel.show_tab(tab);
+        }
+    }
+    // Whether the dock can be brought up: it lives on the 3D tab, and while the worked-example
+    // guide locks the view tabs it is only reachable when that tab is already showing.
+    property <bool> params_reachable: root.active_tab == 0 || GuideModel.allows_view_tabs();
+
+    // Where the Parameters dock sits. It docks only where the viewport keeps its guaranteed
+    // width WITH the dock open; narrower, the open panel floats over the window instead of
+    // squeezing the viewport. The decision reads the REAL space: the window less its 12px body
+    // padding, the library column (340px open, 40px rail, plus the 12px gap after it) and, in the
+    // Edit view, the guide column. It uses the OPEN dock width even while the dock is folded to
+    // its rail, so folding and opening never flips docked and floating.
+    //
+    // Live Render row: 24 (padding) + library column + viewport + 8 (gap) + 360 (dock).
+    //   viewport >= 700px (the toolbar's two-row layout needs about 570px, `gem_viewport.slint`)
+    //   => docked from width 1144px with the library on its rail, 1444px with it open.
+    //   `library_wants_auto_collapse` (below) folds the library to the rail between the two while
+    //   the panel is open, so 1144px is the practical breakpoint.
+    // Edit row: 24 + library column + viewport + 12 + [guide 260 + 12] + 6 (handle) + 12 + inspector
+    //   dock (min 600) + 12 + 360 (dock).
+    //   viewport >= 380px => the row needs 380 + 6 + 24 + 600 + 372 = 1382px (+272px with the
+    //   guide), so docked from width 1458px (+272px) with the library on its rail, 1758px
+    //   (+272px) with it open.
+    property <length> library_column: (LibraryModel.panel_collapsed ? 40px : 340px) + 12px;
+    property <length> guide_column: GuideModel.open ? 272px : 0px;
+    property <bool> params_docked_live: root.width - 24px - root.library_column - 8px - ParametersDockMetrics.open_width >= 700px;
+    property <bool> params_docked_edit: root.width - 24px - root.library_column - 380px - 6px - 24px - 600px
+        - (ParametersDockMetrics.open_width + 12px) - root.guide_column >= 0px;
+    property <bool> params_in_edit_row: root.render_view_tab == 1 && EditorModel.enabled;
+    property <bool> params_docked: root.params_in_edit_row ? root.params_docked_edit : root.params_docked_live;
+    // The open panel has no room beside the viewport: it floats over the window instead.
+    property <bool> params_floating: ParametersModel.open && root.active_tab == 0 && !root.params_docked;
+    // What the docked dock takes of the Edit row's width, with the 12px gap before it: the
+    // inspector dock's clamp (above, and the `SplitHandle`'s) and the guide's left edge (below)
+    // keep the viewport at least 380px wide with it there.
+    property <length> params_edit_extent: (root.params_in_edit_row && root.params_docked_edit)
+        ? (ParametersModel.open ? ParametersDockMetrics.open_width : ParametersDockMetrics.rail_width) + 12px
+        : 0px;
 
     // The width of the window area the in-window modal overlays (the dialogs, the
     // glossary, the tutorial browser, ...) lay out in. While a guide panel is open and not
@@ -312,7 +375,7 @@ export component MainWindow inherits Window {
     // collapsed, as before), and so while the guide is closed or collapsed.
     property <bool> guide_docked: root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled && root.width >= 1100px + (GuideModel.open ? 272px : 0px);
     property <length> guide_left_edge: root.guide_docked
-        ? root.width - 12px - EditorModel.dock_width - 6px - 24px - 260px
+        ? root.width - 12px - root.params_edit_extent - EditorModel.dock_width - 6px - 24px - 260px
         : (GuideModel.float_placed
             ? clamp(GuideModel.float_x, 0px, max(0px, root.width - 260px))
             : max(0px, root.width - 260px - 20px));
@@ -331,20 +394,54 @@ export component MainWindow inherits Window {
     // adjustment, not a change to the user's saved preference, and firing that
     // callback here would silently overwrite it on every resize.
     property <bool> library_auto_collapsed_by_width: false;
+    //
+    // When the library is folded for lack of width:
+    //  * Edit view: the inspector dock (min 600) and a 380px viewport (+ the Parameters dock when
+    //    the window can dock it with the library on its rail, i.e. from 1458px + guide) must fit
+    //    with the library open (340 + 12): 24 + 352 + 1010 + guide [+ 372 + ... dock] -> the
+    //    library folds below 1386px (+272px guide), or below 1758px (+272px) where the dock could
+    //    dock. At or below 1200px it always folds (the narrow stack).
+    //  * Live Render: while the window could dock the Parameters dock (viewport >= 700px) only
+    //    with the library on its rail -- widths 1144px to 1443px.
+    // Both rules read the window width and the OPEN dock width only -- never `ParametersModel.open`
+    // and never the library's own state -- so folding the dock (it leaves its rail mounted) or the
+    // library never feeds back into them. Cost: in those bands the library is on its rail as soon
+    // as the dock could dock, even before the panel is first opened.
+    property <bool> edit_could_dock_with_rail: root.width - 24px - 52px - 1010px - (ParametersDockMetrics.open_width + 12px) - root.guide_column >= 0px;
+    property <bool> library_wants_auto_collapse: root.active_tab != 0
+        ? false
+        : (root.params_in_edit_row
+            ? (root.width < 1200px
+                || root.width - 24px - 352px < 1010px + root.guide_column
+                    + (root.edit_could_dock_with_rail ? ParametersDockMetrics.open_width + 12px : 0px))
+            : (root.render_view_tab == 0
+                && root.width - 24px - 52px - 8px - ParametersDockMetrics.open_width >= 700px
+                && root.width - 24px - 352px - 8px - ParametersDockMetrics.open_width < 700px));
+    // The rule's value the last time `sync_library_auto_collapse` acted on it. The library folds
+    // only when the rule STARTS applying (and reopens only when it stops), never on every resize
+    // inside the band: a user who opens the library from its rail there keeps it open until the
+    // window leaves the band, instead of having it folded again by the next 1px width change.
+    property <bool> library_auto_rule_active: false;
     function sync_library_auto_collapse() {
-        if root.render_view_tab == 1 && EditorModel.enabled && root.active_tab == 0 {
-            if root.width < 1200px && !LibraryModel.panel_collapsed {
+        if root.library_wants_auto_collapse == root.library_auto_rule_active {
+            // Opened by hand while the rule applies: no longer ours to reopen later.
+            if !LibraryModel.panel_collapsed {
+                root.library_auto_collapsed_by_width = false;
+            }
+            return;
+        }
+        root.library_auto_rule_active = root.library_wants_auto_collapse;
+        if root.library_wants_auto_collapse {
+            if !LibraryModel.panel_collapsed {
                 root.library_auto_collapsed_by_width = true;
                 LibraryModel.panel_collapsed = true;
-            } else if root.width >= 1200px && root.library_auto_collapsed_by_width {
-                root.library_auto_collapsed_by_width = false;
-                LibraryModel.panel_collapsed = false;
             }
         } else if root.library_auto_collapsed_by_width {
             root.library_auto_collapsed_by_width = false;
             LibraryModel.panel_collapsed = false;
         }
     }
+    changed library_wants_auto_collapse => { root.sync_library_auto_collapse(); }
     // Re-evaluated on every trigger that can make the rule above start/stop
     // applying, not only an actual resize -- switching INTO the Edit sub-tab while
     // already narrower than 1200px needs the same collapse `changed width` alone
@@ -355,6 +452,23 @@ export component MainWindow inherits Window {
         if root.render_view_tab == 1 { root.edit_view_entered(); }
     }
     changed active_tab => { root.sync_library_auto_collapse(); }
+
+    // A tutorial step that points at a tab of the Parameters dock ("stone_tab", "lighting_tab",
+    // "render_output_tab") needs that tab showing, so the step opens it (`ParametersModel.show_tab`,
+    // the one tab opener the toolbar, the View menu and the palette use). The tab's pill and the
+    // toolbar button of the same tab draw the outline (`parameters_panel.slint`,
+    // `toolbar_buttons.slint`). The learner can still fold the panel afterwards. The worked
+    // example, shared with the web app, still names "design_settings" for its material step; on
+    // the desktop the design's material lives in the Stone tab, so that target opens and outlines
+    // the Stone tab as well (the DESIGN panel keeps its own outline).
+    property <string> guide_parameters_target: GuideModel.highlight_target;
+    changed guide_parameters_target => {
+        if root.guide_parameters_target == "stone_tab" || root.guide_parameters_target == "design_settings" {
+            ParametersModel.show_tab(0);
+        }
+        if root.guide_parameters_target == "lighting_tab" { ParametersModel.show_tab(1); }
+        if root.guide_parameters_target == "render_output_tab" { ParametersModel.show_tab(2); }
+    }
 
     // The command palette bumps `restore_focus_pulse` whenever it closes. Its search field
     // held the keyboard focus and is removed with it, which would leave no focused item and
@@ -373,6 +487,22 @@ export component MainWindow inherits Window {
     // again"), once Preferences and the start-up restore question are out of the way.
     property <bool> welcome_open: PreferencesModel.first_run_tour_pending && EditorModel.enabled
         && !PreferencesModel.dialog_open && EditorModel.startup_restore_path == "";
+    // Whether the "Check for New Versions?" question shows: only while it is still to be asked
+    // AND the window is idle -- never on top of the welcome dialog or the tour, Preferences, the
+    // start-up restore question, the tutorial browser or another dialog. Once those are out of
+    // the way it appears; until then it simply waits (or comes on the next start).
+    property <bool> update_consent_open: UpdateModel.consent_pending && EditorModel.enabled
+        && !PreferencesModel.first_run_tour_pending && !root.welcome_open
+        && !PreferencesModel.dialog_open && EditorModel.startup_restore_path == ""
+        && !GuideModel.open && !TutorialsModel.browser_open
+        && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open
+        && !root.close_confirm_open && !RawTextModel.is_open && !SweepModel.dialog_open
+        && !CuttingModeModel.open;
+    changed update_consent_open => {
+        if !root.update_consent_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
+            global_shortcuts.focus();
+        }
+    }
     // The browser and the welcome dialog hold the keyboard while open and take it with them
     // when they go; the main window takes it back here, unless the answer opened a dialog of
     // its own (the New Design dialog, the unsaved-changes question), which keeps it.
@@ -382,8 +512,11 @@ export component MainWindow inherits Window {
             global_shortcuts.focus();
         }
     }
+    // The new-version question comes up in the same pass when the welcome dialog goes (a first
+    // run), and its own `FocusScope` takes the keyboard on mounting: the main window must not
+    // take it back from the question.
     changed welcome_open => {
-        if !root.welcome_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
+        if !root.welcome_open && !root.update_consent_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
             global_shortcuts.focus();
         }
     }
@@ -407,6 +540,27 @@ export component MainWindow inherits Window {
     property <bool> cutting_mode_open: CuttingModeModel.open;
     changed cutting_mode_open => {
         if !root.cutting_mode_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
+            global_shortcuts.focus();
+        }
+    }
+
+    // The dialogs without a handler of their own above (New Design, Retarget, Gear Remap, the
+    // material editor, the performance graph, the anchor explainer, the metadata editor, the
+    // batch questions, the Render Jobs panel, Shortcuts, Preferences and the glossary): each
+    // removes the item that held the keyboard when it closes, which would leave no focused item
+    // and silence every shortcut until the next click. Whichever of them closes last hands the
+    // keyboard back, unless one of the other dialogs (or the unsaved-changes question) is still
+    // up and keeps it.
+    property <bool> other_overlay_open: EditorModel.new_dialog_open || EditorModel.gear_remap_open
+        || EditorModel.anchor_explainer_open || EditorModel.unsaved_dialog_open
+        || RetargetModel.is_open || ViewportModel.material_editor_open || TiltModel.dialog_open
+        || LibraryModel.metadata_editor_open || BatchModel.preview_visible || BatchModel.tilt_visible
+        || RenderJobsModel.panel_open || ShortcutsModel.open || PreferencesModel.dialog_open
+        || HelpModel.glossary_open || root.welcome_open || root.update_consent_open
+        || root.close_confirm_open || root.tutorials_browser_open || root.raw_text_open
+        || root.sweep_open || root.cutting_mode_open;
+    changed other_overlay_open => {
+        if !root.other_overlay_open {
             global_shortcuts.focus();
         }
     }
@@ -464,7 +618,7 @@ export component MainWindow inherits Window {
             // the tooltip saying so (a `MenuItem` has no tooltip).
             // Advanced: the Simple interface leaves it out, as it does the command bar's entry.
             if GuideModel.shows_advanced(): MenuItem {
-                title: "Export as Gem Cut Studio (.gcs)... (experimental)";
+                title: "Export as Gem Cut Studio (.gcs)... (Experimental)";
                 enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.export_gcs(); }
             }
@@ -507,7 +661,7 @@ export component MainWindow inherits Window {
                 title: "Edit as Text...";
                 enabled: EditorModel.enabled && EditorModel.has_design && GuideModel.allows_advanced()
                     && !RawTextModel.is_open && !EditorModel.unsaved_dialog_open
-                    && !EditorModel.write_confirm_open && !EditorModel.mismatch_dialog_open
+                    && !EditorModel.write_confirm_open
                     && !root.close_confirm_open;
                 activated => { RawTextModel.open(); }
             }
@@ -517,7 +671,7 @@ export component MainWindow inherits Window {
                 title: "Angle Sweep...";
                 enabled: EditorModel.enabled && EditorModel.has_design && GuideModel.allows_advanced()
                     && !SweepModel.dialog_open && !EditorModel.unsaved_dialog_open
-                    && !EditorModel.write_confirm_open && !EditorModel.mismatch_dialog_open
+                    && !EditorModel.write_confirm_open
                     && !root.close_confirm_open;
                 activated => { SweepModel.open_dialog(); }
             }
@@ -530,7 +684,7 @@ export component MainWindow inherits Window {
                 enabled: EditorModel.enabled && CuttingModeModel.unavailable_reason() == ""
                     && GuideModel.allows_advanced() && !CuttingModeModel.open
                     && !EditorModel.unsaved_dialog_open && !EditorModel.write_confirm_open
-                    && !EditorModel.mismatch_dialog_open && !root.close_confirm_open;
+                    && !root.close_confirm_open;
                 activated => { CuttingModeModel.open_cutting_mode(); }
             }
             // App-wide preferences, not about one design: the Simple/Advanced interface,
@@ -547,9 +701,42 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "Command Palette... (Ctrl+K)";
                 enabled: !EditorModel.unsaved_dialog_open && !EditorModel.write_confirm_open
-                    && !EditorModel.mismatch_dialog_open && !root.close_confirm_open
+                    && !root.close_confirm_open
                     && EditorModel.startup_restore_path == "";
                 activated => { CommandPaletteModel.open_palette(); }
+            }
+        }
+        // The Parameters dock: Stone, Lighting & Environment and Render & Output, in the Live
+        // Render view and in the Edit view alike (`ui/components/parameters_panel/`). Each item
+        // brings the 3D tab forward first, like the same entries of the command palette. The
+        // key combinations are labels only; the handler is `global_shortcuts` below.
+        Menu {
+            title: "View";
+            MenuItem {
+                title: "Stone Properties... (Ctrl+Alt+1)";
+                enabled: root.params_reachable;
+                activated => { root.show_parameters(0); }
+            }
+            MenuItem {
+                title: "Lighting & Environment... (Ctrl+Alt+2)";
+                enabled: root.params_reachable;
+                activated => { root.show_parameters(1); }
+            }
+            MenuItem {
+                title: "Render & Output... (Ctrl+Alt+3)";
+                enabled: root.params_reachable;
+                activated => { root.show_parameters(2); }
+            }
+            MenuItem {
+                title: ParametersModel.open ? "Fold the Parameters Panel Away" : "Show the Parameters Panel";
+                enabled: root.params_reachable;
+                activated => {
+                    if ParametersModel.open {
+                        ParametersModel.collapse();
+                    } else {
+                        root.show_parameters(ParametersModel.active_tab);
+                    }
+                }
             }
         }
         // Whole-catalogue batches (`gui::batch::regenerate_all`): each item opens the
@@ -595,7 +782,7 @@ export component MainWindow inherits Window {
                     activated => { LibraryModel.compute_tilt_curves_for_entry(LibraryModel.selected_entry_id); }
                 }
                 MenuItem {
-                    title: "Ignore or Un-ignore";
+                    title: "Ignore or Un-Ignore";
                     activated => { LibraryModel.toggle_ignored(LibraryModel.selected_entry_id); }
                 }
                 MenuItem {
@@ -603,7 +790,7 @@ export component MainWindow inherits Window {
                     activated => { LibraryModel.toggle_planner_excluded(LibraryModel.selected_entry_id); }
                 }
                 MenuItem {
-                    title: "Build this Design";
+                    title: "Build This Design";
                     enabled: !BuildDesignModel.busy;
                     activated => { BuildDesignModel.start(LibraryModel.selected_entry_id); }
                 }
@@ -724,6 +911,14 @@ export component MainWindow inherits Window {
                     root.render_view_tab_changed(root.render_view_tab);
                 }
                 return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && event.modifiers.alt && !event.modifiers.shift
+                    && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "¹" || event.text == "²" || event.text == "³") {
+                // The Parameters dock's tabs: Stone, Lighting & Environment, Render & Output.
+                // Ctrl+1/2/3 already switch the top-level tabs, so these carry Alt as well, and
+                // this arm sits before theirs (which does not look at Alt). "¹ ² ³" are what
+                // AltGr + 1/2/3 types on some European layouts, where Ctrl+Alt is AltGr.
+                root.show_parameters((event.text == "1" || event.text == "¹") ? 0 : ((event.text == "2" || event.text == "²") ? 1 : 2));
+                return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "1" {
                 root.active_tab = 0;
                 root.active_tab_changed(0);
@@ -791,7 +986,12 @@ export component MainWindow inherits Window {
             } else if event.text == Key.Escape {
                 // Global fallback: clears the tier selection and dismisses whatever toast
                 // is showing. Only fires when nothing more specific (a dialog, the inline
-                // angle editor) already consumed the key first.
+                // angle editor) already consumed the key first. A Parameters panel that floats
+                // over the window folds away first, and only then does Esc clear the selection.
+                if root.params_floating {
+                    ParametersModel.collapse();
+                    return accept;
+                }
                 EditorModel.selected_tier_index = -1;
                 root.toast_visible = false;
                 return accept;
@@ -836,6 +1036,7 @@ export component MainWindow inherits Window {
             // widens the logo cluster by ~130px, and the one-row header needs about 1140px.
             header_toolbar := HeaderToolbar {
                 compact: root.width < 1160px;
+                window_height: root.height;
                 // The export indicator was clicked: show the running export's popup again. The
                 // tilt dialog is window-wide; the still export's dialog lives in Live Render,
                 // so that tab is brought up first.
@@ -854,6 +1055,9 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // 1b. NEW-VERSION NOTICE (non-modal; only while a newer release is announced)
+            if UpdateModel.notice_visible: UpdateBanner {}
+
             // 2. MAIN SPLIT WORKSPACE
             HorizontalLayout {
                 spacing: 12px;
@@ -861,9 +1065,21 @@ export component MainWindow inherits Window {
                 if !LibraryModel.panel_collapsed: DiagramListView {}
                 if LibraryModel.panel_collapsed: CollapsedLibraryRail {}
 
-                // Right: Detail Area (Header + Tab/View-Pill Row + Tab Content)
+                // Right: Detail Area (Header + Tab/View-Pill Row + Tab Content).
+                // Wrapped in a clipping Rectangle with `min-width: 0px` and a
+                // explicitly sized (so unconstrained) column: a detail tab whose
+                // content wants more than the room left beside the library (the
+                // 720px minimum window) clips instead of widening the column past
+                // the window edge.
+                Rectangle {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                clip: true;
                 VerticalLayout {
-                    horizontal-stretch: 1;
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
                     spacing: 6px;
 
                     DetailHeaderView {
@@ -894,7 +1110,14 @@ export component MainWindow inherits Window {
 
                         // The Live Render/Edit view pills live in the shared
                         // tab/view-pill row above (see that row's own doc comment for why).
-                        if root.render_view_tab == 0: GemViewportView {}
+                        // The Parameters dock sits to the right of the picture while the picture keeps
+                        // 700px (see `params_docked_live`); narrower, the open panel floats instead.
+                        if root.render_view_tab == 0: HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 1;
+                            GemViewportView {}
+                            if root.params_docked_live: ParametersDock {}
+                        }
 
                         // Edit mode: the solid viewport and the resizable edit
                         // dock side by side (full column height), with a single
@@ -940,6 +1163,10 @@ export component MainWindow inherits Window {
                                 // `self.width` there.
                                 init => { root.reclamp_dock_width(self.width); }
                                 changed width => { root.reclamp_dock_width(self.width); }
+                                // Folding or opening the Parameters dock changes what the
+                                // inspector dock may take, without this row changing width.
+                                property <length> parameters_extent: root.params_edit_extent;
+                                changed parameters_extent => { root.reclamp_dock_width(self.width); }
 
                                 Rectangle {
                                     horizontal-stretch: 1;
@@ -984,7 +1211,7 @@ export component MainWindow inherits Window {
                                         EditorModel.dock_width = clamp(
                                             EditorModel.dock_width - d,
                                             600px,
-                                            min(1000px, max(600px, parent.width - 380px - self.width - 24px - (GuideModel.open ? 272px : 0px)))
+                                            min(1000px, max(600px, parent.width - 380px - self.width - 24px - (GuideModel.open ? 272px : 0px) - root.params_edit_extent))
                                         );
                                         EditorModel.layout_changed();
                                     }
@@ -993,6 +1220,12 @@ export component MainWindow inherits Window {
                                 EditorView {
                                     width: EditorModel.dock_width;
                                 }
+
+                                // The Parameters dock, after the inspector dock at the right edge
+                                // (a thin rail while folded). Only on a wide window: the clamps
+                                // above and the guide's left edge count its width
+                                // (`params_edit_extent`); narrower, the open panel floats.
+                                if root.params_docked_edit: ParametersDock {}
                             }
 
                             // The narrow (<1100px, or <1372px with the guide docked) stack: no drag handle -- there is
@@ -1037,6 +1270,7 @@ export component MainWindow inherits Window {
                     // Tab 2: Attached Files & GemCAD downloads
                     if root.active_tab == 2: AttachmentsView {}
                 }
+                }
             }
         }
 
@@ -1049,6 +1283,19 @@ export component MainWindow inherits Window {
             width: 100%;
             height: 100%;
             docked: root.guide_docked;
+        }
+
+        // The Parameters panel where it has no room beside the viewport (a window too narrow to keep
+        // the viewport 700px wide in Live Render or 380px in the Edit view, see `params_docked_live`): a card over the right
+        // edge of the window, non-modal, closed by its own button, a second press of the
+        // toolbar button, or Esc. Explicit `x`/`y`, so it contributes no layout constraint to
+        // the window -- see "Sizing notes" above. Under the dialogs, so they cover it.
+        if root.params_floating: ParametersPanel {
+            floating: true;
+            width: min(ParametersDockMetrics.open_width, root.width - 24px);
+            height: root.height - 24px;
+            x: root.width - self.width - 12px;
+            y: 12px;
         }
 
         // Cutting mode (Edit > Cutting Mode..., the command bar's Cut Mode, the palette): the
@@ -1229,6 +1476,26 @@ export component MainWindow inherits Window {
                 width: 100%;
                 height: 100%;
             }
+        }
+
+        // The one-time "Check for New Versions?" question (`update_consent_open` above says when
+        // it may show). Closing it without an answer (Cancel, the close button, Escape) stores
+        // nothing: it is asked again on the next start.
+        if root.update_consent_open: ConfirmActionDialog {
+            x: 0px;
+            y: 0px;
+            width: root.dialog_area_width;
+            height: 100%;
+            z: 420;
+            heading: "Check for New Versions?";
+            message: "Indicatrix can check GitHub once a day for a newer release and tell you about it. Nothing is downloaded or installed, and nothing but the request itself is sent.";
+            primary_label: "Check Daily";
+            primary_hint: "Check GitHub once a day for a newer release. You can turn this off in Preferences.";
+            secondary_label: "Don't Check";
+            secondary_hint: "Never check for new versions. You can turn it on later in Preferences.";
+            primary => { UpdateModel.consent_answered(true); }
+            secondary => { UpdateModel.consent_answered(false); }
+            cancel => { UpdateModel.consent_dismissed(); }
         }
 
         // Window-close unsaved-changes guard -- see `close_confirm_open`'s own doc

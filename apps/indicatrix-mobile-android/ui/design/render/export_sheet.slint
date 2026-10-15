@@ -1,0 +1,211 @@
+// The export sheet: size, samples and color space of a picture rendered at full quality,
+// the time it will take, a progress bar while it runs, and Share / Save once it is done.
+//
+// A bottom sheet on a compact window, a card in the middle of the window otherwise. Fill
+// the window with it (place it last in the page); tapping the scrim or Back closes it.
+// Everything comes from `RenderModel`.
+import { ProgressIndicator } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../icons.slint";
+import { Shell } from "../../models.slint";
+import { Segmented } from "../../shell/chips.slint";
+import { IconButton } from "../../shell/icon_button.slint";
+import { PageScroll } from "../../shell/page_scroll.slint";
+import { PrimaryButton, TonalButton, TextButton } from "../../shell/buttons.slint";
+import { RenderModel } from "render_model.slint";
+
+// A small section title above a segmented control.
+component Label inherits Text {
+    color: Theme.on-surface-variant;
+    font-size: Theme.text-label-large;
+    font-weight: 500;
+}
+
+export component ExportSheet inherits Rectangle {
+    property <bool> compact: Shell.window-class == 0;
+    property <length> card-width: root.compact ? root.width : min(root.width - 2 * Theme.space-xl, 440px);
+    // The panel is as tall as its content, at most the window minus a margin.
+    property <length> card-height: min(content.preferred-height + Theme.space-lg, root.height - (root.compact ? Shell.inset-top + Theme.space-xl : 2 * Theme.space-xl));
+
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: "Export Picture";
+
+    // The scrim.
+    Rectangle {
+        background: Theme.scrim.with-alpha(0.32);
+
+        TouchArea {
+            clicked => {
+                RenderModel.export-closed();
+            }
+        }
+    }
+
+    card := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: root.compact ? parent.height - self.height : (parent.height - self.height) / 2;
+        width: root.card-width;
+        height: root.card-height;
+        background: Theme.surface-container;
+        border-top-left-radius: Theme.radius-xl;
+        border-top-right-radius: Theme.radius-xl;
+        border-bottom-left-radius: root.compact ? 0px : Theme.radius-xl;
+        border-bottom-right-radius: root.compact ? 0px : Theme.radius-xl;
+        drop-shadow-color: Theme.shadow;
+        drop-shadow-blur: Theme.shadow-blur-3;
+        drop-shadow-offset-y: -Theme.shadow-offset-1;
+        clip: true;
+
+        // Swallows taps on the card so they do not close the sheet.
+        TouchArea { }
+
+        PageScroll {
+            content := VerticalLayout {
+                padding-left: Theme.space-lg;
+                padding-right: Theme.space-lg;
+                padding-top: Theme.space-sm;
+                padding-bottom: root.compact ? Theme.space-lg + Shell.inset-bottom : Theme.space-lg;
+                spacing: Theme.space-sm;
+
+                HorizontalLayout {
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Export Picture";
+                        color: Theme.on-surface;
+                        font-size: Theme.text-title;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    IconButton {
+                        icon: Icons.close;
+                        label: "Close";
+                        clicked => {
+                            RenderModel.export-closed();
+                        }
+                    }
+                }
+
+                Label {
+                    text: "Size (Long Edge)";
+                }
+
+                Segmented {
+                    options: RenderModel.export-sizes;
+                    current: RenderModel.export-size;
+                    selected(index) => {
+                        RenderModel.export-size = index;
+                        RenderModel.export-options-changed();
+                    }
+                }
+
+                Label {
+                    text: "Samples per Pixel";
+                }
+
+                Segmented {
+                    options: RenderModel.export-samples;
+                    current: RenderModel.export-spp;
+                    selected(index) => {
+                        RenderModel.export-spp = index;
+                        RenderModel.export-options-changed();
+                    }
+                }
+
+                Label {
+                    text: "Color Space";
+                }
+
+                Segmented {
+                    options: ["sRGB", "Display P3"];
+                    current: RenderModel.export-color;
+                    selected(index) => {
+                        RenderModel.export-color = index;
+                        RenderModel.export-options-changed();
+                    }
+                }
+
+                Text {
+                    text: RenderModel.export-problem != "" ? RenderModel.export-problem : RenderModel.export-estimate;
+                    color: RenderModel.export-problem != "" ? Theme.error : Theme.on-surface-variant;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+
+                if RenderModel.export-running: VerticalLayout {
+                    spacing: Theme.space-xs;
+
+                    ProgressIndicator {
+                        progress: RenderModel.export-progress;
+                    }
+
+                    Text {
+                        text: "Rendering " + round(RenderModel.export-progress * 100) + " %";
+                        color: Theme.on-surface-variant;
+                        font-size: Theme.text-label;
+                    }
+                }
+
+                if RenderModel.export-done && !RenderModel.export-running: Text {
+                    text: RenderModel.export-result;
+                    color: Theme.on-surface;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: Theme.space-sm;
+
+                    if RenderModel.export-running: TextButton {
+                        text: "Cancel";
+                        clicked => {
+                            RenderModel.export-cancel();
+                        }
+                    }
+
+                    if RenderModel.export-done && !RenderModel.export-running: TextButton {
+                        text: "Save";
+                        clicked => {
+                            RenderModel.export-save();
+                        }
+                    }
+
+                    if RenderModel.export-done && !RenderModel.export-running: TonalButton {
+                        text: "Share";
+                        icon: Icons.share;
+                        clicked => {
+                            RenderModel.export-share();
+                        }
+                    }
+
+                    if !RenderModel.export-running: PrimaryButton {
+                        text: RenderModel.export-done ? "Render Again" : "Render";
+                        enabled: RenderModel.export-ready;
+                        clicked => {
+                            RenderModel.export-render();
+                        }
+                    }
+                }
+
+                // The remote render lands with the remote setup (More).
+                VerticalLayout {
+                    spacing: Theme.space-xs;
+
+                    TonalButton {
+                        text: "Render on Desktop";
+                        enabled: false;
+                    }
+
+                    Text {
+                        text: "Set up a remote in More";
+                        color: Theme.on-surface-variant;
+                        font-size: Theme.text-label;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

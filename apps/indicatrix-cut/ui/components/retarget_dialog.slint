@@ -63,7 +63,7 @@ component CandidateRow inherits Rectangle {
             Text { text: "Windowing " + root.item.windowing; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
             Text { text: "Brilliance " + root.item.brilliance; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
             Text { text: "Extinction " + root.item.extinction; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
-            Text { text: "Yield loss " + root.item.yield_loss; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
+            Text { text: "Yield Loss " + root.item.yield_loss; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
         }
     }
 }
@@ -218,7 +218,12 @@ export component RetargetDialog inherits Rectangle {
                     alignment: space-between;
                     HorizontalLayout {
                         spacing: 8px;
-                        Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                        // Centred by a layout of its own: a fixed-size Image in the row sits at
+                        // the top of its cell.
+                        VerticalLayout {
+                            alignment: center;
+                            Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; }
+                        }
                         Text { text: "Compare to Snapshot"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
                     }
                     HorizontalLayout {
@@ -294,7 +299,7 @@ export component RetargetDialog inherits Rectangle {
                     ActionButton {
                         horizontal-stretch: 1;
                         height: 32px;
-                        text: "Compare visually…";
+                        text: "Compare Visually…";
                         hint: "Open the snapshot and the design as two rendered stones, side by side. This only looks; nothing changes.";
                         fill: Theme.surface-control;
                         hover_fill: Theme.surface-control-hover;
@@ -329,7 +334,9 @@ export component RetargetDialog inherits Rectangle {
                 VerticalLayout {
                     horizontal-stretch: 0;
                     preferred-width: 480px;
-                    min-width: 380px;
+                    // 300px so left column, pane, gap and padding fit the card at the 720px
+                    // minimum window (672px card).
+                    min-width: 300px;
                     spacing: 12px;
 
                     // 1. Header
@@ -340,7 +347,10 @@ export component RetargetDialog inherits Rectangle {
                             // Uses the gem icon, not a save icon, since Retarget previews a
                             // material swap that is applied only via the footer's own
                             // explicit "Apply" button below.
-                            Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                            VerticalLayout {
+                                alignment: center;
+                                Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; }
+                            }
                             Text { text: "Retarget for Material"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
                         }
                         HorizontalLayout {
@@ -391,7 +401,7 @@ export component RetargetDialog inherits Rectangle {
                                             model: RetargetModel.material_options;
                                             current-index <=> RetargetModel.target_material_index;
                                             enabled: !RetargetModel.is_busy;
-                                            accessible-label: "Target material";
+                                            accessible-label: "Target Material";
                                             selected(val) => { RetargetModel.proposal_changed(); }
                                         }
                                     }
@@ -402,7 +412,7 @@ export component RetargetDialog inherits Rectangle {
                                             text <=> RetargetModel.target_ri_override_text;
                                             placeholder-text: "Custom n_D";
                                             enabled: !RetargetModel.is_busy;
-                                            accessible-label: "Custom refractive index n_D";
+                                            accessible-label: "Custom Refractive Index n_D";
                                             edited => { RetargetModel.proposal_changed(); }
                                         }
                                     }
@@ -555,7 +565,7 @@ export component RetargetDialog inherits Rectangle {
                                 }
 
                                 if GuideModel.shows_advanced(): ToggleRow {
-                                    text: "Keep the design's look";
+                                    text: "Keep the Design's Look";
                                     hint: "Scores every option with a penalty for drifting from the table size and the crown-to-pavilion ratio of the design as it is.";
                                     checked: RetargetModel.keep_look;
                                     enabled: !RetargetModel.is_busy;
@@ -573,9 +583,9 @@ export component RetargetDialog inherits Rectangle {
                                     wrap: word-wrap;
                                 }
 
-                                ActionButton {
+                                action-button-search-done := ActionButton {
                                     height: 32px;
-                                    text: RetargetModel.search_done ? "Search again" : "Search for better angles";
+                                    text: RetargetModel.search_done ? "Search Again" : "Search for Better Angles";
                                     hint: "Search for better crown and pavilion angles, starting from the Shift result. It runs in the background and can be cancelled. Every option it offers is checked the same way Shift is, so none of them loses the girdle.";
                                     fill: Theme.accent-cyan;
                                     hover_fill: Theme.accent-cyan-hover;
@@ -633,7 +643,7 @@ export component RetargetDialog inherits Rectangle {
                                 if RetargetModel.candidates.length > 0: VerticalLayout {
                                     spacing: 4px;
 
-                                    Text { text: "Options (click one to see it)"; font-size: 10px; font-weight: 700; color: Theme.text-muted; }
+                                    Text { text: "Options (Click One to See It)"; font-size: 10px; font-weight: 700; color: Theme.text-muted; }
 
                                     // The list is one Tab stop; Up and Down pick the previous or next
                                     // option like a click does, Space picks the first one.
@@ -641,7 +651,7 @@ export component RetargetDialog inherits Rectangle {
                                         height: cand_list.preferred-height;
                                         enabled: !RetargetModel.is_busy;
                                         accessible-role: AccessibleRole.list;
-                                        accessible-label: "Retarget options";
+                                        accessible-label: "Retarget Options";
                                         accessible-description: "Up and Down pick the previous or next option. The picked option fills the table and the comparison.";
                                         key-pressed(event) => {
                                             if event.text == Key.DownArrow {
@@ -712,7 +722,7 @@ export component RetargetDialog inherits Rectangle {
                                 }
 
                                 ToggleRow {
-                                    text: "Crown follows the pavilion (keeps the silhouette)";
+                                    text: "Crown Follows the Pavilion (Keeps the Silhouette)";
                                     hint: "Scale every crown tier's slope by the same vertical stretch the pavilion gets, so the whole stone is the original stretched up or down: the plan view, the table size and the crown-to-pavilion proportion stay. Switch it off to use a fraction of the shift instead. Scaling by ratio, below, wins over both.";
                                     checked: RetargetModel.crown_follows_pavilion;
                                     enabled: !RetargetModel.is_busy;
@@ -725,7 +735,7 @@ export component RetargetDialog inherits Rectangle {
 
                                 HorizontalLayout {
                                     spacing: 8px;
-                                    Text { text: "Fraction of shift:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                                    Text { text: "Fraction of Shift:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
                                     // A std-widgets `Slider` gets keyboard/drag/click support for
                                     // free, and `step` lands on round 5% increments without the
                                     // pixel-hunting a hand-rolled mouse-x/width drag bar would need.
@@ -738,7 +748,7 @@ export component RetargetDialog inherits Rectangle {
                                             step: 0.05;
                                             value <=> RetargetModel.crown_fraction;
                                             enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio && !RetargetModel.crown_follows_pavilion;
-                                            accessible-label: "Crown fraction of the pavilion shift";
+                                            accessible-label: "Crown Fraction of the Pavilion Shift";
                                             changed(val) => { RetargetModel.proposal_changed(); }
                                         }
                                     }
@@ -748,7 +758,7 @@ export component RetargetDialog inherits Rectangle {
                                         crown_pct_edit := LineEdit {
                                             enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio && !RetargetModel.crown_follows_pavilion;
                                             horizontal-alignment: center;
-                                            accessible-label: "Crown fraction in percent";
+                                            accessible-label: "Crown Fraction in Percent";
                                             // Bare digits, no "%" -- `to-float()` below needs the
                                             // whole string to be a number. Reflects the slider/model
                                             // whenever this field isn't the one being typed into --
@@ -765,7 +775,7 @@ export component RetargetDialog inherits Rectangle {
                                 }
 
                                 ToggleRow {
-                                    text: "Scale crown by ratio instead";
+                                    text: "Scale Crown by Ratio Instead";
                                     hint: "Instead of a fraction of the pavilion's shift, scale every crown tier's own raw angle by the ratio of the two materials' critical angles.";
                                     checked: RetargetModel.scale_crown_by_ratio;
                                     enabled: !RetargetModel.is_busy;
@@ -779,7 +789,7 @@ export component RetargetDialog inherits Rectangle {
 
                             // 5b. Girdle allowance -- Advanced mode only; on by default.
                             if GuideModel.shows_advanced(): ToggleRow {
-                                text: "Allow a thicker girdle (up to +10 %)";
+                                text: "Allow a Thicker Girdle (up to +10 %)";
                                 hint: "When the new angles would pinch the girdle at its corners, thicken the girdle band by 5 % and then 10 % (never thinner) before giving up. Plan view, table and culet size and the crown-to-pavilion ratio are kept exactly; only the total depth grows by the girdle change. The result text says which step was used.";
                                 checked: RetargetModel.girdle_allowance;
                                 enabled: !RetargetModel.is_busy;
@@ -943,7 +953,7 @@ export component RetargetDialog inherits Rectangle {
                                 Rectangle {
                                     height: metrics_title.preferred-height;
                                     Tooltip { text: @markdown("Windowing is light leaking straight out of the pavilion, brilliance is light returned to the eye with the table facing up, extinction is light trapped or lost. A fast table-up estimate under the fixed grading-tray lighting (not the viewport preset): use it to compare the three columns with each other, not with a full tilt sweep. See the glossary."); }
-                                    metrics_title := Text { text: "Optical comparison (table up)"; font-size: 10px; font-weight: 700; color: Theme.text-muted; }
+                                    metrics_title := Text { text: "Optical Comparison (Table Up)"; font-size: 10px; font-weight: 700; color: Theme.text-muted; }
                                 }
 
                                 HorizontalLayout {
@@ -1042,7 +1052,7 @@ export component RetargetDialog inherits Rectangle {
                 if RetargetModel.is_open: CompareView {
                     show_split: false;
                     horizontal-stretch: 1;
-                    min-width: 320px;
+                    min-width: 240px;
                 }
             } // end two-column layout
         }

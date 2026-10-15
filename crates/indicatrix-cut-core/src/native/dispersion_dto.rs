@@ -7,6 +7,7 @@
 //! can use ([`DispersionModel::validate`]) reads as `None`, and the caller falls back to the
 //! refractive index and `n_F - n_C` pair every custom material also carries.
 
+use super::convert::narrow;
 use indicatrix::optics::dispersion::DispersionModel;
 use indicatrix_formats::native::DispersionModelDto;
 
@@ -50,17 +51,17 @@ pub fn dispersion_model_dto(model: &DispersionModel) -> DispersionModelDto {
 pub fn dispersion_model_from_dto(dto: &DispersionModelDto) -> Option<DispersionModel> {
     let model = match *dto {
         DispersionModelDto::Sellmeier1 { b1, c1 } => DispersionModel::Sellmeier1 {
-            b1: b1 as f32,
-            c1: c1 as f32,
+            b1: narrow(b1),
+            c1: narrow(c1),
         },
         DispersionModelDto::Sellmeier3 { b, c } => DispersionModel::Sellmeier3 {
-            b: b.map(|v| v as f32),
-            c: c.map(|v| v as f32),
+            b: b.map(narrow),
+            c: c.map(narrow),
         },
         DispersionModelDto::Cauchy { a, b, c } => DispersionModel::Cauchy {
-            a: a as f32,
-            b: b as f32,
-            c: c as f32,
+            a: narrow(a),
+            b: narrow(b),
+            c: narrow(c),
         },
     };
     model.validate().is_ok().then_some(model)

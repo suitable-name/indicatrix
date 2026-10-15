@@ -238,8 +238,9 @@ pub(super) fn setup_mirror_tier_to_other_block_callback(
                         false,
                     );
                     drop(st);
-                    ui.global::<EditorModel>()
-                        .set_selected_tier_index(new_index as i32);
+                    ui.global::<EditorModel>().set_selected_tier_index(
+                        i32::try_from(new_index).expect("tier index fits in i32"),
+                    );
                     show_toast(&ui, &format!("Mirrored to {}", mirrored.label), "info");
                 }
                 Err(e) => show_toast(&ui, &e.to_string(), "error"),

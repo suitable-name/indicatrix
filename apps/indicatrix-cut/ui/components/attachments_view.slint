@@ -44,7 +44,12 @@ export component AttachmentsView inherits Rectangle {
             spacing: 8px;
             vertical-stretch: 1;
 
-            Image { source: @image-url("../icons/folder.svg"); colorize: Theme.text-muted; width: 32px; height: 32px; horizontal-alignment: center; }
+            // Centred by a layout of its own: a fixed-size Image in the column sits at the left
+            // of its cell (`horizontal-alignment` only places the picture inside the Image).
+            HorizontalLayout {
+                alignment: center;
+                Image { source: @image-url("../icons/folder.svg"); colorize: Theme.text-muted; width: 32px; height: 32px; }
+            }
             Text { text: "No files or GemCAD data attached to this diagram"; font-size: 13px; color: Theme.text-muted; horizontal-alignment: center; }
         }
 
@@ -68,12 +73,16 @@ export component AttachmentsView inherits Rectangle {
                             spacing: 12px;
                             alignment: start;
 
-                            Image {
-                                source: @image-url("../icons/page.svg");
-                                colorize: Theme.text-secondary;
-                                width: 20px;
-                                height: 20px;
-                                vertical-alignment: center;
+                            // Centred by a layout of its own: a fixed-size Image in the row sits at
+                            // the top of its cell.
+                            VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../icons/page.svg");
+                                    colorize: Theme.text-secondary;
+                                    width: 20px;
+                                    height: 20px;
+                                }
                             }
 
                             VerticalLayout {

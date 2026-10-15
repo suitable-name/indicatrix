@@ -217,7 +217,7 @@ export component CommandPalette inherits Rectangle {
                         search := LineEdit {
                             text <=> CommandPaletteModel.query;
                             placeholder-text: "Type to search commands";
-                            accessible-label: "Search commands";
+                            accessible-label: "Search Commands";
                             accessible-description: "Up and Down choose a command, Enter runs it, Escape closes the palette.";
                             font-size: 14px;
                             changed has-focus => { EditorModel.text_focus = self.has-focus; }
@@ -229,7 +229,7 @@ export component CommandPalette inherits Rectangle {
                 Rectangle {
                     height: root.list_height;
                     accessible-role: AccessibleRole.list;
-                    accessible-label: "Matching commands";
+                    accessible-label: "Matching Commands";
                     list := ScrollView {
                         VerticalLayout {
                             alignment: start;

@@ -98,7 +98,7 @@ component HistoryRowView inherits Rectangle {
                     vertical-alignment: center;
                 }
                 if root.thumb.state == 2: Text {
-                    text: "Does not solve";
+                    text: "Does Not Solve";
                     font-size: 9px;
                     color: Theme.text-muted;
                     wrap: word-wrap;
@@ -223,7 +223,7 @@ component HistorySteps inherits Rectangle {
 
     scope := FocusScope {
         accessible-role: AccessibleRole.list;
-        accessible-label: "History steps";
+        accessible-label: "History Steps";
         accessible-description: "Up and Down choose a step, Enter goes to it, Home chooses the newest step and End chooses Start.";
         key-pressed(event) => {
             if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {

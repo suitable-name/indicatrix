@@ -44,6 +44,10 @@ enum GirdleDiameterPush {
 /// independent flags, so a change to one group never re-seeds (and so discards an
 /// in-progress edit in) another.
 #[derive(Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one independent changed-flag per scratch group, so a change to one never re-seeds another"
+)]
 pub struct ScratchDelta {
     /// The material selection changed.
     pub material: bool,
@@ -75,7 +79,7 @@ impl PushedScratch {
             material: self.material.as_ref() != Some(&design.material),
             gear: self.gear_teeth != Some(design.meta.gear_teeth),
             symmetry: self.symmetry != Some((design.meta.symmetry_order, design.meta.mirror)),
-            preform: self.preform != Some(design.preform),
+            preform: self.preform.as_ref() != Some(&design.preform),
             girdle: self.girdle_diameter_mm
                 != GirdleDiameterPush::Observed(design.girdle_diameter_mm),
             meta: self.meta.as_ref() != Some(&meta_now),
@@ -84,7 +88,7 @@ impl PushedScratch {
             material: Some(design.material.clone()),
             gear_teeth: Some(design.meta.gear_teeth),
             symmetry: Some((design.meta.symmetry_order, design.meta.mirror)),
-            preform: Some(design.preform),
+            preform: Some(design.preform.clone()),
             girdle_diameter_mm: GirdleDiameterPush::Observed(design.girdle_diameter_mm),
             meta: Some(meta_now),
         };

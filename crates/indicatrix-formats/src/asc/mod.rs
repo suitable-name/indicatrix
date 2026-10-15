@@ -93,7 +93,7 @@
 //! embedded whitespace (which would otherwise split into extra tokens on re-parse)
 //! is instead sanitised via [`asc_safe_tier_name`] before being written -- e.g.
 //! `"Crown Main"` is written as `Crown_Main` -- so a plain `.asc` export shows the
-//! sanitised form while the native `.indicatrix.toml` sidecar keeps, and restores on
+//! sanitised form while the native `.isdd` design file keeps, and restores on
 //! load, the true name. A name that is only whitespace sanitises to nothing and is
 //! written as an automatic label (block letter plus position: `C1`, `P3`, ...). See
 //! [`is_asc_safe_tier_name`] and [`asc_safe_tier_name`]'s own doc comments.

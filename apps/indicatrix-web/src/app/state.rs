@@ -28,14 +28,12 @@ pub enum DesignSource {
     Template(String),
     /// A bare `.asc` file.
     Asc,
-    /// An older `.asc` + `.indicatrix.toml` sidecar pair.
-    OlderPair,
-    /// A self-contained `.indicatrix` design file (or an older self-contained
-    /// `.indicatrix.toml`), no `.asc`.
+    /// A self-contained `.isdd` design file (or a legacy `.indicatrix`), no `.asc`.
     DesignFile,
     /// A `.gem` or `.gcs` design converted to `.asc`; carries `".gem"`/`".gcs"`.
     Converted(&'static str),
-    /// Restored from this tab's `sessionStorage` after a reload.
+    /// Restored after a reload (this tab's `sessionStorage`) or after a restart (the
+    /// IndexedDB autosave).
     Restored,
 }
 
@@ -46,10 +44,9 @@ impl DesignSource {
         match self {
             Self::Template(name) => format!("New design: {name}"),
             Self::Asc => "Opened .asc".to_string(),
-            Self::OlderPair => "Opened older .asc + sidecar pair".to_string(),
             Self::DesignFile => "Opened design file".to_string(),
             Self::Converted(ext) => format!("Converted from {ext}"),
-            Self::Restored => "Restored from this tab".to_string(),
+            Self::Restored => "Restored from autosave".to_string(),
         }
     }
 }
@@ -61,10 +58,6 @@ pub struct DesignState {
     pub session: EditorSession,
     /// The design's `.asc` name (`round.asc`), `None` for a New design never saved.
     pub asc_filename: Option<String>,
-    /// The opened `.asc`'s exact text, so a Save `.asc` + older sidecar can keep the
-    /// `.asc` half byte-for-byte when the schedule did not change
-    /// (`indicatrix_cut_core::native::save_paired`'s rule).
-    pub original_asc_text: Option<String>,
     /// Where it came from.
     pub source: DesignSource,
     /// The printed proportions a design file carried in its `[source]` table.
@@ -87,7 +80,6 @@ impl DesignState {
         Self {
             session,
             asc_filename: None,
-            original_asc_text: None,
             source,
             printed_proportions: None,
             custom_material: None,

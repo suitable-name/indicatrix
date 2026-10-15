@@ -107,7 +107,7 @@ fn start_add(host: &Rc<Host>) {
     };
     let request = PickerRequest {
         kind: PickerKind::OpenFile,
-        title: Some("Add an inclusion from a mesh file".to_string()),
+        title: Some("Add an Inclusion from a Mesh File".to_string()),
         filters: vec![PickerFilter {
             label: "Mesh (OBJ, STL, PLY)".to_string(),
             extensions: ["obj", "stl", "ply"].map(str::to_string).to_vec(),

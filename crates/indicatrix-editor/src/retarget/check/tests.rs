@@ -615,11 +615,11 @@ fn the_hinge_keeps_the_girdle_where_the_plain_shift_destroys_it() {
     let plan = build_plan(&design, &target, crown, &[]);
 
     // The plain shift: angles only, masts left alone.
-    let mut plain = design.clone();
+    let mut shifted = design.clone();
     for row in plan.rows.iter().filter(|row| row.moves) {
-        plain.tiers[row.tier_index].angle_deg = row.new_angle;
+        shifted.tiers[row.tier_index].angle_deg = row.new_angle;
     }
-    let plain_reasons = judge(&design, &original, &analyze(&plain, false));
+    let plain_reasons = judge(&design, &original, &analyze(&shifted, false));
     assert!(
         !plain_reasons.is_empty(),
         "leaving the masts alone must wreck this stone"

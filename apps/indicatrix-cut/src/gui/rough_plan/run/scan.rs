@@ -208,6 +208,10 @@ fn measure_planes(
             match measured {
                 Some((metrics, verts)) => {
                     let extents = extents_of(&metrics);
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "f32 is the hull storage precision; mesh vertices are in the normal float range"
+                    )]
                     let vertices = verts
                         .into_iter()
                         .map(|v| [v.x as f32, v.y as f32, v.z as f32])
@@ -294,7 +298,7 @@ fn save_measurement(
 ) -> Saved {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+        .map_or(0, |d| d.as_secs().cast_signed());
 
     let guard = db.lock().unwrap_or_else(PoisonError::into_inner);
     match guard.save_solid_extents_and_hull_if_current(

@@ -1,0 +1,89 @@
+// The data and callbacks of the Cut destination and of Cutting Mode.
+//
+// Direction rule (as in `models.slint`): Rust -> Slint is properties (`in`, or `in-out`
+// when the UI also writes them), Slint -> Rust is callbacks. The `mode-*` members belong
+// to Cutting Mode (`cutting_mode.slint`, lane M3-b); the rest to the Cut page.
+//
+// This file must not import `theme.slint` (nothing here draws).
+
+// One row of the instruction list, in cutting order.
+export struct CutRowData {
+    // The position in the cutting order, from 0 (what `open-step` takes).
+    step: int,
+    code: string,
+    // `41.00°`
+    angle: string,
+    // `96-08-16`
+    index-text: string,
+    name: string,
+    notes: string,
+    done: bool,
+    // Marked once, but its cutting values changed since.
+    changed: bool,
+    // `Pavilion`, `Girdle` or `Crown`.
+    section: string,
+    // True on the first row of a section: the list prints the header above it.
+    section-start: bool,
+    // The flat tier's index in the design, -1 for a concave tier.
+    tier: int,
+}
+
+export global CutModel {
+    // ---- the Cut page ----
+    // 0 ready (there are instructions), 1 no tiers to cut, 2 the design is not solved yet.
+    in property <int> state-kind: 1;
+    // The sentence under the empty state's title.
+    in property <string> state-text: "";
+    in property <bool> solving: false;
+    in property <string> title: "";
+    in property <[CutRowData]> rows: [];
+    // "12 of 57 Facets Done"
+    in property <string> progress-text: "";
+    // Done steps over all steps, 0 to 1.
+    in property <float> progress: 0.0;
+    in property <int> done-count: 0;
+    in property <int> total-count: 0;
+    // The row that is shown in the diagram (Medium and larger windows), -1 for none.
+    in-out property <int> selected-row: -1;
+    // The three-panel diagram with the selected row's tier highlighted.
+    in property <image> diagram;
+    in property <bool> has-diagram: false;
+
+    // Opens Cutting Mode where the cutting left off.
+    callback start-cutting();
+    // Opens Cutting Mode at a step.
+    callback open-step(int);
+    // Highlights a step's tier in the diagram without opening Cutting Mode.
+    callback select-step(int);
+    callback solve();
+    callback share-sheet();
+    callback print-sheet();
+    callback share-diagram();
+    // Asks for confirmation, then clears every done mark.
+    callback reset-progress();
+
+    // ---- Cutting Mode ----
+    // The lead shows `CuttingModeScreen` over everything while this is true.
+    in-out property <bool> mode-open: false;
+    // The step on screen, from 0, and how many there are.
+    in property <int> mode-step: 0;
+    in property <int> mode-step-count: 0;
+    in property <string> mode-code: "";
+    in property <string> mode-angle: "";
+    in property <string> mode-index: "";
+    in property <string> mode-name: "";
+    in property <string> mode-notes: "";
+    in property <bool> mode-done: false;
+    in property <image> mode-diagram;
+    // Pavilion, Girdle or Crown.
+    in property <string> mode-section: "";
+
+    callback mode-next();
+    callback mode-previous();
+    callback mode-toggle-done();
+    callback mode-close();
+    callback mode-jump(int);
+    // Raised by the Cut page when `mode-open` turned false, so Rust re-pushes the list
+    // with the marks Cutting Mode set.
+    callback mode-ended();
+}

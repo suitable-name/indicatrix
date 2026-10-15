@@ -166,11 +166,12 @@ impl WorkerHandler {
             ToWorker::SetScene { scene_id, spec } => self
                 .require(WorkerRole::Render, "SetScene")
                 .err()
+                .map(|reply| *reply)
                 .or_else(|| self.set_scene(scene_id, &spec)),
             ToWorker::HdrMap { id, bytes } => Some(
                 self.require_one_of(&[WorkerRole::Render, WorkerRole::Solve], "HdrMap")
                     .err()
-                    .unwrap_or_else(|| self.load_hdr(id, &bytes)),
+                    .map_or_else(|| self.load_hdr(id, &bytes), |reply| *reply),
             ),
             ToWorker::ClearHdr => {
                 self.hdr = None;
@@ -188,35 +189,37 @@ impl WorkerHandler {
             } => Some(
                 self.require(WorkerRole::Render, "TraceChunk")
                     .err()
-                    .unwrap_or_else(|| {
-                        let range = ChunkRange {
-                            first_pixel,
-                            stride,
-                            sample_offset,
-                            spp,
-                        };
-                        self.trace(scene_id, range, now_ms, probe)
-                    }),
+                    .map_or_else(
+                        || {
+                            let range = ChunkRange {
+                                first_pixel,
+                                stride,
+                                sample_offset,
+                                spp,
+                            };
+                            self.trace(scene_id, range, now_ms, probe)
+                        },
+                        |reply| *reply,
+                    ),
             ),
             ToWorker::Solve {
                 job_id,
                 design_toml,
                 request,
-            } => Some(
-                self.require(WorkerRole::Solve, "Solve")
-                    .err()
-                    .unwrap_or_else(|| {
-                        let mark = Arc::clone(&self.cancel_mark);
-                        let env = JobEnv {
-                            now_ms,
-                            emit,
-                            watch: None,
-                            probe,
-                            mark: &mark,
-                        };
-                        self.solve_job(job_id, &design_toml, &request, &env)
-                    }),
-            ),
+            } => Some(self.require(WorkerRole::Solve, "Solve").err().map_or_else(
+                || {
+                    let mark = Arc::clone(&self.cancel_mark);
+                    let env = JobEnv {
+                        now_ms,
+                        emit,
+                        watch: None,
+                        probe,
+                        mark: &mark,
+                    };
+                    self.solve_job(job_id, &design_toml, &request, &env)
+                },
+                |reply| *reply,
+            )),
             ToWorker::Cancel { job_id } => {
                 self.cancel_mark
                     .fetch_max(job_id.saturating_add(1), Ordering::Relaxed);
@@ -234,9 +237,10 @@ impl WorkerHandler {
             } => Some(
                 self.require(WorkerRole::Render, "Picture")
                     .err()
-                    .unwrap_or_else(|| {
-                        self.picture_reply(scene_id, sample_count, &sums, kind, now_ms)
-                    }),
+                    .map_or_else(
+                        || self.picture_reply(scene_id, sample_count, &sums, kind, now_ms),
+                        |reply| *reply,
+                    ),
             ),
         }
     }
@@ -376,12 +380,12 @@ impl WorkerHandler {
     }
 
     /// `Ok` when this Worker has `role`; otherwise the error reply.
-    fn require(&self, role: WorkerRole, what: &str) -> Result<(), FromWorker> {
+    fn require(&self, role: WorkerRole, what: &str) -> Result<(), Box<FromWorker>> {
         self.require_one_of(&[role], what)
     }
 
     /// `Ok` when this Worker has one of `roles`; otherwise the error reply.
-    fn require_one_of(&self, roles: &[WorkerRole], what: &str) -> Result<(), FromWorker> {
+    fn require_one_of(&self, roles: &[WorkerRole], what: &str) -> Result<(), Box<FromWorker>> {
         if self.role.is_some_and(|role| roles.contains(&role)) {
             Ok(())
         } else {
@@ -389,12 +393,12 @@ impl WorkerHandler {
                 [only] => format!("{only:?}"),
                 _ => format!("one of {roles:?}"),
             };
-            Err(FromWorker::Error {
+            Err(Box::new(FromWorker::Error {
                 message: format!(
                     "{what} sent to a worker whose role is {:?}, not {wanted}",
                     self.role
                 ),
-            })
+            }))
         }
     }
 
@@ -429,7 +433,10 @@ impl WorkerHandler {
         }
         match environment_from_hdr_bytes(bytes, web_hdr_limits()) {
             Ok(map) => {
-                let (width, height) = (map.width() as u32, map.height() as u32);
+                let (width, height) = (
+                    u32::try_from(map.width()).unwrap_or(u32::MAX),
+                    u32::try_from(map.height()).unwrap_or(u32::MAX),
+                );
                 self.hdr = Some((id, Arc::new(map)));
                 FromWorker::HdrLoaded { id, width, height }
             }
@@ -616,6 +623,10 @@ fn run_solve_job(
         }
         last_ms.set(now);
         last_stage.set(Some(report.stage));
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "progress display value; f32 is plenty for seconds of elapsed time"
+        )]
         let elapsed_secs = ((now - start_ms) / 1000.0) as f32;
         let counting = matches!(
             report.stage,

@@ -156,6 +156,10 @@ pub fn backlight_weights(backlight: &[f64; GRID_LEN]) -> Result<[f64; GRID_LEN],
 /// # Errors
 /// Fewer than [`MIN_REFERENCE_FILTERS`] filters, an invalid backlight, or a numerically
 /// singular system.
+///
+/// # Panics
+/// Panics if the lambda grid index does not fit `i32`, which the fixed grid length never
+/// produces.
 #[allow(
     clippy::many_single_char_names,
     clippy::too_many_lines,
@@ -237,7 +241,7 @@ pub fn calibrate_from_filters(
         }
         out
     };
-    let a_times = |s: &[f64]| -> Vec<f64> {
+    let apply_design_matrix = |s: &[f64]| -> Vec<f64> {
         (0..rows)
             .map(|k| {
                 let mut sum = 0.0;
@@ -255,14 +259,18 @@ pub fn calibrate_from_filters(
     let mut traces = [0.0; LAMBDA_GRID_LEN];
     let rows_f = rows as f64;
     for j in 0..LAMBDA_GRID_LEN {
-        lambda_grid[j] = scale * 10f64.powi(LAMBDA_FIRST_EXPONENT + j as i32);
+        lambda_grid[j] = scale
+            * 10f64.powi(
+                LAMBDA_FIRST_EXPONENT
+                    + i32::try_from(j).expect("the lambda grid index is far below i32::MAX"),
+            );
         let Some(factor) = cholesky(&normal_matrix(lambda_grid[j]), n) else {
             continue;
         };
         let mut rss = 0.0;
         for column in &b {
             let s = cholesky_solve(&factor, n, &at_times(column));
-            let fitted = a_times(&s);
+            let fitted = apply_design_matrix(&s);
             for k in 0..rows {
                 let r = column[k] - fitted[k];
                 rss = f64::mul_add(r, r, rss);
@@ -301,7 +309,7 @@ pub fn calibrate_from_filters(
     let mut square_sum = 0.0;
     for (c, column) in b.iter().enumerate() {
         let s = nnls_normal(&h, &at_times(column), n);
-        let fitted = a_times(&s);
+        let fitted = apply_design_matrix(&s);
         let mut channel_sum = 0.0;
         for k in 0..filters.len() {
             let r = column[k] - fitted[k];

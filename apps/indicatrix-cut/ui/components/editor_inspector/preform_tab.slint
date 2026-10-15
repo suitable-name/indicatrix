@@ -23,7 +23,7 @@ component FieldSlider inherits VerticalLayout {
     callback moved(float);
 
     spacing: 2px;
-    ValueSlider {
+    value-slider-label := ValueSlider {
         enabled: root.enabled;
         value_valid: root.spec.usable;
         value: root.spec.value;
@@ -58,6 +58,10 @@ component PreformField inherits VerticalLayout {
     in property <bool> enabled: true;
     in-out property <string> value;
     callback edited();
+    // Enter pressed in the field, and the field losing focus: a field that commits as you
+    // leave it wires both; the others ignore them.
+    callback accepted();
+    callback blurred();
 
     spacing: 4px;
     Rectangle {
@@ -81,7 +85,13 @@ component PreformField inherits VerticalLayout {
             placeholder-text: root.placeholder;
             accessible-label: root.label;
             edited => { root.edited(); }
-            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            accepted => { root.accepted(); }
+            changed has-focus => {
+                EditorModel.text_focus = self.has-focus;
+                if !self.has-focus {
+                    root.blurred();
+                }
+            }
         }
     }
     @children
@@ -132,6 +142,18 @@ export component PreformTab inherits VerticalLayout {
     in-out property <bool> yield_pending: false;
 
     property <bool> advanced: GuideModel.shows_advanced();
+
+    // Commits the Girdle Diameter field to the design (the Stone tab's commit): when the text
+    // already is the design's value Rust does nothing. The "not applied yet" star belongs to
+    // the specific gravity too, so it is cleared only while that field is empty.
+    function commit_width() {
+        if root.unlocked && EditorModel.girdle_diameter_mm != EditorModel.design_girdle_diameter_text {
+            EditorModel.apply_stone_width(EditorModel.girdle_diameter_mm);
+            if EditorModel.specific_gravity_override == "" {
+                root.yield_pending = false;
+            }
+        }
+    }
     // The sliders under the number fields. Each follows its field (typing, Undo, a new design)
     // and fills it in when dragged, marking the tab "not applied yet" like typing does. The
     // Y-offset's range is half the Depth in millimetres, so it also reads the Depth and the
@@ -156,11 +178,20 @@ export component PreformTab inherits VerticalLayout {
             width: parent.width;
             height: parent.height;
             enabled: root.unlocked;
-            accessible-label: "Rough shape";
+            accessible-label: "Rough Shape";
             model: ["Block", "Cylinder"];
             current-index <=> EditorModel.preform_shape_index;
             selected => { root.preform_pending = true; }
         }
+    }
+    // Set only while the design's rough is a planned piece from the Rough Planner: says where
+    // it came from and that the fields show its bounding box.
+    if EditorModel.preform_source_note != "": Text {
+        text: EditorModel.preform_source_note;
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
     }
     // Half-Width/Depth are in the design's
     // own model units (girdle half-width = 1), never
@@ -171,7 +202,7 @@ export component PreformTab inherits VerticalLayout {
     // see `state::preform_mm_texts`'s own doc comment for when
     // it has something to show.
     PreformField {
-        label: "Half-Width (model units, girdle half-width = 1)";
+        label: "Half-Width (Model Units, Girdle Half-Width = 1)";
         tooltip: "Half the rough's width, in the design's own units: the stone's girdle half-width is 1, so the rough has to be wider than 1. You can type arithmetic, for example 1.2+0.1.";
         enabled: root.unlocked;
         value <=> EditorModel.preform_half_width;
@@ -191,7 +222,7 @@ export component PreformTab inherits VerticalLayout {
         }
     }
     PreformField {
-        label: "Length / Width (ratio)";
+        label: "Length / Width (Ratio)";
         tooltip: "The rough's length divided by its width. 1 is square or round; larger is longer. You can type arithmetic, for example 3/2.";
         enabled: root.unlocked;
         value <=> EditorModel.preform_length_over_width;
@@ -199,13 +230,13 @@ export component PreformTab inherits VerticalLayout {
         FieldSlider {
             spec: root.ratio_spec;
             enabled: root.unlocked;
-            label: "Length over width";
+            label: "Length over Width";
             hint: "Drag to set the length-to-width ratio, 0.05 at a time (Shift: 0.01). The field above stays editable and the slider follows it. Apply Preform makes it final.";
             moved(v) => { EditorModel.preform_length_over_width = SliderModel.preform_text(v); root.preform_pending = true; }
         }
     }
     PreformField {
-        label: "Depth (model units, girdle half-width = 1)";
+        label: "Depth (Model Units, Girdle Half-Width = 1)";
         tooltip: "The rough's total height from table to culet, in the same units as the Half-Width. You can type arithmetic, for example 1.2+0.3. See the glossary.";
         enabled: root.unlocked;
         value <=> EditorModel.preform_depth;
@@ -245,7 +276,7 @@ export component PreformTab inherits VerticalLayout {
             moved(v) => { EditorModel.preform_y_offset_mm = SliderModel.preform_text(v); root.preform_pending = true; }
         }
     }
-    TipButton {
+    tip-button-preform-pending := TipButton {
         enabled: root.unlocked;
         // `primary` (the same accent-emphasis
         // property `editor_command_bar.slint`'s own Solve button
@@ -308,7 +339,7 @@ export component PreformTab inherits VerticalLayout {
         spacing: 6px;
         ReadoutLine {
             horizontal-stretch: 1;
-            text: "Crown Angle (main facet): " + (EditorModel.proportion_verdict_crown_angle_level >= 0 ? "estimated from schedule" : "-");
+            text: "Crown Angle (Main Facet): " + (EditorModel.proportion_verdict_crown_angle_level >= 0 ? "estimated from schedule" : "-");
             tooltip: "The angle of the main crown facets, read from the schedule and compared with the usual range for the material.";
         }
         VerdictChip { level: EditorModel.proportion_verdict_crown_angle_level; reason: EditorModel.proportion_verdict_crown_angle_reason; }
@@ -317,7 +348,7 @@ export component PreformTab inherits VerticalLayout {
         spacing: 6px;
         ReadoutLine {
             horizontal-stretch: 1;
-            text: "Pavilion Angle (main facet): " + (EditorModel.proportion_verdict_pavilion_angle_level >= 0 ? "estimated from schedule" : "-");
+            text: "Pavilion Angle (Main Facet): " + (EditorModel.proportion_verdict_pavilion_angle_level >= 0 ? "estimated from schedule" : "-");
             tooltip: "The angle of the main pavilion facets, read from the schedule and compared with the usual range for the material.";
         }
         VerdictChip { level: EditorModel.proportion_verdict_pavilion_angle_level; reason: EditorModel.proportion_verdict_pavilion_angle_reason; }
@@ -371,11 +402,16 @@ export component PreformTab inherits VerticalLayout {
     MaterialGuessBadge { }
     PreformField {
         label: "Girdle Diameter (mm)";
-        tooltip: "Real girdle diameter in millimetres, used for the carat estimate. You can type arithmetic, for example 6.5+0.25.";
+        tooltip: "Real girdle diameter in millimetres, used for the carat estimate and for the color depth of the picture. It is the same value as Stone Width in the Stone tab. You can type arithmetic, for example 6.5+0.25.";
         placeholder: "unset";
         enabled: root.unlocked;
         value <=> EditorModel.girdle_diameter_mm;
+        // Commits exactly like the Stone tab's field: Enter or leaving the field sets the
+        // design's girdle diameter (one undoable edit), so the two tabs never disagree.
+        // "Apply Yield Inputs" still applies the field together with the specific gravity.
         edited => { root.yield_pending = true; }
+        accepted => { root.commit_width(); }
+        blurred => { root.commit_width(); }
     }
     // The "Yield Material" combo that used to sit here was removed --
     // its selected index was never actually read (`state::parse_yield_form`'s
@@ -392,7 +428,7 @@ export component PreformTab inherits VerticalLayout {
         value <=> EditorModel.specific_gravity_override;
         edited => { root.yield_pending = true; }
     }
-    TipButton {
+    tip-button-yield-pending := TipButton {
         enabled: root.unlocked;
         // See the matching "Apply Preform"
         // comment above -- identical amber-on-unapplied treatment.

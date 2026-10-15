@@ -85,15 +85,15 @@ fn pair_cuts(
     if user.len() != target.len() {
         return None;
     }
-    let mut used = vec![false; user.len()];
+    let mut claimed = vec![false; user.len()];
     let mut pairs = Vec::with_capacity(target.len());
     for wanted in target {
         let found = user
             .iter()
             .enumerate()
-            .find(|(index, tier)| !used[*index] && same_cut(tier, wanted, gear, angle_tol_deg))?
+            .find(|(index, tier)| !claimed[*index] && same_cut(tier, wanted, gear, angle_tol_deg))?
             .0;
-        used[found] = true;
+        claimed[found] = true;
         pairs.push(found);
     }
     Some(pairs)

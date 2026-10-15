@@ -17,10 +17,19 @@ pub fn interpolated_value(values: &[f32], tilt_deg: f64) -> f32 {
     }
     let clamped = tilt_deg.clamp(-90.0, 90.0);
     let shifted = clamped + 90.0; // 0..180
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the floored value is clamped to 0..=179 on the line itself"
+    )]
     let lower_idx = shifted.floor().clamp(0.0, 179.0) as usize;
     if lower_idx >= 179 {
         return values[180];
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "frac is in 0..1; f32 is the curve precision"
+    )]
     let frac = (shifted - lower_idx as f64) as f32;
     values[lower_idx].mul_add(1.0 - frac, values[lower_idx + 1] * frac)
 }
@@ -78,6 +87,10 @@ pub struct MetricCurves {
 /// Which metrics are selected -- one bool per [`Metric`] variant, matching
 /// `TiltVideoExportModel`'s own five checkboxes.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors TiltVideoExportModel's five checkboxes; fields are independent switches"
+)]
 pub struct MetricSelection {
     pub brilliance: bool,
     pub windowing: bool,
@@ -135,9 +148,14 @@ pub fn readings_for_frame(
         });
     }
     if selection.angle {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the overlay value precision; tilt is within +-90 degrees"
+        )]
+        let angle = tilt_deg as f32;
         out.push(MetricReading {
             metric: Metric::Angle,
-            value: tilt_deg as f32,
+            value: angle,
         });
     }
     out

@@ -67,6 +67,10 @@ fn db_with(model: Option<DispersionModel>) -> Arc<Mutex<Database>> {
 /// The snapshot saved with a design carries the row's model, the plain numbers beside it are
 /// the model's own, and the rebuilt material has the identical curve.
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the snapshot stores f64; the material takes f32 and the test compares at f32 precision"
+)]
 fn the_design_snapshot_carries_the_rows_dispersion_model() {
     let model = bk7();
     let db = db_with(Some(model));

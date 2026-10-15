@@ -28,6 +28,16 @@ impl Clock for ZeroClock {
     }
 }
 
+/// A whole on-screen pixel coordinate; negative values saturate to 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "test anchors are on-screen coordinates; `as` saturates negatives to 0"
+)]
+const fn pixel(coordinate: f32) -> u32 {
+    coordinate as u32
+}
+
 fn pinned(name: &str, angle_deg: f64, indices: &[f64], mast: f64) -> ConstraintTier {
     ConstraintTier {
         angle_deg,
@@ -132,8 +142,8 @@ fn a_handle_anchor_lands_on_the_facet_the_pick_buffer_names() {
         assert!(!target.provisional);
         let anchor = target.layout.anchor;
         let picked = shown.frame.pick.facet_at(
-            anchor.x.floor().max(0.0) as u32,
-            anchor.y.floor().max(0.0) as u32,
+            pixel(anchor.x.floor().max(0.0)),
+            pixel(anchor.y.floor().max(0.0)),
         );
         // The far side of the stone hides some crown mains behind others; the ones the
         // camera sees must have their anchor on their own pixels.
@@ -168,7 +178,7 @@ fn a_click_on_a_letterboxed_view_finds_the_facet_under_a_drawn_handle_anchor() {
         let Some(expected) = shown
             .frame
             .pick
-            .facet_at(anchor.x.floor() as u32, anchor.y.floor() as u32)
+            .facet_at(pixel(anchor.x.floor()), pixel(anchor.y.floor()))
         else {
             continue;
         };

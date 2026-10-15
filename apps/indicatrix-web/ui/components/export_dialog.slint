@@ -68,7 +68,7 @@ export component ExportDialog inherits Rectangle {
             }
 
             Row {
-                label: "Long edge (px)";
+                label: "Long Edge (px)";
                 SpinBox {
                     horizontal-stretch: 1;
                     enabled: !RenderModel.export-running;
@@ -86,7 +86,7 @@ export component ExportDialog inherits Rectangle {
                 horizontal-alignment: right;
             }
             Row {
-                label: "Samples per pixel";
+                label: "Samples per Pixel";
                 SpinBox {
                     horizontal-stretch: 1;
                     enabled: !RenderModel.export-running;
@@ -98,11 +98,11 @@ export component ExportDialog inherits Rectangle {
                 }
             }
             Row {
-                label: "color space";
+                label: "Color Space";
                 ComboBox {
                     horizontal-stretch: 1;
                     enabled: !RenderModel.export-running;
-                    model: ["sRGB", "Display P3"];
+                    model: ["sRGB", "Display P3", "Rec.2020"];
                     current-index <=> RenderModel.export-color-space;
                     selected => { RenderModel.export-edited(); }
                 }

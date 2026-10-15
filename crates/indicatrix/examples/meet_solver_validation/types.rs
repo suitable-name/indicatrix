@@ -84,6 +84,10 @@ pub struct TierResult {
 /// Everything one design's solve contributes to the aggregate report. Produced by
 /// [`solve_one`], which is the unit of work parallelized across `THREADS` workers.
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "report row of independent per-design outcome flags, each counted on its own"
+)]
 pub struct DesignResult {
     /// The schedule parsed successfully.
     pub parse_ok: bool,

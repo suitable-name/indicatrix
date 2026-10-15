@@ -84,7 +84,8 @@ pub enum LibraryRequest {
     /// earlier in the enum, so postcard's index-based encoding of every existing variant
     /// is undisturbed.
     FetchDesignSource { entry_id: i64 },
-    /// Fetch one design's self-contained native `.indicatrix` file, byte for byte
+    /// Fetch one design's self-contained native design file (`.isdd`, or an entry stored
+    /// under the earlier `.indicatrix` name), byte for byte
     /// (v19). The only lossless carrier of a concave design: the `.asc` that
     /// [`Self::FetchDesignSource`] returns cannot represent concave tiers, so a client
     /// that wants the real stone loads this instead. Answered by
@@ -146,7 +147,7 @@ pub enum LibraryResponse {
     /// Reply to [`LibraryRequest::FetchDesignSource`]: `entry_id`'s real, attached
     /// `.asc` file, decoded as UTF-8 (lossily, same as the client's own local load path
     /// -- see `gui::editor::loading::design_from_full_record`). `file_name` is that
-    /// attachment's own bare file name (for `save_paired`-style "Save"
+    /// attachment's own bare file name (for the "Save"
     /// round-tripping later), `asc_text` its exact original text. Subject to the same
     /// per-message [`crate::framing::MAX_FRAME_LEN`] wire cap every other reply
     /// (including [`Self::Attachment`]) already carries -- no separate bespoke size
@@ -174,7 +175,7 @@ pub enum LibraryResponse {
         file_name: String,
         content: Vec<u8>,
     },
-    /// `entry_id` names a real catalogue entry that has no native `.indicatrix`
+    /// `entry_id` names a real catalogue entry that has no native design-file
     /// attachment (the counterpart of [`Self::DesignSourceNotAvailable`]).
     DesignNativeNotAvailable,
 }

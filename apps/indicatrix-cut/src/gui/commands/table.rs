@@ -687,14 +687,44 @@ pub static COMMANDS: &[Command] = &[
         MATERIAL_EDITOR,
         set!(ViewportModel.set_material_editor_open(true)),
     ),
+    // The Parameters dock (Stone / Lighting & Environment / Render & Output), in the Live
+    // Render and the Edit view alike. "Render Settings..." is kept as the old name of the
+    // Render & Output tab, so the palette still finds it under the name people know.
+    command(
+        "tools.stone_properties",
+        "Stone Properties...",
+        Category::View,
+        "stone size width material effects inclusion haze crystal axis frosted girdle edge rounding parameters panel dock",
+        Some("Ctrl+Alt+1"),
+        VIEW_TABS,
+        run::open_stone_properties,
+    ),
+    command(
+        "tools.lighting_environment",
+        "Lighting & Environment...",
+        Category::View,
+        "light lighting exposure backdrop hdr environment map glare head shadow presets parameters panel dock",
+        Some("Ctrl+Alt+2"),
+        VIEW_TABS,
+        run::open_lighting_and_environment,
+    ),
+    command(
+        "tools.render_output",
+        "Render & Output...",
+        Category::View,
+        "quality samples bounces resolution compute denoise thumbnails live render parameters panel dock",
+        Some("Ctrl+Alt+3"),
+        VIEW_TABS,
+        run::open_render_and_output,
+    ),
     command(
         "tools.render_settings",
         "Render Settings...",
         Category::Tools,
-        "quality samples bounces live render",
+        "quality samples bounces live render alias of render and output",
         None,
         VIEW_TABS,
-        run::open_render_settings,
+        run::open_render_and_output,
     ),
     command(
         "tools.export_render",

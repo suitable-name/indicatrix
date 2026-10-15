@@ -89,6 +89,11 @@ pub(super) fn unit_normal_or_zero(n: Vec3) -> Vec3 {
 #[inline]
 pub(super) fn cos_pow(base: f32, power: f32) -> f32 {
     if power >= 0.0 && power.fract() == 0.0 && power <= u32::MAX as f32 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "power is a non-negative whole number no larger than u32::MAX, checked just above"
+        )]
         let int_power = power as u32;
         if int_power.is_power_of_two() {
             let squarings = int_power.trailing_zeros();
@@ -231,8 +236,9 @@ struct Centre {
 /// `base + offset` when that lands inside `0..limit`.
 #[inline]
 fn shifted(base: usize, offset: i64, limit: usize) -> Option<usize> {
-    usize::try_from(base as i64 + offset)
+    i64::try_from(base)
         .ok()
+        .and_then(|base| usize::try_from(base + offset).ok())
         .filter(|&pos| pos < limit)
 }
 
@@ -309,11 +315,13 @@ fn atrous_pixel(
     let mut sum = Vec3::ZERO;
     let mut weight_sum = 0.0f32;
     for (ky, &hy) in B3_SPLINE.iter().enumerate() {
-        let Some(sy) = shifted(y, (ky as i64 - 2) * stride, g.height) else {
+        let row_tap = i64::try_from(ky).expect("a 5-tap index fits i64") - 2;
+        let Some(sy) = shifted(y, row_tap * stride, g.height) else {
             continue;
         };
         for (kx, &hx) in B3_SPLINE.iter().enumerate() {
-            let Some(sx) = shifted(x, (kx as i64 - 2) * stride, g.width) else {
+            let col_tap = i64::try_from(kx).expect("a 5-tap index fits i64") - 2;
+            let Some(sx) = shifted(x, col_tap * stride, g.width) else {
                 continue;
             };
             let idx = sy * g.width + sx;

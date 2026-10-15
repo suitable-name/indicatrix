@@ -4,6 +4,7 @@
 use crate::{
     LibraryModel, MainWindow,
     bridge::library::source::{self as library_source, LibrarySource},
+    gui::library::read_access::with_read_db,
     settings::WorkerSettings,
 };
 use indicatrix_net::library::{LibraryRequest, LibraryResponse};
@@ -13,35 +14,39 @@ use std::sync::{Arc, Mutex};
 
 /// Exports one attached file from the LOCAL database, by exact name match, to
 /// `dest_path`. Returns a human-readable status line on success.
+///
+/// Reads the attachment list as metadata and then ONLY the matching attachment's bytes
+/// (by id) over a read-only connection, instead of every attachment of the design under
+/// the shared lock. Blocking file and database I/O: call it from a worker thread.
 pub fn export_diagram_file(
     db_mutex: &Arc<Mutex<Database>>,
     entry_id: i64,
     file_name: &str,
     dest_path: &std::path::Path,
 ) -> Result<String, String> {
-    let full_result = {
-        let db = match db_mutex.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        db.get_diagram_full(entry_id)
-    };
+    let attachment = with_read_db(db_mutex, |db| {
+        let meta = db.get_diagram_full_meta(entry_id).ok().flatten()?;
+        let id = meta
+            .attached_files
+            .iter()
+            .find(|af| af.name == file_name)?
+            .id;
+        db.get_attachment_content(id).ok().flatten()
+    });
 
-    if let Ok(Some(full)) = full_result
-        && let Some(f) = full.attached_files.iter().find(|af| af.name == file_name)
-    {
+    if let Some((name, content)) = attachment {
         if let Some(parent) = dest_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if std::fs::write(dest_path, &f.content).is_ok() {
-            return Ok(format!("Saved '{}' to {}", f.name, dest_path.display()));
+        if std::fs::write(dest_path, &content).is_ok() {
+            return Ok(format!("Saved '{name}' to {}", dest_path.display()));
         }
     }
     Err(format!("Failed to export file '{file_name}'."))
 }
 
-/// Dispatches "export this attachment" to the LOCAL synchronous path ([`export_diagram_file`],
-/// which reports through `ui.status_message`/a toast) or a background remote fetch,
+/// Dispatches "export this attachment" to a LOCAL worker ([`export_diagram_file`], which
+/// reports through `ui.status_message`/a toast) or a background remote fetch,
 /// depending on which library is active.
 ///
 /// Unlike [`export_diagram_file`] this reports its own result directly onto `ui` rather
@@ -100,23 +105,27 @@ pub fn export_diagram_file_via_source(
                 .clone();
             match current {
                 LibrarySource::Local => {
-                    match export_diagram_file(
-                        &db_mutex,
-                        entry_id_owned,
-                        &file_name_owned,
-                        &dest_path,
-                    ) {
-                        Ok(msg) => {
-                            ui.global::<LibraryModel>()
-                                .set_status_message(msg.clone().into());
-                            crate::gui::show_toast(ui, &msg, "success");
-                        }
-                        Err(err) => {
-                            ui.global::<LibraryModel>()
-                                .set_status_message(err.clone().into());
-                            crate::gui::show_toast(ui, &err, "error");
-                        }
-                    }
+                    // The read and the file write run on a worker; the report comes
+                    // back through the event loop.
+                    let db_mutex = Arc::clone(&db_mutex);
+                    let file_name = file_name_owned.clone();
+                    let ui_weak = ui.as_weak();
+                    std::thread::spawn(move || {
+                        let result =
+                            export_diagram_file(&db_mutex, entry_id_owned, &file_name, &dest_path);
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| match result {
+                            Ok(msg) => {
+                                ui.global::<LibraryModel>()
+                                    .set_status_message(msg.clone().into());
+                                crate::gui::show_toast(&ui, &msg, "success");
+                            }
+                            Err(err) => {
+                                ui.global::<LibraryModel>()
+                                    .set_status_message(err.clone().into());
+                                crate::gui::show_toast(&ui, &err, "error");
+                            }
+                        });
+                    });
                 }
                 LibrarySource::Remote(worker) => {
                     export_diagram_file_remote(

@@ -87,7 +87,7 @@ impl GalleryGroup {
         match self {
             Self::Blank => "Blank",
             Self::Shapes => "Shapes",
-            Self::Variants => "Round variants and teaching designs",
+            Self::Variants => "Round Variants and Teaching Designs",
         }
     }
 

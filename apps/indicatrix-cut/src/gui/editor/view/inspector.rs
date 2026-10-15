@@ -9,8 +9,8 @@ use super::state::{
     gear_index_from_teeth, index_chip_items, push_rows, ri_source_text,
 };
 use crate::{
-    EditorModel, IndexChipItem, MainWindow, ViewportModel,
-    bridge::render_thread::RenderContext,
+    EditorModel, IndexChipItem, MainWindow, SettingsModel, ViewportModel,
+    bridge::render_thread::{PlanesOwner, RenderContext},
     gui::{
         editor::{
             body_color_combo,
@@ -18,7 +18,7 @@ use crate::{
                 EditorMaterialLookup, material_guess, traced_gem_material, traced_material_for,
             },
         },
-        render::render_body_color::display_rgb_for_stone,
+        render::{render_body_color::display_rgb_for_stone, stone_effects},
     },
 };
 use indicatrix::optics::materials::GemMaterial;
@@ -86,6 +86,17 @@ fn is_physics_material(design: &Design, ctx: &RenderContext) -> bool {
     })
 }
 
+/// Whether the design's material is a custom material with colour zones. Its colour is its
+/// zones, so the design's body-colour override does not apply to it (the cut-core
+/// `MaterialSelection::apply_overrides` ignores it) and the Stone tab greys the control out.
+fn is_zoned_material(design: &Design, ctx: &RenderContext) -> bool {
+    design.material.name.as_deref().is_some_and(|name| {
+        ctx.custom_materials
+            .iter()
+            .any(|m| m.zoning.is_some() && m.name.eq_ignore_ascii_case(name))
+    })
+}
+
 /// The design settings panel's color combo half of [`refresh_design_settings`] --
 /// split out purely to keep that function under clippy's function-length lint. The
 /// option list is "Material default", the nine presets and the trailing "Custom..." entry
@@ -97,7 +108,7 @@ fn push_body_color_fields(
     ui: &MainWindow,
     design: &Design,
     readout: String,
-    physics_material: bool,
+    (physics_material, zoned_material): (bool, bool),
     material_changed: bool,
 ) {
     let model = ui.global::<EditorModel>();
@@ -117,6 +128,9 @@ fn push_body_color_fields(
     // The override replaces the whole absorption tensor, so it is unavailable (greyed out) for a
     // physics material; one that is already set gets a warning rather than a silent override.
     model.set_design_material_is_physics(physics_material);
+    // A zoned material's colour is its zones: the override is ignored for it, so the control is
+    // greyed out with a note (the Stone tab) instead of silently doing nothing.
+    model.set_design_material_is_zoned(zoned_material);
     model.set_physics_override_conflict(
         physics_material && design.material.body_color_override.is_some(),
     );
@@ -163,11 +177,17 @@ pub(super) fn refresh_design_settings(
     // it, and is a real `Drop` guard released at the end of this block rather
     // than sitting locked across the `delta`-gated pushes below, which touch
     // only `design`/`ui` -- clippy::nursery's `significant_drop_tightening`.
-    let (n_d, options, color_readout, physics_material) = {
+    let (n_d, options, color_readout, physics_material, zoned_material) = {
         let ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let color_readout = body_color_readout(design, &ctx.custom_materials, ctx.stone_width_mm);
+        let zoned_material = is_zoned_material(design, &ctx);
+        // A zoned material ignores the override, so the readout never names a colour it lacks.
+        let color_readout = if zoned_material {
+            String::new()
+        } else {
+            body_color_readout(design, &ctx.custom_materials, ctx.stone_width_mm)
+        };
         // Custom-catalogue-aware: unlike `effective_refractive_index`,
         // this also resolves a custom material by name before falling back to a built-in
         // or the design's `I` line -- see `ri_source_text` below for the matching
@@ -180,10 +200,31 @@ pub(super) fn refresh_design_settings(
         // selections below are gated on `delta`.
         let options = state.material_combo_options(&ctx.custom_materials);
         let physics_material = is_physics_material(design, &ctx);
+        // The design's own traced material, published ahead of the link gate so "Preview as..."
+        // can tell the design's material from another one even while a preview is running
+        // (`ctx.material_name` is then the preview's).
+        ui.global::<ViewportModel>()
+            .set_design_material_name(traced_material_for(design, &ctx.custom_materials).0.into());
         drop(ctx);
-        (n_d, options, color_readout, physics_material)
+        (
+            n_d,
+            options,
+            color_readout,
+            physics_material,
+            zoned_material,
+        )
     };
-    push_body_color_fields(ui, design, color_readout, physics_material, delta.material);
+    push_body_color_fields(
+        ui,
+        design,
+        color_readout,
+        (physics_material, zoned_material),
+        delta.material,
+    );
+    // The stone width (and the zone scale that follows it) is synced BEFORE the
+    // viewport material link: the link derives `material_override` from the re-scaled list, and
+    // `stone_width_applied` replaces a same-named override with the bare list entry.
+    push_stone_fields(ui, render_ctx, design);
     // A second, separate lock acquisition (rather than reusing the guard
     // above): its own last use sits right at this block's own end, so the
     // lock is never held across work -- the `delta`-gated pushes below -- that
@@ -200,6 +241,65 @@ pub(super) fn refresh_design_settings(
         ui.global::<ViewportModel>()
             .set_selected_material_index(idx);
     }
+    push_material_options(ui, &options);
+    if delta.material {
+        ui.global::<EditorModel>()
+            .set_material_combo_index(design_material_index_from_name(
+                design.material.name.as_deref(),
+                &options,
+            ));
+        ui.global::<EditorModel>().set_ri_override_text(
+            design
+                .material
+                .refractive_index_override
+                .map_or_else(String::new, |v| format!("{v:.4}"))
+                .into(),
+        );
+    }
+    ui.global::<EditorModel>()
+        .set_effective_ri_text(format!("{n_d:.4}").into());
+    ui.global::<EditorModel>()
+        .set_critical_angle_text(format!("{:.2}\u{b0}", critical_angle_deg(n_d)).into());
+    push_material_guess(ui, design, n_d);
+    push_gear_symmetry_meta(ui, design, delta);
+
+    n_d
+}
+
+/// The stone width and render effects are the design's own, preview or not: syncs the render
+/// context from the design, pushes the Stone tab's controls when they differ and no live edit
+/// waits to commit, and follows a width change (mirror property, swatches, zoning hook).
+fn push_stone_fields(ui: &MainWindow, render_ctx: &Arc<Mutex<RenderContext>>, design: &Design) {
+    let stone = {
+        let mut ctx = render_ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sync_stone_from_design(&mut ctx, design)
+    };
+    if !stone_effects::live_edit_pending()
+        && (stone.effects_applied
+            || stone_effects::effects_from_controls(ui) != design.render_effects)
+    {
+        stone_effects::push_effects_to_controls(ui, &design.render_effects);
+    }
+    if stone.width_changed {
+        // A read-only mirror of the design's width for the code that sizes library zones
+        // (`SettingsModel.stone_width_mm`; the design is the only place the width is edited).
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f32 is the storage precision of the stone width in mm"
+        )]
+        let girdle_mm = design.girdle_diameter_mm.unwrap_or(0.0) as f32;
+        ui.global::<SettingsModel>().set_stone_width_mm(girdle_mm);
+        // The toolbar swatches show the colour at this size.
+        ui.global::<ViewportModel>().invoke_render_color_refresh();
+        // Library zones stored "relative to stone" follow the new width.
+        crate::gui::rough_colour::material_zones::stone_width_applied(render_ctx, girdle_mm);
+    }
+}
+
+/// Pushes the material combo's option list and the New Design dialog's material list.
+fn push_material_options(ui: &MainWindow, options: &[String]) {
     // `options` is already cached at the `Vec<String>` level
     // (`EditorState::material_combo_options`'s own `MaterialComboCache`, rebuilt
     // only when the catalogue's custom-material names change). Comparing against
@@ -239,25 +339,11 @@ pub(super) fn refresh_design_settings(
                 .map(SharedString::from)
                 .collect::<Vec<_>>(),
         )));
-    if delta.material {
-        ui.global::<EditorModel>()
-            .set_material_combo_index(design_material_index_from_name(
-                design.material.name.as_deref(),
-                &options,
-            ));
-        ui.global::<EditorModel>().set_ri_override_text(
-            design
-                .material
-                .refractive_index_override
-                .map_or_else(String::new, |v| format!("{v:.4}"))
-                .into(),
-        );
-    }
-    ui.global::<EditorModel>()
-        .set_effective_ri_text(format!("{n_d:.4}").into());
-    ui.global::<EditorModel>()
-        .set_critical_angle_text(format!("{:.2}\u{b0}", critical_angle_deg(n_d)).into());
-    push_material_guess(ui, design, n_d);
+}
+
+/// The gear, symmetry and header/footnote scratch pushes, each gated on its own `delta` flag so
+/// an edit that changed one never re-seeds (and discards typing in) the others.
+fn push_gear_symmetry_meta(ui: &MainWindow, design: &Design, delta: &ScratchDelta) {
     if delta.gear {
         ui.global::<EditorModel>()
             .set_gear_index(gear_index_from_teeth(design.meta.gear_teeth));
@@ -297,17 +383,18 @@ pub(super) fn refresh_design_settings(
             format!("{}", design.meta.gear_reference_angle).into(),
         );
     }
-
-    n_d
 }
 
-/// The design-settings panel's "linked to design" viewport sync -- see
+/// The viewport's material sync while the view follows the design (no sync while the person is
+/// previewing another material) -- the stone width and effects are [`sync_stone_from_design`]'s.
+///
+/// See
 /// [`refresh_design_settings`]'s doc comment for why there is no separate
 /// `render_view_tab` gate. Split out purely to keep that function under clippy's
 /// function-length lint.
 ///
-/// Returns the Render Material dropdown's
-/// resolved index instead of setting `ViewportModel.selected_material_index`
+/// Returns the viewport material selection's (the "Preview as…" and library-row
+/// picker) resolved index instead of setting `ViewportModel.selected_material_index`
 /// itself. That setter's `changed` handler runs a DB query
 /// (`custom_materials.rs`), and every caller holds `ctx` -- the `render_ctx`
 /// mutex the render thread also locks every frame -- across this function's
@@ -320,7 +407,10 @@ pub(in crate::gui::editor) fn sync_viewport_material_link(
     ctx: &mut RenderContext,
     design: &Design,
 ) -> Option<i32> {
-    if !ui.global::<ViewportModel>().get_viewport_material_linked() {
+    // A library design on the viewport is not this design's picture: never sync it.
+    if matches!(ctx.planes_owner, PlanesOwner::Catalogue { .. })
+        || !ui.global::<ViewportModel>().get_viewport_material_linked()
+    {
         return None;
     }
     let (name, unresolved) = traced_material_for(design, &ctx.custom_materials);
@@ -368,26 +458,65 @@ pub(in crate::gui::editor) fn sync_viewport_material_link(
         ctx.material_name.clone_from(&name);
         ctx.dirty = true;
     }
-    // Keeps the Render Material dropdown's own displayed selection in sync with
+    // Keeps the viewport material selection's displayed index in sync with
     // the material actually being traced on every refresh. Writing this only
     // once, at startup (`startup_settings::apply_saved_settings`), would let the
-    // dropdown go on showing e.g. "Diamond" long after `ctx.material_name` (and
+    // selection go on showing e.g. "Diamond" long after `ctx.material_name` (and
     // so the trace, and the tilt dialog's staleness check, both of which read
     // `ViewportModel.selected_material_index`/`material_options`) had moved to
     // something else entirely.
     let options = ui.global::<ViewportModel>().get_material_options();
-    let selected_material_index = crate::gui::startup_settings::find_option_index(&options, &name);
-    // The design's own real girdle diameter, under the same link gate as the
-    // material above -- without this write, `context::apply_material_overrides`
-    // would always skip absorption-path scaling (treating every design as if it
-    // had no physical size), and the Yield panel's millimetre carat estimate
-    // would have no counterpart in the render's own color depth.
+    crate::gui::startup_settings::find_option_index(&options, &name)
+}
+
+/// What [`sync_stone_from_design`] changed.
+pub(in crate::gui::editor) struct StoneSync {
+    /// The stone width moved (the zoning hook rescales library zones, and the swatches follow).
+    pub width_changed: bool,
+    /// The design's effects were pushed into the render context.
+    pub effects_applied: bool,
+}
+
+/// Makes the render context's stone width and render effects the design's own. Unlike the
+/// material, these are NOT view choices: they follow the design whether or not a material
+/// preview is on (the preview only swaps the material), so the old overwrite of a manual size
+/// by a linked refresh is gone -- there is one stone width, `design.girdle_diameter_mm`.
+///
+/// The effects are left alone while a Stone-tab control waits to commit its change to the design
+/// ([`stone_effects::live_edit_pending`]), so a refresh that lands mid-drag never takes the
+/// slider's value back. The caller pushes the controls after dropping the context lock.
+#[must_use]
+pub(in crate::gui::editor) fn sync_stone_from_design(
+    ctx: &mut RenderContext,
+    design: &Design,
+) -> StoneSync {
+    // A library design on the viewport keeps its own view-only width and effects.
+    if matches!(ctx.planes_owner, PlanesOwner::Catalogue { .. }) {
+        return StoneSync {
+            width_changed: false,
+            effects_applied: false,
+        };
+    }
+    // 0.0 = not set in the design: the render assumes the 7 mm the built-in colours are tuned for.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f32 is the render-context precision of the stone width in mm"
+    )]
     let stone_width_mm = design.girdle_diameter_mm.unwrap_or(0.0) as f32;
-    if (ctx.stone_width_mm - stone_width_mm).abs() > f32::EPSILON {
+    let width_changed = (ctx.stone_width_mm - stone_width_mm).abs() > f32::EPSILON;
+    if width_changed {
         ctx.stone_width_mm = stone_width_mm;
         ctx.dirty = true;
     }
-    selected_material_index
+    let effects_applied = !stone_effects::live_edit_pending()
+        && !stone_effects::context_matches(ctx, &design.render_effects);
+    if effects_applied {
+        stone_effects::apply_effects_to_context(ctx, &design.render_effects);
+    }
+    StoneSync {
+        width_changed,
+        effects_applied,
+    }
 }
 
 /// Builds the chip row for whichever tier the inspector's Tier tab currently has
@@ -482,5 +611,35 @@ mod tests {
         assert_eq!(chips.len(), 2);
         assert!(!chips[0].detached);
         assert!(chips[1].detached);
+    }
+
+    /// A refresh must not take a slider's value back while its commit is pending, and must
+    /// apply the design's own effects once nothing is pending; a library design on the viewport
+    /// is never synced.
+    #[test]
+    fn the_design_effects_wait_for_a_pending_edit_and_skip_library_views() {
+        let _guard = stone_effects::PENDING_FLAG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut design = EditorState::fresh().design.clone();
+        design.render_effects = indicatrix_cut_core::StoneRenderEffects::from_render_values(
+            0.5, true, 30.0, 120.0, true, 0.01,
+        );
+
+        stone_effects::mark_live_edit_pending();
+        let mut ctx = RenderContext::default();
+        assert!(!sync_stone_from_design(&mut ctx, &design).effects_applied);
+        assert!(!stone_effects::context_matches(
+            &ctx,
+            &design.render_effects
+        ));
+
+        stone_effects::clear_live_edit_pending();
+        ctx.planes_owner = PlanesOwner::Catalogue { entry_id: 1 };
+        assert!(!sync_stone_from_design(&mut ctx, &design).effects_applied);
+
+        ctx.planes_owner = PlanesOwner::Editor { generation: 1 };
+        assert!(sync_stone_from_design(&mut ctx, &design).effects_applied);
+        assert!(stone_effects::context_matches(&ctx, &design.render_effects));
     }
 }

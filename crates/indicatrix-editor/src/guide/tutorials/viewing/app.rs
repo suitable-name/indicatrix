@@ -85,8 +85,8 @@ fn interface_mode() -> Guide {
             "A hidden setting keeps its value and still applies.",
         )
         .actions([
-            "Simple hides the Tilt Curve and Save View Preset buttons, and the advanced rows in Settings: preview image size and samples, motion preview resolution, live compute and transfer, local compute, max ray bounces and the Tilt Performance Curve panel.",
-            "When one of those settings is not at its default, Settings says Some advanced settings are in use.",
+            "Simple hides the Tilt Curve and Save lighting buttons, the RI Override of the Stone tab, and the advanced rows of the Render & Output tab: library thumbnails, motion preview resolution, live and local compute, max ray bounces and the Tilt Performance Curve panel.",
+            "When one of those settings is not at its default, the tab says Some advanced settings are in use.",
             "The command palette has Use the Simple Interface and Use the Advanced Interface as well.",
         ])
         .why("Every control is unlocked again."),
@@ -96,7 +96,7 @@ fn interface_mode() -> Guide {
 fn high_contrast() -> Guide {
     Guide::new(
         "prefs-high-contrast",
-        "High contrast",
+        "High Contrast",
         "Switch to near-black backgrounds, white text and bright accents for easier reading.",
         GuideCategory::Preferences,
     )
@@ -109,7 +109,7 @@ fn high_contrast() -> Guide {
         .actions([
             "Backgrounds turn near-black, text white, borders clear and accents bright.",
             "It takes effect at once, in the main window and in the Compare and Rough Planner windows, including ones you open later.",
-            "A few colours keep their value because they mean something: the tilt graph's curve colours, colour swatches and the rendered pictures themselves.",
+            "A few colors keep their value because they mean something: the tilt graph's curve colors, color swatches and the rendered pictures themselves.",
         ])
         .allow(ADVANCED),
     )
@@ -120,12 +120,12 @@ fn high_contrast() -> Guide {
         )
         .actions([
             "Choose Edit, then Preferences... (or press Ctrl+,).",
-            "In Appearance, switch High contrast on.",
+            "In Appearance, switch High Contrast on.",
             "Switch it off again if you only wanted to look, then click Done.",
         ])
-        .check("The colours of the window change as you flip the switch.")
+        .check("The colors of the window change as you flip the switch.")
         .why("The choice is saved at once and comes back the next time you start the program.")
-        .goal(event(HIGH_CONTRAST_CHANGED), "High contrast switched")
+        .goal(event(HIGH_CONTRAST_CHANGED), "High Contrast switched")
         .allow(ADVANCED),
     )
     .step(
@@ -140,7 +140,7 @@ fn high_contrast() -> Guide {
 fn interface_scale() -> Guide {
     Guide::new(
         "prefs-interface-scale",
-        "Interface scale",
+        "Interface Scale",
         "Make everything in the windows larger or smaller.",
         GuideCategory::Preferences,
     )
@@ -148,7 +148,7 @@ fn interface_scale() -> Guide {
     .step(
         GuideStep::new(
             "How the scale works",
-            "Interface scale makes everything in the windows larger or smaller.",
+            "Interface Scale makes everything in the windows larger or smaller.",
         )
         .actions([
             "The choices are Automatic, which follows your system's display scaling, and 75, 90, 100, 110, 125, 150, 175 and 200 percent.",
@@ -165,7 +165,7 @@ fn interface_scale() -> Guide {
         )
         .actions([
             "Choose Edit, then Preferences... (or press Ctrl+,).",
-            "In Appearance, open Interface scale and choose a value.",
+            "In Appearance, open Interface Scale and choose a value.",
             "Choose Automatic again if you do not want the new size at the next start, then click Done.",
         ])
         .check("A note under the drop-down says it takes effect after a restart.")
@@ -184,7 +184,7 @@ fn interface_scale() -> Guide {
 fn larger_handles() -> Guide {
     Guide::new(
         "prefs-larger-handles",
-        "Larger handles",
+        "Larger Handles",
         "Make the drag handles on the stone bigger, for touch screens and pens.",
         GuideCategory::Preferences,
     )
@@ -195,7 +195,7 @@ fn larger_handles() -> Guide {
             "A fingertip is far less precise than a mouse.",
         )
         .actions([
-            "Larger handles makes the angle, depth and index handles about 60 percent bigger, and the area you can grab around each one just as much bigger.",
+            "Larger Handles makes the angle, depth and index handles about 60 percent bigger, and the area you can grab around each one just as much bigger.",
             "A touch screen has no hover, so with larger handles on, the line under the toolbar explains the three handles as soon as you select a facet.",
         ])
         .allow(ADVANCED),
@@ -207,10 +207,10 @@ fn larger_handles() -> Guide {
         )
         .actions([
             "Choose Edit, then Preferences... (or press Ctrl+,).",
-            "In Direct manipulation, switch Larger handles on, then click Done.",
+            "In Direct Manipulation, switch Larger Handles on, then click Done.",
         ])
         .check("The switch is on.")
-        .goal(event(LARGE_HANDLES_CHANGED), "Larger handles switched")
+        .goal(event(LARGE_HANDLES_CHANGED), "Larger Handles switched")
         .allow(ADVANCED),
     )
     .step(
@@ -222,7 +222,7 @@ fn larger_handles() -> Guide {
             "Click the Edit tab, then a facet of the stone in the Solid view.",
         ])
         .check("The handles A, D and I are bigger than before, and the line under the toolbar names what each one does.")
-        .why("Switch Larger handles off in the same place if you prefer the small ones. Snap to gear steps when dragging is in the same section; it is the Snap pill of the toolbar.")
+        .why("Switch Larger Handles off in the same place if you prefer the small ones. Snap to Gear Steps When Dragging is in the same section; it is the Snap pill of the toolbar.")
         .goal(event(TIER_SELECTED), "A facet selected")
         .highlight("solid_viewport")
         .allow(VIEWPORT),
@@ -239,7 +239,7 @@ fn larger_handles() -> Guide {
 fn command_palette() -> Guide {
     Guide::new(
         "app-command-palette",
-        "The command palette",
+        "The Command Palette",
         "Find and run any action by typing a few letters of its name.",
         GuideCategory::GettingStarted,
     )
@@ -292,7 +292,7 @@ fn command_palette() -> Guide {
 fn keyboard() -> Guide {
     Guide::new(
         "app-keyboard-shortcuts",
-        "Keyboard shortcuts",
+        "Keyboard Shortcuts",
         "Switch views, tabs and tools with keys, and find every shortcut in one list.",
         GuideCategory::GettingStarted,
     )
@@ -376,7 +376,7 @@ fn keyboard() -> Guide {
 fn help_viewer() -> Guide {
     Guide::new(
         "app-help-viewer",
-        "The manual and context help",
+        "The Manual and Context Help",
         "Read the manual inside the program, and open the page for what is on screen with F1.",
         GuideCategory::GettingStarted,
     )
@@ -423,7 +423,7 @@ fn help_viewer() -> Guide {
             "The search box finds sections, not only chapters.",
         )
         .actions([
-            "In the help window, click Search the manual (or press Ctrl+F in it) and type a word, for example mast.",
+            "In the help window, click Search the Manual (or press Ctrl+F in it) and type a word, for example mast.",
             "Click a result to open that section.",
         ])
         .why("Every control is unlocked again."),
@@ -433,7 +433,7 @@ fn help_viewer() -> Guide {
 fn glossary() -> Guide {
     Guide::new(
         "app-glossary",
-        "The glossary",
+        "The Glossary",
         "Look up the words of cutting and optics that the program and the manual use.",
         GuideCategory::GettingStarted,
     )
@@ -456,7 +456,7 @@ fn glossary() -> Guide {
         )
         .actions([
             "Choose Help, then Glossary in the menu bar.",
-            "Click Search the terms and type a word, for example mast.",
+            "Click Search the Terms and type a word, for example mast.",
             "Press Esc, or click the close button, to come back to this panel.",
         ])
         .check("The list narrows to the terms that match what you typed.")

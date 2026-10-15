@@ -208,10 +208,10 @@ fn parses_serve_insecure_no_tls_flag() {
 #[test]
 fn serve_compute_mode_defaults_to_hybrid_when_neither_only_flag_is_given() {
     let argv = ["serve".to_string()];
-    let Command::Serve(args) = parse(&argv).unwrap() else {
+    let Command::Serve(parsed) = parse(&argv).unwrap() else {
         panic!("expected Serve")
     };
-    assert_eq!(args.compute_mode, ComputeMode::Hybrid);
+    assert_eq!(parsed.compute_mode, ComputeMode::Hybrid);
 }
 
 /// `--only-cpu` selects the own lane's engine, so it implies `--render`.
@@ -344,10 +344,10 @@ fn parses_serve_max_connections_flag() {
 #[test]
 fn serve_max_connections_defaults_to_64_when_not_given() {
     let argv = ["serve".to_string()];
-    let Command::Serve(args) = parse(&argv).unwrap() else {
+    let Command::Serve(parsed) = parse(&argv).unwrap() else {
         panic!("expected Serve")
     };
-    assert_eq!(args.max_connections, 64);
+    assert_eq!(parsed.max_connections, 64);
 }
 
 #[test]
@@ -378,10 +378,10 @@ fn parses_serve_max_preauth_per_ip_flag() {
 #[test]
 fn serve_max_preauth_per_ip_defaults_to_8_when_not_given() {
     let argv = ["serve".to_string()];
-    let Command::Serve(args) = parse(&argv).unwrap() else {
+    let Command::Serve(parsed) = parse(&argv).unwrap() else {
         panic!("expected Serve")
     };
-    assert_eq!(args.max_preauth_per_ip, 8);
+    assert_eq!(parsed.max_preauth_per_ip, 8);
 }
 
 #[test]

@@ -300,6 +300,11 @@ fn standard_gem_cut_generators_always_satisfy_from_planes_d_negative_preconditio
 
     // 5.5, 9.2, 12.9, ... stepping by 3.7 degrees, staying inside the (5, 88) taper
     // range that `from_database_angles` uses its proportional formula for.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the step count is a small positive ceiling (about 23)"
+    )]
     let steps = ((88.0f32 - 5.5) / 3.7).ceil() as u32;
     for step in 0..steps {
         let angle_deg = 3.7f32.mul_add(step as f32, 5.5);

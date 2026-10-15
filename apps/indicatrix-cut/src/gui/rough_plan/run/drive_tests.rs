@@ -88,7 +88,7 @@ pub(super) fn layout_bits(layout: &RoughLayout) -> Vec<u64> {
         ],
     );
     for stone in &layout.stones {
-        bits.push(stone.entry_id as u64);
+        bits.push(stone.entry_id.cast_unsigned());
         bits.push(match stone.table_axis {
             Axis::X => 0,
             Axis::Y => 1,
@@ -494,7 +494,7 @@ fn marked_layout(slot: usize) -> RoughLayout {
     RoughLayout {
         cut_order: CutOrder::Xyz,
         stones: vec![PlacedStone {
-            entry_id: slot as i64,
+            entry_id: i64::try_from(slot).expect("a test slot fits i64"),
             piece_origin_mm: [0.0; 3],
             piece_size_mm: [1.0; 3],
             stone_size_mm: [1.0; 3],

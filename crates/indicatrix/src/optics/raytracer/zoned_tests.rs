@@ -1,4 +1,4 @@
-//! Tests of the zoned absorption in the CPU tracer (`zoning` feature): the segment optical depth
+//! Tests of the zoned absorption in the CPU tracer: the segment optical depth
 //! per zone, the bit-exact reduction to the unzoned path, the bicolour render, the zoned
 //! scattering estimator and the zone swatches.
 
@@ -228,7 +228,7 @@ fn half_chromaticities(material: &GemMaterial) -> (f32, f32) {
             let ray = camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
             let mut pixel = Vec3::ZERO;
             for s in 0..SAMPLES {
-                let pixel_id = (iy * GRID + ix) as u32;
+                let pixel_id = u32::try_from(iy * GRID + ix).expect("a small grid");
                 let seed =
                     super::sampling::hash_u32(pixel_id ^ super::sampling::hash_u32(s ^ 0x20_4E));
                 pixel += trace_spectral_ray(
@@ -405,7 +405,7 @@ fn identical_zones_with_scattering_render_like_the_unzoned_stone() {
                 let ray =
                     camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
                 for s in 0..SAMPLES {
-                    let pixel_id = (iy * GRID + ix) as u32;
+                    let pixel_id = u32::try_from(iy * GRID + ix).expect("a small grid");
                     let seed =
                         super::sampling::hash_u32(pixel_id ^ super::sampling::hash_u32(s ^ 0x5CA7));
                     sum += trace_spectral_ray(

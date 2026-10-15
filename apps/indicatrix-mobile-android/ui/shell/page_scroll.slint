@@ -1,0 +1,17 @@
+// A vertically scrolling page body: children are stacked from the top and the page
+// pans by touch when they are taller than the space. Fills its parent.
+export component PageScroll inherits Flickable {
+    content-height: column.height;
+
+    column := VerticalLayout {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        // At least the visible height, so the children never get squeezed below their
+        // preferred size when the page is short.
+        height: max(self.preferred-height, root.height);
+        alignment: start;
+
+        @children
+    }
+}

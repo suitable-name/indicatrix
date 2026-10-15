@@ -30,7 +30,11 @@
 //! evaluations in ~1.4 s, interactive), versus ~6.2 s/eval on a large, heavily
 //! meet-derived design like CrackOtto-Step (200 evaluations would be ~20 minutes,
 //! entirely re-solving)**. There is no cheap incremental resolve to fall back on
-//! once tiers are genuinely free.
+//! once tiers are genuinely free. (The table above predates the per-candidate geometry
+//! being built once: a candidate's plane list, mesh and solid measurement are now shared
+//! by the guard, the manufacturability gate and the score, and the preform is measured
+//! once per run, so the figures above include that repeated work; the girdle guard's
+//! extra `measure_solid` below is likewise gone.)
 //!
 //! Asking for several candidates ([`OptimizeOptions::keep_candidates`]) adds one more
 //! `Full`-fidelity scoring per extra candidate (the last column above: 1.281 s on
@@ -286,8 +290,9 @@ pub use candidate::{
 pub use indicatrix::color::metrics::FaceUpTone;
 pub use objective::{
     CANONICAL_LIGHT_PITCH, CANONICAL_LIGHT_YAW, CANONICAL_LIGHTING_PRESET, ObjectiveComponents,
-    ObjectiveFidelity, ObjectiveWeights, ToneGoal, evaluate_objective, evaluate_objective_under,
-    evaluate_objective_with_tone, evaluate_objective_with_tone_under,
+    ObjectiveFidelity, ObjectiveWeights, ToneGoal, evaluate_objective, evaluate_objective_threaded,
+    evaluate_objective_under, evaluate_objective_under_threaded, evaluate_objective_with_tone,
+    evaluate_objective_with_tone_under, evaluate_objective_with_tone_under_threaded,
 };
 pub use options::{MastChange, OptimizeCandidate, OptimizeOptions, OptimizeResult, ShapeTarget};
 pub use preset::ObjectivePreset;

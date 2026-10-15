@@ -122,28 +122,23 @@ fn material_dump_hashes() -> Vec<u64> {
             let applied =
                 apply_material_overrides(base, overrides, &planes, &mut StoneWidthCache::new());
             let _ = writeln!(dump, "{applied:?}");
-            fnv1a(dump.as_bytes())
+            fnv1a(without_zoning_field(&dump).as_bytes())
         })
         .collect()
 }
 
-/// The default-build hashes of [`material_dump_hashes`].
-#[cfg(not(feature = "zoning"))]
-const MATERIAL_DUMP_HASHES: [u64; 6] = [
-    3_580_898_491_540_929_908,
-    12_196_816_847_341_780_186,
-    9_708_379_532_442_297_358,
-    2_548_391_994_686_336_338,
-    6_689_374_829_022_688_779,
-    4_166_139_222_748_066_605,
-];
+/// The dump with `GemMaterial`'s `zoning` field projected out.
+///
+/// `GemMaterial` derives `Debug` and its `zoning` field is the LAST field, so every material
+/// prints a trailing `, zoning: None }` that the pinned constants predate. No other dumped type
+/// carries a field of that name. Removing exactly that text gives the pinned bytes. A material
+/// that really carries zones prints `zoning: Some(..)`, is left alone, and fails the hash
+/// comparison, which is what the pin is for.
+fn without_zoning_field(dump: &str) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Owned(dump.replace(", zoning: None", ""))
+}
 
-/// The `zoning`-build twin of [`MATERIAL_DUMP_HASHES`]. With the feature on `GemMaterial`'s Debug
-/// dump gains a `zoning: None` field, so every hash moves. These are still the DEFAULT-build
-/// values (they cannot be computed without running the test): the test is `#[ignore]`d under
-/// `zoning` until the owner pastes the values `cargo test -p indicatrix-cut --features zoning --
-/// --ignored resolved_material_dumps_are_pinned` prints.
-#[cfg(feature = "zoning")]
+/// The hashes of [`material_dump_hashes`] (through [`without_zoning_field`]).
 const MATERIAL_DUMP_HASHES: [u64; 6] = [
     3_580_898_491_540_929_908,
     12_196_816_847_341_780_186,
@@ -154,10 +149,6 @@ const MATERIAL_DUMP_HASHES: [u64; 6] = [
 ];
 
 #[test]
-#[cfg_attr(
-    feature = "zoning",
-    ignore = "zoning re-pin: owner (GemMaterial Debug dump gained `zoning: None`)"
-)]
 fn resolved_material_dumps_are_pinned() {
     // Re-recorded 2026-09-28: `crates/indicatrix::optics::materials` changed under
     // this pin since it was last recorded (an unrelated, legitimate fix elsewhere in

@@ -30,7 +30,7 @@ pub use naming::{
     unique_duplicate_name, unique_mirror_name,
 };
 pub use number_expr::{NumberExprError, eval_number};
-pub use preform_and_new_design::{parse_new_design_form, parse_preform_form};
+pub use preform_and_new_design::{parse_new_design_form, parse_preform_form, preform_source_note};
 pub use step_series::{StepSeriesError, parse_step_series_form};
 pub use tier_form::{
     TierFormFields, non_integral_index_warning, parse_angle_only, parse_angle_only_with_names,

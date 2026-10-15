@@ -71,7 +71,7 @@ export struct PreformReadout {
 
 export global InspectorModel {
     // -- Shell ---------------------------------------------------------------------
-    // 0 Tier, 1 Preform, 2 Optimize, 3 Schedule.
+    // 0 Tier, 1 Preform, 2 Optimize, 3 Schedule, 4 History.
     in-out property <int> tab: 0;
     in-out property <bool> collapsed: false;
     // A request to put the keyboard cursor in a Tier-tab field ("angle" or "constraint"):
@@ -143,6 +143,9 @@ export global InspectorModel {
 
     // -- Preform tab -----------------------------------------------------------------
     in-out property <int> preform-shape-index: 1;
+    // Where the design's rough came from when it is a planned piece from the Rough Planner
+    // (a plane set, not a block or cylinder); empty for a block or cylinder.
+    in property <string> preform-source-note: "";
     in-out property <string> preform-half-width: "";
     in-out property <string> preform-length-over-width: "";
     in-out property <string> preform-depth: "";
@@ -167,4 +170,13 @@ export global InspectorModel {
 
     // -- Schedule tab ----------------------------------------------------------------
     in property <[ScheduleRow]> schedule-rows: [];
+
+    // -- History tab -------------------------------------------------------------------
+    // What each undo step did, newest first (`EditorSession::history_entries`, reversed).
+    // Step `n` of `history-labels.length` is row `length - n`; step 0 is "Start".
+    in property <[string]> history-labels: [];
+    // The step the design stands at now: 0 before any step, up to the number of steps.
+    in property <int> history-position: 0;
+    // Go to step `n` (`EditorSession::jump_to`), ending in the shared edit path.
+    callback history-jump(int);
 }

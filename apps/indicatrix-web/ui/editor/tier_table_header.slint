@@ -28,7 +28,11 @@ export component TierTableHeader inherits Rectangle {
         padding-right: 4px;
         HeaderText { width: Columns.hash-width; text: TierTableModel.select-mode ? "\u{2713}" : "#"; }
         Rectangle { width: Columns.warn-width; }
-        Rectangle { width: Columns.block-width; }
+        HeaderText {
+            width: Columns.block-width;
+            text: "CODE";
+            hint: "The tier's label on the cutting sheet, numbered in cutting order: P pavilion, G girdle, C crown, T table. A concave tier is marked Tool.";
+        }
         HeaderText { width: Columns.angle-width; text: "ANGLE"; }
         HeaderText { horizontal-stretch: 1; min-width: Columns.name-min; text: "NAME"; }
         HeaderText { horizontal-stretch: 1; min-width: Columns.indices-min; text: "INDICES"; }

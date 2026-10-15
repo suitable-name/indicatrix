@@ -242,7 +242,7 @@ fn route_event_reports_a_display_frame_and_keeps_the_request_open() {
         width: 2,
         height: 1,
         encoding: DisplayEncoding::Rgba8,
-        payload_len: rgba.len() as u32,
+        payload_len: u32::try_from(rgba.len()).expect("an 8-byte payload fits u32"),
     };
     route_event(
         &mut current,

@@ -1,0 +1,241 @@
+// The data and callbacks of the Tiers tab, the angle sheet and the tier sheet.
+//
+// Direction rule (as in `models.slint`): Rust -> Slint is properties (`in`, or `in-out`
+// when the UI also writes them), Slint -> Rust is callbacks. Rows are addressed by their
+// position in `rows` (flat tiers first, then concave tiers), which equals the tier index
+// for a flat tier.
+//
+// This file must not import `theme.slint` (nothing here draws).
+import { Shell } from "../../models.slint";
+
+// One row of the tier list. `pill-a`/`pill-b` are the (up to) two most important
+// badges, already chosen in Rust; a level is 0 good, 1 check, 2 problem, 3 info.
+export struct TierRowData {
+    index: int,
+    code: string,
+    name: string,
+    angle: string,
+    block: string,
+    indices: string,
+    mast: string,
+    summary: string,
+    pill-a: string,
+    pill-a-level: int,
+    pill-b: string,
+    pill-b-level: int,
+    selected: bool,
+    multi: bool,
+    stale: bool,
+    concave: bool,
+    detached: bool,
+}
+
+// One index position of the tier being edited.
+export struct TierChipData {
+    label: string,
+    detached: bool,
+}
+
+// One entry of the angle sheet's "Typical" row.
+export struct AnglePresetData {
+    label: string,
+    value: string,
+    reason: string,
+}
+
+export global TiersModel {
+    // ---- the contract other lanes use ----
+    in property <bool> can-undo: false;
+    in property <bool> can-redo: false;
+    in property <string> undo-hint: "";
+    in property <string> redo-hint: "";
+    callback undo();
+    callback redo();
+    callback solve();
+    in property <string> status-text: "";
+    in property <bool> status-problem: false;
+    in property <bool> solving: false;
+    // The selected tier (a flat tier index), -1 for none.
+    in property <int> selected-tier: -1;
+
+    // ---- the list ----
+    in property <[TierRowData]> rows: [];
+    // 0 nothing to report, 1 solving, 2 solved, 3 problem or failed, 4 stale.
+    in property <int> status-kind: 0;
+    in-out property <bool> select-mode: false;
+    in property <int> multi-count: 0;
+    // Quick Add's three presets are shown while this is on.
+    in-out property <bool> quick-open: false;
+
+    callback row-tapped(int);
+    callback row-long-pressed(int);
+    callback add-tier();
+    callback quick-add(int);
+    callback complete-orbit-selected();
+    callback mirror-selected();
+    callback adopt-all();
+    callback select-mode-changed(bool);
+    callback select-all();
+    callback select-clear();
+    callback batch-delete();
+    callback batch-adopt();
+    callback batch-offset(float);
+
+    // ---- overlays: open/close bookkeeping ----
+    // The page's sheet is raised to full height while an overlay is open.
+    property <int> detent-before: 1;
+
+    public function raise-sheet() {
+        if (!angle-open && !tier-open) {
+            detent-before = Shell.sheet-detent;
+        }
+        Shell.sheet-detent = 2;
+    }
+
+    public function lower-sheet() {
+        if (!angle-open && !tier-open) {
+            Shell.sheet-detent = detent-before;
+        }
+    }
+
+    // ---- the angle sheet ----
+    in-out property <bool> angle-open: false;
+    in property <string> angle-title: "";
+    in property <string> angle-block: "";
+    // What the keypad's readout shows: the tier's angle, or what is being typed.
+    in property <string> angle-readout: "0";
+    in property <bool> angle-typing: false;
+    in property <string> angle-error: "";
+    in property <bool> angle-slider-visible: false;
+    in property <float> angle-slider-value: 0;
+    in property <float> angle-slider-min: 0;
+    in property <float> angle-slider-max: 90;
+    // The marked band of a pavilion slider; equal values mean none.
+    in property <float> angle-band-from: 0;
+    in property <float> angle-band-to: 0;
+    in property <string> angle-note: "";
+    in property <[AnglePresetData]> angle-presets: [];
+
+    callback angle-requested(int);
+    callback angle-dismissed();
+    callback angle-step(float);
+    callback angle-slider-moved(float);
+    callback angle-slider-released();
+    callback angle-preset(int);
+    callback keypad-key(string);
+    callback keypad-ok();
+
+    public function open-angle(row: int) {
+        raise-sheet();
+        angle-open = true;
+        angle-requested(row);
+    }
+
+    public function close-angle() {
+        angle-open = false;
+        lower-sheet();
+        angle-dismissed();
+    }
+
+    // ---- the tier sheet ----
+    in-out property <bool> tier-open: false;
+    // The row the sheet edits (the angle sheet opens for it).
+    in property <int> tier-row: -1;
+    in property <string> tier-title: "";
+    // Two-way bound to the name field; Rust writes it when the sheet opens.
+    in-out property <string> tier-name: "";
+    in property <string> tier-angle: "";
+    in property <string> tier-block: "";
+    in property <[TierChipData]> tier-chips: [];
+    in property <string> tier-meet: "";
+    in property <string> tier-solve: "";
+    in property <string> tier-relation: "";
+    in property <string> tier-orbit: "";
+    in property <bool> tier-orbit-incomplete: false;
+    in property <bool> tier-detached: false;
+    in property <string> tier-imported: "";
+    in property <string> tier-warning: "";
+    in property <bool> tier-can-up: false;
+    in property <bool> tier-can-down: false;
+    // The keypad that adds an index position.
+    in-out property <bool> index-entry-open: false;
+    in property <string> index-readout: "0";
+    in property <bool> index-typing: false;
+
+    callback tier-requested(int);
+    callback tier-dismissed();
+    callback tier-rename(string);
+    callback tier-remove-index(int);
+    callback tier-rotate(int);
+    callback tier-mirror();
+    callback tier-complete-orbit();
+    callback tier-adopt();
+    callback tier-duplicate();
+    callback tier-delete();
+    callback tier-move(int);
+    callback tier-detach();
+    callback index-key(string);
+    callback index-ok();
+
+    public function open-tier(row: int) {
+        raise-sheet();
+        tier-open = true;
+        tier-requested(row);
+    }
+
+    public function close-tier() {
+        tier-open = false;
+        index-entry-open = false;
+        lower-sheet();
+        tier-dismissed();
+    }
+
+    // ---- the "Remove Anyway?" question ----
+    in-out property <bool> confirm-open: false;
+    in property <string> confirm-title: "";
+    in property <string> confirm-body: "";
+    in property <string> confirm-action: "Remove Anyway";
+    callback confirm-result(bool);
+
+    public function answer-confirm(confirmed: bool) {
+        confirm-open = false;
+        confirm-result(confirmed);
+    }
+
+    // ---- closing from outside ----
+    // True while any of the overlays is open.
+    out property <bool> overlay-open: angle-open || tier-open || confirm-open;
+
+    // The sheet left full height (the Back key, a drag down): close the overlays without
+    // touching the detent again.
+    public function dismiss-overlays() {
+        if (confirm-open) {
+            confirm-open = false;
+            confirm-result(false);
+        }
+        if (angle-open) {
+            angle-open = false;
+            angle-dismissed();
+        }
+        if (tier-open) {
+            tier-open = false;
+            index-entry-open = false;
+            tier-dismissed();
+        }
+    }
+
+    // Leaves Select mode and tells Rust.
+    public function set-select-mode(active: bool) {
+        select-mode = active;
+        select-mode-changed(active);
+    }
+
+    // A long press on a row starts Select mode with that row.
+    public function begin-select(row: int) {
+        if (!select-mode) {
+            select-mode = true;
+            select-mode-changed(true);
+        }
+        row-long-pressed(row);
+    }
+}

@@ -124,10 +124,12 @@ pub fn including_text(count: usize, volume_mm3: f64) -> String {
     } else {
         "inclusions"
     };
-    format!(
-        "including {count} {noun} ({} mm\u{b3})",
-        volume_mm3.round() as i64
-    )
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "display only: a stone's inclusion volume in mm3 is far below the i64 range (`as` saturates)"
+    )]
+    let rounded_mm3 = volume_mm3.round() as i64;
+    format!("including {count} {noun} ({rounded_mm3} mm\u{b3})")
 }
 
 /// The points (mm) and triangles of the mesh file `bytes` (see [`parse_mesh`] for how the

@@ -182,7 +182,17 @@ fn bright_spot_dominates_sampling() {
         let (u0, u1) = stratified_pair(i.wrapping_add(0x1234_5678));
         let (dir, _rgb, _pdf) = env.sample(u0, u1);
         let (u, v) = EnvironmentMap::direction_to_uv(dir);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "u is in [0, 1], so the texel index is non-negative and clamped to the map size"
+        )]
         let col = ((u * width as f32) as usize).min(width - 1);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "v is in [0, 1], so the texel index is non-negative and clamped to the map size"
+        )]
         let row = ((v * height as f32) as usize).min(height - 1);
         if (bx0..bx1).contains(&col) && (by0..by1).contains(&row) {
             hits += 1;

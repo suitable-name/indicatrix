@@ -3,9 +3,18 @@
 //! into -- see the parent module's doc comment for the panel conventions this
 //! implements.
 
-use super::{NORMAL_EPS, PanelKind};
+use super::{NORMAL_EPS, PanelKind, fill::to_px};
 use glam::{DVec3, Vec3};
 use indicatrix::geometry::stone_metrics::SolidMesh;
+
+/// A world-space `f64` narrowed to the `f32` screen/GPU precision.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 is the diagram's screen and GPU precision; world coordinates are in the normal float range"
+)]
+pub const fn narrow(value: f64) -> f32 {
+    value as f32
+}
 
 /// A facet is drawn top-facing (crown) when its normal points enough toward `+Y`
 /// to not be considered edge-on. See the parent module's doc comment.
@@ -70,7 +79,7 @@ pub fn wheel_direction(phi: f32, mirrored: bool) -> (f32, f32) {
 /// (looking down `-Y`). `depth` is smaller for a point nearer the camera (larger
 /// `y`), matching `raster.rs`'s "smaller depth wins" convention.
 pub const fn crown_project(p: DVec3, layout: &PanelLayout) -> (f32, f32, f32) {
-    let (world_x, world_y, world_z) = (p.x as f32, p.y as f32, p.z as f32);
+    let (world_x, world_y, world_z) = (narrow(p.x), narrow(p.y), narrow(p.z));
     let screen_x = layout.center_x + world_z * layout.scale;
     let screen_y = layout.center_y - world_x * layout.scale;
     (screen_x, screen_y, -world_y)
@@ -79,7 +88,7 @@ pub const fn crown_project(p: DVec3, layout: &PanelLayout) -> (f32, f32, f32) {
 /// The pavilion panel's mirror of [`crown_project`] (looking up `+Y`; see the
 /// parent module's doc comment for why the horizontal axis flips).
 pub const fn pavilion_project(p: DVec3, layout: &PanelLayout) -> (f32, f32, f32) {
-    let (world_x, world_y, world_z) = (p.x as f32, p.y as f32, p.z as f32);
+    let (world_x, world_y, world_z) = (narrow(p.x), narrow(p.y), narrow(p.z));
     let screen_x = layout.center_x - world_z * layout.scale;
     let screen_y = layout.center_y - world_x * layout.scale;
     (screen_x, screen_y, world_y)
@@ -90,7 +99,7 @@ pub const fn pavilion_project(p: DVec3, layout: &PanelLayout) -> (f32, f32, f32)
 /// for why [`profile_visible`] rather than a single dot-product cull decides what
 /// reaches this projection.
 pub const fn profile_project(p: DVec3, layout: &PanelLayout) -> (f32, f32, f32) {
-    let (world_x, world_y, world_z) = (p.x as f32, p.y as f32, p.z as f32);
+    let (world_x, world_y, world_z) = (narrow(p.x), narrow(p.y), narrow(p.z));
     let screen_x = layout.center_x + world_x * layout.scale;
     let screen_y = layout.center_y - world_y * layout.scale;
     (screen_x, screen_y, -world_z)
@@ -138,7 +147,7 @@ fn mesh_radii(mesh: &SolidMesh) -> (f32, f32) {
     }
     let half_w = ((max_x - min_x) / 2.0).max(1e-6);
     let half_h = ((max_y - min_y) / 2.0).max(1e-6);
-    (xz_radius as f32, half_w.max(half_h) as f32)
+    (narrow(xz_radius), narrow(half_w.max(half_h)))
 }
 
 /// The column/row geometry every [`PanelLayout`] in a frame shares --
@@ -177,10 +186,10 @@ fn build_panel_layout(
     let body_radius_px = metrics.panel_box / 2.0 * body_frac;
     let scale = body_radius_px / world_radius.max(1e-6);
     let clip = (
-        (index as f32 * metrics.col_width).floor() as i32,
+        to_px((index as f32 * metrics.col_width).floor()),
         0,
-        ((index as f32 + 1.0) * metrics.col_width).ceil() as i32 - 1,
-        height as i32 - 1,
+        to_px(((index as f32 + 1.0) * metrics.col_width).ceil()) - 1,
+        height.cast_signed() - 1,
     );
     PanelLayout {
         kind,

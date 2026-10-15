@@ -1,6 +1,7 @@
 import { CheckBox } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { RenderJobsModel } from "../../models/render_jobs.slint";
+import { RemoteWorkerModel } from "../../models/remote_worker.slint";
 import { SegmentPill } from "../pill_button.slint";
 import { ActionButton } from "../chip_toggle.slint";
 
@@ -35,7 +36,7 @@ export component ScriptExportSection inherits Rectangle {
             accessible-role: AccessibleRole.text;
         }
 
-        Caption { text: "Script type"; }
+        Caption { text: "Script Type"; }
         HorizontalLayout {
             spacing: 4px;
             SegmentPill {
@@ -58,28 +59,28 @@ export component ScriptExportSection inherits Rectangle {
             }
         }
 
-        Caption { text: "Render on"; }
+        Caption { text: "Render On"; }
         HorizontalLayout {
             spacing: 4px;
             SegmentPill {
-                text: "This computer";
+                text: "This Computer";
                 hint: "The script renders on the computer that runs it.";
                 selected: RenderJobsModel.script_target_index == 0;
                 picked => { RenderJobsModel.script_target_index = 0; }
             }
             SegmentPill {
-                text: "This computer and the remote worker " + RenderJobsModel.script_remote_label;
-                hint: RenderJobsModel.script_remote_available
+                text: "This Computer and the Remote Worker "+ RenderJobsModel.script_remote_label;
+                hint: RemoteWorkerModel.availability.configured
                     ? "The script also uses the remote worker set up in Settings."
                     : "No remote worker is set up in Settings.";
                 selected: RenderJobsModel.script_target_index == 1;
-                enabled: RenderJobsModel.script_remote_available;
+                enabled: RemoteWorkerModel.availability.configured;
                 picked => { RenderJobsModel.script_target_index = 1; }
             }
         }
 
         CheckBox {
-            text: "Put the finished pictures and videos in the script folder";
+            text: "Put the Finished Pictures and Videos in the Script Folder";
             checked <=> RenderJobsModel.script_outputs_beside;
             accessible-description: "Without this, each picture or video goes to the folder its job was added with.";
         }

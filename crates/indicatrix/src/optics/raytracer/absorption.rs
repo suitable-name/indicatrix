@@ -125,7 +125,7 @@ pub(super) fn apply_absorption(
 /// of one interior segment: `segment` is the segment's ray (`origin`, unit `dir`, in model
 /// units) and its length `path_len`.
 ///
-/// Without the `zoning` feature, or for a material without zones, this is exactly
+/// For a material without zones, this is exactly
 /// [`apply_absorption`] (the ray is ignored). A zoned material instead takes the per-channel
 /// optical depth `sum_z alpha_z * len_z` from `zoned::segment_optical_depths`, which is the one
 /// function every zoned absorption site shares (the scattering estimator,
@@ -140,9 +140,6 @@ pub(super) fn apply_segment_absorption(
     stokes: &mut [StokesVector; NUM_CHANNELS],
 ) {
     let (ray, path_len) = segment;
-    #[cfg(not(feature = "zoning"))]
-    let _ = ray;
-    #[cfg(feature = "zoning")]
     if let Some(depths) =
         super::zoned::segment_optical_depths(ctx, cache, k_hat, is_extraordinary, ray, path_len)
     {
@@ -229,11 +226,17 @@ pub(crate) fn channel_absorption_alphas_assigned(
     // call -- see `RayWavelengthCache::hero_indicatrix`'s doc comment.
     let e_mode_hat = cache.hero_indicatrix.map_or_else(
         || {
-            let n_o_hero = cache.n_o_ch[ctx.hero_idx];
-            let n_e_hero = ctx
+            let ordinary_hero = cache.n_o_ch[ctx.hero_idx];
+            let extraordinary_hero = ctx
                 .material
-                .extraordinary_index_at(ctx.lambdas[ctx.hero_idx], n_o_hero);
-            assigned_mode_e_field_uniaxial(k_hat, c_axis, is_extraordinary, n_o_hero, n_e_hero)
+                .extraordinary_index_at(ctx.lambdas[ctx.hero_idx], ordinary_hero);
+            assigned_mode_e_field_uniaxial(
+                k_hat,
+                c_axis,
+                is_extraordinary,
+                ordinary_hero,
+                extraordinary_hero,
+            )
         },
         |ind| ind.assigned_mode_e_field(k_hat, is_extraordinary),
     );
