@@ -1,0 +1,322 @@
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { LibraryModel } from "../../models/library.slint";
+import { GuideLockTip } from "../guide_lock.slint";
+import { WarningLine } from "../warning_line.slint";
+
+// One row of the File menu. Space or Enter runs it, Escape closes the menu (`dismissed`).
+// A row the worked-example guide has locked is dimmed and carries a `GuideLockTip`.
+component FileMenuItem inherits Rectangle {
+    in property <string> label;
+    // The accessible name when it differs from the visible text.
+    in property <string> access_label: "";
+    in property <string> shortcut: "";
+    in property <string> description;
+    in property <bool> enabled: true;
+    in property <bool> locked: false;
+    in property <bool> highlighted: false;
+    callback activated();
+    callback dismissed();
+
+    public function take_focus() {
+        item_focus.focus();
+    }
+
+    height: 26px;
+    background: root.enabled && (item_touch.has-hover || item_focus.has-focus) ? Theme.bg-card-hover : transparent;
+    border-width: item_focus.has-focus || root.highlighted ? 2px : 0px;
+    border-color: root.highlighted ? Theme.accent-cyan : Theme.accent-cyan-hover;
+    opacity: root.enabled ? 1.0 : 0.4;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.access_label != "" ? root.access_label : root.label;
+    accessible-description: root.description;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.activated();
+        }
+    }
+
+    item_focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Space || event.text == Key.Return) && root.enabled {
+                root.activated();
+                return accept;
+            } else if event.text == Key.Escape {
+                root.dismissed();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    Text {
+        text: root.label;
+        font-size: 10px;
+        color: Theme.text-primary;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+        x: 8px;
+    }
+    Text {
+        text: root.shortcut;
+        font-size: 10px;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+        horizontal-alignment: right;
+        x: root.width - self.width - 8px;
+        width: 60px;
+    }
+    item_touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
+        changed has-hover => {
+            if self.has-hover {
+                EditorModel.hover_hint = root.description;
+            } else if EditorModel.hover_hint == root.description {
+                EditorModel.hover_hint = "";
+            }
+        }
+    }
+    GuideLockTip { locked: root.locked; }
+    Tooltip { text: @markdown("\{root.description}"); }
+}
+
+// The bar's single File menu: New Design..., Open, Load Selected, Save and the exports,
+// each with its own guide gating. Structure and keyboard handling follow the old
+// "Export..." split button: Tab reaches the button, Space, Enter or Down opens the menu and
+// puts the focus on its first item, Tab walks the items, Space or Enter runs one, Escape
+// closes the menu and brings the focus back to the button.
+//
+// "Will Ask Before Saving" sits beside the button, so the verdict that Save or an export
+// will ask for confirmation is visible where those actions live.
+export component FileMenu inherits HorizontalLayout {
+    height: 34px;
+    spacing: 8px;
+    alignment: end;
+
+    // The worked-example guide's file-related steps outline the button (the menu items are
+    // outlined too once it is open): see `catalog::HIGHLIGHT_TARGETS`.
+    property <bool> guided: GuideModel.highlight_target == "save_button"
+        || GuideModel.highlight_target == "open_button"
+        || GuideModel.highlight_target == "load_button"
+        || GuideModel.highlight_target == "export_asc_button"
+        || GuideModel.highlight_target == "export_menu"
+        || GuideModel.highlight_target == "new_design_dialog";
+
+    // Makes the "not a closed solid" (or any other solve-problem) verdict visible IN the
+    // save area itself, small and non-blocking, rather than only as a Yes/No prompt the
+    // cutter sees at the exact moment they click Save. `EditorModel.status_is_problem` is
+    // the flag `EditorStatusStrip` colors ruby for; this does not duplicate its message.
+    if EditorModel.status_is_problem && EditorModel.status_text != "": Rectangle {
+        width: save_warning_text.preferred-width;
+        height: 34px;
+        accessible-role: AccessibleRole.text;
+        accessible-label: "Will Ask Before Saving";
+        accessible-description: EditorModel.status_text + ". Saving or exporting still works, but you are asked to confirm first.";
+        save_warning_text := WarningLine {
+            text: "Will Ask Before Saving";
+            font_weight: 600;
+            wrap_text: false;
+            centered: true;
+        }
+        Tooltip { text: @markdown("**\{EditorModel.status_text}**\n\nSaving or exporting will still work -- you'll be asked to confirm first (\"Save as draft\"), and the written file notes this in its own header."); }
+    }
+
+    anchor := Rectangle {
+        property <bool> menu_open: false;
+        width: btn_row.preferred-width;
+        height: 34px;
+
+        // Closes the menu and returns the focus to the button.
+        function close_menu() {
+            self.menu_open = false;
+            // A closed row can no longer report the pointer leaving it.
+            EditorModel.hover_hint = "";
+            main_focus.focus();
+        }
+
+        btn_row := HorizontalLayout {
+            Rectangle {
+                width: main_txt.preferred-width + chevron.width + 28px;
+                background: main_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: main_focus.has-focus || root.guided ? 2px : 0px;
+                border-color: root.guided ? Theme.accent-cyan : Theme.accent-cyan-hover;
+
+                accessible-role: AccessibleRole.button;
+                accessible-label: "File";
+                accessible-description: "Open the file menu: new design, open, load the selected library design, save, and the exports.";
+                accessible-expandable: true;
+                accessible-expanded: anchor.menu_open;
+                accessible-action-default => { anchor.menu_open = !anchor.menu_open; }
+
+                main_focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
+                            anchor.menu_open = true;
+                            return accept;
+                        } else if event.text == Key.Escape && anchor.menu_open {
+                            anchor.menu_open = false;
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    main_txt := Text {
+                        text: "File";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        chevron := Image {
+                            source: @image-url("../../icons/chevron-down.svg");
+                            colorize: Theme.text-primary;
+                            width: 12px;
+                            height: 12px;
+                        }
+                    }
+                }
+                main_touch := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { anchor.menu_open = !anchor.menu_open; }
+                    changed has-hover => {
+                        if self.has-hover {
+                            EditorModel.hover_hint = "File: new design, open, load the selected library design, save, and export the .asc file, cutting sheet or diagram.";
+                        } else if EditorModel.hover_hint == "File: new design, open, load the selected library design, save, and export the .asc file, cutting sheet or diagram." {
+                            EditorModel.hover_hint = "";
+                        }
+                    }
+                }
+            }
+        }
+
+        // Backdrop -- dismisses the menu on an outside click, matching `header.slint`'s
+        // floating-panel convention (`filter_popup`/`import_popup`).
+        if anchor.menu_open: Rectangle {
+            x: -2000px;
+            y: -2000px;
+            width: 4000px;
+            height: 4000px;
+            z: 49;
+            TouchArea { clicked => { anchor.menu_open = false; EditorModel.hover_hint = ""; } }
+        }
+
+        if anchor.menu_open: Rectangle {
+            // Right-aligned under the button: the button sits at the bar's right end.
+            x: anchor.width - self.width;
+            y: anchor.height + 2px;
+            z: 50;
+            width: 250px;
+            height: menu_col.preferred-height;
+            background: Theme.surface-dialog;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: Theme.modal-shadow;
+            clip: true;
+            accessible-role: AccessibleRole.list;
+            accessible-label: "File Menu";
+
+            // Opening the menu from the keyboard leaves the focus in it.
+            init => { new_item.take_focus(); }
+
+            menu_col := VerticalLayout {
+                // "New Design..." discards the WHOLE design, unlike the Tier tab's own
+                // clear-the-form "New" button. The ellipsis marks "opens a dialog first".
+                new_item := FileMenuItem {
+                    label: "New Design...";
+                    description: "Start a new design from a shape or a blank preform. Asks first if the open design has unsaved changes.";
+                    enabled: GuideModel.allows_new_design();
+                    locked: !GuideModel.allows_new_design();
+                    highlighted: GuideModel.highlight_target == "new_design_dialog";
+                    activated => { anchor.close_menu(); EditorModel.new_dialog_open = true; }
+                    dismissed => { anchor.close_menu(); }
+                }
+                FileMenuItem {
+                    label: "Open...";
+                    access_label: "Open";
+                    shortcut: "Ctrl+O";
+                    description: "Open a .isdd design file, or an .asc, .gem or .gcs file.";
+                    enabled: GuideModel.allows_file_ops();
+                    locked: !GuideModel.allows_file_ops();
+                    highlighted: GuideModel.highlight_target == "open_button";
+                    activated => { anchor.close_menu(); EditorModel.open_native(); }
+                    dismissed => { anchor.close_menu(); }
+                }
+                FileMenuItem {
+                    label: "Load Selected";
+                    description: "Open the design selected in the library list so you can edit it here.";
+                    enabled: GuideModel.allows_file_ops() && LibraryModel.selected_entry_id >= 0;
+                    locked: !GuideModel.allows_file_ops();
+                    highlighted: GuideModel.highlight_target == "load_button";
+                    activated => { anchor.close_menu(); EditorModel.load_selected(); }
+                    dismissed => { anchor.close_menu(); }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                // Save writes the self-contained `.isdd` design file and, unlike the
+                // exports below, DOES update this design's catalogue row
+                // (`native_io::write_back_to_catalogue`).
+                FileMenuItem {
+                    label: "Save";
+                    shortcut: "Ctrl+S";
+                    description: "Save the whole design to its .isdd file, and update this design's library entry.";
+                    enabled: GuideModel.allows_file_ops();
+                    locked: !GuideModel.allows_file_ops();
+                    highlighted: GuideModel.highlight_target == "save_button";
+                    activated => { anchor.close_menu(); EditorModel.save_native(); }
+                    dismissed => { anchor.close_menu(); }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                // The exports never register anything in, or change anything about, the
+                // library. "Export .asc" exports the design AS EDITED in this tab, distinct
+                // from `detail_header.slint`'s catalogue-original export.
+                FileMenuItem {
+                    label: "Export .asc...";
+                    access_label: "Export .asc";
+                    description: "Write the design as edited in this tab to an .asc file on disk. Your library is not updated.";
+                    enabled: GuideModel.allows_file_ops();
+                    locked: !GuideModel.allows_file_ops();
+                    highlighted: GuideModel.highlight_target == "export_asc_button";
+                    activated => { anchor.close_menu(); EditorModel.export_asc(); }
+                    dismissed => { anchor.close_menu(); }
+                }
+                FileMenuItem {
+                    label: "Export Cutting Sheet (HTML)...";
+                    description: "A printable page with every facet in cutting order.";
+                    enabled: GuideModel.allows_file_ops();
+                    locked: !GuideModel.allows_file_ops();
+                    highlighted: GuideModel.highlight_target == "export_menu";
+                    activated => { anchor.close_menu(); EditorModel.export_cutting_sheet(); }
+                    dismissed => { anchor.close_menu(); }
+                }
+                FileMenuItem {
+                    label: "Export Diagram (PNG)...";
+                    description: "A picture (PNG) of the design diagram.";
+                    enabled: GuideModel.allows_file_ops();
+                    locked: !GuideModel.allows_file_ops();
+                    highlighted: GuideModel.highlight_target == "export_menu";
+                    activated => { anchor.close_menu(); EditorModel.export_diagram(); }
+                    dismissed => { anchor.close_menu(); }
+                }
+                // Advanced: the Simple interface leaves the Gem Cut Studio export out.
+                if GuideModel.shows_advanced(): FileMenuItem {
+                    label: "Export as Gem Cut Studio (.gcs)...";
+                    description: "Experimental: written from the published Gem Cut Studio 1.1 file description; chiral designs are untested.";
+                    enabled: GuideModel.allows_file_ops();
+                    locked: !GuideModel.allows_file_ops();
+                    highlighted: GuideModel.highlight_target == "export_menu";
+                    activated => { anchor.close_menu(); EditorModel.export_gcs(); }
+                    dismissed => { anchor.close_menu(); }
+                }
+            }
+        }
+    }
+}

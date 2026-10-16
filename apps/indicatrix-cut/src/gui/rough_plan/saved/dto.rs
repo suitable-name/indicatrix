@@ -41,14 +41,18 @@ pub const MAX_LAYOUTS: usize = 10;
 /// Longest plan name, in characters.
 pub const MAX_NAME_CHARS: usize = 200;
 
-/// Most stones in a layout, which is the planner's stone-count limit.
-pub const MAX_STONES_PER_LAYOUT: usize = 99;
+/// Most stones in a layout. The planner places stones freely, one per piece, and its finest
+/// grid has 48 units per axis, so no layout holds more than one stone per unit cell.
+pub const MAX_STONES_PER_LAYOUT: usize = 48 * 48 * 48;
 
-/// Most designs a plan lists: ten layouts of 99 stones, every stone of another design.
-pub const MAX_DESIGNS: usize = MAX_LAYOUTS * MAX_STONES_PER_LAYOUT;
+/// Most different designs in one layout: the planner's design cap.
+const MAX_DESIGNS_PER_LAYOUT: usize = 99;
 
-/// Most slabs in a layout, bars in a slab and pieces in a bar. Every piece holds a
-/// stone, so none of them can pass the stone limit.
+/// Most designs a plan lists: ten layouts of 99 designs each, none shared.
+pub const MAX_DESIGNS: usize = MAX_LAYOUTS * MAX_DESIGNS_PER_LAYOUT;
+
+/// Most slabs in a layout, bars in a slab and pieces in a bar: at most one per unit of the
+/// finest grid (48) or per cell of the largest uniform grid (99) along an axis.
 pub const MAX_SAW_ITEMS: usize = 99;
 
 /// Longest kerf, allowance or skin the planner form accepts, in mm.
@@ -257,11 +261,14 @@ pub struct CutDto {
 /// Planning settings and kerf losses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsDto {
-    /// Maximum stone count (`1..=99`); read as a wide integer so a wrong value is
-    /// reported instead of failing the parse.
+    /// The design cap (`1..=99`): the most different designs a layout may use. Read as a
+    /// wide integer so a wrong value is reported instead of failing the parse. The key stays
+    /// `count`, so plans saved when it was the stone cap still open (their number now reads
+    /// as the design cap).
     pub count: i64,
-    /// Minimum stone count (`1..=count`). Absent in older files, which mean 1 (no floor).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The stone-count floor of plans saved before the planner placed stones freely. Read and
+    /// ignored (every layout from one stone up is shown now); never written.
+    #[serde(default, skip_serializing)]
     pub min_count: Option<i64>,
     /// Saw blade kerf width in mm.
     pub kerf_mm: f64,

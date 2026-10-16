@@ -1,6 +1,7 @@
 //! Shaped uniform grid layouts for single designs.
 //!
-//! Evaluates equal-sized cell grids `a * b * c <= K` across the rough's bounding box,
+//! Evaluates equal-sized cell grids `a * b * c <= UNIFORM_MAX_STONES` (99) across the rough's
+//! bounding box,
 //! clipping individual cells against non-box planes. Every cell stays in the layout's
 //! tree: a cell that cannot hold a stone (an exterior corner of a cylinder, say) is
 //! merged into its neighbour when the layout is built, never deleted, so the remaining
@@ -33,7 +34,7 @@ use crate::rough_plan::{
     SHAPED_UNIFORM_DESIGNS,
     piece::{ASSIGNMENTS, Norm, min_width_floor, stone_value, usable_rough},
     tree::{Bar, Leaf, Slab, Tree},
-    uniform::{PER_DESIGN, cell_size, enumerate_grids},
+    uniform::{PER_DESIGN, UNIFORM_MAX_STONES, cell_size, enumerate_grids},
 };
 
 /// The unclipped box value and assignment of each of the six orientations,
@@ -317,7 +318,7 @@ impl UniformPass<'_> {
     /// `Uniform { done: d_idx, .. }` before each grid and at each design's start; `None`
     /// when it returns `false`.
     fn layouts_of(&self, chunk: Range<usize>, report: &mut Report<'_>) -> Option<Vec<RoughLayout>> {
-        let k = self.settings.count_usize();
+        let k = UNIFORM_MAX_STONES;
         let total = self.pool.len();
         let mut layouts = Vec::new();
         for d_idx in chunk {
@@ -371,14 +372,13 @@ pub fn shaped_uniform_layouts(
     lanes: usize,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<RoughLayout>> {
-    let k = settings.count_usize();
     let block = RoughBlock {
         x_mm: ctx.bbox_extents[0],
         y_mm: ctx.bbox_extents[1],
         z_mm: ctx.bbox_extents[2],
     };
     let usable_box = usable_rough(&block, settings.skin_mm);
-    let geoms: Vec<GridGeom> = enumerate_grids(k)
+    let geoms: Vec<GridGeom> = enumerate_grids(UNIFORM_MAX_STONES)
         .into_iter()
         .filter_map(|counts| grid_geometry(ctx, settings, &usable_box, counts))
         .collect();

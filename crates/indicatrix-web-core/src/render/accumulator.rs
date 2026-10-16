@@ -21,6 +21,8 @@ pub enum ChunkRejection {
         /// Entries received.
         got: usize,
     },
+    /// A full pass's `sums` length does not equal the full-frame pixel count.
+    LengthMismatch,
     /// The chunk's `spp` differs from another partition's chunk for the same pass.
     SppMismatch,
     /// This partition's chunk for this pass already arrived.
@@ -47,12 +49,17 @@ pub enum ChunkOutcome {
     },
 }
 
-/// One pass still waiting for some of its partitions.
+/// One pass still waiting to be merged.
 #[derive(Debug)]
-struct PendingPass {
-    spp: u32,
-    parts: Vec<Option<Vec<Vec3>>>,
-    received: u32,
+enum PendingPass {
+    /// A pass split across CPU partitions.
+    Partitioned {
+        spp: u32,
+        parts: Vec<Option<Vec<Vec3>>>,
+        received: u32,
+    },
+    /// A complete full-frame pass (from GPU).
+    Full { spp: u32, sums: Vec<[f32; 3]> },
 }
 
 /// The full-frame sum buffer and its per-pass bookkeeping.
@@ -170,20 +177,70 @@ impl Accumulator {
         let pass = self
             .pending
             .entry(sample_offset)
-            .or_insert_with(|| PendingPass {
+            .or_insert_with(|| PendingPass::Partitioned {
                 spp,
                 parts: vec![None; partitions],
                 received: 0,
             });
-        if pass.spp != spp {
-            return ChunkOutcome::Rejected(ChunkRejection::SppMismatch);
+        match pass {
+            PendingPass::Partitioned {
+                spp: pass_spp,
+                parts,
+                received,
+            } => {
+                if *pass_spp != spp {
+                    return ChunkOutcome::Rejected(ChunkRejection::SppMismatch);
+                }
+                let slot = &mut parts[first_pixel as usize];
+                if slot.is_some() {
+                    return ChunkOutcome::Rejected(ChunkRejection::Duplicate);
+                }
+                *slot = Some(sums);
+                *received += 1;
+            }
+            PendingPass::Full { .. } => {
+                return ChunkOutcome::Rejected(ChunkRejection::Duplicate);
+            }
         }
-        let slot = &mut pass.parts[first_pixel as usize];
-        if slot.is_some() {
+        let merged = self.merge_ready_passes();
+        if merged == 0 {
+            ChunkOutcome::Pending
+        } else {
+            ChunkOutcome::Committed { passes: merged }
+        }
+    }
+
+    /// Adds one complete full-frame pass (from the GPU worker or a single full trace).
+    pub fn add_full_pass(
+        &mut self,
+        scene_id: u64,
+        _pass_id: u64,
+        sample_offset: u32,
+        spp: u32,
+        sums: &[[f32; 3]],
+    ) -> ChunkOutcome {
+        if scene_id != self.scene_id {
+            return ChunkOutcome::Stale;
+        }
+        if sums.len() != self.sum.len() {
+            return ChunkOutcome::Rejected(ChunkRejection::LengthMismatch);
+        }
+        if spp == 0 {
+            return ChunkOutcome::Rejected(ChunkRejection::Empty);
+        }
+        if sample_offset < self.samples {
+            return ChunkOutcome::Rejected(ChunkRejection::AlreadyCommitted);
+        }
+        if self.pending.contains_key(&sample_offset) {
             return ChunkOutcome::Rejected(ChunkRejection::Duplicate);
         }
-        *slot = Some(sums);
-        pass.received += 1;
+        self.pending.insert(
+            sample_offset,
+            PendingPass::Full {
+                spp,
+                sums: sums.to_vec(),
+            },
+        );
         let merged = self.merge_ready_passes();
         if merged == 0 {
             ChunkOutcome::Pending
@@ -224,27 +281,38 @@ impl Accumulator {
     fn merge_ready_passes(&mut self) -> u32 {
         let mut merged = 0;
         loop {
-            let ready = self
-                .pending
-                .get(&self.samples)
-                .is_some_and(|pass| pass.received == self.partitions);
+            let ready = match self.pending.get(&self.samples) {
+                Some(PendingPass::Partitioned { received, .. }) => *received == self.partitions,
+                Some(PendingPass::Full { .. }) => true,
+                None => false,
+            };
             if !ready {
                 return merged;
             }
             let Some(pass) = self.pending.remove(&self.samples) else {
                 return merged;
             };
-            for (first_pixel, part) in pass.parts.into_iter().enumerate() {
-                if let Some(sums) = part {
-                    indicatrix::renderer::cpu_frame::scatter_interleaved(
-                        &mut self.sum,
-                        u32::try_from(first_pixel).expect("a partition index fits u32"),
-                        self.partitions,
-                        &sums,
-                    );
+            match pass {
+                PendingPass::Partitioned { spp, parts, .. } => {
+                    for (first_pixel, part) in parts.into_iter().enumerate() {
+                        if let Some(sums) = part {
+                            indicatrix::renderer::cpu_frame::scatter_interleaved(
+                                &mut self.sum,
+                                u32::try_from(first_pixel).expect("a partition index fits u32"),
+                                self.partitions,
+                                &sums,
+                            );
+                        }
+                    }
+                    self.samples += spp;
+                }
+                PendingPass::Full { spp, sums } => {
+                    for (dst, src) in self.sum.iter_mut().zip(sums) {
+                        *dst += Vec3::new(src[0], src[1], src[2]);
+                    }
+                    self.samples += spp;
                 }
             }
-            self.samples += pass.spp;
             self.completed_passes += 1;
             merged += 1;
         }

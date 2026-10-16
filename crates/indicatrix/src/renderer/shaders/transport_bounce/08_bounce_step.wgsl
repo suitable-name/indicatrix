@@ -1,3 +1,133 @@
+
+fn bounce_extend(
+    s: ptr<function, BounceRay>,
+    h: ptr<function, BounceHit>,
+    rc: RayConstants,
+    bounce: u32,
+    seed0: u32,
+    observer: vec3<f32>,
+) -> u32 {
+    let phase_pdf_this_check = (*s).pending_light_mis;
+    let phase_dir_this_check = (*s).pending_light_mis_dir;
+    (*h).phase_pdf_this_check = phase_pdf_this_check;
+    (*h).phase_dir_this_check = phase_dir_this_check;
+    (*s).pending_light_mis = 0.0;
+
+    let hit = intersect_ray((*s).origin, (*s).dir);
+    (*h).hit = hit;
+    if (!hit.hit) {
+        if (bounce == 0u && params.env_mode == 1u && params.backdrop > 0.0) {
+            for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+                (*s).radiance[k] = params.backdrop * studio_spectral_power((*s).lambdas[k]);
+            }
+            (*s).path_escaped = true;
+            return PHASE_TERMINATE;
+        }
+        var mis_weight: f32 = 1.0;
+        if (phase_pdf_this_check > 0.0 && nee_light_available()) {
+            let light_pdf = nee_light_pdf(phase_dir_this_check, rc.studio_key_dir);
+            mis_weight = balance_heuristic(phase_pdf_this_check, light_pdf);
+        }
+        for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+            let env = sample_environment_with_rig((*s).dir, (*s).lambdas[k], rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp, observer);
+            (*s).radiance[k] = fma(max((*s).stokes[k].x, 0.0) * mis_weight, env, (*s).radiance[k]);
+        }
+        (*s).path_escaped = true;
+        return PHASE_TERMINATE;
+    }
+    return PHASE_NEXT;
+}
+
+fn bounce_scatter(
+    s: ptr<function, BounceRay>,
+    h: ptr<function, BounceHit>,
+    rc: RayConstants,
+    bounce: u32,
+    seed0: u32,
+    observer: vec3<f32>,
+) -> u32 {
+    if ((*s).inside_gem && material.scattering_sigma_s > 0.0) {
+        var alphas: array<f32, 8>;
+        for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+            alphas[k] = 0.0;
+        }
+        if (rc.is_anisotropic) {
+            for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+                if (rc.is_biaxial && material.has_beta_ray != 0u) {
+                    alphas[k] = assigned_mode_alpha_biaxial(
+                        rc.alpha_o_hoisted[k], rc.alpha_beta_hoisted[k], rc.alpha_e_hoisted[k],
+                        rc.n_alpha_hero, rc.n_beta_hero, rc.n_gamma_hero, rc.biax_ax0, rc.biax_ax1, rc.biax_ax2,
+                        rc.c_axis, (*s).k, (*s).is_extraordinary,
+                    );
+                } else {
+                    alphas[k] = assigned_mode_alpha_uniaxial(
+                        rc.alpha_o_hoisted[k], rc.alpha_e_hoisted[k], rc.c_axis, (*s).k, (*s).is_extraordinary,
+                        rc.n_o_hero_seed, rc.n_e_hero_seed,
+                    );
+                }
+            }
+        } else {
+            let eigen_a = ordinary_eigen_polarization((*s).k, rc.c_axis);
+            let eigen_b = extraordinary_eigen_polarization((*s).k, rc.c_axis);
+            for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+                alphas[k] = isotropic_channel_alpha(
+                    rc.alpha_o_hoisted[k], rc.alpha_e_hoisted[k], rc.c_axis, eigen_a, eigen_b,
+                );
+            }
+        }
+        var local_stokes = (*s).stokes;
+        var local_path_pdf = (*s).path_pdf;
+        let sc = maybe_scatter_or_extinguish(
+            alphas, material.scattering_sigma_s, material.scattering_g, (*s).dir, (*h).hit.t,
+            material.absorption_path_scale, seed0, bounce, &local_stokes, &local_path_pdf,
+        );
+        (*s).stokes = local_stokes;
+        (*s).path_pdf = local_path_pdf;
+        if (sc.scattered != 0u) {
+            let scatter_point = (*s).origin + sc.t_free * (*s).dir;
+            let old_dir = (*s).dir;
+            if (params.env_mode == 2u) {
+                var local_lambdas = (*s).lambdas;
+                var local_compat = (*s).compat;
+                var local_nee = (*s).nee_xyz;
+                nee_contribution_hg_scatter(
+                    &local_lambdas, rc.n_o_hero_seed, scatter_point, old_dir,
+                    material.scattering_g, seed0, bounce, &local_stokes, &local_path_pdf, &local_compat,
+                    &local_nee, alphas,
+                );
+                (*s).stokes = local_stokes;
+                (*s).path_pdf = local_path_pdf;
+                (*s).compat = local_compat;
+                (*s).nee_xyz = local_nee;
+                (*s).pending_light_mis = henyey_greenstein_phase(dot(sc.new_dir, old_dir), material.scattering_g);
+                (*s).pending_light_mis_dir = sc.new_dir;
+            }
+            (*s).origin = scatter_point;
+            (*s).dir = sc.new_dir;
+            (*s).k = sc.new_dir;
+            (*s).have_prev_plane_normal = false;
+
+            if (bounce > 4u) {
+                var max_intensity: f32 = 0.0;
+                for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+                    max_intensity = max(max_intensity, max((*s).stokes[k].x, 0.0));
+                }
+                let q = clamp(max_intensity, RR_FLOOR, 1.0);
+                let rr_rand = f32(hash_u32(seed0 ^ hash_u32(bounce ^ RUSSIAN_ROULETTE_STREAM))) / 4294967295.0;
+                if (rr_rand > q) {
+                    return PHASE_TERMINATE;
+                }
+                for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+                    (*s).stokes[k] = (*s).stokes[k] * (1.0 / q);
+                    (*s).split_radiance[k] = (*s).split_radiance[k] / q;
+                }
+            }
+            return PHASE_END_STEP;
+        }
+    }
+    return PHASE_NEXT;
+}
+
 // See this file's header comment for the calling convention. Parameter order: `bounce`
 // (the loop counter) and the per-ray RNG seed first, then every read-only per-ray
 // constant in the same order the megakernel's own prologue computed them (`observer`,
@@ -54,132 +184,56 @@ fn transport_bounce_step(
     // the time a transmit-out carry reaches here is the refracted EXTERIOR direction).
     pending_light_mis_dir: ptr<function, vec3<f32>>,
 ) -> u32 {
-        let phase_pdf_this_check = (*pending_light_mis);
-        let phase_dir_this_check = (*pending_light_mis_dir);
-        (*pending_light_mis) = 0.0;
-
-        let hit = intersect_ray((*current_origin), (*current_dir));
-        if (!hit.hit) {
-            // The camera ray sees the backdrop card, if the scene has one -- see
-            // `optics::raytracer::environment::fill_backdrop`.
-            if (bounce == 0u && params.env_mode == 1u && params.backdrop > 0.0) {
-                for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                    (*radiance)[k] = params.backdrop * studio_spectral_power((*lambdas)[k]);
-                }
-                (*path_escaped) = true;
-                return BOUNCE_STATUS_TERMINATE;
-            }
-            var mis_weight: f32 = 1.0;
-            if (phase_pdf_this_check > 0.0 && nee_light_available()) {
-                let light_pdf = nee_light_pdf(phase_dir_this_check, studio_key_dir);
-                mis_weight = balance_heuristic(phase_pdf_this_check, light_pdf);
-            }
-            for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                let env = sample_environment_with_rig((*current_dir), (*lambdas)[k], studio_key_dir, studio_fill_dir, studio_sin_lp, observer);
-                // `max((*stokes)[k].x, 0.0)` clamps `I` to >= 0 before the environment
-                // lookup, matching `accumulate_miss_radiance`'s `StokesVector::intensity`
-                // on the CPU side -- negative `I` is unphysical on either side.
-                (*radiance)[k] = fma(max((*stokes)[k].x, 0.0) * mis_weight, env, (*radiance)[k]);
-            }
-            // The only site that sets this: staged exit-split contributions commit
-            // only when the shared/hero path itself reaches this environment lookup.
-            (*path_escaped) = true;
+        var s = bounce_ray_from_pointers(
+            current_origin, current_dir, current_k, prev_plane_normal, pending_light_mis_dir, nee_xyz,
+            pending_light_mis, inside_gem, is_extraordinary, have_prev_plane_normal, path_escaped,
+            lambdas, stokes, radiance, path_pdf, split_radiance, compat,
+        );
+        var h = bounce_hit_blank();
+        var rc: RayConstants;
+        rc.c_axis = c_axis;
+        rc.birefringence_delta = birefringence_delta;
+        rc.is_anisotropic = is_anisotropic;
+        rc.is_biaxial = is_biaxial;
+        rc.biax_ax0 = biax_ax0;
+        rc.biax_ax1 = biax_ax1;
+        rc.biax_ax2 = biax_ax2;
+        rc.n_o_hero_seed = n_o_hero_seed;
+        rc.n_beta_hero = n_beta_hero;
+        rc.n_alpha_hero = n_alpha_hero;
+        rc.n_gamma_hero = n_gamma_hero;
+        rc.n_e_hero_seed = n_e_hero_seed;
+        rc.n_o_hoisted = n_o_hoisted;
+        rc.alpha_o_hoisted = alpha_o_hoisted;
+        rc.alpha_e_hoisted = alpha_e_hoisted;
+        rc.alpha_beta_hoisted = alpha_beta_hoisted;
+        rc.studio_key_dir = studio_key_dir;
+        rc.studio_fill_dir = studio_fill_dir;
+        rc.studio_sin_lp = studio_sin_lp;
+        var r = bounce_extend(&s, &h, rc, bounce, seed0, observer);
+        bounce_ray_to_pointers(
+            s, current_origin, current_dir, current_k, prev_plane_normal, pending_light_mis_dir, nee_xyz,
+            pending_light_mis, inside_gem, is_extraordinary, have_prev_plane_normal, path_escaped,
+            stokes, radiance, path_pdf, split_radiance, compat,
+        );
+        if (r == PHASE_TERMINATE) {
             return BOUNCE_STATUS_TERMINATE;
         }
+        let hit = h.hit;
+        let phase_pdf_this_check = h.phase_pdf_this_check;
+        let phase_dir_this_check = h.phase_dir_this_check;
 
-        // Mirrors optics::raytracer::trace_spectral_ray_inner's restructured bounce
-        // loop: attempt a Henyey-Greenstein scattering event somewhere along this
-        // segment before the plane-of-incidence rotation / facet processing below.
-        // Gated on `material.scattering_sigma_s > 0.0` -- every scene with it `<= 0.0`
-        // skips this block entirely, matching the CPU's default-off bit-identity
-        // guarantee.
-        if ((*inside_gem) && material.scattering_sigma_s > 0.0) {
-            // P1 (assigned-mode absorption): mirrors the absorption block's
-            // `is_anisotropic`/`is_biaxial` branching below -- `try_scatter_step` feeds
-            // the same `channel_absorption_alphas_assigned` the absorption block uses.
-            // The propagation direction fed to every alpha function here is the WAVE
-            // NORMAL `k`, not the Poynting direction `S` -- (*current_k), not (*current_dir).
-            var alphas: array<f32, 8>;
-            if (is_anisotropic) {
-                for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                    // alpha_o/alpha_e/alpha_beta hoisted above (per-ray, not per-bounce).
-                    if (is_biaxial && material.has_beta_ray != 0u) {
-                        alphas[k] = assigned_mode_alpha_biaxial(
-                            alpha_o_hoisted[k], alpha_beta_hoisted[k], alpha_e_hoisted[k],
-                            n_alpha_hero, n_beta_hero, n_gamma_hero, biax_ax0, biax_ax1, biax_ax2,
-                            c_axis, (*current_k), (*is_extraordinary),
-                        );
-                    } else {
-                        alphas[k] = assigned_mode_alpha_uniaxial(
-                            alpha_o_hoisted[k], alpha_e_hoisted[k], c_axis, (*current_k), (*is_extraordinary),
-                            n_o_hero_seed, n_e_hero_seed,
-                        );
-                    }
-                }
-            } else {
-                // Isotropic-by-symmetry material: the plain midpoint of the two
-                // eigenmode quadratic forms, independent of the Stokes state, exactly as
-                // optics::raytracer::absorption::channel_absorption_alphas_assigned
-                // computes it. A dichroic tensor on an isotropic material therefore gets
-                // the same unpolarized average on both sides.
-                let eigen_a = ordinary_eigen_polarization((*current_k), c_axis);
-                let eigen_b = extraordinary_eigen_polarization((*current_k), c_axis);
-                for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                    alphas[k] = isotropic_channel_alpha(
-                        alpha_o_hoisted[k], alpha_e_hoisted[k], c_axis, eigen_a, eigen_b,
-                    );
-                }
-            }
-            let sc = maybe_scatter_or_extinguish(
-                alphas, material.scattering_sigma_s, material.scattering_g, (*current_dir), hit.t,
-                material.absorption_path_scale, seed0, bounce, stokes, path_pdf,
-            );
-            if (sc.scattered != 0u) {
-                let scatter_point = (*current_origin) + sc.t_free * (*current_dir);
-                let old_dir = (*current_dir);
-                if (params.env_mode == 2u) {
-                    nee_contribution_hg_scatter(
-                        lambdas, n_o_hero_seed, scatter_point, old_dir,
-                        material.scattering_g, seed0, bounce, stokes, path_pdf, compat,
-                        nee_xyz, alphas,
-                    );
-                    (*pending_light_mis) = henyey_greenstein_phase(dot(sc.new_dir, old_dir), material.scattering_g);
-                    (*pending_light_mis_dir) = sc.new_dir;
-                }
-                (*current_origin) = scatter_point;
-                (*current_dir) = sc.new_dir;
-                // A scattering event depolarizes, so `k` collapses to `S` going forward.
-                (*current_k) = sc.new_dir;
-                // Scattered Stokes vectors are already depolarized, so the previous
-                // plane of incidence is not physically meaningful -- reset it
-                // like the pre-first-bounce state.
-                (*have_prev_plane_normal) = false;
-
-                if (bounce > 4u) {
-                    var max_intensity: f32 = 0.0;
-                    for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                        max_intensity = max(max_intensity, max((*stokes)[k].x, 0.0));
-                    }
-                    let q = clamp(max_intensity, RR_FLOOR, 1.0);
-                    let rr_rand = f32(hash_u32(seed0 ^ hash_u32(bounce ^ RUSSIAN_ROULETTE_STREAM))) / 4294967295.0;
-                    if (rr_rand > q) {
-                        return BOUNCE_STATUS_TERMINATE;
-                    }
-                    // `split_radiance` rides along on the same `1/q` survival rescale
-                    // as `stokes`.
-                    for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                        (*stokes)[k] = (*stokes)[k] * (1.0 / q);
-                        (*split_radiance)[k] = (*split_radiance)[k] / q;
-                    }
-                }
-                return BOUNCE_STATUS_CONTINUE;
-            }
-            // No scatter event fired: the path survived to the facet boundary, and
-            // `maybe_scatter_or_extinguish` already applied this segment's full
-            // extinction weight (absorption AND the scattering removal probability)
-            // to `stokes`/`path_pdf`. Fall through to the facet-dispatch code below,
-            // but see the (skipped) absorption block further down for why it is not
-            // applied a second time.
+        let r_scatter = bounce_scatter(&s, &h, rc, bounce, seed0, observer);
+        bounce_ray_to_pointers(
+            s, current_origin, current_dir, current_k, prev_plane_normal, pending_light_mis_dir, nee_xyz,
+            pending_light_mis, inside_gem, is_extraordinary, have_prev_plane_normal, path_escaped,
+            stokes, radiance, path_pdf, split_radiance, compat,
+        );
+        if (r_scatter == PHASE_TERMINATE) {
+            return BOUNCE_STATUS_TERMINATE;
+        }
+        if (r_scatter == PHASE_END_STEP) {
+            return BOUNCE_STATUS_CONTINUE;
         }
 
         let hit_point = (*current_origin) + hit.t * (*current_dir);

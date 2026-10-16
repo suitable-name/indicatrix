@@ -502,7 +502,7 @@ pub(super) fn start_step(target: &Design, title: &str, step_count: usize) -> Gui
         ),
     )
     .actions([
-        "Click New Design... on the command bar (or File > New Design...).".to_owned(),
+        "Choose File > New Design... in the command bar (or in the File menu at the top of the window).".to_owned(),
         "Start From: Empty.".to_owned(),
         format!(
             "Preform Shape: {shape} -- Half-Width {}, Length / Width {}, Depth {}.",

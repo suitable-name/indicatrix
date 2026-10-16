@@ -116,9 +116,14 @@ use crate::{
 /// export color-space index also gained 2 = Rec.2020 (`PictureKind::Png::color_space`, no new
 /// bytes, but a Worker on 16 would write that export as sRGB).
 ///
+/// 18: Web GPU rendering support: `WorkerRole::Gpu`, `ToWorker::GpuCompile`,
+/// `ToWorker::TraceFullPass`, `FromWorker::GpuAdapter`, `FromWorker::GpuUnavailable`,
+/// `FromWorker::GpuCompiled`, `FromWorker::GpuCompileFailed`, `FromWorker::FullPassResult`,
+/// and `FromWorker::GpuLost`.
+///
 /// A change to any message's bytes must bump this and update the pinned bytes in this
 /// module's `wire_format_is_pinned` test.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// What [`ToWorker::Picture`] makes of a sum (see `crate::display`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +146,8 @@ pub enum WorkerRole {
     Render,
     /// Runs solve jobs.
     Solve,
+    /// Traces GPU passes and compiles GPU pipelines.
+    Gpu,
 }
 
 /// Page to Worker.
@@ -228,6 +235,28 @@ pub enum ToWorker {
         job_id: u64,
         /// The URL to poll.
         url: String,
+    },
+    /// Compiles GPU kernels in order and reports each.
+    GpuCompile {
+        /// Material class (0 generic, 1 isotropic, 2 uniaxial, 3 biaxial).
+        class: u32,
+        /// Kernel names to compile in order.
+        kernels: Vec<String>,
+        /// Soft deadline in milliseconds (stop compiling new kernels if breached).
+        soft_ms: u32,
+        /// Hard deadline in milliseconds (terminate worker if breached).
+        hard_ms: u32,
+    },
+    /// Traces one full pass of the cached scene on the GPU.
+    TraceFullPass {
+        /// The scene the host means; a mismatch is dropped.
+        scene_id: u64,
+        /// The pass id.
+        pass_id: u64,
+        /// First sample index.
+        sample_offset: u32,
+        /// Samples per pixel.
+        spp: u32,
     },
 }
 
@@ -352,6 +381,70 @@ pub enum FromWorker {
         first_pixel: u32,
         /// First sample index.
         sample_offset: u32,
+    },
+    /// Reports adapter limits and capabilities after GPU worker initialisation.
+    GpuAdapter {
+        /// Adapter vendor name.
+        vendor: String,
+        /// Architecture name.
+        architecture: String,
+        /// Device name.
+        device: String,
+        /// Human-readable description.
+        description: String,
+        /// Backend name (e.g. Vulkan, Metal, D3D12).
+        backend: String,
+        /// Maximum storage buffers per stage.
+        max_storage_buffers_per_stage: u32,
+        /// Maximum storage buffer binding size in bytes.
+        max_storage_binding: u64,
+        /// Maximum buffer size in bytes.
+        max_buffer: u64,
+    },
+    /// WebGPU is unavailable or does not satisfy minimum requirements.
+    GpuUnavailable {
+        /// Why WebGPU could not be used.
+        reason: String,
+    },
+    /// A GPU kernel pipeline compiled successfully.
+    GpuCompiled {
+        /// Kernel name.
+        kernel: String,
+        /// Material class.
+        class: u32,
+        /// Compilation time in milliseconds.
+        ms: f64,
+    },
+    /// A GPU kernel pipeline failed to compile or exceeded budget.
+    GpuCompileFailed {
+        /// Kernel name.
+        kernel: String,
+        /// Material class.
+        class: u32,
+        /// Failure reason.
+        reason: String,
+        /// Compilation time in milliseconds before failure/timeout.
+        ms: f64,
+    },
+    /// A finished full-frame GPU render pass.
+    FullPassResult {
+        /// The scene it was traced for.
+        scene_id: u64,
+        /// The pass id.
+        pass_id: u64,
+        /// First sample index.
+        sample_offset: u32,
+        /// Samples per pixel.
+        spp: u32,
+        /// One summed XYZ radiance per pixel of the entire frame.
+        sums: Vec<[f32; 3]>,
+        /// Tracing time measured in the Worker (`performance.now()`).
+        elapsed_ms: f64,
+    },
+    /// Device lost or unrecoverable GPU error.
+    GpuLost {
+        /// Reason for device loss.
+        reason: String,
     },
 }
 

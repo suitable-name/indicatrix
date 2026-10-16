@@ -301,7 +301,7 @@ fn snapshot_compare() -> Guide {
             "Take a snapshot",
             "A snapshot is a copy of the design and its solved depths, to compare against later.",
         )
-        .actions(["Click Snapshot on the command bar's second row."])
+        .actions(["Click Snapshot on the command bar."])
         .check("a message says the snapshot was taken, and the Compare button is no longer dim.")
         .why("A snapshot is not saved anywhere. It lives only in memory for this session: closing the design or the program, or clicking Snapshot again, replaces or loses it. It is not written to the design file.")
         .goal(event(events::SNAPSHOT_TAKEN), "a snapshot taken")
@@ -382,7 +382,7 @@ fn raw_text() -> Guide {
             "Take a snapshot",
             "The text comparison needs something to compare with. A design that has never been saved has no file, so use a snapshot.",
         )
-        .actions(["Click Snapshot on the command bar's second row."])
+        .actions(["Click Snapshot on the command bar."])
         .check("a message says the snapshot was taken.")
         .goal(event(events::SNAPSHOT_TAKEN), "a snapshot taken")
         .highlight("snapshot_button")

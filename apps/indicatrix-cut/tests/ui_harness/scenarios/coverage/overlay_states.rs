@@ -737,8 +737,7 @@ fn design_panel_states_rest() -> Vec<State> {
         ),
         state!("Edit view, edited design", Edited, None, NONE, |a| {
             edit_tab(a);
-            // Duplicate, Move Tier Up and Move Tier Down need a selected tier; tier 1 can move
-            // both ways.
+            // A selected tier shows the inspector's tier form; tier 1 can move both ways.
             a.ui().global::<EditorModel>().set_selected_tier_index(1);
             pump(200);
         }),

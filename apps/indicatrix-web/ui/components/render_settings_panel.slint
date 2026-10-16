@@ -1,4 +1,4 @@
-import { Slider, ComboBox, Switch, SpinBox, Button, ScrollView } from "std-widgets.slint";
+import { Slider, ComboBox, Switch, SpinBox, Button, ScrollView, CheckBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { AppModel } from "../models/app_model.slint";
 import { RenderModel } from "render_model.slint";
@@ -248,6 +248,28 @@ export component RenderSettingsPanel inherits Rectangle {
                 text: "Denoise When Settled";
                 checked <=> RenderModel.denoise;
                 toggled => { RenderModel.settings-edited(); }
+            }
+            CheckBox {
+                text: "GPU Rendering (Experimental)";
+                checked <=> RenderModel.gpu-enabled;
+                toggled => { RenderModel.settings-edited(); }
+            }
+            Text {
+                text: RenderModel.gpu-status-text;
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+                visible: RenderModel.gpu-status-text != "";
+            }
+            Button {
+                text: "Test GPU";
+                visible: RenderModel.gpu-state == 1;
+                clicked => { RenderModel.gpu-test-clicked(); }
+            }
+            Button {
+                text: "Forget GPU Test Result";
+                visible: RenderModel.gpu-state == 4;
+                clicked => { RenderModel.gpu-forget-clicked(); }
             }
 
             Caption { text: "MATERIAL"; }

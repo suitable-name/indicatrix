@@ -46,7 +46,7 @@ pub mod transport_check;
 
 // Welford/z-score/connected-component statistics and the pass criteria shared by
 // `estimator_check`'s Tier 3 image comparisons and `merge_tests`.
-pub(crate) mod z_stats;
+pub mod z_stats;
 
 // Self-test for `shading_normal_near_edge`; kept separate (own `planes`
 // binding) from `transport_check`/`transport_functions.wgsl`.
@@ -86,4 +86,6 @@ pub use context::{
     GpuAcquireError, GpuContext, MEGAKERNEL_STORAGE_BUFFERS, WAVEFRONT_BOUNCE_TOTAL_BUFFERS,
     WAVEFRONT_STORAGE_BUFFERS,
 };
-pub use frame::{AccumulateOutcome, GpuFrameError, GpuFrameRenderer, GpuFrameScene};
+pub use frame::{
+    AccumulateOutcome, GpuFrameError, GpuFrameRenderer, GpuFrameScene, GpuPipelineKind,
+};

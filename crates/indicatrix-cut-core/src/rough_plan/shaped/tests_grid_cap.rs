@@ -15,10 +15,24 @@ use crate::rough_plan::{
     tests::{box_design, settings_with},
 };
 
-fn settings(count: u8) -> PlanSettings {
+fn settings(max_designs: u8) -> PlanSettings {
     PlanSettings {
-        count,
+        max_designs,
         ..PlanSettings::default()
+    }
+}
+
+#[test]
+fn the_grid_does_not_depend_on_the_design_cap() {
+    for extents in [[20.0; 3], [40.0, 25.0, 8.0], [100.0, 100.0, 2.0]] {
+        let reference = choose_shaped_grid_at([0.0; 3], extents, &settings(1));
+        for max_designs in [2, 10, 99] {
+            assert_eq!(
+                choose_shaped_grid_at([0.0; 3], extents, &settings(max_designs)),
+                reference,
+                "{extents:?} designs={max_designs}"
+            );
+        }
     }
 }
 
@@ -30,13 +44,13 @@ fn the_plain_chooser_is_the_capped_one_at_the_plain_cap() {
         [100.0, 100.0, 100.0],
         [6.0, 5.0, 4.0],
     ] {
-        for count in [1, 4, 10, 40, 99] {
-            let settings = settings(count);
+        for max_designs in [1, 4, 10, 40, 99] {
+            let settings = settings(max_designs);
             for corner in [[0.0; 3], [3.0, -2.0, 7.5]] {
                 assert_eq!(
                     choose_shaped_grid_at(corner, extents, &settings),
                     choose_shaped_grid_capped(corner, extents, &settings, SHAPED_PIECE_CAP),
-                    "{extents:?} K={count}"
+                    "{extents:?} designs={max_designs}"
                 );
             }
         }
@@ -44,9 +58,9 @@ fn the_plain_chooser_is_the_capped_one_at_the_plain_cap() {
 }
 
 #[test]
-fn a_convex_cube_at_k10_keeps_its_16_cell_grid() {
-    // 18 cells an axis shrink by 5 % steps (18, 17, 16) until the 2.6 M entry cap holds
-    // (136^3 = 2,515,456 entries).
+fn a_convex_cube_keeps_its_16_cell_grid() {
+    // 30 units clamp to 20 cells an axis, which shrink by 5 % steps (20, 19, 18, 17, 16)
+    // until the 2.6 M entry cap holds (136^3 = 2,515,456 entries).
     let grid = choose_shaped_grid_at([0.0; 3], [20.0; 3], &settings(10));
     assert_eq!(grid.cells, [16; 3]);
 }
@@ -60,15 +74,15 @@ fn the_mesh_cap_gives_at_most_the_mesh_cap_and_never_more_cells_than_the_convex_
         [100.0, 100.0, 100.0],
         [60.0, 60.0, 12.0],
     ] {
-        for count in [1, 4, 10, 40, 99] {
-            let settings = settings(count);
+        for max_designs in [1, 10, 99] {
+            let settings = settings(max_designs);
             let convex = choose_shaped_grid_at([0.0; 3], extents, &settings);
             let mesh =
                 choose_shaped_grid_capped([0.0; 3], extents, &settings, SHAPED_MESH_PIECE_CAP);
             for axis in 0..3 {
                 assert!(
                     mesh.cells[axis] <= convex.cells[axis],
-                    "{extents:?} K={count}: {:?} vs {:?}",
+                    "{extents:?} designs={max_designs}: {:?} vs {:?}",
                     mesh.cells,
                     convex.cells
                 );

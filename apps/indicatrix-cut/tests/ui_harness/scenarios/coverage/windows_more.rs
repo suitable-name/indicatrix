@@ -267,7 +267,7 @@ fn planner_ready(app: &mut HarnessApp, profile: &Profile, library: bool) -> bool
 }
 
 /// A 40 x 30 x 25 mm block planned over the whole library; waits (up to 60 s) for the layouts.
-fn plan_block(count: i32) -> bool {
+fn plan_block(max_designs: i32) -> bool {
     let Some(window) = harness_support::rough_planner_window() else {
         return false;
     };
@@ -276,8 +276,7 @@ fn plan_block(count: i32) -> bool {
     model.set_rough_x("40".into());
     model.set_rough_y("30".into());
     model.set_rough_z("25".into());
-    model.set_count(count);
-    model.set_min_count(1);
+    model.set_max_designs(max_designs);
     model.set_use_filter(false);
     model.invoke_base_field_committed();
     pump(250);

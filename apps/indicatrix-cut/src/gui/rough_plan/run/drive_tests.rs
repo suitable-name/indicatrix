@@ -187,12 +187,16 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(model: RoughModel, count: u8, catalogue: Vec<(CandidateDesign, DesignHull)>) -> Self {
+    fn new(
+        model: RoughModel,
+        max_designs: u8,
+        catalogue: Vec<(CandidateDesign, DesignHull)>,
+    ) -> Self {
         let (designs, hulls) = catalogue.into_iter().unzip();
         Self {
             model,
             settings: PlanSettings {
-                count,
+                max_designs,
                 ..PlanSettings::default()
             },
             designs,
@@ -249,11 +253,12 @@ fn cut_block() -> Fixture {
     )
 }
 
-/// The cut block planning up to six stones of three designs.
-fn cut_block_of_six() -> Fixture {
+/// The cut block planning with at most two of three designs per layout (so the design-cap
+/// chain runs whenever the best mixed layout uses all three).
+fn cut_block_of_two_designs() -> Fixture {
     Fixture::new(
         RoughModel::new(block(8.0, 6.0, 5.0), vec![cut_edge()]),
-        6,
+        2,
         catalogue(),
     )
 }
@@ -277,13 +282,13 @@ fn cylinder() -> Fixture {
     )
 }
 
-/// The cylinder planning up to six stones of three designs.
-fn cylinder_of_six() -> Fixture {
-    Fixture::new(RoughModel::new(cylinder_base(), Vec::new()), 6, catalogue())
+/// The cylinder planning with at most two of three designs per layout.
+fn cylinder_of_two_designs() -> Fixture {
+    Fixture::new(RoughModel::new(cylinder_base(), Vec::new()), 2, catalogue())
 }
 
-/// A pebble with its top sawn flat, planning up to six stones of three designs.
-fn cut_pebble_of_six() -> Fixture {
+/// A pebble with its top sawn flat, planning with at most two of three designs per layout.
+fn cut_pebble_of_two_designs() -> Fixture {
     let pebble = RoughBase::Pebble {
         x_mm: 7.0,
         y_mm: 5.0,
@@ -293,7 +298,7 @@ fn cut_pebble_of_six() -> Fixture {
         normal: [0.0, 1.0, 0.0],
         depth_mm: 1.0,
     };
-    Fixture::new(RoughModel::new(pebble, vec![saw]), 6, catalogue())
+    Fixture::new(RoughModel::new(pebble, vec![saw]), 2, catalogue())
 }
 
 /// The result of a scoped plan thread; a panic in it is re-raised with its own message.
@@ -342,8 +347,8 @@ fn a_cut_block_plans_like_the_core_for_every_lane_count() {
 }
 
 #[test]
-fn a_cut_block_of_six_stones_plans_like_the_core_for_every_lane_count() {
-    assert_lanes_match_the_core(&cut_block_of_six());
+fn a_cut_block_of_two_designs_plans_like_the_core_for_every_lane_count() {
+    assert_lanes_match_the_core(&cut_block_of_two_designs());
 }
 
 #[test]
@@ -355,9 +360,9 @@ fn a_cylinder_plans_like_the_core_for_every_lane_count() {
 
 #[test]
 #[ignore = "slow (> 60 s in debug): full shaped plan per lane count -- run with \
-            `cargo test -p indicatrix-cut --release -- --ignored a_cylinder_of_six_stones_plans_like_the_core_for_every_lane_count`"]
-fn a_cylinder_of_six_stones_plans_like_the_core_for_every_lane_count() {
-    assert_lanes_match_the_core(&cylinder_of_six());
+            `cargo test -p indicatrix-cut --release -- --ignored a_cylinder_of_two_designs_plans_like_the_core_for_every_lane_count`"]
+fn a_cylinder_of_two_designs_plans_like_the_core_for_every_lane_count() {
+    assert_lanes_match_the_core(&cylinder_of_two_designs());
 }
 
 #[test]
@@ -365,11 +370,11 @@ fn a_cylinder_of_six_stones_plans_like_the_core_for_every_lane_count() {
             `cargo test -p indicatrix-cut --release -- --ignored \
             a_pebble_with_a_sawn_face_plans_like_the_core_for_every_lane_count`"]
 fn a_pebble_with_a_sawn_face_plans_like_the_core_for_every_lane_count() {
-    assert_lanes_match_the_core(&cut_pebble_of_six());
+    assert_lanes_match_the_core(&cut_pebble_of_two_designs());
 }
 
-/// The C-shaped mesh rough (a 20 mm cube with a notch, 6000 mm^3 of material) planning up
-/// to three stones of two box designs.
+/// The C-shaped mesh rough (a 20 mm cube with a notch, 6000 mm^3 of material) planning
+/// with at most two designs per layout (both box designs).
 fn c_shape_mesh() -> Fixture {
     let (points, triangles) = parse_obj_mesh(C_SHAPE_OBJ).expect("the fixture parses");
     let (base, note) = import_mesh(&points, &triangles).expect("the fixture imports");
@@ -378,7 +383,7 @@ fn c_shape_mesh() -> Fixture {
     assert!(model.mesh().is_some(), "the notch keeps the mesh");
     Fixture::new(
         model,
-        3,
+        2,
         vec![
             box_design(1, [4.0, 4.0, 4.0]),
             box_design(2, [4.0, 2.4, 6.4]),

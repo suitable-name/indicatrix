@@ -165,6 +165,8 @@ pub struct RenderSettings {
     pub stone_width_mm: f32,
     /// Light the stone with the uploaded HDR map, when one is loaded.
     pub use_hdr: bool,
+    /// Whether GPU rendering is enabled (experimental).
+    pub gpu_enabled: bool,
     /// The PNG export dialog.
     pub export: ExportSettings,
 }
@@ -196,6 +198,7 @@ impl Default for RenderSettings {
             edge_rounding_radius: 0.0,
             stone_width_mm: 0.0,
             use_hdr: true,
+            gpu_enabled: false,
             export: ExportSettings::default(),
         }
     }

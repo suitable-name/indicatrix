@@ -62,8 +62,8 @@ where it is described):
   are hidden too. In History and Variants, the per-row save-as-variant icon and
   "Compare Text" are hidden. The Tier tab's "+ Add Concave Tier" and Offset stay
   visible.
-- **Command bar** (Chapter 3): Deep Solve, Snapshot, Compare, Tilt Curves and
-  + Concave. The Export button's menu drops its Gem Cut Studio (.gcs) entry.
+- **Command bar** (Chapter 3): Deep Solve, Snapshot, Compare and Tilt Curves.
+  The File menu drops its Gem Cut Studio (.gcs) entry.
 - **Design settings panel** (Chapter 6): Symmetry Order, Mirror and
   Apply Symmetry, Extra Header Lines, Footnotes, Gear Ref. Angle and the
   printed-proportions row; in the gear remap dialog, Rounding. When a hidden control

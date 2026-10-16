@@ -15,21 +15,22 @@ use super::{
 use indicatrix_cut_core::rough_plan::{
     CandidateDesign, CutOrder, FINAL_LAYOUTS, LayoutGroup, PLAIN_SINGLE_FITS, PlanInput, PlanPath,
     PlanProgress, REFINE_TOP, RoughBlock, RoughLayout, SHAPED_SINGLE_FITS, SHAPED_SINGLE_LAYOUTS,
-    best_layout, build_piece_table_lanes, choose_grid, final_ranking_min, finish_plan_lanes,
-    flatten_groups, merge_and_rank_min, own_pool, pareto_front, partial_ranking_min,
-    plan_alternatives_lanes, plan_rough_for_order, rank_indices_min,
+    best_layout, build_piece_table_lanes, choose_grid, final_ranking_capped, finish_plan_lanes,
+    flatten_groups, merge_and_rank_capped, own_pool, pareto_front, partial_ranking_capped,
+    plan_alternatives_lanes, plan_design_cap, plan_rough_for_order, rank_indices_capped,
     shaped::{
         ShapedAltParams, ShapedCtx, ShapedGrid, grid_poll_events, plan_shaped_alternatives,
-        plan_shaped_for_order, refine_shaped, shaped_uniform_layouts,
+        plan_shaped_design_cap, plan_shaped_for_order, refine_shaped_capped,
+        shaped_uniform_layouts,
     },
     single_fit_layouts, uniform_layouts_lanes, uniform_pool,
 };
 
 /// DP ticks the plain planner reports per cell of the first cut axis and order.
-const PLAIN_TICKS_PER_CELL: usize = 2;
+const PLAIN_TICKS_PER_CELL: usize = 1;
 
 /// DP ticks the shaped planner reports per cell of the first cut axis and order.
-const SHAPED_TICKS_PER_CELL: usize = 3;
+const SHAPED_TICKS_PER_CELL: usize = 2;
 
 /// Plans the rough of `input` on up to `lanes` threads. `None` when `progress` cancelled;
 /// an empty list when nothing is feasible (or the model is invalid: the caller validates
@@ -116,15 +117,16 @@ fn plan_plain_block(
         PLAIN_SINGLE_FITS,
         rough.volume_mm3(),
     ));
-    Some(merge_and_rank_min(
+    Some(merge_and_rank_capped(
         layouts,
         FINAL_LAYOUTS,
-        settings.min_count_usize(),
+        settings.max_designs_usize(),
     ))
 }
 
 /// The core's `plan_rough` over the Pareto `front`, every stage that splits on threads: the
-/// piece tables, the six orders, the single-design pass and the refinement.
+/// piece tables, the six orders, the design-cap chain, the single-design pass and the
+/// refinement.
 fn plan_block_layouts(
     rough: &RoughBlock,
     input: &PlanInput<'_>,
@@ -143,26 +145,30 @@ fn plan_block_layouts(
 
     let table = build_piece_table_lanes(&grid, &front, lanes, &mut on_progress)?;
     let mixed = run_orders(lanes, progress, |order, on| {
-        plan_rough_for_order(&grid, &table, &front, order, settings.count, on)
+        plan_rough_for_order(&grid, &table, &front, order, on)
     })?;
-    let alternatives = match best_layout(&mixed) {
-        // The FULL candidate list, not the front: a design dominated only by a removed
-        // one may be needed once that one is gone.
-        Some(best) => plan_alternatives_lanes(
-            &grid,
-            designs,
-            best,
-            settings.count,
-            lanes,
-            &mut on_progress,
-        )?,
-        None => Vec::new(),
+    let (capped, alternatives) = match best_layout(&mixed) {
+        Some(best) => (
+            plan_design_cap(
+                &grid,
+                designs,
+                best,
+                settings.max_designs_usize(),
+                lanes,
+                &mut on_progress,
+            )?,
+            // The FULL candidate list, not the front: a design dominated only by a removed
+            // one may be needed once that one is gone.
+            plan_alternatives_lanes(&grid, designs, best, lanes, &mut on_progress)?,
+        ),
+        None => (Vec::new(), Vec::new()),
     };
 
     let mut groups = vec![LayoutGroup {
         pool: front,
         layouts: mixed,
     }];
+    groups.extend(capped);
     groups.extend(alternatives);
     if !on_progress(PlanProgress::Uniform { done: 0, total: 1 }) {
         return None;
@@ -177,8 +183,8 @@ fn plan_block_layouts(
     finish_plan_lanes(rough, settings, designs, &groups, lanes, &mut on_progress)
 }
 
-/// A shaped rough: the positional DPs over the clipped table, the leave-one-out
-/// alternatives, the exact single-stone fits, the shaped uniform pass, the refinement of
+/// A shaped rough: the positional DPs over the clipped table, the design-cap chain, the
+/// leave-one-out alternatives, the exact single-stone fits, the shaped uniform pass, the refinement of
 /// the best layouts and the final ranking.
 fn plan_shaped(
     input: &PlanInput<'_>,
@@ -195,9 +201,9 @@ fn plan_shaped(
         return Some(Vec::new());
     }
     let settings = input.settings;
-    let min_stones = settings.min_count_usize();
+    let max_designs = settings.max_designs_usize();
     let partial = |groups: &[LayoutGroup], extra: Vec<RoughLayout>| {
-        partial_ranking_min(groups, extra, min_stones)
+        partial_ranking_capped(groups, extra, max_designs)
     };
     let inset = settings.skin_mm + settings.allowance_mm;
     let (Ok(ctx), Ok(coarse_region)) = (
@@ -253,7 +259,7 @@ fn plan_shaped(
     });
 
     let (flat, group_of) = flatten_groups(&groups);
-    let ranked = rank_indices_min(&flat, REFINE_TOP, min_stones);
+    let ranked = rank_indices_capped(&flat, REFINE_TOP, max_designs);
     let Some(mut refined) = refine_parallel(ranked.len(), lanes, progress, |slot| {
         let index = ranked[slot];
         let group = &groups[group_of[index]];
@@ -262,12 +268,12 @@ fn plan_shaped(
         } else {
             group.pool.clone()
         };
-        refine_shaped(&ctx, flat[index], &pool, settings)
+        refine_shaped_capped(&ctx, flat[index], &pool, designs, settings)
     }) else {
         return stopped_layouts(progress, || partial(&groups, single_layouts()));
     };
     refined.extend(single_layouts());
-    Some(final_ranking_min(refined, &flat, &ranked, min_stones))
+    Some(final_ranking_capped(refined, &flat, &ranked, max_designs))
 }
 
 /// What a stage that returned `None` means: the time limit stopped the plan (the layouts
@@ -279,8 +285,9 @@ fn stopped_layouts(
     progress.time_stopped().then(partial)
 }
 
-/// The size table, the clipped table, the six DPs and the alternatives of a shaped
-/// rough, as refinement groups in the plain planner's order (mixed, alternatives).
+/// The size table, the clipped table, the six DPs, the design-cap chain and the
+/// alternatives of a shaped rough, as refinement groups in the plain planner's order
+/// (mixed, design cap, alternatives).
 fn shaped_dp_groups(
     input: &PlanInput<'_>,
     ctx: &ShapedCtx,
@@ -307,31 +314,36 @@ fn shaped_dp_groups(
     let mixed = run_orders(lanes, progress, |order, on| {
         plan_shaped_for_order(&grid, &clipped, ctx, front, order, settings, on)
     })?;
-    let alternatives = match best_layout(&mixed) {
-        Some(best) => {
-            let params = ShapedAltParams {
-                grid: &grid,
-                table: &clipped,
-                ctx,
-                all_designs: input.designs,
-                best,
-                settings,
-                lanes,
-            };
+    let mut extra = Vec::new();
+    if let Some(best) = best_layout(&mixed) {
+        let params = ShapedAltParams {
+            grid: &grid,
+            table: &clipped,
+            ctx,
+            all_designs: input.designs,
+            best,
+            settings,
+            lanes,
+        };
+        // The limit may stop either stage: the layouts found so far stand.
+        match plan_shaped_design_cap(&params, &mut on_progress) {
+            Some(capped) => extra.extend(capped),
+            None if progress.time_stopped() => {}
+            None => return None,
+        }
+        if !progress.time_stopped() {
             match plan_shaped_alternatives(&params, &mut on_progress) {
-                Some(alternatives) => alternatives,
-                // The limit stopped the leave-one-out rounds: the DP layouts stand.
-                None if progress.time_stopped() => Vec::new(),
+                Some(alternatives) => extra.extend(alternatives),
+                None if progress.time_stopped() => {}
                 None => return None,
             }
         }
-        None => Vec::new(),
-    };
+    }
 
     let mut groups = vec![LayoutGroup {
         pool: front.to_vec(),
         layouts: mixed,
     }];
-    groups.extend(alternatives);
+    groups.extend(extra);
     Some(groups)
 }

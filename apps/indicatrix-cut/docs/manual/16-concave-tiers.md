@@ -38,9 +38,7 @@ and girdle section, and at the end of the crown, directly above the table.
 
 ![The Tier tab on the blank concave tier form.](../../../../assets/concave_tier_form.png)
 
-Press **+ Add Concave Tier** in the tier table's toolbar. The Advanced interface
-also has **+ Concave** in the command bar; the Simple interface leaves that button
-out and keeps the one in the tier table. The inspector opens on the Tier tab with the concave form, blank. Fill
+Press **+ Add Concave Tier** in the tier table's toolbar. The inspector opens on the Tier tab with the concave form, blank. Fill
 in:
 
 - **Name**, **Angle (deg)**, **Indices** and **Instructions** — the facet line.

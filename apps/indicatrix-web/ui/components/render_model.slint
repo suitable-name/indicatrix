@@ -51,6 +51,10 @@ export global RenderModel {
     in-out property <float> edge-rounding: 0.0;
     in-out property <float> stone-width-mm: 0.0;
     in-out property <bool> use-hdr: true;
+    in-out property <bool> gpu-enabled: false;
+    in-out property <string> gpu-status-text: "";
+    // 0 off, 1 unknown, 2 testing, 3 ok, 4 failed.
+    in-out property <int> gpu-state: 0;
 
     // -- The PNG export dialog ---------------------------------------------------------
     in-out property <bool> export-open: false;
@@ -72,6 +76,8 @@ export global RenderModel {
     callback surface-glare-edited(float);
     callback load-hdr();
     callback restart-workers();
+    callback gpu-test-clicked();
+    callback gpu-forget-clicked();
     // An export dialog field changed (the size text follows).
     callback export-edited();
     callback export-start();

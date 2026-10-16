@@ -70,14 +70,11 @@ fn best_of_orders(
     grid: &super::Grid,
     table: &PieceTable,
     front: &[CandidateDesign],
-    settings: &PlanSettings,
 ) -> (Vec<super::RoughLayout>, super::RoughLayout) {
     let mut mixed = Vec::new();
     for order in CutOrder::ALL {
-        mixed.extend(
-            plan_rough_for_order(grid, table, front, order, settings.count, &mut |_| true)
-                .expect("order"),
-        );
+        mixed
+            .extend(plan_rough_for_order(grid, table, front, order, &mut |_| true).expect("order"));
     }
     let best = best_layout(&mixed).expect("a feasible layout").clone();
     (mixed, best)
@@ -89,23 +86,15 @@ fn the_alternatives_on_lanes_are_the_serial_groups() {
     let front = pareto_front(&designs);
     let grid = choose_grid(&rough, &settings);
     let table = build_piece_table(&grid, &front, &mut |_| true).expect("table");
-    let (_, best) = best_of_orders(&grid, &table, &front, &settings);
-    let serial =
-        plan_alternatives(&grid, &designs, &best, settings.count, &mut |_| true).expect("serial");
+    let (_, best) = best_of_orders(&grid, &table, &front);
+    let serial = plan_alternatives(&grid, &designs, &best, &mut |_| true).expect("serial");
     assert_ne!(serial.len(), 0);
     for lanes in LANES {
         let mut last = None;
-        let groups = plan_alternatives_lanes(
-            &grid,
-            &designs,
-            &best,
-            settings.count,
-            lanes,
-            &mut |event| {
-                last = Some(event);
-                true
-            },
-        )
+        let groups = plan_alternatives_lanes(&grid, &designs, &best, lanes, &mut |event| {
+            last = Some(event);
+            true
+        })
         .expect("lanes");
         assert_eq!(groups, serial, "lanes {lanes}");
         assert!(
@@ -114,11 +103,10 @@ fn the_alternatives_on_lanes_are_the_serial_groups() {
         );
 
         let mut seen = 0;
-        let cancelled =
-            plan_alternatives_lanes(&grid, &designs, &best, settings.count, lanes, &mut |_| {
-                seen += 1;
-                seen < 4
-            });
+        let cancelled = plan_alternatives_lanes(&grid, &designs, &best, lanes, &mut |_| {
+            seen += 1;
+            seen < 4
+        });
         assert!(cancelled.is_none(), "lanes {lanes}");
     }
 }
@@ -126,7 +114,7 @@ fn the_alternatives_on_lanes_are_the_serial_groups() {
 #[test]
 fn the_uniform_pass_on_lanes_is_the_serial_scan_with_monotonic_progress() {
     let (rough, mut settings, _) = fixture();
-    settings.count = 6;
+    settings.max_designs = 6;
     // More designs than one poll interval, so several chunks and several reports.
     let designs = random_designs(&mut Lcg(5), 300);
     let serial = uniform_layouts(&rough, &settings, &designs, &mut |_| true).expect("serial");
@@ -163,15 +151,12 @@ fn the_refinement_on_lanes_is_the_serial_final_ranking() {
     let front = pareto_front(&designs);
     let grid = choose_grid(&rough, &settings);
     let table = build_piece_table(&grid, &front, &mut |_| true).expect("table");
-    let (mixed, best) = best_of_orders(&grid, &table, &front, &settings);
+    let (mixed, best) = best_of_orders(&grid, &table, &front);
     let mut groups = vec![LayoutGroup {
         pool: front,
         layouts: mixed,
     }];
-    groups.extend(
-        plan_alternatives(&grid, &designs, &best, settings.count, &mut |_| true)
-            .expect("alternatives"),
-    );
+    groups.extend(plan_alternatives(&grid, &designs, &best, &mut |_| true).expect("alternatives"));
     groups.push(LayoutGroup {
         pool: Vec::new(),
         layouts: uniform_layouts(&rough, &settings, &designs, &mut |_| true).expect("uniform"),

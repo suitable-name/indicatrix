@@ -95,6 +95,18 @@ fn every_page_to_worker_message_round_trips() {
                 denoise: true,
             },
         },
+        ToWorker::GpuCompile {
+            class: 1,
+            kernels: vec!["ew_extend".to_string(), "ew_surface".to_string()],
+            soft_ms: 5000,
+            hard_ms: 20000,
+        },
+        ToWorker::TraceFullPass {
+            scene_id: 9,
+            pass_id: 3,
+            sample_offset: 17,
+            spp: 8,
+        },
     ] {
         round_trip_to(&message);
     }
@@ -183,6 +195,41 @@ fn every_worker_to_page_message_round_trips() {
             first_pixel: 1,
             sample_offset: 17,
         },
+        FromWorker::GpuAdapter {
+            vendor: "NVIDIA".to_string(),
+            architecture: "Ada".to_string(),
+            device: "RTX 4090".to_string(),
+            description: "GeForce".to_string(),
+            backend: "Vulkan".to_string(),
+            max_storage_buffers_per_stage: 8,
+            max_storage_binding: 134_217_728,
+            max_buffer: 268_435_456,
+        },
+        FromWorker::GpuUnavailable {
+            reason: "no adapter".to_string(),
+        },
+        FromWorker::GpuCompiled {
+            kernel: "ew_extend".to_string(),
+            class: 1,
+            ms: 124.5,
+        },
+        FromWorker::GpuCompileFailed {
+            kernel: "ew_surface".to_string(),
+            class: 1,
+            reason: "syntax error".to_string(),
+            ms: 12.0,
+        },
+        FromWorker::FullPassResult {
+            scene_id: 9,
+            pass_id: 3,
+            sample_offset: 17,
+            spp: 8,
+            sums: vec![[0.5, -0.0, f32::MAX]],
+            elapsed_ms: 25.5,
+        },
+        FromWorker::GpuLost {
+            reason: "device reset".to_string(),
+        },
     ] {
         round_trip_from(&message);
     }
@@ -206,8 +253,8 @@ fn hex(bytes: &[u8]) -> String {
 #[test]
 fn wire_format_is_pinned() {
     assert_eq!(
-        PROTOCOL_VERSION, 17,
-        "the bytes below were pinned for version 17"
+        PROTOCOL_VERSION, 18,
+        "the bytes below were pinned for version 18"
     );
 
     // TraceChunk = variant 4; scene id 300 = varint AC 02.
@@ -231,7 +278,7 @@ fn wire_format_is_pinned() {
         hex(&encode_to_worker(&watch).expect("encodes")),
         "08 05 06 62 6C 6F 62 3A 78"
     );
-    // Init = variant 0, then version 17, role Render = 0, worker index 2.
+    // Init = variant 0, then version 18, role Render = 0, worker index 2.
     let init = ToWorker::Init {
         protocol_version: PROTOCOL_VERSION,
         role: WorkerRole::Render,
@@ -239,7 +286,39 @@ fn wire_format_is_pinned() {
     };
     assert_eq!(
         hex(&encode_to_worker(&init).expect("encodes")),
-        "00 11 00 02"
+        "00 12 00 02"
+    );
+    // Init with role Gpu = 2, worker index 0.
+    let init_gpu = ToWorker::Init {
+        protocol_version: PROTOCOL_VERSION,
+        role: WorkerRole::Gpu,
+        worker_index: 0,
+    };
+    assert_eq!(
+        hex(&encode_to_worker(&init_gpu).expect("encodes")),
+        "00 12 02 00"
+    );
+    // GpuCompile = variant 9.
+    let gpu_compile = ToWorker::GpuCompile {
+        class: 1,
+        kernels: vec!["a".to_string()],
+        soft_ms: 10,
+        hard_ms: 20,
+    };
+    assert_eq!(
+        hex(&encode_to_worker(&gpu_compile).expect("encodes")),
+        "09 01 01 01 61 0A 14"
+    );
+    // TraceFullPass = variant 10.
+    let trace_full = ToWorker::TraceFullPass {
+        scene_id: 9,
+        pass_id: 2,
+        sample_offset: 17,
+        spp: 8,
+    };
+    assert_eq!(
+        hex(&encode_to_worker(&trace_full).expect("encodes")),
+        "0A 09 02 11 08"
     );
 
     // ChunkResult = variant 2; one [0.5, 1.0, 2.0] sum; 187.25 ms = 0x4067680000000000.
@@ -256,7 +335,7 @@ fn wire_format_is_pinned() {
         hex(&encode_from_worker(&result).expect("encodes")),
         "02 09 01 04 11 08 01 00 00 00 3F 00 00 80 3F 00 00 00 40 00 00 00 00 00 68 67 40"
     );
-    // ChunkAborted = variant 12, the last one.
+    // ChunkAborted = variant 12.
     let aborted = FromWorker::ChunkAborted {
         scene_id: 9,
         first_pixel: 1,
@@ -266,11 +345,76 @@ fn wire_format_is_pinned() {
         hex(&encode_from_worker(&aborted).expect("encodes")),
         "0C 09 01 11"
     );
+    // GpuAdapter = variant 13.
+    let gpu_adapter = FromWorker::GpuAdapter {
+        vendor: "v".to_string(),
+        architecture: "a".to_string(),
+        device: "d".to_string(),
+        description: String::new(),
+        backend: "b".to_string(),
+        max_storage_buffers_per_stage: 8,
+        max_storage_binding: 16,
+        max_buffer: 32,
+    };
+    assert_eq!(
+        hex(&encode_from_worker(&gpu_adapter).expect("encodes")),
+        "0D 01 76 01 61 01 64 00 01 62 08 10 20"
+    );
+    // GpuUnavailable = variant 14.
+    let gpu_unavail = FromWorker::GpuUnavailable {
+        reason: "no".to_string(),
+    };
+    assert_eq!(
+        hex(&encode_from_worker(&gpu_unavail).expect("encodes")),
+        "0E 02 6E 6F"
+    );
+    // GpuCompiled = variant 15.
+    let gpu_compiled = FromWorker::GpuCompiled {
+        kernel: "k".to_string(),
+        class: 1,
+        ms: 1.0,
+    };
+    assert_eq!(
+        hex(&encode_from_worker(&gpu_compiled).expect("encodes")),
+        "0F 01 6B 01 00 00 00 00 00 00 F0 3F"
+    );
+    // GpuCompileFailed = variant 16.
+    let gpu_failed = FromWorker::GpuCompileFailed {
+        kernel: "k".to_string(),
+        class: 1,
+        reason: "fail".to_string(),
+        ms: 1.0,
+    };
+    assert_eq!(
+        hex(&encode_from_worker(&gpu_failed).expect("encodes")),
+        "10 01 6B 01 04 66 61 69 6C 00 00 00 00 00 00 F0 3F"
+    );
+    // FullPassResult = variant 17, the last one before GpuLost.
+    let full_pass_result = FromWorker::FullPassResult {
+        scene_id: 9,
+        pass_id: 2,
+        sample_offset: 17,
+        spp: 8,
+        sums: vec![[0.5, 1.0, 2.0]],
+        elapsed_ms: 1.0,
+    };
+    assert_eq!(
+        hex(&encode_from_worker(&full_pass_result).expect("encodes")),
+        "11 09 02 11 08 01 00 00 00 3F 00 00 80 3F 00 00 00 40 00 00 00 00 00 00 F0 3F"
+    );
+    // GpuLost = variant 18, the last one.
+    let gpu_lost = FromWorker::GpuLost {
+        reason: "lost".to_string(),
+    };
+    assert_eq!(
+        hex(&encode_from_worker(&gpu_lost).expect("encodes")),
+        "12 04 6C 6F 73 74"
+    );
     // Loaded = variant 0, then the version.
     let loaded = FromWorker::Loaded {
         protocol_version: PROTOCOL_VERSION,
     };
-    assert_eq!(hex(&encode_from_worker(&loaded).expect("encodes")), "00 11");
+    assert_eq!(hex(&encode_from_worker(&loaded).expect("encodes")), "00 12");
 }
 
 /// `LightingSpec` pinned: preset index and backdrop index as zigzag varints, then the

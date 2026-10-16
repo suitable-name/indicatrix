@@ -40,7 +40,7 @@ members = [
 # `crates/indicatrix-mobile-core`, its UI-free core (app state, compute threads, platform trait).
 
 [workspace.package]
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -153,19 +153,19 @@ log = "0.4"
 log-panics = { version = "2", features = ["with-backtrace"] }
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.8.0" }
-indicatrix = { path = "crates/indicatrix", version = "0.8.0" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.8.0" }
-indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.8.0" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.8.0" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.8.0" }
-indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.8.0" }
-indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.8.0" }
-indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.8.0" }
-indicatrix-update = { path = "crates/indicatrix-update", version = "0.8.0" }
-indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.8.0" }
-indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.8.0" }
-indicatrix-mobile-core = { path = "crates/indicatrix-mobile-core", version = "0.8.0" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.8.1" }
+indicatrix = { path = "crates/indicatrix", version = "0.8.1" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.8.1" }
+indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.8.1" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.8.1" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.8.1" }
+indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.8.1" }
+indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.8.1" }
+indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.8.1" }
+indicatrix-update = { path = "crates/indicatrix-update", version = "0.8.1" }
+indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.8.1" }
+indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.8.1" }
+indicatrix-mobile-core = { path = "crates/indicatrix-mobile-core", version = "0.8.1" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

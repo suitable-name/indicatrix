@@ -15,6 +15,7 @@ use crate::{
 use indicatrix::render_setup::inclusion_scale;
 use indicatrix_web_core::settings::RenderSettings;
 use slint::ComponentHandle;
+use tracing as log;
 
 /// Copies the panel's values from `settings`.
 pub(super) fn push_panel(ui: &AppWindow, settings: &RenderSettings) {
@@ -41,6 +42,7 @@ pub(super) fn push_panel(ui: &AppWindow, settings: &RenderSettings) {
     model.set_edge_rounding(settings.edge_rounding_radius);
     model.set_stone_width_mm(settings.stone_width_mm);
     model.set_use_hdr(settings.use_hdr);
+    model.set_gpu_enabled(settings.gpu_enabled);
 }
 
 /// `settings` with the panel's values (sanitised).
@@ -77,6 +79,7 @@ fn read_panel(ui: &AppWindow, settings: &RenderSettings) -> RenderSettings {
         edge_rounding_radius: model.get_edge_rounding(),
         stone_width_mm: model.get_stone_width_mm(),
         use_hdr: model.get_use_hdr(),
+        gpu_enabled: model.get_gpu_enabled(),
         ..settings.clone()
     }
     .sanitized()
@@ -127,4 +130,10 @@ pub(super) fn wire(ui: &AppWindow, ctx: &Ctx) {
     model.on_settings_edited(move || on_edited(&c));
     let c = ctx.clone();
     model.on_load_hdr(move || load_hdr(&c));
+    model.on_gpu_test_clicked(|| {
+        log::info!("Test GPU clicked (stub)");
+    });
+    model.on_gpu_forget_clicked(|| {
+        log::info!("Forget GPU clicked (stub)");
+    });
 }

@@ -80,7 +80,7 @@ impl GuideProgress {
 /// override.
 pub const WEB_WORDING: &[(&str, &str)] = &[
     (
-        "Click New Design... on the command bar (or File > New Design...).",
+        "Choose File > New Design... in the command bar (or in the File menu at the top of the window).",
         "Click New Design... on the start page (or File > New Design..., or Alt+N).",
     ),
     (

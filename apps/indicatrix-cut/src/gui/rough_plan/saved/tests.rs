@@ -2,7 +2,7 @@
 //! come from [`super::fixtures`], where every figure follows from first principles.
 
 use super::{
-    convert::CandidateSource,
+    convert::{CandidateSource, settings_to_dto},
     dto::SavedPlanDto,
     fixtures::{
         IDENTITY, LIBRARY_STAMP, MINIMAL_HEADER, TURN_3_4_5, block, designs, exact_fit_layout_in,
@@ -317,10 +317,10 @@ fn a_wrong_format_is_reported_even_when_the_file_is_truncated() {
 }
 
 #[test]
-fn the_stone_count_is_reported_never_clamped() {
+fn the_design_cap_is_reported_never_clamped() {
     for count in [0_u8, 100, 255] {
         let mut wide = settings();
-        wide.count = count;
+        wide.max_designs = count;
         let layouts: [RankedLayout<'_>; 0] = [];
         let text = serialize_plan_to_toml(&SerializeInput {
             name: "n",
@@ -346,36 +346,38 @@ fn the_stone_count_is_reported_never_clamped() {
             parse_and_validate_plan(&text)
                 .expect("loads")
                 .settings
-                .count,
+                .max_designs,
             count
         );
     }
 }
 
 #[test]
-fn the_minimum_stone_count_round_trips_and_defaults_to_one_for_older_files() {
-    // The default 1 is not written (old-shaped plans stay byte-identical), so the key is
-    // added after `count` by hand.
+fn an_old_files_minimum_stone_count_is_accepted_and_ignored_and_never_written_back() {
+    // The key `count` now holds the design cap, and the stone-count floor of older files is
+    // read and ignored. It is never written, so the key is added after `count` by hand.
     let line = "count = 6\n";
     let text = write_with(&plain_block(), &[], &[]);
     assert!(
         !text.contains("min_count"),
-        "the default is omitted:\n{text}"
+        "the floor is never written:\n{text}"
     );
     assert!(text.contains(line), "{text}");
 
     let loaded = parse_and_validate_plan(&text).expect("a file without the key loads");
-    assert_eq!(loaded.settings.min_count, 1);
+    assert_eq!(loaded.settings.max_designs, 6);
 
-    let three = text.replace(line, "count = 6\nmin_count = 3\n");
-    let loaded = parse_and_validate_plan(&three).expect("loads");
-    assert_eq!(loaded.settings.min_count, 3);
-    assert_eq!(loaded.settings.count, 6);
-
-    // Reported, never clamped: below 1 or above the stone count (6 in the fixture).
-    for bad in ["0", "7", "-1"] {
-        let error = expect_error(&text.replace(line, &format!("count = 6\nmin_count = {bad}\n")));
-        assert!(error.contains("settings.min_count"), "{bad}: {error}");
+    // Whatever the old floor was, even one the old loader refused, it changes nothing.
+    for old in ["1", "3", "0", "7", "-1"] {
+        let with_floor = text.replace(line, &format!("count = 6\nmin_count = {old}\n"));
+        let loaded = parse_and_validate_plan(&with_floor)
+            .unwrap_or_else(|e| panic!("min_count = {old} loads: {e}"));
+        assert_eq!(loaded.settings, settings(), "min_count = {old}");
+        assert_eq!(
+            settings_to_dto(&loaded.settings, loaded.candidate_source).min_count,
+            None,
+            "min_count = {old} is not written back"
+        );
     }
 }
 

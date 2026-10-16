@@ -36,7 +36,7 @@ fn a_first_build_payload_still_loads_with_the_same_values() {
     // Fields the first build did not write take the desktop defaults.
     let defaults = RenderSettings::default();
     assert!(r.link_material && r.denoise && r.use_hdr);
-    assert!(!r.frosted_girdle && !r.c_axis_override);
+    assert!(!r.frosted_girdle && !r.c_axis_override && !r.gpu_enabled);
     assert_eq!(r.export, defaults.export);
     // Sanitising changes nothing that was in range.
     assert_eq!(&r.clone().sanitized(), r);
@@ -366,4 +366,19 @@ fn the_option_lists_match_the_desktop() {
     };
     assert_eq!(uv.lighting_preset(), LightingPreset::default());
     assert_eq!(uv.sanitized().lighting, LightingPreset::default().label());
+}
+
+#[test]
+fn gpu_enabled_defaults_to_false_and_round_trips() {
+    let payload = SessionPayload::from_json(FIRST_BUILD_PAYLOAD).expect("parses");
+    assert!(!payload.render.gpu_enabled);
+
+    let mut updated = payload;
+    updated.render.gpu_enabled = true;
+    let json = updated.to_json().expect("writes");
+    assert!(json.contains("\"gpu_enabled\":true"));
+
+    let back = SessionPayload::from_json(&json).expect("parses");
+    assert!(back.render.gpu_enabled);
+    assert_eq!(back, updated);
 }

@@ -84,7 +84,7 @@ fn deep_solve() -> Guide {
             "Start the check.",
         )
         .actions([
-            "Click Deep Solve on the command bar's second row.",
+            "Click Deep Solve on the command bar, next to Solve.",
             "The button turns into Cancel Deep Solve, and the status strip shows that Deep Solve is running.",
         ])
         .check("the button reads Cancel Deep Solve.")
@@ -150,7 +150,7 @@ fn optimize() -> Guide {
         )
         .actions(["Click Optimize in the inspector below the tier table."])
         .check("the tab shows Objective, What May Change, Run and Candidates.")
-        .why("The Optimize button on the command bar starts a run with the same settings without opening the tab.")
+        .why("The tab is the one home of Optimize: it has the Optimize button that starts a run and the Cancel button that stops it.")
         .goal(Goal::InspectorTab(2), "the Optimize tab open")
         .highlight("optimize_tab")
         .allow(TOOLS),
@@ -297,7 +297,7 @@ fn retarget_shift() -> Guide {
             "Review the proposal, read its verdict, and apply it.",
         )
         .actions([
-            "Click Retarget... on the command bar's second row.",
+            "Click Retarget... on the command bar.",
             "Set Target Material to Topaz. A card under it shows its n_D and critical angle. Leave Mode on Shift.",
             "Read the table: Block, Tier, Old, New, Margin and Risk (Safe, Marginal or Windows) for each crown and pavilion tier. The table and culet are greyed and read Not changed.",
             "Wait until the line under the table no longer says Checking..., and read it: Valid, with the girdle and table figures and the stone's depth (for example depth 61 % (was 58 %)), or Not valid, with the reasons. Under it, Optical Comparison (Table Up) gives windowing, brilliance and extinction for the current stone, the current stone in Topaz, and the retargeted stone.",
@@ -387,7 +387,7 @@ fn retarget_optimize() -> Guide {
             "Search for options in sapphire, pick one and apply it.",
         )
         .actions([
-            "Click Retarget... on the command bar's second row.",
+            "Click Retarget... on the command bar.",
             "Set Target Material to Sapphire and Mode to Optimize.",
             "Leave Objective on Balanced and Range on 6 degrees either side, and set Effort to Quick (100 steps). These three show in the Advanced interface; the lesson shows them for now.",
             "Click Search for Better Angles. A line names the stage and how far it has got; Cancel stops the search without closing the dialog.",

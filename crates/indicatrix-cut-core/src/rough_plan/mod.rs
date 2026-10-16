@@ -17,7 +17,12 @@
 //! minimum width is infeasible. The objective is the total finished volume
 //! (equivalently carats: one material, one specific gravity).
 //!
-//! The stone count is a MAXIMUM: a layout may hold any `n` in `1..=K`.
+//! The number of stones is free: a layout holds as many as fit best. What is capped is the
+//! number of DIFFERENT designs ([`PlanSettings::max_designs`]): the DPs may mix any number,
+//! and the design-cap chain ([`plan_design_cap`], `shaped::plan_shaped_design_cap`) drops the
+//! least contributing design and solves again until the best layout is within the cap. Every
+//! ranked list keeps only layouts within the cap ([`rank_indices_capped`]), and the
+//! refinement never re-picks a design past it ([`refine_capped`]).
 //!
 //! # Entry point and paths
 //!
@@ -46,9 +51,11 @@
 //!   read-only [`PieceTable`] (`Send + Sync`) of best stone value per piece
 //!   size.
 //! - [`plan_rough_for_order`]: the mixed DP of ONE cut order over the shared
-//!   table, every stone count `n` in `1..=K` reconstructed as a candidate. The
+//!   table, its best layout reconstructed as the order's candidate. The
 //!   six orders are independent, so an application can run them on six threads
 //!   sharing `&Grid`, `&PieceTable` and `&[CandidateDesign]`.
+//! - [`plan_design_cap`]: the design-cap chain from the best mixed layout down to at most
+//!   [`PlanSettings::max_designs`] designs.
 //! - [`plan_alternatives`]: the leave-one-out mixed alternatives (best mixed
 //!   layout's most-used design removed from the full list, Pareto front
 //!   recomputed, DP re-run, up to three times).
@@ -98,6 +105,8 @@ mod tests_assembly;
 #[cfg(test)]
 mod tests_brute;
 #[cfg(test)]
+mod tests_design_cap;
+#[cfg(test)]
 mod tests_input;
 #[cfg(test)]
 mod tests_lanes;
@@ -108,7 +117,7 @@ mod types;
 mod uniform;
 pub mod zoned_plan;
 
-pub use dp::{plan_alternatives, plan_alternatives_lanes, plan_rough_for_order};
+pub use dp::{plan_alternatives, plan_alternatives_lanes, plan_design_cap, plan_rough_for_order};
 pub use fit::*;
 pub use pareto::pareto_front;
 pub use piece::{Grid, PieceTable, build_piece_table, build_piece_table_lanes, choose_grid};
@@ -117,10 +126,12 @@ pub use placement::{
 };
 pub use plan::*;
 pub use rank::{
-    best_layout, flatten_groups, merge_and_rank, merge_and_rank_min, rank_indices, rank_indices_min,
+    best_layout, flatten_groups, merge_and_rank, merge_and_rank_capped, rank_indices,
+    rank_indices_capped,
 };
 pub use refine::{
-    final_ranking, final_ranking_min, finish_plan, finish_plan_lanes, own_pool, refine,
+    final_ranking, final_ranking_capped, finish_plan, finish_plan_lanes, own_pool, refine,
+    refine_capped,
 };
 pub use shape::{
     BoxFace, HullError, MAX_HULL_PLANES, MAX_MESH_TRIANGLES, MeshError, RoughBase, RoughCut,
@@ -144,7 +155,7 @@ pub const REFINE_TOP: usize = 20;
 pub const SHAPED_UNIFORM_DESIGNS: usize = 64;
 /// The one per-design-set limit of every ranked list: at most this many layouts may use the
 /// same set of designs (counts ignored). A selection that uses a single design therefore
-/// shows at most this many layouts, however many stone counts are feasible.
+/// shows at most this many layouts.
 pub(crate) const SAME_SET_CAP: usize = 3;
 /// Refinement passes over a layout's boundaries.
 pub(crate) const PASSES: usize = 3;
@@ -158,14 +169,14 @@ pub(crate) const NEG: f64 = f64::NEG_INFINITY;
 /// Plan the rough: up to 10 ranked layouts ([`FINAL_TOP`]).
 ///
 /// Runs, in order, the Pareto prune, the grid and piece table, the six
-/// cut-order DPs, the leave-one-out alternatives, the single-design pass, the
-/// refinement of the best 20 and the final ranking. `on_progress` is called
+/// cut-order DPs, the design-cap chain, the leave-one-out alternatives, the single-design
+/// pass, the refinement of the best 20 and the final ranking. `on_progress` is called
 /// throughout with a [`PlanProgress`]; returning `false` cancels.
 ///
 /// The list holds distinct compositions only, and at most three layouts per design set
-/// (the `SAME_SET_CAP` of the ranking): a selection with one design shows at most three,
-/// however many stone counts are feasible, and any selection shows fewer than ten when fewer
-/// distinct compositions survive that cap.
+/// (the `SAME_SET_CAP` of the ranking), each within the design cap: a selection with one
+/// design shows at most three, and any selection shows fewer than ten when fewer distinct
+/// compositions survive those caps.
 ///
 /// Returns `None` when cancelled and `Some(vec![])` when nothing is feasible
 /// (invalid settings or rough, see [`PlanSettings::validate`] and [`RoughBlock::validate`];
@@ -197,18 +208,28 @@ pub fn plan_rough(
             &table,
             &front,
             order,
-            settings.count,
             on_progress,
         )?);
     }
-    let alternatives = match rank::best_layout(&mixed) {
-        Some(best) => plan_alternatives(&grid, &clean, best, settings.count, on_progress)?,
-        None => Vec::new(),
+    let (capped, alternatives) = match rank::best_layout(&mixed) {
+        Some(best) => (
+            plan_design_cap(
+                &grid,
+                &clean,
+                best,
+                settings.max_designs_usize(),
+                1,
+                on_progress,
+            )?,
+            plan_alternatives(&grid, &clean, best, on_progress)?,
+        ),
+        None => (Vec::new(), Vec::new()),
     };
     let mut groups = vec![LayoutGroup {
         pool: front,
         layouts: mixed,
     }];
+    groups.extend(capped);
     groups.extend(alternatives);
     groups.push(LayoutGroup {
         pool: Vec::new(),

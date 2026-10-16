@@ -24,38 +24,12 @@ fn compositions(total: usize) -> Vec<Vec<usize>> {
     out
 }
 
-/// Best total per exact piece count over independent parts (max-plus
-/// convolution); every part holds at least one piece.
-fn combine(parts: &[Vec<f64>], kmax: usize) -> Vec<f64> {
-    let mut acc = vec![NEG; kmax + 1];
-    acc[0] = 0.0;
-    for part in parts {
-        let mut next = vec![NEG; kmax + 1];
-        for (n, &a) in acc.iter().enumerate().filter(|(_, a)| **a > NEG) {
-            for (m, &b) in part.iter().enumerate().filter(|(_, b)| **b > NEG) {
-                if n + m <= kmax {
-                    next[n + m] = next[n + m].max(a + b);
-                }
-            }
-        }
-        acc = next;
-    }
-    acc
-}
-
-/// Elementwise maximum into `best`.
-fn merge_max(best: &mut [f64], other: &[f64]) {
-    for (b, o) in best.iter_mut().zip(other) {
-        *b = b.max(*o);
-    }
-}
-
-/// Explicit enumeration of every staged layout of one cut order.
+/// Explicit enumeration of every staged layout of one cut order: the best total over every
+/// split of the rough into slabs, bars and pieces (the number of pieces is free).
 struct Brute<'a> {
     table: &'a PieceTable,
     order: [usize; 3],
     cells: [usize; 3],
-    kmax: usize,
 }
 
 impl Brute<'_> {
@@ -67,33 +41,25 @@ impl Brute<'_> {
         self.table.values[self.table.index(cell)]
     }
 
-    fn bar(&self, ga: usize, gb: usize) -> Vec<f64> {
-        let mut best = vec![NEG; self.kmax + 1];
-        for runs in compositions(self.cells[2]) {
-            if runs.len() <= self.kmax {
-                let value: f64 = runs.iter().map(|&g| self.piece([ga, gb, g])).sum();
-                best[runs.len()] = best[runs.len()].max(value);
-            }
-        }
-        best
+    fn bar(&self, ga: usize, gb: usize) -> f64 {
+        compositions(self.cells[2])
+            .iter()
+            .map(|runs| runs.iter().map(|&g| self.piece([ga, gb, g])).sum::<f64>())
+            .fold(NEG, f64::max)
     }
 
-    fn slab(&self, ga: usize) -> Vec<f64> {
-        let mut best = vec![NEG; self.kmax + 1];
-        for runs in compositions(self.cells[1]) {
-            let parts: Vec<Vec<f64>> = runs.iter().map(|&g| self.bar(ga, g)).collect();
-            merge_max(&mut best, &combine(&parts, self.kmax));
-        }
-        best
+    fn slab(&self, ga: usize) -> f64 {
+        compositions(self.cells[1])
+            .iter()
+            .map(|runs| runs.iter().map(|&g| self.bar(ga, g)).sum::<f64>())
+            .fold(NEG, f64::max)
     }
 
-    fn root(&self) -> Vec<f64> {
-        let mut best = vec![NEG; self.kmax + 1];
-        for runs in compositions(self.cells[0]) {
-            let parts: Vec<Vec<f64>> = runs.iter().map(|&g| self.slab(g)).collect();
-            merge_max(&mut best, &combine(&parts, self.kmax));
-        }
-        best
+    fn root(&self) -> f64 {
+        compositions(self.cells[0])
+            .iter()
+            .map(|runs| runs.iter().map(|&g| self.slab(g)).sum::<f64>())
+            .fold(NEG, f64::max)
     }
 }
 
@@ -131,7 +97,7 @@ fn assert_table_picks(grid: &Grid, table: &PieceTable, norms: &[Norm], min_width
 }
 
 #[test]
-fn dp_equals_brute_force_over_all_staged_layouts_for_every_count() {
+fn the_free_count_dp_equals_brute_force_over_all_staged_layouts() {
     let mut rng = Lcg(77);
     let designs = random_designs(&mut rng, 6);
     let front = pareto_front(&designs);
@@ -150,52 +116,48 @@ fn dp_equals_brute_force_over_all_staged_layouts_for_every_count() {
         assert_table_picks(&grid, &table, &norms, settings.min_width_mm);
         for order in CutOrder::ALL {
             let axes = order.axes();
-            for kmax in [1, 2, 4] {
-                let dp = run_order_dp(&grid, &table, axes, kmax, &mut || true).expect("dp");
-                let brute = Brute {
-                    table: &table,
-                    order: axes,
-                    cells: axes.map(|i| cells[i]),
-                    kmax,
-                }
-                .root();
-                for (n, &expected) in brute.iter().enumerate().skip(1) {
-                    let value = dp.value(n);
-                    if expected == NEG {
-                        assert!(
-                            value == NEG,
-                            "{cells:?} {order} n={n}: dp {value}, brute -inf"
-                        );
-                        continue;
-                    }
-                    // Both sum the same pieces in the same left-to-right association and
-                    // floating-point addition is monotone, so the maxima agree bit for bit.
-                    assert_eq!(
-                        value.to_bits(),
-                        expected.to_bits(),
-                        "{cells:?} {order} n={n}: dp {value}, brute {expected}"
-                    );
-                    let tree = dp.reconstruct(&grid, &table, n);
-                    let layout = layout_from_tree(&rough, &settings, order, &tree, &front);
-                    assert_eq!(layout.stone_count(), n);
-                    assert!(close(layout.total_volume_mm3, value, 1e-9));
-                    for stone in &layout.stones {
-                        // Each piece holds the design and assignment an independent pick
-                        // over the front makes for its usable box.
-                        let p = stone.piece_size_mm.map(|s| s - a2);
-                        let (design, orient, v) = best_pick(&norms, p, settings.min_width_mm)
-                            .expect("a placed piece is feasible");
-                        assert_eq!(stone.entry_id, front[design].entry_id);
-                        assert_eq!(stone.table_axis, Axis::from_index(ASSIGNMENTS[orient][2]));
-                        assert_eq!(stone.volume_mm3.to_bits(), v.to_bits());
-                    }
-                    finite += 1;
-                }
+            let dp = run_order_dp(&grid, &table, axes, &mut || true).expect("dp");
+            let expected = Brute {
+                table: &table,
+                order: axes,
+                cells: axes.map(|i| cells[i]),
             }
+            .root();
+            let value = dp.value();
+            if expected == NEG {
+                assert!(value == NEG, "{cells:?} {order}: dp {value}, brute -inf");
+                continue;
+            }
+            // Both sum the same pieces in the same left-to-right association and
+            // floating-point addition is monotone, so the maxima agree bit for bit.
+            assert_eq!(
+                value.to_bits(),
+                expected.to_bits(),
+                "{cells:?} {order}: dp {value}, brute {expected}"
+            );
+            // The reconstructed tree is worth exactly the DP value, whatever its stone count.
+            let tree = dp.reconstruct(&grid, &table);
+            let layout = layout_from_tree(&rough, &settings, order, &tree, &front);
+            assert_ne!(layout.stone_count(), 0);
+            assert!(close(layout.total_volume_mm3, value, 1e-9));
+            for stone in &layout.stones {
+                // Each piece holds the design and assignment an independent pick
+                // over the front makes for its usable box.
+                let p = stone.piece_size_mm.map(|s| s - a2);
+                let (design, orient, v) = best_pick(&norms, p, settings.min_width_mm)
+                    .expect("a placed piece is feasible");
+                assert_eq!(stone.entry_id, front[design].entry_id);
+                assert_eq!(stone.table_axis, Axis::from_index(ASSIGNMENTS[orient][2]));
+                assert_eq!(stone.volume_mm3.to_bits(), v.to_bits());
+            }
+            // The order's one candidate is that layout.
+            let candidates = dp.candidates(&grid, &table, &front, order);
+            assert_eq!(candidates, vec![layout]);
+            finite += 1;
         }
     }
     assert!(
-        finite > 40,
+        finite > 12,
         "the cases should exercise feasible layouts ({finite})"
     );
 }

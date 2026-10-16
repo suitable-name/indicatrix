@@ -1,6 +1,6 @@
 //! Single-design layouts: `n` equal cells of one design in an `a x b x c` grid.
 //!
-//! Every grid with `1 <= a*b*c <= K` is enumerated on all three axis
+//! Every grid with `1 <= a*b*c <= UNIFORM_MAX_STONES` (99) is enumerated on all three axis
 //! assignments (each ordered triple of counts), fully filled: `n = a*b*c`
 //! stones and no waste cells. Continuous, no unit-grid error. The best layout
 //! per `(design, n)` is kept, then only the best three per design, so no
@@ -16,6 +16,12 @@ use super::{
 
 /// Layouts kept per design.
 pub const PER_DESIGN: usize = 3;
+/// The most cells of a uniform grid. The stone count of the mixed DPs is free; this pass
+/// only adds the exact equal-cell layouts on top of them, and grids beyond 99 cells (the
+/// largest stone count the planner allowed when the count was capped) would multiply its
+/// cost (the shaped pass classifies every cell of every grid against the rough) for layouts
+/// the DPs already reach.
+pub const UNIFORM_MAX_STONES: usize = 99;
 /// Designs scanned between two progress reports (and cancel checks).
 const POLL_EVERY: usize = 256;
 /// Chunks of designs per lane in the threaded scan; more chunks than lanes let a lane that
@@ -78,8 +84,7 @@ fn best_for_design(
     boxes: &[[f64; 3]],
     settings: &PlanSettings,
 ) -> Vec<Cand> {
-    let k = settings.count_usize();
-    let mut slots: Vec<Option<Cand>> = vec![None; k + 1];
+    let mut slots: Vec<Option<Cand>> = vec![None; UNIFORM_MAX_STONES + 1];
     for (counts, p) in grids.iter().zip(boxes) {
         let Some((orient, value)) = best_orient(norm, *p, settings.min_width_mm) else {
             continue;
@@ -137,7 +142,7 @@ fn build_layout(
 /// The best equal-cell layout per `(design, n)`, at most three per design.
 ///
 /// Considers EVERY valid candidate (not only the Pareto front) and every grid
-/// with `1 <= a*b*c <= K`. The result is sorted by total volume descending,
+/// with `1 <= a*b*c <= UNIFORM_MAX_STONES`. The result is sorted by total volume descending,
 /// then fewer stones, then `entry_id`, and cut to the best 200 layouts (a pool
 /// for the refinement, well beyond the final top 10).
 ///
@@ -171,7 +176,7 @@ pub fn uniform_layouts_lanes(
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<RoughLayout>> {
     let pool = sanitize(designs);
-    let grids = enumerate_grids(settings.count_usize());
+    let grids = enumerate_grids(UNIFORM_MAX_STONES);
     let usable = usable_rough(rough, settings.skin_mm);
     let a2 = 2.0 * settings.allowance_mm;
     let boxes: Vec<[f64; 3]> = grids

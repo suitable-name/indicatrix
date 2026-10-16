@@ -76,62 +76,27 @@ export component PlanForm inherits VerticalLayout {
                 color: Theme.text-muted;
             }
 
-            // Stones count limit (1..=99)
+            // Design cap (1..=99): how many different designs a layout may mix. The number of
+            // stones is not capped; the planner fits as many as yield best.
             HorizontalLayout {
                 spacing: 6px;
                 alignment: start;
 
                 Text {
-                    text: "Stones (up to):";
+                    text: "Designs (up to):";
                     font-size: 11px;
                     color: Theme.text-muted;
                     vertical-alignment: center;
                 }
 
                 TipBox {
-                    hint: "The most stones to plan out of one rough, from 1 to 99.";
+                    hint: "The most different designs one layout may mix, from 1 to 99. The number of stones is not limited: the planner fits as many as yield the most weight. 1 plans every layout with a single design.";
                     SpinBox {
                         minimum: 1;
                         maximum: 99;
-                        value <=> RoughPlanModel.count;
+                        value <=> RoughPlanModel.max_designs;
                         enabled: !root.busy;
-                        accessible-label: "Most Stones to Plan";
-                        // Lowering the maximum below the minimum lowers the minimum with it.
-                        edited(value) => {
-                            if (value < RoughPlanModel.min_count) {
-                                RoughPlanModel.min_count = value;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Stones count floor (1..=count): layouts with fewer stones are not shown
-            HorizontalLayout {
-                spacing: 6px;
-                alignment: start;
-
-                Text {
-                    text: "Min Stones:";
-                    font-size: 11px;
-                    color: Theme.text-muted;
-                    vertical-alignment: center;
-                }
-
-                TipBox {
-                    hint: "The fewest stones a shown layout may hold. Layouts with fewer stones are left out, so raise it to see only plans that yield several stones. 1 shows everything. Raising it above the maximum raises the maximum too.";
-                    SpinBox {
-                        minimum: 1;
-                        maximum: 99;
-                        value <=> RoughPlanModel.min_count;
-                        enabled: !root.busy;
-                        accessible-label: "Fewest Stones to Plan";
-                        // Raising the minimum above the maximum raises the maximum with it.
-                        edited(value) => {
-                            if (value > RoughPlanModel.count) {
-                                RoughPlanModel.count = value;
-                            }
-                        }
+                        accessible-label: "Most Designs per Layout";
                     }
                 }
             }

@@ -181,7 +181,7 @@ fn model_fixtures() -> [(&'static str, RoughModel); 4] {
 
 /// Plans every model of [`model_fixtures`] with `designs` and their outlines, and
 /// asserts what must hold of any plan: some layout, at most ten, no layout above the
-/// stone cap, none yielding more than the rough and all with consistent carats.
+/// design cap, none yielding more than the rough and all with consistent carats.
 /// Returns the elapsed time and result count per model.
 fn plan_every_model(
     designs: &[CandidateDesign],
@@ -203,9 +203,10 @@ fn plan_every_model(
         assert!(results.len() <= 10, "{name}: {} layouts", results.len());
         for layout in &results {
             assert!(
-                (1..=settings.count_usize()).contains(&layout.stone_count()),
-                "{name}: {} stones",
-                layout.stone_count()
+                layout.stone_count() >= 1 && layout.design_count() <= settings.max_designs_usize(),
+                "{name}: {} stones of {} designs",
+                layout.stone_count(),
+                layout.design_count()
             );
             assert!(
                 layout.yield_fraction > 0.0 && layout.yield_fraction <= 1.0 + 1e-9,
@@ -242,7 +243,7 @@ fn the_outline_shapes_have_more_than_100_points_inside_their_design_box() {
 
 #[test]
 #[ignore = "slow rough-planner test (over 60 s); run with --ignored"]
-fn a_k3_plan_over_the_four_model_kinds_with_large_outlines_is_sane() {
+fn a_three_design_plan_over_the_four_model_kinds_with_large_outlines_is_sane() {
     let designs = random_designs(&mut Lcg(1234), 4);
     let hulls: Vec<DesignHull> = designs
         .iter()

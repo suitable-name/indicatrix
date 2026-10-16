@@ -577,7 +577,7 @@ exactly as loaded, with no material name set at all.
 
 ## Retarget: An Automated Proposal
 
-Click **Retarget...** on the command bar's second row (Chapter 3) to open
+Click **Retarget...** on the command bar (Chapter 3) to open
 a dialog that proposes new pavilion and crown angles for a different
 material, for you to review before anything is applied.
 

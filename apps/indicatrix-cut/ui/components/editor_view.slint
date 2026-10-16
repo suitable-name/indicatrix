@@ -153,6 +153,12 @@ export component EditorView inherits Rectangle {
         if GuideModel.highlight_target == "tier_table" {
             EditorModel.tier_table_collapsed = false;
         }
+        // A fresh inspector holds its literal defaults: snapshot them so the blank form compares
+        // clean. The Edit view mounts on first use, which is after a design loaded now that the
+        // app starts on Live Render; without this the blank concave signature differed from the
+        // default "" snapshot, the form read dirty, and the first tier click put up the
+        // "unsaved changes to the new tier draft" warning.
+        inspector.snapshot_form();
         inspector.load_tier_into_form(EditorModel.selected_tier_index);
     }
     changed height => { root.reclamp_inspector_height(); }

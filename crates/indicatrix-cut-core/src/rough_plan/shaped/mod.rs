@@ -47,12 +47,15 @@ pub use clip::{
     slice_entry_range,
 };
 pub use ctx::ShapedCtx;
-pub use dp::{ShapedAltParams, ShapedOrderDp, plan_shaped_alternatives, plan_shaped_for_order};
+pub use dp::{
+    ShapedAltParams, ShapedOrderDp, plan_shaped_alternatives, plan_shaped_design_cap,
+    plan_shaped_for_order,
+};
 pub use grid::{
     SHAPED_MAX_CELLS, SHAPED_MESH_PIECE_CAP, SHAPED_OP_CAP, SHAPED_PIECE_CAP, ShapedGrid,
     choose_shaped_grid, choose_shaped_grid_at, choose_shaped_grid_capped, piece_count,
     shaped_op_estimate,
 };
-pub use refine::refine_shaped;
+pub use refine::{refine_shaped, refine_shaped_capped};
 pub use tree::layout_from_tree_shaped;
 pub use uniform::shaped_uniform_layouts;

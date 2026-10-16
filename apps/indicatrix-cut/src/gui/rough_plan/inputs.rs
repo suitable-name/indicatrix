@@ -167,10 +167,8 @@ pub struct FormFields {
     pub min_width_mm: String,
     /// The weighed carat ("" when not weighed).
     pub weighed_ct: String,
-    /// The stone-count limit as the spin box holds it.
-    pub count: i32,
-    /// The minimum stone count as the spin box holds it (0 reads as 1).
-    pub min_count: i32,
+    /// The design cap as the spin box holds it.
+    pub max_designs: i32,
     /// The picked row of the material list (negative for none).
     pub material_index: i32,
 }
@@ -185,8 +183,7 @@ impl FormFields {
             skin_mm: model.get_skin_mm().to_string(),
             min_width_mm: model.get_min_width_mm().to_string(),
             weighed_ct: model.get_weighed_ct().to_string(),
-            count: model.get_count(),
-            min_count: model.get_min_count(),
+            max_designs: model.get_max_designs(),
             material_index: model.get_material_index(),
         }
     }
@@ -195,7 +192,7 @@ impl FormFields {
 /// A validated plan form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanForm {
-    /// Stone-count limit, losses, minimum width and specific gravity.
+    /// Design cap, losses, minimum width and specific gravity.
     pub settings: PlanSettings,
     /// The chosen material's name.
     pub material_name: String,
@@ -285,15 +282,10 @@ impl PlanForm {
             .ok()
             .and_then(|i| choices.get(i))
             .ok_or_else(|| PICK_MATERIAL_MESSAGE.to_string())?;
-        let count = u8::try_from(fields.count.clamp(1, 99)).unwrap_or(1);
-        // The floor never exceeds the cap: a minimum typed above the maximum reads as the maximum.
-        let min_count = u8::try_from(fields.min_count.clamp(1, 99))
-            .unwrap_or(1)
-            .min(count);
+        let max_designs = u8::try_from(fields.max_designs.clamp(1, 99)).unwrap_or(1);
         Ok(Self {
             settings: PlanSettings {
-                count,
-                min_count,
+                max_designs,
                 kerf_mm,
                 allowance_mm,
                 skin_mm,
@@ -462,26 +454,8 @@ mod tests {
             skin_mm: "0.00".to_string(),
             min_width_mm: "1.00".to_string(),
             weighed_ct: String::new(),
-            count: 12,
-            min_count: 1,
+            max_designs: 2,
             material_index: 1,
-        }
-    }
-
-    #[test]
-    fn the_minimum_stone_count_is_clamped_between_one_and_the_maximum() {
-        for (max, typed, used) in [(12, 0, 1), (12, 1, 1), (12, 5, 5), (12, 40, 12), (3, -2, 1)] {
-            let form = PlanForm::parse(
-                &FormFields {
-                    count: max,
-                    min_count: typed,
-                    ..fields()
-                },
-                &materials(),
-            )
-            .expect("a valid form");
-            assert_eq!(form.settings.min_count, used, "typed {typed} of {max}");
-            assert_eq!(form.settings.validate(), Ok(()));
         }
     }
 
@@ -498,8 +472,7 @@ mod tests {
         assert_eq!(
             form.settings,
             PlanSettings {
-                count: 12,
-                min_count: 1,
+                max_designs: 2,
                 kerf_mm: 0.3,
                 allowance_mm: 0.2,
                 skin_mm: 0.0,
@@ -512,17 +485,18 @@ mod tests {
     }
 
     #[test]
-    fn the_stone_count_is_clamped_to_the_range_the_planner_takes() {
+    fn the_design_cap_is_clamped_to_the_range_the_planner_takes() {
         for (typed, used) in [(0, 1), (-5, 1), (1, 1), (99, 99), (500, 99)] {
             let form = PlanForm::parse(
                 &FormFields {
-                    count: typed,
+                    max_designs: typed,
                     ..fields()
                 },
                 &materials(),
             )
             .expect("a valid form");
-            assert_eq!(form.settings.count, used, "typed {typed}");
+            assert_eq!(form.settings.max_designs, used, "typed {typed}");
+            assert_eq!(form.settings.validate(), Ok(()));
         }
     }
 

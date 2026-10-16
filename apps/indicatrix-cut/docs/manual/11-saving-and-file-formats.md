@@ -20,8 +20,8 @@ clear.
 
 ### Export Edited .asc, from the Editor
 
-While a design is open in the cutting-design editor (Chapter 3), click
-**Export Edited .asc**. This re-solves every tier's mast fresh from the
+While a design is open in the cutting-design editor (Chapter 3), choose
+**File**, then **Export .asc** (called **Export Edited .asc** in the File menu at the top of the window). This re-solves every tier's mast fresh from the
 design's current, edited geometry and writes a plain `.asc` file wherever
 you choose to save it. If some tier can't currently be solved, you'll see
 "Cannot export: &lt;reason&gt;." — fix that first (Chapter 5). On success,
@@ -121,7 +121,7 @@ exactly as you left it.
 
 **Export as Gem Cut Studio (.gcs)...** writes the same cutting instructions
 **Export Edited .asc** would write, as a Gem Cut Studio `.gcs` file. In the
-editor it sits in the command bar's **Export...** menu and in the File menu;
+editor it sits in the command bar's **File** menu and in the File menu at the top of the window;
 it re-solves the design first and asks the same "not a closed solid"
 question as the `.asc` export. In the catalogue, the small **gcs** button next
 to Export .asc exports a design's original `.gcs` file unchanged when it was

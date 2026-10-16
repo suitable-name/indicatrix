@@ -52,10 +52,15 @@ pub(super) fn box_design(entry_id: i64) -> CandidateDesign {
     }
 }
 
-pub(super) fn settings_with(count: u8, kerf: f64, allowance: f64, min_width: f64) -> PlanSettings {
+/// Settings with the design cap `max_designs` (the number of stones is never capped).
+pub(super) fn settings_with(
+    max_designs: u8,
+    kerf: f64,
+    allowance: f64,
+    min_width: f64,
+) -> PlanSettings {
     PlanSettings {
-        count,
-        min_count: 1,
+        max_designs,
         kerf_mm: kerf,
         allowance_mm: allowance,
         skin_mm: 0.0,
@@ -85,7 +90,7 @@ pub(super) fn close(a: f64, b: f64, rel: f64) -> bool {
 }
 
 #[test]
-fn k1_matches_closed_form() {
+fn one_design_never_falls_below_the_closed_form_single_stone() {
     let mut rng = Lcg(7);
     let designs = random_designs(&mut rng, 25);
     let rough = RoughBlock {
@@ -115,12 +120,14 @@ fn k1_matches_closed_form() {
     }
     let results = plan(&rough, &settings, &designs);
     assert!(results.len() <= 10);
-    assert_eq!(results[0].stone_count(), 1);
+    // Stones are not capped, so the best layout may hold several stones; the closed-form
+    // single stone of the best design is always feasible and so a lower bound.
     assert!(
-        close(results[0].total_volume_mm3, expected, 1e-9),
-        "got {} expected {expected}",
+        results[0].total_volume_mm3 >= expected * (1.0 - 1e-9),
+        "got {} below the single stone {expected}",
         results[0].total_volume_mm3
     );
+    assert!(results.iter().all(|l| l.design_count() <= 1));
 }
 
 #[test]
@@ -266,9 +273,10 @@ fn input_order_does_not_change_the_result() {
 #[test]
 fn box_design_in_a_cube_with_no_losses_ties_across_counts() {
     let rough = cube(10.0);
-    let settings = settings_with(8, 0.0, 0.0, 0.01);
+    let settings = settings_with(1, 0.0, 0.0, 0.01);
     let results = plan(&rough, &settings, &[box_design(1)]);
-    // Every count fills the cube, so the tie-break picks the fewest stones.
+    // Every count fills the cube, so the tie-break (longest run in the DP, fewest stones in
+    // the ranking) picks one stone.
     assert_eq!(results[0].stone_count(), 1);
     assert!(close(results[0].yield_fraction, 1.0, 1e-9));
     // The 8-stone layout exists and is 2 x 2 x 2 cells of 5 mm.
@@ -287,7 +295,7 @@ fn box_design_in_a_cube_with_no_losses_ties_across_counts() {
 #[test]
 fn box_design_in_a_cube_with_kerf_prefers_the_uncut_block() {
     let rough = cube(10.0);
-    let settings = settings_with(8, 0.3, 0.0, 0.01);
+    let settings = settings_with(1, 0.3, 0.0, 0.01);
     let results = plan(&rough, &settings, &[box_design(1)]);
     assert_eq!(results[0].stone_count(), 1);
     assert!(close(results[0].total_volume_mm3, 1000.0, 1e-9));
@@ -309,7 +317,7 @@ fn a_rough_narrower_than_min_width_plus_allowance_is_empty() {
         y_mm: 5.0,
         z_mm: 5.0,
     };
-    let settings = settings_with(4, 0.3, 0.2, 1.0);
+    let settings = settings_with(1, 0.3, 0.2, 1.0);
     let results = plan_rough(&rough, &settings, &[box_design(1)], &mut |_| true);
     assert_eq!(results, Some(Vec::new()));
 }
@@ -321,7 +329,7 @@ fn a_long_bar_takes_several_stones() {
         y_mm: 6.0,
         z_mm: 6.0,
     };
-    let settings = settings_with(10, 0.3, 0.2, 1.0);
+    let settings = settings_with(1, 0.3, 0.2, 1.0);
     let results = plan(&rough, &settings, &[box_design(1)]);
     assert_ne!(results.len(), 0);
     // Precondition: one stone fills the cross-section only, a cube of 6 - 2 x 0.2 = 5.6 mm.
@@ -357,7 +365,7 @@ fn refinement_never_decreases_the_objective() {
     let table = build_piece_table(&grid, &front, &mut |_| true).expect("table");
     let mut layouts = Vec::new();
     for order in CutOrder::ALL {
-        let found = plan_rough_for_order(&grid, &table, &front, order, 9, &mut |_| true)
+        let found = plan_rough_for_order(&grid, &table, &front, order, &mut |_| true)
             .expect("not cancelled");
         layouts.extend(found);
     }
@@ -414,9 +422,10 @@ fn results_are_distinct_capped_and_ranked() {
         y_mm: 12.0,
         z_mm: 10.0,
     };
-    let settings = settings_with(12, 0.3, 0.2, 1.0);
+    let settings = settings_with(3, 0.3, 0.2, 1.0);
     let results = plan(&rough, &settings, &designs);
     assert!(!results.is_empty() && results.len() <= 10);
+    assert!(results.iter().all(|l| l.design_count() <= 3));
     let mut compositions: Vec<Vec<(i64, usize)>> =
         results.iter().map(RoughLayout::composition).collect();
     let mut per_set = std::collections::BTreeMap::new();
@@ -538,26 +547,23 @@ fn layouts_are_geometrically_valid() {
 }
 
 #[test]
-fn the_grid_targets_six_units_per_expected_piece() {
+fn the_grid_is_thirty_units_per_axis_scaled_to_the_rough_whatever_the_settings() {
+    // The grid no longer depends on a stone count (there is none) or the design cap.
     let rough = cube(20.0);
-    assert_eq!(
-        choose_grid(&rough, &settings_with(99, 0.3, 0.2, 1.0)).cells(),
-        [30; 3]
-    );
-    assert_eq!(
-        choose_grid(&rough, &settings_with(20, 0.3, 0.2, 1.0)).cells(),
-        [18; 3]
-    );
-    assert_eq!(
-        choose_grid(&rough, &settings_with(1, 0.3, 0.2, 1.0)).cells(),
-        [8; 3]
-    );
+    for max_designs in [1, 20, 99] {
+        assert_eq!(
+            choose_grid(&rough, &settings_with(max_designs, 0.3, 0.2, 1.0)).cells(),
+            [30; 3]
+        );
+    }
     let bar = RoughBlock {
         x_mm: 40.0,
         y_mm: 6.0,
         z_mm: 6.0,
     };
+    // 30 x r / geometric mean: 106 -> clamped to 48, and 15.9 -> 16.
     let cells = choose_grid(&bar, &settings_with(10, 0.3, 0.2, 1.0)).cells();
+    assert_eq!(cells, [48, 16, 16]);
     assert!(cells[0] > cells[1] && cells.iter().all(|c| (8..=48).contains(c)));
 }
 
@@ -573,11 +579,11 @@ fn leave_one_out_alternatives_drop_the_most_used_design() {
     let mut mixed = Vec::new();
     for order in CutOrder::ALL {
         mixed.extend(
-            plan_rough_for_order(&grid, &table, &front, order, 4, &mut |_| true).expect("order"),
+            plan_rough_for_order(&grid, &table, &front, order, &mut |_| true).expect("order"),
         );
     }
     let best = merge_and_rank(mixed, 1).remove(0);
-    let groups = plan_alternatives(&grid, &designs, &best, 4, &mut |_| true).expect("alternatives");
+    let groups = plan_alternatives(&grid, &designs, &best, &mut |_| true).expect("alternatives");
     assert_ne!(groups.len(), 0);
     let mut removed: Vec<i64> = Vec::new();
     let mut current = best;
@@ -625,12 +631,12 @@ fn a_design_dominated_only_by_the_removed_one_returns_in_round_one() {
     let mut mixed = Vec::new();
     for order in CutOrder::ALL {
         mixed.extend(
-            plan_rough_for_order(&grid, &table, &front, order, 4, &mut |_| true).expect("order"),
+            plan_rough_for_order(&grid, &table, &front, order, &mut |_| true).expect("order"),
         );
     }
     let best = merge_and_rank(mixed, 1).remove(0);
     assert!(best.stones.iter().all(|s| s.entry_id == 1));
-    let groups = plan_alternatives(&grid, &designs, &best, 4, &mut |_| true).expect("alternatives");
+    let groups = plan_alternatives(&grid, &designs, &best, &mut |_| true).expect("alternatives");
     assert_ne!(groups.len(), 0);
     assert!(groups[0].pool.iter().any(|d| d.entry_id == 2));
     assert!(

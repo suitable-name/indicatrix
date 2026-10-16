@@ -3,9 +3,9 @@
 
 use super::{
     Axis, CandidateDesign, CutOrder, CutPlan, FINAL_TOP, LayoutGroup, PlacedStone, RoughLayout,
-    SingleFit, StonePose, final_ranking, final_ranking_min, flatten_groups, merge_and_rank,
-    merge_and_rank_min, own_pool, partial_ranking, partial_ranking_min, rank_indices,
-    rank_indices_min, uniform_pool,
+    SingleFit, StonePose, final_ranking, final_ranking_capped, flatten_groups, merge_and_rank,
+    merge_and_rank_capped, own_pool, partial_ranking, partial_ranking_capped, rank_indices,
+    rank_indices_capped, uniform_pool,
 };
 
 fn design(entry_id: i64) -> CandidateDesign {
@@ -164,8 +164,9 @@ fn the_final_ranking_tops_up_with_the_unrefined_candidates() {
     assert_eq!(alone.len(), 5);
 }
 
-/// Twelve layouts: stone counts 1 to 4, distinct designs so the dedup and the set cap stay
-/// out of the way. Layout `i` (0-based) holds `1 + i % 4` stones and is worth `100 - i` mm^3 a stone.
+/// Twelve layouts: design counts 1 to 4, distinct designs so the dedup and the set cap stay
+/// out of the way. Layout `i` (0-based) holds `1 + i % 4` stones, each of its own design, and is
+/// worth `100 - i` mm^3 a stone.
 fn mixed_counts() -> Vec<RoughLayout> {
     (0..12_i64)
         .map(|i| {
@@ -178,78 +179,87 @@ fn mixed_counts() -> Vec<RoughLayout> {
 }
 
 #[test]
-fn a_minimum_of_one_stone_is_exactly_the_plain_ranking() {
+fn an_unbounded_design_cap_is_exactly_the_plain_ranking() {
     let flat = mixed_counts();
     for limit in [1, 4, 10, 20] {
         assert_eq!(
-            rank_indices_min(&flat, limit, 1),
+            rank_indices_capped(&flat, limit, usize::MAX),
             rank_indices(&flat, limit)
         );
         assert_eq!(
-            rank_indices_min(&flat, limit, 0),
-            rank_indices(&flat, limit),
+            rank_indices_capped(&flat, limit, 0),
+            rank_indices_capped(&flat, limit, 1),
             "0 reads as 1"
         );
         assert_eq!(
-            merge_and_rank_min(flat.clone(), limit, 1),
+            merge_and_rank_capped(flat.clone(), limit, usize::MAX),
             merge_and_rank(flat.clone(), limit)
         );
     }
 }
 
 #[test]
-fn a_minimum_drops_the_small_layouts_before_the_limit_and_refills_from_the_rest() {
+fn a_design_cap_drops_the_wide_layouts_before_the_limit_and_refills_from_the_rest() {
     let flat = mixed_counts();
-    let kept = rank_indices_min(&flat, 20, 2);
+    let kept = rank_indices_capped(&flat, 20, 2);
     assert_ne!(kept, [] as [usize; 0]);
-    assert!(kept.iter().all(|&i| flat[i].stones.len() >= 2));
-    // Nine of the twelve hold two stones or more, and all of them qualify.
-    assert_eq!(kept.len(), 9);
+    assert!(kept.iter().all(|&i| flat[i].design_count() <= 2));
+    // Six of the twelve use one or two designs, and all of them qualify.
+    assert_eq!(kept.len(), 6);
     // A limit smaller than the qualifying count is filled with qualifying layouts only
-    // (the one-stone layouts that would have ranked in the top 3 are gone).
-    let top = rank_indices_min(&flat, 3, 2);
+    // (the three- and four-design layouts that would have ranked in the top 3 are gone).
+    let top = rank_indices_capped(&flat, 3, 2);
     assert_eq!(top.len(), 3);
-    assert!(top.iter().all(|&i| flat[i].stones.len() >= 2));
+    assert!(top.iter().all(|&i| flat[i].design_count() <= 2));
     assert_eq!(top, kept[..3]);
-    // Above every layout: nothing.
-    assert_eq!(rank_indices_min(&flat, 20, 5), [] as [usize; 0]);
+    // One design: only the three single-stone layouts (i = 0, 4, 8).
+    let single = rank_indices_capped(&flat, 20, 1);
+    assert_eq!(single.len(), 3);
+    assert!(single.iter().all(|&i| flat[i].design_count() == 1));
     assert_eq!(
-        merge_and_rank_min(flat, 20, 5),
-        [] as [crate::rough_plan::types::RoughLayout; 0]
+        merge_and_rank_capped(flat, 20, 1).len(),
+        3,
+        "the layout form agrees with the index form"
     );
 }
 
 #[test]
 fn the_final_ranking_top_up_refills_from_layouts_that_qualify() {
     let flat = mixed_counts();
-    let ranked = rank_indices_min(&flat, 3, 2);
+    let ranked = rank_indices_capped(&flat, 3, 2);
     let refined: Vec<RoughLayout> = ranked.iter().map(|&i| flat[i].clone()).collect();
-    let topped = final_ranking_min(refined.clone(), &flat, &ranked, 2);
-    assert_eq!(topped.len(), 9, "every qualifying layout, no more");
-    assert!(topped.iter().all(|l| l.stones.len() >= 2));
-    // With a minimum of one the top-up is the plain one.
+    let topped = final_ranking_capped(refined.clone(), &flat, &ranked, 2);
+    assert_eq!(topped.len(), 6, "every qualifying layout, no more");
+    assert!(topped.iter().all(|l| l.design_count() <= 2));
+    // With no cap the top-up is the plain one.
     assert_eq!(
-        final_ranking_min(refined.clone(), &flat, &ranked, 1),
+        final_ranking_capped(refined.clone(), &flat, &ranked, usize::MAX),
         final_ranking(refined, &flat, &ranked)
     );
 }
 
 #[test]
-fn the_partial_ranking_honours_the_minimum_too() {
+fn the_partial_ranking_honours_the_design_cap_too() {
     let groups = vec![LayoutGroup {
         pool: Vec::new(),
         layouts: mixed_counts(),
     }];
     assert_eq!(
-        partial_ranking_min(&groups, Vec::new(), 1),
+        partial_ranking_capped(&groups, Vec::new(), usize::MAX),
         partial_ranking(&groups, Vec::new())
     );
-    let shown = partial_ranking_min(&groups, vec![layout(&[(500, 1000.0)])], 2);
+    let shown = partial_ranking_capped(&groups, vec![layout(&[(500, 1000.0)])], 2);
     assert_ne!(shown, [] as [crate::rough_plan::types::RoughLayout; 0]);
-    assert!(shown.iter().all(|l| l.stones.len() >= 2));
+    assert!(shown.iter().all(|l| l.design_count() <= 2));
     assert_eq!(
-        partial_ranking_min(&groups, Vec::new(), 9),
-        [] as [crate::rough_plan::types::RoughLayout; 0]
+        shown[0].composition(),
+        vec![(500, 1)],
+        "the extra layout leads"
+    );
+    assert_eq!(
+        partial_ranking_capped(&groups, Vec::new(), 1).len(),
+        3,
+        "only the three one-design layouts"
     );
 }
 

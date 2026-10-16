@@ -31,7 +31,7 @@ only waits while the check is still running.
 
 ## Snapshot Design and Compare to Snapshot
 
-Two buttons on the command bar's second row let you diff your current
+Two buttons on the command bar (**Snapshot** and **Compare**) let you diff your current
 angles against an earlier point in the same editing session:
 
 - **Snapshot Design** — hover hint: "Capture the current design and its

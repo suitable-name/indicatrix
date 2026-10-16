@@ -118,6 +118,7 @@ const TRANSPORT_BOUNCE_PIECES: &[&str] = &[
     "05_intersect_and_edge_rounding.wgsl",
     "06_nee_sampling.wgsl",
     "07_camera_and_mode_selection.wgsl",
+    "07b_bounce_phases_types.wgsl",
     "08_bounce_step.wgsl",
     "09_finalize_and_ray_gen.wgsl",
 ];

@@ -198,7 +198,8 @@ pub fn rough_planner(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
     sc.snap_window("RoughPlannerWindow", &window)
 }
 
-/// `rough_planner_result.png`: the planner after Plan with the best layout selected.
+/// `rough_planner_result.png`: the planner after Plan (at most two designs per layout; the
+/// stones are not capped) with the best layout selected.
 ///
 /// # Errors
 ///
@@ -206,8 +207,7 @@ pub fn rough_planner(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
 pub fn rough_planner_result(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
     let window = planner_with_block(sc)?;
     let model = window.global::<RoughPlanModel>();
-    model.set_count(6);
-    model.set_min_count(1);
+    model.set_max_designs(2);
     pump(300);
     model.invoke_plan();
     pump(500);

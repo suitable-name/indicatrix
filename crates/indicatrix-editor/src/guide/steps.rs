@@ -16,7 +16,7 @@ pub enum Group {
     NewDesign,
     /// "+ Add Tier", the Tier tab, New Tier, Add/Save Tier.
     TierForm,
-    /// The tier table's toolbar and the command bar's Duplicate/Delete/Move.
+    /// The tier table's toolbar and each tier row's Duplicate/Delete/Move.
     TierTable,
     /// The Design Settings panel (on the desktop also the Stone tab's material controls).
     DesignSettings,
@@ -101,7 +101,7 @@ pub const STEPS: &[Step] = &[
         title: "Start a new design",
         intro: "The walkthrough builds its stone from an empty design with a known gear and symmetry.",
         actions: &[
-            "Click New Design... on the command bar (or File > New Design...).",
+            "Choose File > New Design... in the command bar (or in the File menu at the top of the window).",
             "Start From: Empty.",
             "Preform Shape: Cylinder \u{2014} Half-Width 1.50, Length / Width 1.00, Depth 1.50.",
             "Index Gear: 96. Symmetry Order: 8. Mirror: on.",

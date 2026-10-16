@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bytemuck",
  "divan",
@@ -2750,7 +2750,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "indicatrix",
  "indicatrix-cut",
@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-cut"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2801,7 +2801,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-cut-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "divan",
  "glam",
@@ -2817,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-dispatch"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "divan",
  "glam",
@@ -2827,7 +2827,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-editor"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "glam",
  "image",
@@ -2840,7 +2840,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-formats"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "sha2",
@@ -2849,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-mobile-android"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "android_logger",
  "image",
@@ -2871,7 +2871,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-mobile-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "glam",
  "indicatrix",
@@ -2890,7 +2890,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-net"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bytemuck",
  "glam",
@@ -2909,7 +2909,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-render-jobs"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "indicatrix",
  "indicatrix-net",
@@ -2919,7 +2919,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-solid"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "glam",
  "image",
@@ -2930,7 +2930,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-update"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "semver",
  "serde",
@@ -2940,7 +2940,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-vault"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "indicatrix",
@@ -2953,7 +2953,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-web"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "console_error_panic_hook",
  "image",
@@ -2977,7 +2977,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-web-compute"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "console_error_panic_hook",
  "indicatrix-web-core",
@@ -2988,7 +2988,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-web-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "futures-channel",
  "glam",
@@ -3006,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-worker"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "bytemuck",

@@ -8,10 +8,11 @@ use super::{
     ctx::ShapedCtx,
     dp::plan_shaped_for_order,
     grid::{
-        SHAPED_OP_CAP, SHAPED_PIECE_CAP, ShapedGrid, choose_shaped_grid, choose_shaped_grid_at,
-        piece_count, shaped_op_estimate,
+        SHAPED_OP_CAP, SHAPED_PIECE_CAP, ShapedGrid, choose_shaped_grid, piece_count,
+        shaped_op_estimate,
     },
     refine::refine_shaped,
+    tests_dp::grid_with_cells,
 };
 use crate::{
     rough_plan::{
@@ -135,7 +136,7 @@ pub(super) fn corner_cut_model() -> RoughModel {
 }
 
 #[test]
-fn plain_block_equivalence_over_multiple_roughs_and_stone_counts() {
+fn plain_block_equivalence_over_multiple_roughs() {
     let mut rng = Lcg(12345);
     let designs = random_designs(&mut rng, 8);
     let roughs = [
@@ -146,111 +147,96 @@ fn plain_block_equivalence_over_multiple_roughs_and_stone_counts() {
         [16.0, 12.0, 10.0],
     ];
 
-    let mut exact_grid_cases = 0;
     for ext in roughs {
-        for &k in &[1u8, 4, 12] {
-            let settings = settings_with(k, 0.3, 0.2, 0.5);
-            let rough_block = RoughBlock {
+        let settings = settings_with(1, 0.3, 0.2, 0.5);
+        let rough_block = RoughBlock {
+            x_mm: ext[0],
+            y_mm: ext[1],
+            z_mm: ext[2],
+        };
+        let model = RoughModel::new(
+            RoughBase::Block {
                 x_mm: ext[0],
                 y_mm: ext[1],
                 z_mm: ext[2],
-            };
-            let model = RoughModel::new(
-                RoughBase::Block {
-                    x_mm: ext[0],
-                    y_mm: ext[1],
-                    z_mm: ext[2],
-                },
-                Vec::new(),
-            );
+            },
+            Vec::new(),
+        );
 
-            let clean = crate::rough_plan::pareto::sanitize(&designs);
-            let front = pareto_front(&clean);
+        let clean = crate::rough_plan::pareto::sanitize(&designs);
+        let front = pareto_front(&clean);
 
-            // The plain planner's best mixed DP value on the cells the shaped grid uses
-            // (its per-axis cap is lower than the plain grid's, so a larger rough would
-            // otherwise compare two different resolutions).
-            let shaped_grid = choose_shaped_grid(ext, &settings);
-            let grid = Grid::with_cells(&rough_block, &settings, shaped_grid.cells);
-            let table = build_piece_table(&grid, &front, &mut |_| true).expect("table");
-            let mut existing_best = f64::NEG_INFINITY;
-            for order in CutOrder::ALL {
-                let layouts = plan_rough_for_order(&grid, &table, &front, order, k, &mut |_| true)
-                    .expect("order dp");
-                for l in layouts {
-                    existing_best = existing_best.max(l.total_volume_mm3);
-                }
-            }
-
-            // Shaped planner
-            let ctx = ShapedCtx::new(&model, &settings).expect("ctx");
-            assert!(
-                ctx.non_box.is_empty(),
-                "uncut block must have no non-box planes"
-            );
-            let size_table = shaped_grid
-                .size_table(&settings, &front, &mut |_| true)
-                .expect("table");
-
-            let clip_params = BuildClipParams {
-                grid: &shaped_grid,
-                front: &front,
-                non_box_planes: &ctx.non_box,
-                mesh: None,
-                size_table: &size_table,
-                settings: &settings,
-                slice: 0..shaped_grid.cells[0],
-                cached_classes: None,
-            };
-            let clipped = build_clipped_table(&clip_params, &mut |_| true).expect("clipped");
-
-            assert!(
-                clipped.classes.iter().all(|&c| c == CLASS_INTERIOR),
-                "every piece in uncut block must classify as interior"
-            );
-
-            let mut shaped_best = f64::NEG_INFINITY;
-            for order in CutOrder::ALL {
-                let layouts = plan_shaped_for_order(
-                    &shaped_grid,
-                    &clipped,
-                    &ctx,
-                    &front,
-                    order,
-                    &settings,
-                    &mut |_| true,
-                )
-                .expect("shaped dp");
-                for l in layouts {
-                    shaped_best = shaped_best.max(l.total_volume_mm3);
-                }
-            }
-
-            assert!(
-                existing_best > 0.0,
-                "the plain planner found no layout for ext={ext:?}, k={k}"
-            );
-            assert!(
-                shaped_best >= 0.97 * existing_best,
-                "shaped {shaped_best} was lower than 97% of existing {existing_best} for ext={ext:?}, k={k}"
-            );
-            // On the same grid both planners search the same cuts over the same
-            // interior values, so they agree. A coarser grid that is not a subset of
-            // the finer one can place cuts the finer one cannot, so the comparison
-            // has no such guarantee there.
-            if shaped_grid.cells == grid.cells() {
-                exact_grid_cases += 1;
-                assert!(
-                    close(shaped_best, existing_best, 1e-9),
-                    "shaped {shaped_best} differs from existing {existing_best} on the same grid for ext={ext:?}, k={k}"
-                );
+        // The plain planner's best mixed DP value on the cells the shaped grid uses
+        // (its per-axis cap is lower than the plain grid's, so a larger rough would
+        // otherwise compare two different resolutions).
+        let shaped_grid = choose_shaped_grid(ext, &settings);
+        let grid = Grid::with_cells(&rough_block, &settings, shaped_grid.cells);
+        let table = build_piece_table(&grid, &front, &mut |_| true).expect("table");
+        let mut existing_best = f64::NEG_INFINITY;
+        for order in CutOrder::ALL {
+            let layouts = plan_rough_for_order(&grid, &table, &front, order, &mut |_| true)
+                .expect("order dp");
+            for l in layouts {
+                existing_best = existing_best.max(l.total_volume_mm3);
             }
         }
+
+        // Shaped planner
+        let ctx = ShapedCtx::new(&model, &settings).expect("ctx");
+        assert!(
+            ctx.non_box.is_empty(),
+            "uncut block must have no non-box planes"
+        );
+        let size_table = shaped_grid
+            .size_table(&settings, &front, &mut |_| true)
+            .expect("table");
+
+        let clip_params = BuildClipParams {
+            grid: &shaped_grid,
+            front: &front,
+            non_box_planes: &ctx.non_box,
+            mesh: None,
+            size_table: &size_table,
+            settings: &settings,
+            slice: 0..shaped_grid.cells[0],
+            cached_classes: None,
+        };
+        let clipped = build_clipped_table(&clip_params, &mut |_| true).expect("clipped");
+
+        assert!(
+            clipped.classes.iter().all(|&c| c == CLASS_INTERIOR),
+            "every piece in uncut block must classify as interior"
+        );
+
+        let mut shaped_best = f64::NEG_INFINITY;
+        for order in CutOrder::ALL {
+            let layouts = plan_shaped_for_order(
+                &shaped_grid,
+                &clipped,
+                &ctx,
+                &front,
+                order,
+                &settings,
+                &mut |_| true,
+            )
+            .expect("shaped dp");
+            assert!(layouts.len() <= 1, "one candidate per order");
+            for l in layouts {
+                shaped_best = shaped_best.max(l.total_volume_mm3);
+            }
+        }
+
+        assert!(
+            existing_best > 0.0,
+            "the plain planner found no layout for ext={ext:?}"
+        );
+        // Both planners search the same cuts over the same interior values on the same
+        // grid, so they agree.
+        assert!(
+            close(shaped_best, existing_best, 1e-9),
+            "shaped {shaped_best} differs from existing {existing_best} on the same grid for ext={ext:?}"
+        );
     }
-    assert!(
-        exact_grid_cases > 0,
-        "no rough and count put both planners on one grid"
-    );
 }
 
 #[test]
@@ -299,7 +285,9 @@ fn corner_cut_fixture(settings: &crate::rough_plan::PlanSettings) -> CornerCutFi
     let model = corner_cut_model();
     let front = pareto_front(&designs);
     let ctx = ShapedCtx::new(&model, settings).expect("ctx");
-    let grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, settings);
+    // A deliberately coarse grid: the chosen resolution is far too fine for tests that
+    // classify or build every piece.
+    let grid = grid_with_cells(&ctx, settings, [8, 8, 8]);
     let size_table = grid
         .size_table(settings, &front, &mut |_| true)
         .expect("size table");
@@ -399,7 +387,7 @@ fn slicing_invariance_for_clipped_piece_table() {
     );
     let front = pareto_front(&designs);
     let ctx = ShapedCtx::new(&model, &settings).expect("ctx");
-    let grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, &settings);
+    let grid = grid_with_cells(&ctx, &settings, [8, 8, 8]);
     let size_table = grid
         .size_table(&settings, &front, &mut |_| true)
         .expect("table");
@@ -480,8 +468,8 @@ fn slice_entry_ranges_tile_the_full_table() {
 }
 
 #[test]
-fn op_and_piece_caps_hold_for_k99() {
-    let settings = settings_with(99, 0.3, 0.2, 0.5);
+fn op_and_piece_caps_hold() {
+    let settings = settings_with(1, 0.3, 0.2, 0.5);
 
     let cases = [
         ("plate 100x100x2", [100.0, 100.0, 2.0]),
@@ -493,9 +481,9 @@ fn op_and_piece_caps_hold_for_k99() {
     for (name, ext) in cases {
         let grid = choose_shaped_grid(ext, &settings);
         let pieces = piece_count(grid.cells);
-        let ops = shaped_op_estimate(grid.cells, 99);
+        let ops = shaped_op_estimate(grid.cells);
 
-        // The documented resolution: K = 99 on a 20 mm cube starts at 20 cells per
+        // The documented resolution: a 20 mm cube starts at 20 cells per
         // axis, and the 5 % shrink steps 20, 19, 18, 17, 16 stop at 16 because
         // 136^3 = 2,515,456 entries fit the cap while 153^3 = 3,581,577 (17 cells)
         // do not.
@@ -538,7 +526,7 @@ fn refinement_never_worse_and_all_stones_inside_region() {
 
     let clean = crate::rough_plan::pareto::sanitize(&designs);
     let ctx = ShapedCtx::new(&model, &settings).expect("ctx");
-    let shaped_grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, &settings);
+    let shaped_grid = grid_with_cells(&ctx, &settings, [8, 8, 8]);
     let size_table = shaped_grid
         .size_table(&settings, &clean, &mut |_| true)
         .expect("table");

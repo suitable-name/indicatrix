@@ -18,11 +18,11 @@ use std::collections::HashSet;
 /// `GuideModel.allows_*()` helper each group is read through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GuideGroup {
-    /// New Design... (command bar, File menu, Ctrl+N).
+    /// New Design... (command bar's File menu, File menu, Ctrl+N).
     NewDesign,
     /// Add Tier and the inspector's Tier tab.
     TierForm,
-    /// The tier table's toolbar and the command bar's tier buttons.
+    /// The tier table's toolbar and each tier row's buttons.
     TierTable,
     /// The Design Settings panel.
     DesignSettings,

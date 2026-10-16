@@ -18,7 +18,7 @@ import { TouchButton } from "touch_button.slint";
 // Every card is a button for the keyboard and a screen reader (`TouchButton`): Tab walks the
 // cards in reading order, Space or Enter picks one, a ring shows the focus, and the tooltip
 // says in one sentence what the card does. A card the guide has locked is dimmed and says so.
-// The "?" in the corner opens the manual page on this screen.
+// The "?" in the bottom right corner opens the manual page on this screen.
 //
 // `recent_native_files`/`open_recent` mirror `MainWindow`'s own
 // `recent_native_files`/`open_recent_native_file` (declared on `root` there,
@@ -32,13 +32,12 @@ export component EmptyState inherits Rectangle {
 
     background: Theme.bg-card;
 
-    // The manual page on this screen, in the top right corner. Positioned by hand, so it adds
-    // nothing to the grid's layout.
-    // This card starts below the Solid view toolbar (`EditorViewportOverlay` offsets it), so
-    // this "?" never sits on top of the toolbar's own.
+    // The manual page on this screen, in the bottom right corner. Positioned by hand, so it
+    // adds nothing to the grid's layout. Not the top right: the Solid view toolbar's own "?"
+    // sits just above this card there, and two stacked "?" read as one doubled button.
     HelpButton {
         x: parent.width - self.width - 12px;
-        y: 8px;
+        y: parent.height - self.height - 8px;
         z: 10;
         topic: HelpTopics.empty-state;
         hint: "Open the manual page on starting a design";

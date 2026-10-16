@@ -195,8 +195,7 @@ fn plan_block(model: &RoughPlanModel<'_>) -> bool {
     model.set_rough_x("40".into());
     model.set_rough_y("30".into());
     model.set_rough_z("25".into());
-    model.set_count(2);
-    model.set_min_count(1);
+    model.set_max_designs(2);
     model.set_use_filter(false);
     model.invoke_base_field_committed();
     pump(250);

@@ -371,3 +371,207 @@ fn spp_targets_clamp_to_the_owner_limits() {
     assert_eq!(clamp_export_spp(0), EXPORT_MIN_SPP);
     assert_eq!(clamp_export_spp(1 << 20), EXPORT_MAX_SPP);
 }
+
+#[test]
+fn fake_gpu_pass_and_fake_cpu_partitions_merge_to_same_sum_in_any_arrival_order() {
+    let pixel_count = (WIDTH * HEIGHT) as usize;
+    // Pass 0: fake GPU pass of all-ones, sample_offset 0, spp 2.
+    let gpu_pass_offset = 0;
+    let gpu_pass_spp = 2;
+    let gpu_sums = vec![[1.0_f32, 1.0_f32, 1.0_f32]; pixel_count];
+
+    // Pass 1: fake CPU partitions (2 partitions), sample_offset 2, spp 3.
+    let cpu_pass_offset = 2;
+    let cpu_pass_spp = 3;
+    let p0_len = partition_len(WIDTH * HEIGHT, 0, 2) as usize;
+    let p1_len = partition_len(WIDTH * HEIGHT, 1, 2) as usize;
+    let cpu_p0_sums = vec![Vec3::new(2.0, 2.0, 2.0); p0_len];
+    let cpu_p1_sums = vec![Vec3::new(2.0, 2.0, 2.0); p1_len];
+
+    // Expected sum: 1.0 (from GPU) + 2.0 (from CPU) = 3.0 per pixel.
+    let expected_sum = vec![Vec3::new(3.0, 3.0, 3.0); pixel_count];
+
+    // Order 1: GPU pass first, then CPU partition 0, then CPU partition 1.
+    {
+        let mut acc = Accumulator::new(9, WIDTH, HEIGHT, 2);
+        let out_gpu = acc.add_full_pass(9, 0, gpu_pass_offset, gpu_pass_spp, &gpu_sums);
+        assert_eq!(out_gpu, ChunkOutcome::Committed { passes: 1 });
+
+        let out_c0 = acc.add_chunk(9, 0, 2, cpu_pass_offset, cpu_pass_spp, cpu_p0_sums.clone());
+        assert_eq!(out_c0, ChunkOutcome::Pending);
+
+        let out_c1 = acc.add_chunk(9, 1, 2, cpu_pass_offset, cpu_pass_spp, cpu_p1_sums.clone());
+        assert_eq!(out_c1, ChunkOutcome::Committed { passes: 1 });
+
+        assert_eq!(acc.completed_passes(), 2);
+        assert_eq!(acc.sample_count(), 5);
+        assert_eq!(acc.sum(), &expected_sum[..]);
+    }
+
+    // Order 2: CPU partitions arrive first (reverse order p1 then p0), then GPU pass.
+    {
+        let mut acc = Accumulator::new(9, WIDTH, HEIGHT, 2);
+        let out_c1 = acc.add_chunk(9, 1, 2, cpu_pass_offset, cpu_pass_spp, cpu_p1_sums.clone());
+        assert_eq!(out_c1, ChunkOutcome::Pending);
+
+        let out_c0 = acc.add_chunk(9, 0, 2, cpu_pass_offset, cpu_pass_spp, cpu_p0_sums.clone());
+        assert_eq!(out_c0, ChunkOutcome::Pending);
+
+        // CPU pass cannot merge until pass 0 (GPU pass) arrives.
+        assert_eq!(acc.completed_passes(), 0);
+        assert_eq!(acc.sample_count(), 0);
+
+        // Now GPU pass arrives, committing both pass 0 and pass 1 at once.
+        let out_gpu = acc.add_full_pass(9, 0, gpu_pass_offset, gpu_pass_spp, &gpu_sums);
+        assert_eq!(out_gpu, ChunkOutcome::Committed { passes: 2 });
+
+        assert_eq!(acc.completed_passes(), 2);
+        assert_eq!(acc.sample_count(), 5);
+        assert_eq!(acc.sum(), &expected_sum[..]);
+    }
+
+    // Order 3: CPU partition 0, then GPU pass, then CPU partition 1.
+    {
+        let mut acc = Accumulator::new(9, WIDTH, HEIGHT, 2);
+        let out_c0 = acc.add_chunk(9, 0, 2, cpu_pass_offset, cpu_pass_spp, cpu_p0_sums);
+        assert_eq!(out_c0, ChunkOutcome::Pending);
+
+        let out_gpu = acc.add_full_pass(9, 0, gpu_pass_offset, gpu_pass_spp, &gpu_sums);
+        assert_eq!(out_gpu, ChunkOutcome::Committed { passes: 1 });
+
+        let out_c1 = acc.add_chunk(9, 1, 2, cpu_pass_offset, cpu_pass_spp, cpu_p1_sums);
+        assert_eq!(out_c1, ChunkOutcome::Committed { passes: 1 });
+
+        assert_eq!(acc.completed_passes(), 2);
+        assert_eq!(acc.sample_count(), 5);
+        assert_eq!(acc.sum(), &expected_sum[..]);
+    }
+}
+
+#[test]
+fn return_gpu_pass_leads_to_complete_merge_from_cpu_partitions_alone() {
+    use super::planner::PassOwner;
+    let pixel_count = (WIDTH * HEIGHT) as usize;
+    let target_spp = 10;
+    let partitions = 2;
+    let mut planner = ChunkPlanner::new(partitions, WIDTH * HEIGHT, target_spp);
+
+    // Schedule a GPU pass.
+    let (pass_id, sample_offset, spp) = planner.next_gpu_pass().expect("GPU pass is planned");
+    assert_eq!(pass_id, 0);
+    assert_eq!(sample_offset, 0);
+    assert_eq!(spp, 1);
+    assert_eq!(planner.pass_owner(0), Some(PassOwner::Gpu));
+
+    // Now return the GPU pass (e.g. after GPU failure or device loss).
+    planner.return_gpu_pass(pass_id);
+    assert_eq!(planner.pass_owner(0), Some(PassOwner::Cpu));
+
+    // Now CPU partitions alone trace all passes until completion.
+    let mut acc = Accumulator::new(9, WIDTH, HEIGHT, partitions);
+    let mut iterations = 0;
+    while !planner.is_done(acc.completed_passes()) {
+        iterations += 1;
+        assert!(
+            iterations < 100,
+            "planner should terminate in bounded iterations"
+        );
+        let mut scheduled_any = false;
+        for p in 0..partitions {
+            if let Some(chunk) = planner.next_chunk(p, acc.completed_passes()) {
+                scheduled_any = true;
+                let len = partition_len(WIDTH * HEIGHT, chunk.first_pixel, chunk.stride) as usize;
+                let fake_sums = vec![Vec3::splat(chunk.spp as f32); len];
+                let outcome = acc.add_chunk(
+                    9,
+                    chunk.first_pixel,
+                    chunk.stride,
+                    chunk.sample_offset,
+                    chunk.spp,
+                    fake_sums,
+                );
+                assert!(
+                    matches!(
+                        outcome,
+                        ChunkOutcome::Pending | ChunkOutcome::Committed { .. }
+                    ),
+                    "unexpected outcome: {outcome:?}"
+                );
+            }
+        }
+        assert!(scheduled_any, "planner made progress");
+    }
+
+    assert_eq!(acc.sample_count(), target_spp);
+    assert_eq!(planner.planned_spp(), target_spp);
+    assert_eq!(acc.pending_passes(), 0);
+    assert!(planner.is_done(acc.completed_passes()));
+    assert_eq!(acc.sum().len(), pixel_count);
+    for v in acc.sum() {
+        assert_eq!(*v, Vec3::splat(target_spp as f32));
+    }
+}
+
+#[test]
+fn stale_scene_id_is_dropped_by_add_full_pass() {
+    let pixel_count = (WIDTH * HEIGHT) as usize;
+    let mut acc = Accumulator::new(42, WIDTH, HEIGHT, 2);
+    let fake_sums = vec![[1.0_f32, 1.0_f32, 1.0_f32]; pixel_count];
+
+    let outcome = acc.add_full_pass(41, 0, 0, 1, &fake_sums);
+    assert_eq!(outcome, ChunkOutcome::Stale);
+    assert_eq!(acc.sample_count(), 0);
+    assert_eq!(acc.completed_passes(), 0);
+    assert_eq!(acc.pending_passes(), 0);
+    assert!(acc.sum().iter().all(|v| *v == Vec3::ZERO));
+}
+
+#[test]
+fn wrong_sums_length_is_rejected_by_add_full_pass() {
+    let pixel_count = (WIDTH * HEIGHT) as usize;
+    let mut acc = Accumulator::new(42, WIDTH, HEIGHT, 2);
+
+    let too_short = vec![[1.0_f32, 1.0_f32, 1.0_f32]; pixel_count - 1];
+    let outcome_short = acc.add_full_pass(42, 0, 0, 1, &too_short);
+    assert_eq!(
+        outcome_short,
+        ChunkOutcome::Rejected(ChunkRejection::LengthMismatch)
+    );
+
+    let too_long = vec![[1.0_f32, 1.0_f32, 1.0_f32]; pixel_count + 1];
+    let outcome_long = acc.add_full_pass(42, 0, 0, 1, &too_long);
+    assert_eq!(
+        outcome_long,
+        ChunkOutcome::Rejected(ChunkRejection::LengthMismatch)
+    );
+
+    assert_eq!(acc.sample_count(), 0);
+    assert_eq!(acc.completed_passes(), 0);
+    assert_eq!(acc.pending_passes(), 0);
+    assert!(acc.sum().iter().all(|v| *v == Vec3::ZERO));
+}
+
+#[test]
+fn gpu_rate_ema_and_gpu_pass_sizing() {
+    let pixels = 100_000_u32;
+    let mut planner = ChunkPlanner::new(2, pixels, 1024);
+
+    let (id0, offset0, spp0) = planner.next_gpu_pass().expect("pass 0");
+    assert_eq!((id0, offset0, spp0), (0, 0, 1));
+
+    planner.record_gpu_rate(100_000, 50.0);
+    assert_eq!(planner.gpu_rate(), Some(2000.0));
+
+    let (id1, offset1, spp1) = planner.next_gpu_pass().expect("pass 1");
+    assert_eq!((id1, offset1, spp1), (1, 1, 5));
+
+    planner.record_gpu_rate(500_000, 500.0);
+    let expected_rate = 1500.0;
+    assert!((planner.gpu_rate().unwrap() - expected_rate).abs() < 1e-6);
+
+    let (id2, offset2, spp2) = planner.next_gpu_pass().expect("pass 2");
+    assert_eq!((id2, offset2, spp2), (2, 6, 4));
+
+    let new_planner = ChunkPlanner::with_rates_from(&planner, 2, pixels, 1024);
+    assert_eq!(new_planner.gpu_rate(), planner.gpu_rate());
+}

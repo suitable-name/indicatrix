@@ -3,8 +3,8 @@
 //! Provides [`ShapedGrid`] over the bounding box of usable rough, sized with caps on
 //! total piece table entries and positional DP operations.
 //!
-//! For example, K = 99 on a 20 mm cube yields a resolution of 16 x 16 x 16 cells,
-//! fitting within the 2,600,000 piece table entry cap.
+//! For example, a 20 mm cube yields a resolution of 16 x 16 x 16 cells, fitting within the
+//! 2,600,000 piece table entry cap.
 
 use super::parallel::{even_chunks, run_lanes};
 use crate::rough_plan::{
@@ -23,7 +23,7 @@ pub const SHAPED_PIECE_CAP: usize = 2_600_000;
 ///
 /// An eighth of [`SHAPED_PIECE_CAP`]. Every entry of a mesh rough's clipped table costs
 /// a classification against the whole mesh, so the table is the stage that takes minutes;
-/// an eighth of the entries is 11 cells per axis for a cube at K = 10 instead of 16.
+/// an eighth of the entries is 11 cells per axis for a cube instead of 16.
 pub const SHAPED_MESH_PIECE_CAP: usize = SHAPED_PIECE_CAP / 8;
 
 /// Maximum estimated DP operations summed over all 6 cut orders (`3.0e9`): the plain
@@ -212,24 +212,15 @@ pub const fn piece_count(cells: [usize; 3]) -> usize {
     px * py * pz
 }
 
-/// Evaluates the positional DP operation estimate summed over all 6 cut orders.
+/// Evaluates the positional DP operation estimate summed over all 6 cut orders: per order
+/// the bars (`p_a * p_b * p_c`, one split per range of every axis), the slabs (`p_a * p_b`)
+/// and the root (`p_a`), `p_x` being the range count of axis `x`.
 #[must_use]
-pub fn shaped_op_estimate(cells: [usize; 3], k: usize) -> f64 {
+pub fn shaped_op_estimate(cells: [usize; 3]) -> f64 {
     let mut total = 0.0;
     for order in CutOrder::ALL {
-        let [a, b, c] = order.axes();
-        let ga = cells[a];
-        let gb = cells[b];
-        let gc = cells[c];
-        let pa = (ga * (ga + 1) / 2) as f64;
-        let pb = (gb * (gb + 1) / 2) as f64;
-        let pc = (gc * (gc + 1) / 2) as f64;
-        let kb = (k.min(gc)) as f64;
-        let ks = (k.min(gb * k.min(gc))) as f64;
-        let kr = (k.min(ga * gb * gc)) as f64;
-        let bar_cost = pa * pb * pc * kb;
-        let slab_cost = (pa * pb * ks).mul_add(kb, bar_cost);
-        total += (pa * kr).mul_add(ks, slab_cost);
+        let [pa, pb, pc] = order.axes().map(|i| (cells[i] * (cells[i] + 1) / 2) as f64);
+        total += (pa * pb).mul_add(pc, pa.mul_add(pb, pa));
     }
     total
 }
@@ -246,8 +237,6 @@ pub fn choose_shaped_grid(extents: [f64; 3], settings: &PlanSettings) -> ShapedG
 ///
 /// Starts from the cells computed by [`choose_grid`] clamped to [`SHAPED_MAX_CELLS`],
 /// then shrinks each axis by 5% until both [`SHAPED_PIECE_CAP`] and [`SHAPED_OP_CAP`] hold.
-/// The op estimate uses `kr = min(K, cells)` for the root table, since the root
-/// cannot hold more stones than there are cells.
 #[must_use]
 pub fn choose_shaped_grid_at(
     min_corner: [f64; 3],
@@ -268,7 +257,6 @@ pub fn choose_shaped_grid_capped(
     settings: &PlanSettings,
     piece_cap: usize,
 ) -> ShapedGrid {
-    let k = settings.count_usize();
     let block = RoughBlock {
         x_mm: extents[0],
         y_mm: extents[1],
@@ -279,7 +267,7 @@ pub fn choose_shaped_grid_capped(
 
     loop {
         let pieces = piece_count(cells);
-        let ops = shaped_op_estimate(cells, k);
+        let ops = shaped_op_estimate(cells);
         if pieces <= piece_cap && ops <= SHAPED_OP_CAP {
             break;
         }

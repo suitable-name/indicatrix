@@ -57,13 +57,13 @@ pub(super) fn tier_signature(ui: &MainWindow) -> String {
         .join(";")
 }
 
-/// Opens the New Design dialog (clicking "New Design...") and waits until the template gallery
-/// has its cards, gears and materials. Returns whether it got that far.
+/// Opens the New Design dialog (the command bar's File menu, then "New Design...") and waits
+/// until the template gallery has its cards, gears and materials. Returns whether it got that far.
 pub(super) fn open_new_design_dialog(app: &HarnessApp) -> bool {
     let ui = app.ui();
     let editor = ui.global::<EditorModel>();
-    if !editor.get_new_dialog_open() && !click(app, "New Design...") {
-        // GAP: the command bar button is not reachable by label; the flag it sets is driven.
+    if !editor.get_new_dialog_open() && !(click(app, "File") && click(app, "New Design...")) {
+        // GAP: the File menu item is not reachable by label; the flag it sets is driven.
         editor.set_new_dialog_open(true);
         pump(100);
     }
@@ -143,17 +143,17 @@ pub(super) fn create_template(app: &HarnessApp, card: Card) -> bool {
         && editor.get_tiers().row_count() > 0
 }
 
-/// Selects tier row 0 and adds a tier next to it with the command bar's Duplicate button.
+/// Selects tier row 0 and adds a tier next to it the way the tier row's Duplicate button and
+/// Ctrl+D do (the command bar has no Duplicate button any more).
 pub(super) fn duplicate_first_tier(app: &HarnessApp) {
     let ui = app.ui();
     let editor = ui.global::<EditorModel>();
     editor.set_selected_tier_index(0);
     pump(80);
-    if !click(app, "Duplicate") {
-        // GAP: Duplicate is not reachable by label; the callback it fires is driven.
-        editor.invoke_duplicate_tier(0);
-        pump(100);
-    }
+    // GAP: the row's Duplicate button is icon-only and not reachable by label; the callback it
+    // fires is driven.
+    editor.invoke_duplicate_tier(0);
+    pump(100);
 }
 
 /// `EditorModel.inspector_tab` of the History tab.

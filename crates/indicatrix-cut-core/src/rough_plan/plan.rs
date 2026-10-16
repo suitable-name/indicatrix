@@ -6,15 +6,16 @@ use super::{
     Axis, BarCut, CandidateDesign, CutOrder, CutPlan, DesignHull, FINAL_TOP, LayoutGroup,
     PlacedStone, PlanProgress, PlanSettings, REFINE_TOP, RoughBlock, RoughLayout, RoughModel,
     SHAPED_UNIFORM_DESIGNS, SingleFit, SlabCut, fit_single_stones, fit_single_stones_with,
-    merge_and_rank_min,
+    merge_and_rank_capped,
     pareto::{pareto_front, sanitize},
     plan_rough,
-    rank::{best_layout, flatten_groups, rank_indices_min},
-    refine::{final_ranking_min, own_pool},
+    rank::{best_layout, flatten_groups, rank_indices_capped},
+    refine::{final_ranking_capped, own_pool},
     shape::RoughBase,
     shaped::{
         BuildClipParams, ShapedAltParams, ShapedCtx, build_clipped_table, plan_shaped_alternatives,
-        plan_shaped_for_order, refine_shaped, shaped_uniform_layouts,
+        plan_shaped_design_cap, plan_shaped_for_order, refine_shaped_capped,
+        shaped_uniform_layouts,
     },
 };
 
@@ -230,15 +231,16 @@ fn plan_plain_block(
         PLAIN_SINGLE_FITS,
         rough.volume_mm3(),
     ));
-    Some(merge_and_rank_min(
+    Some(merge_and_rank_capped(
         layouts,
         FINAL_LAYOUTS,
-        input.settings.min_count_usize(),
+        input.settings.max_designs_usize(),
     ))
 }
 
-/// The size table, clipped table, six DPs and alternatives of a shaped rough,
-/// as refinement groups in the order of the plain planner (mixed, alternatives).
+/// The size table, clipped table, six DPs, design-cap chain and alternatives of a shaped
+/// rough, as refinement groups in the order of the plain planner (mixed, design cap,
+/// alternatives).
 fn run_shaped_dp(
     input: &PlanInput<'_>,
     ctx: &ShapedCtx,
@@ -275,7 +277,7 @@ fn run_shaped_dp(
         )?);
     }
 
-    let alternatives = match best_layout(&mixed) {
+    let (capped, alternatives) = match best_layout(&mixed) {
         Some(best) => {
             let alt_params = ShapedAltParams {
                 grid: &grid,
@@ -286,15 +288,19 @@ fn run_shaped_dp(
                 settings,
                 lanes: SEQUENTIAL_LANES,
             };
-            plan_shaped_alternatives(&alt_params, on_progress)?
+            (
+                plan_shaped_design_cap(&alt_params, on_progress)?,
+                plan_shaped_alternatives(&alt_params, on_progress)?,
+            )
         }
-        None => Vec::new(),
+        None => (Vec::new(), Vec::new()),
     };
 
     let mut groups = vec![LayoutGroup {
         pool: front.to_vec(),
         layouts: mixed,
     }];
+    groups.extend(capped);
     groups.extend(alternatives);
     Some(groups)
 }
@@ -378,8 +384,8 @@ fn finish_shaped(
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<RoughLayout>> {
     let (flat, group_of) = flatten_groups(groups);
-    let min_stones = input.settings.min_count_usize();
-    let ranked = rank_indices_min(&flat, REFINE_TOP, min_stones);
+    let max_designs = input.settings.max_designs_usize();
+    let ranked = rank_indices_capped(&flat, REFINE_TOP, max_designs);
     let mut refined = Vec::with_capacity(ranked.len() + SHAPED_SINGLE_LAYOUTS);
     for &idx in &ranked {
         if !on_progress(PlanProgress::Refine) {
@@ -391,7 +397,13 @@ fn finish_shaped(
         } else {
             sanitize(&group.pool)
         };
-        refined.push(refine_shaped(ctx, flat[idx], &pool, input.settings));
+        refined.push(refine_shaped_capped(
+            ctx,
+            flat[idx],
+            &pool,
+            clean,
+            input.settings,
+        ));
     }
 
     refined.extend(single_fit_layouts(
@@ -400,27 +412,28 @@ fn finish_shaped(
         SHAPED_SINGLE_LAYOUTS,
         ctx.model_volume,
     ));
-    Some(final_ranking_min(refined, &flat, &ranked, min_stones))
+    Some(final_ranking_capped(refined, &flat, &ranked, max_designs))
 }
 
 /// The layouts to show when a plan was stopped before its refinement ran.
 ///
 /// Every layout of `groups` and of `extra` (single-stone and uniform layouts), unrefined,
-/// ranked and cut to [`FINAL_LAYOUTS`] by [`merge_and_rank_min`]. Empty when none has a stone.
+/// ranked and cut to [`FINAL_LAYOUTS`] by [`merge_and_rank_capped`]. Empty when none has a
+/// stone.
 #[must_use]
 pub fn partial_ranking(groups: &[LayoutGroup], extra: Vec<RoughLayout>) -> Vec<RoughLayout> {
-    partial_ranking_min(groups, extra, 1)
+    partial_ranking_capped(groups, extra, usize::MAX)
 }
 
-/// [`partial_ranking`] keeping only layouts of at least `min_stones` stones.
+/// [`partial_ranking`] keeping only layouts of at most `max_designs` different designs.
 #[must_use]
-pub fn partial_ranking_min(
+pub fn partial_ranking_capped(
     groups: &[LayoutGroup],
     extra: Vec<RoughLayout>,
-    min_stones: usize,
+    max_designs: usize,
 ) -> Vec<RoughLayout> {
     let (flat, _) = flatten_groups(groups);
     let mut all: Vec<RoughLayout> = flat.into_iter().cloned().collect();
     all.extend(extra);
-    merge_and_rank_min(all, FINAL_LAYOUTS, min_stones)
+    merge_and_rank_capped(all, FINAL_LAYOUTS, max_designs)
 }

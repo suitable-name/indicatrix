@@ -5,11 +5,16 @@
 //!
 //! # Memory
 //!
-//! Only the argmax choices are stored, one byte each. Per cut order the bar table
-//! holds `p_a * p_b * (G_C + 1) * (k_b + 1)` bytes (`p_x = G_x (G_x + 1) / 2`
-//! range counts; about 5 MB at `G = 16` and `K = 99`), the slab tables
-//! `2 * p_a * (G_B + 1) * (k_s + 1)` and the root tables `2 * (G_A + 1) * (K + 1)`.
-//! The bar, slab and root value tables are `f64` and far smaller.
+//! The number of pieces is free: every order's DP places as many stones as the rough, the
+//! losses and the minimum width allow. The design cap is applied outside the DP (see
+//! [`plan_shaped_design_cap`]).
+//!
+//! # Memory
+//!
+//! Only the argmax run lengths are stored, one byte each. Per cut order the bar table
+//! holds `p_a * p_b * (G_C + 1)` bytes (`p_x = G_x (G_x + 1) / 2` range counts), the slab
+//! table `p_a * (G_B + 1)` and the root table `G_A + 1`. The value tables are `f64` and
+//! hold one value per range.
 
 use super::{
     clip::{BuildClipParams, ClippedTable, build_clipped_table_jobs},
@@ -18,11 +23,10 @@ use super::{
     tree::layout_from_tree_shaped,
 };
 use crate::rough_plan::{
-    Axis, CandidateDesign, CutOrder, CutPlan, LayoutGroup, NEG, PlacedStone, PlanProgress,
-    PlanSettings, RoughLayout, StonePose,
-    dp::{ALTERNATIVE_ROUNDS, MAX_PER_ORDER},
+    CandidateDesign, CutOrder, LayoutGroup, NEG, PlanProgress, PlanSettings, RoughLayout,
+    dp::ALTERNATIVE_ROUNDS,
     pareto::pareto_front,
-    rank::{best_layout, most_used_design, rank_indices},
+    rank::{best_layout, least_contributing_design, most_used_design, pool_without},
     tree::{Bar, Leaf, Slab, Tree},
 };
 
@@ -35,79 +39,33 @@ pub struct ShapedOrderDp {
     ga: usize,
     gb: usize,
     gc: usize,
-    kb: usize,
-    ks: usize,
-    kr: usize,
+    /// Bar argmax run length per `(slab range, bar range, c)`.
     bar_arg: Vec<u8>,
-    slab_arg_g: Vec<u8>,
-    slab_arg_m: Vec<u8>,
-    root_arg_g: Vec<u8>,
-    root_arg_m: Vec<u8>,
-    root_vals: Vec<f64>,
-}
-
-/// A stone that carries only its design; enough for the ranking's composition.
-const fn blank_stone(entry_id: i64) -> PlacedStone {
-    PlacedStone {
-        entry_id,
-        piece_origin_mm: [0.0; 3],
-        piece_size_mm: [0.0; 3],
-        stone_size_mm: [0.0; 3],
-        table_axis: Axis::X,
-        carat: 0.0,
-        volume_mm3: 0.0,
-        pose: StonePose {
-            center_mm: [0.0; 3],
-            axes: [[0.0; 3]; 3],
-            mm_per_unit: 0.0,
-        },
-    }
-}
-
-/// A stand-in for the layout of `tree` that carries what the ranking reads: the
-/// composition, the stone count, the DP `value` and the cut order. Building the
-/// real layout costs one clipped fit per piece; the ranking needs none of it.
-fn ranking_stub(order: CutOrder, tree: &Tree, pool: &[CandidateDesign], value: f64) -> RoughLayout {
-    let stones = tree
-        .slabs
-        .iter()
-        .flat_map(|slab| &slab.bars)
-        .flat_map(|bar| &bar.leaves)
-        .filter_map(|leaf| pool.get(leaf.design))
-        .map(|design| blank_stone(design.entry_id))
-        .collect();
-    RoughLayout {
-        cut_order: order,
-        stones,
-        cut_plan: CutPlan { slabs: Vec::new() },
-        total_carat: 0.0,
-        total_volume_mm3: value,
-        yield_fraction: 0.0,
-        exact_fit: false,
-    }
+    /// Slab argmax run length per `(slab range, b)`.
+    slab_arg: Vec<u8>,
+    /// Root argmax run length per `a`.
+    root_arg: Vec<u8>,
+    /// The best total value (`-inf` when nothing fits).
+    root_value: f64,
 }
 
 impl ShapedOrderDp {
-    /// The best total value of exactly `n` stones for this order (`-inf` when no
-    /// layout holds `n`, including `n = 0` and `n` beyond the stone cap).
+    /// The best total value of this order (`-inf` when no layout fits).
     #[must_use]
-    pub fn root_value(&self, n: usize) -> f64 {
-        self.root_vals.get(n).copied().unwrap_or(NEG)
+    pub const fn root_value(&self) -> f64 {
+        self.root_value
     }
 
-    /// Reconstructs the guillotine tree for a specific stone count `n`.
+    /// Reconstructs the guillotine tree of the best layout.
     #[must_use]
-    pub fn reconstruct(&self, grid: &ShapedGrid, table: &ClippedTable, n: usize) -> Tree {
-        let ord = self.order.axes();
-        let [ax, bx, cx] = ord;
+    pub fn reconstruct(&self, grid: &ShapedGrid, table: &ClippedTable) -> Tree {
+        let [ax, bx, cx] = self.order.axes();
+        let pb = grid.range_count(bx);
         let mut slabs = Vec::new();
         let mut a = self.ga;
-        let mut rem_n = n;
-
-        while a > 0 && rem_n > 0 {
-            let g_a = self.root_arg_g[a * (self.kr + 1) + rem_n] as usize;
-            let m_a = self.root_arg_m[a * (self.kr + 1) + rem_n] as usize;
-            if g_a == 0 || m_a == 0 || g_a > a || m_a > rem_n {
+        while a > 0 {
+            let g_a = usize::from(self.root_arg[a]);
+            if g_a == 0 || g_a > a {
                 break;
             }
             let a_prime = a - g_a;
@@ -115,14 +73,9 @@ impl ShapedOrderDp {
 
             let mut bars = Vec::new();
             let mut b = self.gb;
-            let mut rem_b = m_a;
-
-            while b > 0 && rem_b > 0 {
-                let slab_offset =
-                    slab_rng * (self.gb + 1) * (self.ks + 1) + b * (self.ks + 1) + rem_b;
-                let g_b = self.slab_arg_g[slab_offset] as usize;
-                let m_b = self.slab_arg_m[slab_offset] as usize;
-                if g_b == 0 || m_b == 0 || g_b > b || m_b > rem_b {
+            while b > 0 {
+                let g_b = usize::from(self.slab_arg[slab_rng * (self.gb + 1) + b]);
+                if g_b == 0 || g_b > b {
                     break;
                 }
                 let b_prime = b - g_b;
@@ -130,65 +83,44 @@ impl ShapedOrderDp {
 
                 let mut leaves = Vec::new();
                 let mut c = self.gc;
-                let mut rem_c = m_b;
-
-                while c > 0 && rem_c > 0 {
-                    let pb = grid.range_count(bx);
-                    let bar_stride = (self.gc + 1) * (self.kb + 1);
-                    let bar_offset =
-                        (slab_rng * pb + bar_rng) * bar_stride + c * (self.kb + 1) + rem_c;
-                    let g_c = self.bar_arg[bar_offset] as usize;
+                let bar_base = (slab_rng * pb + bar_rng) * (self.gc + 1);
+                while c > 0 {
+                    let g_c = usize::from(self.bar_arg[bar_base + c]);
                     if g_c == 0 || g_c > c {
                         break;
                     }
                     let c_prime = c - g_c;
-                    let leaf_rng = grid.range_index(cx, c_prime, c);
-
                     let mut r_canon = [0; 3];
                     r_canon[ax] = slab_rng;
                     r_canon[bx] = bar_rng;
-                    r_canon[cx] = leaf_rng;
-
+                    r_canon[cx] = grid.range_index(cx, c_prime, c);
                     let t_idx = table.index(r_canon[0], r_canon[1], r_canon[2]);
                     leaves.push(Leaf {
                         len: grid.run_mm(cx, g_c),
                         design: table.design[t_idx] as usize,
                         orient: table.orient[t_idx] as usize,
                     });
-
                     c = c_prime;
-                    rem_c -= 1;
                 }
-
                 leaves.reverse();
                 bars.push(Bar {
                     width: grid.run_mm(bx, g_b),
                     leaves,
                 });
-
                 b = b_prime;
-                rem_b -= m_b;
             }
-
             bars.reverse();
             slabs.push(Slab {
                 thickness: grid.run_mm(ax, g_a),
                 bars,
             });
-
             a = a_prime;
-            rem_n -= m_a;
         }
-
         slabs.reverse();
         Tree { slabs }
     }
 
-    /// Evaluates candidate layouts for this cut order.
-    ///
-    /// Every stone count with a finite DP value is reconstructed and ranked on
-    /// its DP value and composition; only the retained candidates (at most
-    /// [`MAX_PER_ORDER`]) are built into real layouts.
+    /// This order's candidate: the best layout, built in full, or none when nothing fits.
     #[must_use]
     pub fn candidates(
         &self,
@@ -198,311 +130,134 @@ impl ShapedOrderDp {
         settings: &PlanSettings,
         pool: &[CandidateDesign],
     ) -> Vec<RoughLayout> {
-        let mut trees = Vec::new();
-        let mut stubs = Vec::new();
-        for (n, &value) in self.root_vals.iter().enumerate().skip(1) {
-            if value > NEG {
-                let tree = self.reconstruct(grid, table, n);
-                stubs.push(ranking_stub(self.order, &tree, pool, value));
-                trees.push(tree);
-            }
+        if self.root_value <= NEG {
+            return Vec::new();
         }
-        rank_indices(&stubs, MAX_PER_ORDER)
-            .into_iter()
-            .map(|i| layout_from_tree_shaped(ctx, self.order, &trees[i], pool, settings))
-            .filter(|layout| !layout.stones.is_empty())
-            .collect()
+        let tree = self.reconstruct(grid, table);
+        let layout = layout_from_tree_shaped(ctx, self.order, &tree, pool, settings);
+        if layout.stones.is_empty() {
+            Vec::new()
+        } else {
+            vec![layout]
+        }
     }
 }
 
-/// A stored argmax (a run length or a piece count) as one byte.
+/// A stored argmax (a run length) as one byte.
 fn arg_byte(value: usize) -> u8 {
-    u8::try_from(value).expect("a run is at most 20 cells and a count at most 99 pieces")
+    u8::try_from(value).expect("a run is at most 20 cells")
 }
 
-struct DpDims {
-    ord: [usize; 3],
-    cells: [usize; 3],
-    kb: usize,
-    ks: usize,
-    kr: usize,
+/// The best split of a run of `units` cells into runs, given the value of the run between
+/// `start` and `end` (`run_value(start, end)`, `-inf` when unusable): fills
+/// `best[0..=units]` and `arg`. The longest run is tried first, so it is kept on a tie: of two
+/// splits worth the same, the one with fewer pieces wins, as in the ranking.
+fn split_runs(
+    units: usize,
+    best: &mut [f64],
+    arg: &mut [u8],
+    run_value: impl Fn(usize, usize) -> f64,
+) {
+    best[0] = 0.0;
+    arg[0] = 0;
+    for u in 1..=units {
+        let (mut top, mut top_g) = (NEG, 0);
+        for g in (1..=u).rev() {
+            let prev = best[u - g];
+            if prev > NEG {
+                let v = run_value(u - g, u);
+                if v > NEG && prev + v > top {
+                    top = prev + v;
+                    top_g = g;
+                }
+            }
+        }
+        best[u] = top;
+        arg[u] = arg_byte(top_g);
+    }
 }
 
-struct RootBuffers<'a> {
-    arg_g: &'a mut [u8],
-    arg_m: &'a mut [u8],
-    table: &'a mut [f64],
-}
-
-/// Fills the bar tables; ticks once per starting plane of the a range.
-fn fill_bar_table(
+/// Runs the three DP levels of `order`; `None` when `tick` cancels. `tick` is called once
+/// per starting plane of the a range in the bar fill and once per starting plane in the slab
+/// fill (two calls per cell of the a axis).
+pub(super) fn solve_order(
     grid: &ShapedGrid,
     table: &ClippedTable,
-    dims: &DpDims,
-    bar_arg: &mut [u8],
-    bar_vals: &mut [f64],
+    order: CutOrder,
     tick: &mut Tick<'_>,
-) -> bool {
-    let [ax, bx, cx] = dims.ord;
-    let [ga, gb, gc] = dims.cells;
-    let pb = grid.range_count(bx);
-    let bar_stride = (gc + 1) * (dims.kb + 1);
-    let mut t_buf = vec![NEG; bar_stride];
+) -> Option<ShapedOrderDp> {
+    let [ax, bx, cx] = order.axes();
+    let (ga, gb, gc) = (grid.cells[ax], grid.cells[bx], grid.cells[cx]);
+    let (pa, pb) = (grid.range_count(ax), grid.range_count(bx));
 
+    // Bars: for every (slab range, bar range), the best split of the c axis.
+    let mut bar_arg = vec![0u8; pa * pb * (gc + 1)];
+    let mut bar_vals = vec![NEG; pa * pb];
+    let mut t_buf = vec![NEG; gc + 1];
     for ra_start in 0..ga {
         if !tick() {
-            return false;
+            return None;
         }
         for ra_end in (ra_start + 1)..=ga {
             let slab_rng = grid.range_index(ax, ra_start, ra_end);
             for rb_start in 0..gb {
                 for rb_end in (rb_start + 1)..=gb {
                     let bar_rng = grid.range_index(bx, rb_start, rb_end);
-                    let bar_pair_idx = slab_rng * pb + bar_rng;
-
-                    t_buf.fill(NEG);
-                    t_buf[0] = 0.0;
-
-                    for c in 1..=gc {
-                        for n in 1..=c.min(dims.kb) {
-                            let mut best = NEG;
-                            let mut best_g = 0usize;
-                            for g in 1..=c {
-                                let c_prime = c - g;
-                                let prev = t_buf[c_prime * (dims.kb + 1) + n - 1];
-                                if prev > NEG {
-                                    let leaf_rng = grid.range_index(cx, c_prime, c);
-                                    let mut r_canon = [0; 3];
-                                    r_canon[ax] = slab_rng;
-                                    r_canon[bx] = bar_rng;
-                                    r_canon[cx] = leaf_rng;
-                                    let v = table.value(r_canon[0], r_canon[1], r_canon[2]);
-                                    if v > NEG {
-                                        let cand = prev + v;
-                                        if cand > best {
-                                            best = cand;
-                                            best_g = g;
-                                        }
-                                    }
-                                }
-                            }
-                            let offset = c * (dims.kb + 1) + n;
-                            t_buf[offset] = best;
-                            bar_arg[bar_pair_idx * bar_stride + offset] = arg_byte(best_g);
-                        }
-                    }
-
-                    for m in 1..=dims.kb {
-                        bar_vals[bar_pair_idx * (dims.kb + 1) + m] = t_buf[gc * (dims.kb + 1) + m];
-                    }
+                    let pair = slab_rng * pb + bar_rng;
+                    let args = &mut bar_arg[pair * (gc + 1)..(pair + 1) * (gc + 1)];
+                    split_runs(gc, &mut t_buf, args, |c0, c1| {
+                        let mut r_canon = [0; 3];
+                        r_canon[ax] = slab_rng;
+                        r_canon[bx] = bar_rng;
+                        r_canon[cx] = grid.range_index(cx, c0, c1);
+                        table.value(r_canon[0], r_canon[1], r_canon[2])
+                    });
+                    bar_vals[pair] = t_buf[gc];
                 }
             }
         }
     }
-    true
-}
 
-/// Fills the slab tables; ticks once per starting plane of the a range.
-fn fill_slab_table(
-    grid: &ShapedGrid,
-    dims: &DpDims,
-    bar_vals: &[f64],
-    slab_args: (&mut [u8], &mut [u8]),
-    slab_vals: &mut [f64],
-    tick: &mut Tick<'_>,
-) -> bool {
-    let (slab_arg_g, slab_arg_m) = slab_args;
-    let [ax, bx, _] = dims.ord;
-    let [ga, gb, _] = dims.cells;
-    let pb = grid.range_count(bx);
-    let slab_stride = (gb + 1) * (dims.ks + 1);
-    let mut s_buf = vec![NEG; slab_stride];
-
+    // Slabs: for every slab range, the best split of the b axis into bars.
+    let mut slab_arg = vec![0u8; pa * (gb + 1)];
+    let mut slab_vals = vec![NEG; pa];
+    let mut s_buf = vec![NEG; gb + 1];
     for ra_start in 0..ga {
         if !tick() {
-            return false;
+            return None;
         }
         for ra_end in (ra_start + 1)..=ga {
             let slab_rng = grid.range_index(ax, ra_start, ra_end);
-
-            s_buf.fill(NEG);
-            s_buf[0] = 0.0;
-
-            for b in 1..=gb {
-                for n in 1..=(b * dims.kb).min(dims.ks) {
-                    let mut best = NEG;
-                    let mut best_g = 0usize;
-                    let mut best_m = 0usize;
-
-                    for g in 1..=b {
-                        let b_prime = b - g;
-                        let bar_rng = grid.range_index(bx, b_prime, b);
-                        let bar_pair_idx = slab_rng * pb + bar_rng;
-
-                        for m in 1..=n.min(dims.kb) {
-                            let prev = s_buf[b_prime * (dims.ks + 1) + n - m];
-                            let b_val = bar_vals[bar_pair_idx * (dims.kb + 1) + m];
-                            if prev > NEG && b_val > NEG {
-                                let cand = prev + b_val;
-                                if cand > best {
-                                    best = cand;
-                                    best_g = g;
-                                    best_m = m;
-                                }
-                            }
-                        }
-                    }
-
-                    let offset = b * (dims.ks + 1) + n;
-                    s_buf[offset] = best;
-                    slab_arg_g[slab_rng * slab_stride + offset] = arg_byte(best_g);
-                    slab_arg_m[slab_rng * slab_stride + offset] = arg_byte(best_m);
-                }
-            }
-
-            for m in 1..=dims.ks {
-                slab_vals[slab_rng * (dims.ks + 1) + m] = s_buf[gb * (dims.ks + 1) + m];
-            }
+            let args = &mut slab_arg[slab_rng * (gb + 1)..(slab_rng + 1) * (gb + 1)];
+            split_runs(gb, &mut s_buf, args, |b0, b1| {
+                bar_vals[slab_rng * pb + grid.range_index(bx, b0, b1)]
+            });
+            slab_vals[slab_rng] = s_buf[gb];
         }
     }
-    true
-}
 
-/// Fills the root table; ticks once per plane of the a axis.
-fn fill_root_table(
-    grid: &ShapedGrid,
-    dims: &DpDims,
-    slab_vals: &[f64],
-    bufs: &mut RootBuffers<'_>,
-    tick: &mut Tick<'_>,
-) -> bool {
-    let [ax, _, _] = dims.ord;
-    let [ga, _, _] = dims.cells;
-    let root_stride = dims.kr + 1;
-    for a in 1..=ga {
-        if !tick() {
-            return false;
-        }
-        for n in 1..=(a * dims.ks).min(dims.kr) {
-            let mut best = NEG;
-            let mut best_g = 0usize;
-            let mut best_m = 0usize;
-
-            for g in 1..=a {
-                let a_prime = a - g;
-                let slab_rng = grid.range_index(ax, a_prime, a);
-
-                for m in 1..=n.min(dims.ks) {
-                    let prev = bufs.table[a_prime * root_stride + n - m];
-                    let s_val = slab_vals[slab_rng * (dims.ks + 1) + m];
-                    if prev > NEG && s_val > NEG {
-                        let cand = prev + s_val;
-                        if cand > best {
-                            best = cand;
-                            best_g = g;
-                            best_m = m;
-                        }
-                    }
-                }
-            }
-
-            let offset = a * root_stride + n;
-            bufs.table[offset] = best;
-            bufs.arg_g[offset] = arg_byte(best_g);
-            bufs.arg_m[offset] = arg_byte(best_m);
-        }
-    }
-    true
-}
-
-/// Runs the three DP levels of `order` for at most `k` stones; `None` when `tick`
-/// cancels.
-pub(super) fn solve_order(
-    grid: &ShapedGrid,
-    table: &ClippedTable,
-    order: CutOrder,
-    k: usize,
-    tick: &mut Tick<'_>,
-) -> Option<ShapedOrderDp> {
-    let [ax, bx, cx] = order.axes();
-    let ga = grid.cells[ax];
-    let gb = grid.cells[bx];
-    let gc = grid.cells[cx];
-
-    let kb = k.min(gc);
-    let ks = k.min(gb * kb);
-    let kr = k;
-    let dims = DpDims {
-        ord: [ax, bx, cx],
-        cells: [ga, gb, gc],
-        kb,
-        ks,
-        kr,
-    };
-
-    let pa = grid.range_count(ax);
-    let pb = grid.range_count(bx);
-
-    let mut bar_arg = vec![0u8; pa * pb * (gc + 1) * (kb + 1)];
-    let mut bar_vals = vec![NEG; pa * pb * (kb + 1)];
-    if !fill_bar_table(grid, table, &dims, &mut bar_arg, &mut bar_vals, tick) {
-        return None;
-    }
-
-    let slab_stride = (gb + 1) * (ks + 1);
-    let mut slab_arg_g = vec![0u8; pa * slab_stride];
-    let mut slab_arg_m = vec![0u8; pa * slab_stride];
-    let mut slab_vals = vec![NEG; pa * (ks + 1)];
-    let slab_args = (&mut slab_arg_g[..], &mut slab_arg_m[..]);
-    if !fill_slab_table(grid, &dims, &bar_vals, slab_args, &mut slab_vals, tick) {
-        return None;
-    }
-
-    let root_stride = kr + 1;
-    let mut root_arg_g = vec![0u8; (ga + 1) * root_stride];
-    let mut root_arg_m = vec![0u8; (ga + 1) * root_stride];
-    let mut root_table = vec![NEG; (ga + 1) * root_stride];
-    root_table[0] = 0.0;
-    let mut root_bufs = RootBuffers {
-        arg_g: &mut root_arg_g,
-        arg_m: &mut root_arg_m,
-        table: &mut root_table,
-    };
-    if !fill_root_table(grid, &dims, &slab_vals, &mut root_bufs, tick) {
-        return None;
-    }
-
-    let root_vals = (0..=kr)
-        .map(|n| {
-            if n == 0 {
-                NEG
-            } else {
-                root_table[ga * root_stride + n]
-            }
-        })
-        .collect();
+    // Root: the best split of the a axis into slabs.
+    let mut root_arg = vec![0u8; ga + 1];
+    let mut root_buf = vec![NEG; ga + 1];
+    split_runs(ga, &mut root_buf, &mut root_arg, |a0, a1| {
+        slab_vals[grid.range_index(ax, a0, a1)]
+    });
     Some(ShapedOrderDp {
         order,
         ga,
         gb,
         gc,
-        kb,
-        ks,
-        kr,
         bar_arg,
-        slab_arg_g,
-        slab_arg_m,
-        root_arg_g,
-        root_arg_m,
-        root_vals,
+        slab_arg,
+        root_arg,
+        root_value: root_buf[ga],
     })
 }
 
 /// Solves positional DP for a given cut order.
 ///
 /// Reports [`PlanProgress::Dp`] once per starting plane in the bar and slab
-/// fills and once per plane in the root fill, so a cancel is seen within a
-/// fraction of the order's work.
+/// fills, so a cancel is seen within a fraction of the order's work.
 ///
 /// # Returns
 ///
@@ -523,7 +278,7 @@ pub fn plan_shaped_for_order(
             of: CutOrder::ALL.len(),
         })
     };
-    let dp = solve_order(grid, table, order, settings.count_usize(), &mut tick)?;
+    let dp = solve_order(grid, table, order, &mut tick)?;
     Some(dp.candidates(grid, table, ctx, settings, pool))
 }
 
@@ -645,4 +400,60 @@ pub fn plan_shaped_alternatives(
         total: ALTERNATIVE_ROUNDS,
     };
     on_progress(done).then_some(groups)
+}
+
+/// The design-cap chain of the shaped planner: the twin of the block planner's
+/// `plan_design_cap` over the clipped tables.
+///
+/// While the best layout (`params.best` at the start) uses more than
+/// [`PlanSettings::max_designs`] designs, the one contributing the least volume is dropped,
+/// the clipped table is rebuilt over the designs the layout still uses (the classification
+/// is reused, see `alternative_table`) and the six orders are solved again. One
+/// [`LayoutGroup`] per round; nothing runs when the best layout is already within the cap.
+/// Reports [`PlanProgress::Alternatives`] at the start of every round, with the round's own
+/// `Grid` and `Dp` events between; `None` when `on_progress` cancels.
+pub fn plan_shaped_design_cap(
+    params: &ShapedAltParams<'_>,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<Vec<LayoutGroup>> {
+    let max_designs = params.settings.max_designs_usize();
+    let total = params.best.design_count().saturating_sub(max_designs);
+    let mut current = params.best.clone();
+    let mut groups = Vec::new();
+    let mut round = 0;
+    while current.design_count() > max_designs {
+        if !on_progress(PlanProgress::Alternatives {
+            done: round.min(total),
+            total,
+        }) {
+            return None;
+        }
+        round += 1;
+        let Some(drop) = least_contributing_design(&current) else {
+            break;
+        };
+        let pool = pool_without(params.all_designs, &current, drop);
+        if pool.is_empty() {
+            break;
+        }
+        let table = alternative_table(params, &pool, on_progress)?;
+        let mut layouts = Vec::new();
+        for order in CutOrder::ALL {
+            layouts.extend(plan_shaped_for_order(
+                params.grid,
+                &table,
+                params.ctx,
+                &pool,
+                order,
+                params.settings,
+                on_progress,
+            )?);
+        }
+        let Some(next) = best_layout(&layouts).cloned() else {
+            break;
+        };
+        current = next;
+        groups.push(LayoutGroup { pool, layouts });
+    }
+    Some(groups)
 }

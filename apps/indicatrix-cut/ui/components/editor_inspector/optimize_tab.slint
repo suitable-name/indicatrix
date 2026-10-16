@@ -181,8 +181,9 @@ export component OptimizeTab inherits VerticalLayout {
         EditorModel.optimize_only_selected,
         OptimizeModel.starts_text);
 
-    // Latches "Cancel" the moment it is clicked, like the command bar's button, so a second
-    // click cannot re-fire the cancel while the search finishes its current evaluation.
+    // Latches "Cancel" the moment it is clicked, so a second click cannot re-fire the cancel
+    // while the search finishes its current evaluation. This tab is the one home of Optimize
+    // (the command bar has no Optimize or Cancel Optimize button).
     property <bool> cancel_requested: false;
     property <bool> running_mirror: EditorModel.optimize_running;
     changed running_mirror => {

@@ -474,11 +474,12 @@ pub struct AppSettings {
     pub library_panel_collapsed: bool,
     /// The solid preview's Solid/Path-traced/Both view-mode selector -- see
     /// [`DEFAULT_SOLID_VIEW_MODE`]. Still saved when the user changes it, but not
-    /// applied at startup: the app always opens on the Edit tab in Solid mode.
+    /// applied at startup: the app always opens on the Live Render tab in Solid mode.
     #[serde(default)]
     pub solid_view_mode: u8,
     /// The Live Render tab's Solid/Path-traced view-mode selector -- see
-    /// [`DEFAULT_LIVE_VIEW_MODE`].
+    /// [`DEFAULT_LIVE_VIEW_MODE`]. Still saved when the user changes it, but not applied at
+    /// startup: the Live Render tab always opens in Solid mode.
     #[serde(default = "default_live_view_mode")]
     pub live_view_mode: u8,
     /// The "Edit" sub-tab's auto-solve budget (milliseconds) -- see

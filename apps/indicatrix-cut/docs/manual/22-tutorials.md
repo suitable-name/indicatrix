@@ -399,8 +399,8 @@ they are about.
 
 1. **Welcome to Indicatrix Cut.** What the program is for.
 2. **The library.** The list on the left, its search box and Load Selected.
-3. **The command bar.** New Design..., Load Selected, Undo and Redo, Save and Solve.
-   The Solve button is outlined.
+3. **The command bar.** Undo and Redo, Solve, and the File menu with New Design...,
+   Open, Load Selected, Save and the exports. The Solve button is outlined.
 4. **The tier table.** A design is a list of tiers; each row is one. The table is
    outlined.
 5. **The inspector.** The panel that edits the selected tier. Its Tier tab is outlined.
@@ -439,8 +439,8 @@ browser) and **Reset Tutorial Progress** (in Preferences) clear the Done marks.
 - **Outlines.** A step can outline the New Design dialog, the inspector's Tier and
   Preform tabs, the Design Settings panel, the Solve button, the tier table, the Solid
   viewport and its view-mode, Snap, Slice and Cut controls, the Live Render tab and
-  Lighting drop-down, the Cut Mode, Export .asc, Export..., Save, Open and Load Selected
-  buttons, the library's search box, filters and Import button, and the Simple | Advanced
+  Lighting drop-down, the Cut Mode button, the File menu (Export .asc, the other exports, Save, Open and
+  Load Selected), the library's search box, filters and Import button, and the Simple | Advanced
   switch. The solving lessons also outline the Auto-solve list, the verdict badge, the
   Deep Solve, Retarget, Snapshot and Compare buttons, and the Optimize and History tabs.
   A step about anything else, such as a menu or a dialog, names the control in its text

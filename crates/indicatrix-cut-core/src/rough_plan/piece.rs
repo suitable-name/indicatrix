@@ -155,12 +155,6 @@ impl Grid {
         self.cells
     }
 
-    /// The stone-count cap the grid was sized for.
-    #[must_use]
-    pub fn count(&self) -> usize {
-        self.settings.count_usize()
-    }
-
     /// Length in mm of a run of `g` units along `axis`.
     pub(crate) fn run_mm(&self, axis: usize, g: usize) -> f64 {
         (g as f64).mul_add(self.unit[axis], -self.settings.kerf_mm)
@@ -178,15 +172,6 @@ pub fn usable_rough(rough: &RoughBlock, skin_mm: f64) -> [f64; 3] {
     rough.sizes().map(|r| 2.0f64.mul_add(-skin_mm, r).max(0.0))
 }
 
-/// The smallest integer `c` with `c^3 >= k`.
-const fn ceil_cube_root(k: usize) -> usize {
-    let mut c = 1;
-    while c * c * c < k {
-        c += 1;
-    }
-    c
-}
-
 /// A deterministic cube root by bisection (no libm).
 fn cube_root(x: f64) -> f64 {
     let (mut lo, mut hi) = (0.0f64, x.max(1.0));
@@ -201,29 +186,33 @@ fn cube_root(x: f64) -> f64 {
     lo
 }
 
-/// The DP operation estimate summed over the six cut orders.
-fn op_estimate(cells: [usize; 3], k: usize) -> f64 {
-    let kf = k as f64;
+/// Units per axis of a rough with the proportions of a cube, before the grid is scaled to
+/// the rough's own proportions: the resolution the planner used for its largest stone count
+/// (99) when the count was still capped.
+const UNITS_PER_AXIS: f64 = 30.0;
+
+/// The DP operation estimate summed over the six cut orders: per order the bars
+/// (`a * b * c^2`), the slabs (`a * b^2`) and the root (`a^2`).
+fn op_estimate(cells: [usize; 3]) -> f64 {
     let mut total = 0.0;
     for order in super::types::CutOrder::ALL {
         let [a, b, c] = order.axes().map(|i| cells[i] as f64);
-        total += (a * b * c * c).mul_add(kf, (a * b * b).mul_add(kf * kf, a * a * kf * kf));
+        total += (a * b * c).mul_add(c, (a * b).mul_add(b, a * a));
     }
     total
 }
 
-/// Choose the unit grid: about six units per expected piece, `8..=48` per
-/// axis, shrunk until the DP operation estimate is at most `3e9`.
+/// Choose the unit grid: [`UNITS_PER_AXIS`] units scaled to the rough's proportions,
+/// `8..=48` per axis, shrunk until the DP operation estimate is at most `3e9`.
 ///
 /// The shrink works in 5 % steps on all axes together and may take an axis
-/// below the 8-unit floor (never below 2); e.g. a 100 x 100 x 2 mm rough at
-/// K = 99 goes from `[48, 48, 8]` to `[45, 45, 7]`.
+/// below the 8-unit floor (never below 2). Without a stone dimension the DP is cheap, so
+/// the shrink only matters for the shaped planner's own caps (`shaped::grid`).
 #[must_use]
 pub fn choose_grid(rough: &RoughBlock, settings: &PlanSettings) -> Grid {
-    let k = settings.count_usize();
     let usable = usable_rough(rough, settings.skin_mm);
     let geomean = cube_root(usable[0] * usable[1] * usable[2]);
-    let per_axis = (6 * ceil_cube_root(k)) as f64;
+    let per_axis = UNITS_PER_AXIS;
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -236,7 +225,7 @@ pub fn choose_grid(rough: &RoughBlock, settings: &PlanSettings) -> Grid {
     };
     loop {
         let next = cells.map(|g| (g * 19 / 20).max(2));
-        if op_estimate(cells, k) <= OP_CAP || next == cells {
+        if op_estimate(cells) <= OP_CAP || next == cells {
             break;
         }
         cells = next;

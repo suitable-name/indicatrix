@@ -12,33 +12,34 @@ has no "Edit" sub-tab next to "Live Render," it was built without it.
 
 ## The Editor's Toolbar
 
-The command bar is two rows of buttons. Each row ends in empty space rather
-than spreading its buttons out, and a single hint line underneath the two
-rows shows an explanation of whatever button you are currently hovering. Tab
-reaches every button and Space or Enter presses it, and a screen reader hears the
-same hint as the button's description. The **?** at the right end of the hint line
-opens this section of the manual:
+The command bar is one compact row of grouped buttons; in a narrower dock it
+wraps into two rows. Each row ends in empty space rather than spreading its
+buttons out, and a single hint line underneath shows an explanation of
+whatever button you are currently hovering. Tab reaches every button and Space
+or Enter presses it, and a screen reader hears the same hint as the button's
+description. The **?** at the right end of the hint line opens this section of
+the manual. The groups, left to right:
 
-- **Row 1, left** — New Design..., Load Selected, Undo, Redo.
-- **Row 1, right** — Solve, and the auto-solve delay control next to it —
-  labelled "Auto-Solve:" (Off / 150 ms / 300 ms / 1 s / 3 s — Chapter 5).
-- **Row 2, left** — a Tier group (**+ Add Tier**, **Duplicate**, **Delete**,
-  and an up/down pair to reorder), acting on whichever tier is currently
-  selected in the list below — the same actions the tier list's own
-  per-row buttons and its "+ Add Tier" header button already offer
-  (Chapter 4), collected here too since they are easy to miss on first use.
-  The Advanced interface adds **+ Concave** to the group.
-- **Row 2, middle** — Deep Solve, Optimize, and **Retarget...** (an automated
-  proposal for adapting a design to a different material — Chapter 6). Deep
-  Solve and Optimize grey out when there is nothing for them to do, and
-  hovering a greyed-out button shows the specific reason right on the
-  button rather than somewhere else you would have to go looking. The
-  Advanced interface (Chapter 17) adds **Snapshot**, **Compare** and **Tilt
-  Curves** here.
-- **Row 2, right** — Export Edited .asc, Save, and Open. The
-  File menu's version of the first uses the identical label; both trigger
-  the same export. See Chapter 11 for what each of the three actually
-  writes.
+- **Undo, Redo.**
+- **Solve, Auto-Solve, Deep Solve** — Solve, the auto-solve delay control next
+  to it, labelled "Auto-Solve:" (Off / 150 ms / 300 ms / 1 s / 3 s — Chapter
+  5), and Deep Solve (Advanced interface). Deep Solve greys out when there is
+  nothing for it to do, and hovering a greyed-out button shows the specific
+  reason right on the button.
+- **Retarget..., Tilt Curves, Cut Mode** — Retarget is an automated proposal
+  for adapting a design to a different material (Chapter 6).
+- **Snapshot, Compare** (Advanced interface, Chapter 17).
+- **File** — a menu with New Design..., Open, Load Selected, Save, Export .asc,
+  Export Cutting Sheet (HTML), Export Diagram (PNG) and, in the Advanced
+  interface, Export as Gem Cut Studio (.gcs). When the design will ask before it
+  saves, **Will Ask Before Saving** sits beside the button. See Chapter 11 for
+  what each item actually writes.
+
+The tier actions are not on the command bar. **+ Add Tier** and **+ Add
+Concave Tier** are in the tier list's header, each row has its own Move,
+Duplicate and Delete buttons (Ctrl+D and Delete work on the selected row), and
+**Optimize** has its own Optimize and Cancel buttons on the inspector's Optimize
+tab (Chapter 4).
 
 Undo and Redo say what they are about to do, rather than a bare "Undo"
 and "Redo" — hover either button, or open the Edit menu, and you will see
@@ -75,7 +76,7 @@ or an Apply Optimize Result.
 
 1. Select a design in the catalogue panel (Chapter 2).
 2. Open the 3D tab's **Edit** sub-tab.
-3. Click **Load Selected**.
+3. Choose **File**, then **Load Selected**, on the command bar.
 
 What happens next depends on the design and where it lives:
 
@@ -110,7 +111,7 @@ by the time you see it.
 
 ## Starting a New Design Instead
 
-Click **New Design...** (or File → New) to open the New Design dialog rather
+Choose **File**, then **New Design...** on the command bar (or File → New at the top of the window) to open the New Design dialog rather
 than loading an existing design: pick the preform shape and dimensions, the
 index gear, symmetry order, mirror, and a starting material, then click
 **Create**. Every one of these stays editable afterward — gear, symmetry,

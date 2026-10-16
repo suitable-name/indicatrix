@@ -9,6 +9,7 @@ use super::{
     tests::{
         all_ranges, assert_carats, assert_pose_right_handed, assert_stone_inside, piece_total,
     },
+    tests_dp::grid_with_cells,
     tree::{StoneFitter, layout_from_tree_shaped},
     uniform::shaped_uniform_layouts,
 };
@@ -22,6 +23,7 @@ use crate::{
         rank::{best_layout, most_used_design},
         tests::{Lcg, box_design, random_designs, settings_with},
         tree::{Bar, Leaf, Slab, Tree, assignment_axes, orient_of_pose},
+        uniform::UNIFORM_MAX_STONES,
     },
     yield_metrics::carat_weight,
 };
@@ -133,7 +135,9 @@ fn alternative_rounds_are_scored_with_their_own_pool() {
         }],
     );
     let ctx = ShapedCtx::new(&model, &settings).expect("ctx");
-    let grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, &settings);
+    // A deliberately coarse grid: the chosen resolution is far too fine for a test that
+    // builds several whole clipped tables.
+    let grid = grid_with_cells(&ctx, &settings, [6, 6, 6]);
     let table = clipped_for(&ctx, &grid, &front, &settings);
 
     let mut mixed = Vec::new();
@@ -276,7 +280,8 @@ fn shaped_uniform_layouts_keep_the_extent_and_match_stones_to_pieces() {
         assert_eq!(layout.cut_order, CutOrder::Xyz);
         assert_eq!(layout.stones.len(), piece_total(layout));
         assert_carats(layout, &settings);
-        assert!(layout.stone_count() <= 8);
+        assert!(layout.stone_count() <= UNIFORM_MAX_STONES);
+        assert_eq!(layout.design_count(), 1, "a uniform layout is one design");
         // Merged cells keep their material: the saw plan still covers the whole box.
         let slabs: Vec<f64> = layout
             .cut_plan
@@ -329,8 +334,8 @@ fn shaped_plans_keep_stones_and_pieces_in_step_and_poses_right_handed() {
             2,
         ),
     ];
-    for (model, count) in &cases {
-        let settings = settings_with(*count, 0.3, 0.2, 0.8);
+    for (model, max_designs) in &cases {
+        let settings = settings_with(*max_designs, 0.3, 0.2, 0.8);
         let hulls = Vec::new();
         let input = PlanInput {
             model,
@@ -449,7 +454,7 @@ fn the_dp_ticks_inside_the_bar_and_slab_fills_and_can_be_cancelled_there() {
         vec![],
     );
     let ctx = ShapedCtx::new(&model, &settings).expect("ctx");
-    let grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, &settings);
+    let grid = grid_with_cells(&ctx, &settings, [6, 6, 6]);
     let table = clipped_for(&ctx, &grid, &front, &settings);
     let ga = grid.cells[0];
     let run = |on_progress: &mut dyn FnMut(PlanProgress) -> bool| {
@@ -464,8 +469,8 @@ fn the_dp_ticks_inside_the_bar_and_slab_fills_and_can_be_cancelled_there() {
         )
     };
 
-    // One tick per starting plane in the bar fill, again in the slab fill, and
-    // one per plane in the root fill.
+    // One tick per starting plane in the bar fill and again in the slab fill (the root fill
+    // is one short split over the a axis and does not tick).
     let mut ticks = 0;
     let done = run(&mut |event| {
         if matches!(event, PlanProgress::Dp { .. }) {
@@ -474,7 +479,7 @@ fn the_dp_ticks_inside_the_bar_and_slab_fills_and_can_be_cancelled_there() {
         true
     });
     assert!(done.is_some());
-    assert_eq!(ticks, 3 * ga);
+    assert_eq!(ticks, 2 * ga);
 
     let mut seen = 0;
     assert!(

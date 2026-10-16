@@ -98,6 +98,7 @@ divan = { workspace = true }
 [features]
 default = []
 gpu = ["dep:wgpu", "dep:pollster"]
+zoning = []
 # Loads Radiance `.hdr` equirectangular environment maps for
 # `renderer::env_map::EnvironmentMap`, and turns on `render_setup::png_encode`
 # (in-memory PNG+ICC encoding for wide-gamut export). Off by default so the base
@@ -120,6 +121,10 @@ name = "gpu_equivalence_harness"
 # --workspace --all-targets` / `cargo test` without `--features gpu` must skip
 # building it entirely, not merely skip running it, since `renderer::gpu` (which it
 # imports) doesn't exist without the feature either.
+required-features = ["gpu"]
+
+[[example]]
+name = "gpu_golden_capture"
 required-features = ["gpu"]
 
 [[bench]]

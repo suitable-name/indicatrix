@@ -35,6 +35,18 @@ pub const EXPORT_MIN_SPP: u32 = 16;
 /// Highest export target.
 pub const EXPORT_MAX_SPP: u32 = 4096;
 
+/// Target duration for one GPU pass in milliseconds.
+pub const EW_GPU_TARGET_PASS_MS: f64 = 250.0;
+
+/// Who traces a pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassOwner {
+    /// Interleaved partitions traced by CPU workers.
+    Cpu,
+    /// Traced whole over the full frame by the GPU worker.
+    Gpu,
+}
+
 /// Clamps a live-view target to `[LIVE_MIN_SPP, LIVE_MAX_SPP]`.
 #[must_use]
 pub fn clamp_live_spp(spp: u32) -> u32 {
@@ -83,10 +95,14 @@ pub struct ChunkPlanner {
     target_spp: u32,
     /// `(sample_offset, spp)` of every pass defined so far.
     passes: Vec<(u32, u32)>,
+    /// Owner of each pass in `passes`.
+    pass_owners: Vec<PassOwner>,
     /// Per partition: the next pass index it will be given.
     next_pass: Vec<u32>,
     /// Per partition: measured milliseconds per pixel-sample.
     rates: Vec<Option<f64>>,
+    /// Measured GPU rate in samples per millisecond (across all pixels).
+    gpu_rate: Option<f64>,
 }
 
 impl ChunkPlanner {
@@ -100,8 +116,10 @@ impl ChunkPlanner {
             pixel_count,
             target_spp,
             passes: Vec::new(),
+            pass_owners: Vec::new(),
             next_pass: vec![0; partitions as usize],
             rates: vec![None; partitions as usize],
+            gpu_rate: None,
         }
     }
 
@@ -120,6 +138,7 @@ impl ChunkPlanner {
         if planner.partitions == previous.partitions && previous.pixel_count > 0 {
             planner.rates.clone_from(&previous.rates);
         }
+        planner.gpu_rate = previous.gpu_rate;
         planner
     }
 
@@ -167,21 +186,30 @@ impl ChunkPlanner {
     /// [`LOOKAHEAD_PASSES`] ahead of `completed_passes`) or there is nothing left to plan.
     pub fn next_chunk(&mut self, partition: u32, completed_passes: u32) -> Option<ChunkAssignment> {
         let slot = partition as usize;
-        let pass_index = *self.next_pass.get(slot)?;
-        if pass_index >= completed_passes + LOOKAHEAD_PASSES {
-            return None;
-        }
-        if pass_index as usize >= self.passes.len() {
-            let remaining = self.target_spp.saturating_sub(self.planned_spp());
-            if remaining == 0 {
+        let mut pass_index = *self.next_pass.get(slot)?;
+        loop {
+            if pass_index >= completed_passes + LOOKAHEAD_PASSES {
                 return None;
             }
-            let offset = self.planned_spp();
-            let spp = self.next_pass_spp().min(remaining);
-            self.passes.push((offset, spp));
+            if (pass_index as usize) < self.passes.len() {
+                if self.pass_owners[pass_index as usize] == PassOwner::Gpu {
+                    pass_index += 1;
+                    continue;
+                }
+            } else {
+                let remaining = self.target_spp.saturating_sub(self.planned_spp());
+                if remaining == 0 {
+                    return None;
+                }
+                let offset = self.planned_spp();
+                let spp = self.next_pass_spp().min(remaining);
+                self.passes.push((offset, spp));
+                self.pass_owners.push(PassOwner::Cpu);
+            }
+            break;
         }
         let (sample_offset, spp) = self.passes[pass_index as usize];
-        self.next_pass[slot] += 1;
+        self.next_pass[slot] = pass_index + 1;
         Some(ChunkAssignment {
             pass_index,
             first_pixel: partition,
@@ -189,6 +217,106 @@ impl ChunkPlanner {
             sample_offset,
             spp,
         })
+    }
+
+    /// Takes the next unassigned pass and marks it [`PassOwner::Gpu`].
+    ///
+    /// Returns `(pass_id, sample_offset, spp)`.
+    pub fn next_gpu_pass(&mut self) -> Option<(u64, u32, u32)> {
+        for i in 0..self.passes.len() {
+            if self.pass_owners[i] == PassOwner::Cpu {
+                let unassigned = self.next_pass.iter().all(|&next| (next as usize) <= i);
+                if unassigned {
+                    self.pass_owners[i] = PassOwner::Gpu;
+                    let (offset, spp) = self.passes[i];
+                    return Some((i as u64, offset, spp));
+                }
+            }
+        }
+        let remaining = self.target_spp.saturating_sub(self.planned_spp());
+        if remaining == 0 {
+            return None;
+        }
+        let offset = self.planned_spp();
+        let spp = self.next_gpu_pass_spp().min(remaining);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a plan holds a few dozen passes, far below u32::MAX"
+        )]
+        let pass_index = self.passes.len() as u32;
+        self.passes.push((offset, spp));
+        self.pass_owners.push(PassOwner::Gpu);
+        Some((pass_index as u64, offset, spp))
+    }
+
+    /// Turns an unfinished GPU pass back into a CPU pass, so its partitions get scheduled.
+    pub fn return_gpu_pass(&mut self, pass_id: u64) {
+        let Ok(pass_index) = usize::try_from(pass_id) else {
+            return;
+        };
+        if pass_index < self.pass_owners.len() && self.pass_owners[pass_index] == PassOwner::Gpu {
+            self.pass_owners[pass_index] = PassOwner::Cpu;
+            for next in &mut self.next_pass {
+                if *next as usize > pass_index {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "pass_index was verified from usize below pass_owners.len()"
+                    )]
+                    {
+                        *next = pass_index as u32;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Updates the exponential moving average of the GPU rate.
+    ///
+    /// `samples` is the total samples traced across the frame, `elapsed_ms` is duration in milliseconds.
+    pub fn record_gpu_rate(&mut self, samples: u64, elapsed_ms: f64) {
+        if samples == 0 || !elapsed_ms.is_finite() || elapsed_ms <= 0.0 {
+            return;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "samples fit comfortably within f64 precision for rate calculation"
+        )]
+        let rate_sample = samples as f64 / elapsed_ms;
+        self.gpu_rate = Some(self.gpu_rate.map_or(rate_sample, |old| {
+            RATE_SMOOTHING.mul_add(rate_sample - old, old)
+        }));
+    }
+
+    /// Sizing for the next new GPU pass.
+    fn next_gpu_pass_spp(&self) -> u32 {
+        if self.passes.is_empty() {
+            return 1;
+        }
+        let Some(gpu_rate) = self.gpu_rate else {
+            return 1;
+        };
+        let pixels = f64::from(self.pixel_count.max(1));
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the value is rounded and clamped to 1.0..=MAX_CHUNK_SPP before the cast"
+        )]
+        let sized = (EW_GPU_TARGET_PASS_MS * gpu_rate / pixels)
+            .round()
+            .clamp(1.0, f64::from(MAX_CHUNK_SPP)) as u32;
+        sized
+    }
+
+    /// The owner of pass `pass_index`.
+    #[must_use]
+    pub fn pass_owner(&self, pass_index: u32) -> Option<PassOwner> {
+        self.pass_owners.get(pass_index as usize).copied()
+    }
+
+    /// The measured GPU rate, samples per millisecond.
+    #[must_use]
+    pub const fn gpu_rate(&self) -> Option<f64> {
+        self.gpu_rate
     }
 
     /// Takes `assignment` back: its chunk could not be delivered, so `partition` is

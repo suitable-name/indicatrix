@@ -578,9 +578,8 @@ export component MainWindow inherits Window {
             // down, kept in lock-step by hand since a `MenuItem` has no accelerator
             // property of its own to bind.
             MenuItem {
-                // Matches the command bar's own "New Design..." label -- both
-                // start a brand-new design (discarding the current one),
-                // unlike the inspector's unrelated "New Tier" button.
+                // Matches the command bar's File menu entry of the same label -- both
+                // start a brand-new design (discarding the current one).
                 title: "New Design... (Ctrl+N)";
                 enabled: EditorModel.enabled && GuideModel.allows_new_design();
                 activated => { EditorModel.new_dialog_open = true; }
@@ -614,7 +613,7 @@ export component MainWindow inherits Window {
                 activated => { EditorModel.export_asc(); }
             }
             // Experimental: the `.gcs` writer follows the published Gem Cut Studio
-            // 1.1 file description; the command bar's "Export..." entry carries
+            // 1.1 file description; the command bar's File menu entry carries
             // the tooltip saying so (a `MenuItem` has no tooltip).
             // Advanced: the Simple interface leaves it out, as it does the command bar's entry.
             if GuideModel.shows_advanced(): MenuItem {
@@ -628,9 +627,8 @@ export component MainWindow inherits Window {
                 activated => { RenderJobsModel.panel_open = true; }
             }
             // "Export Cutting Sheet (HTML)..."/"Export Diagram (PNG)..." live on
-            // the command bar's own "Export..." split button
-            // (`ui/components/export_split_button.slint`, mounted in
-            // `editor_command_bar.slint` next to Save), not on this File
+            // the command bar's own File menu
+            // (`ui/components/editor_command_bar/file_menu.slint`), not on this File
             // menu -- same `EditorModel.export_cutting_sheet()`/`export_diagram()`
             // callbacks, just one menu instead of two to know to open.
         }

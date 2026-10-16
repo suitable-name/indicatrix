@@ -11,6 +11,10 @@ use indicatrix_editor::material::gear_index_from_teeth;
 use slint::{ComponentHandle, Model};
 use slint_harness::screenshot::Shot;
 
+/// Inspector height of the Edit-view shots, in logical pixels. The first-run default (380 px)
+/// leaves the tier table at its minimum, a header with no rows, at the shots' window height;
+/// this split shows table rows and the top of the tier form together.
+const SHOT_INSPECTOR_HEIGHT: f32 = 250.0;
 /// The gear the `SplitChecker` is changed to.
 const NEW_TEETH: i32 = 64;
 /// How far the Optimize shot scrolls the inspector down to the candidate list, in logical pixels.
@@ -31,6 +35,10 @@ pub fn cad(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
     sc.open_in_editor(FVS)?;
     sc.set_view_mode(0);
     sc.set_inspector_tab(0);
+    sc.ui()
+        .global::<EditorModel>()
+        .set_inspector_height(SHOT_INSPECTOR_HEIGHT);
+    pump(300);
     sc.select_tier(CROWN_TIER)?;
     sc.snap_main()
 }
@@ -43,6 +51,10 @@ pub fn cad(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
 pub fn cad_solved_diagram(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
     sc.open_in_editor(FVS)?;
     sc.set_inspector_tab(0);
+    sc.ui()
+        .global::<EditorModel>()
+        .set_inspector_height(SHOT_INSPECTOR_HEIGHT);
+    pump(300);
     sc.select_tier(CROWN_TIER)?;
     sc.set_view_mode(3);
     pump(1000);

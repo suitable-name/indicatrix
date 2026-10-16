@@ -19,7 +19,7 @@ use crate::guide::{
 const EDIT: &[Group] = &[Group::TierForm, Group::TierTable, Group::History];
 
 /// File operations, the Advanced controls and Undo: the Gem Cut Studio export is an advanced
-/// export, which the Simple interface leaves out of the Export... menu unless a step unlocks it.
+/// export, which the Simple interface leaves out of the File menu unless a step unlocks it.
 const GEM_CUT_STUDIO: &[Group] = &[Group::FileOps, Group::Advanced, Group::History];
 
 /// The lessons of this file, in browser order.
@@ -103,7 +103,7 @@ fn export_asc() -> Guide {
             "An .asc file is the long-standing plain-text schedule: every facet's angle, index and meet instruction.",
         )
         .actions([
-            "Export .asc in the command bar writes the design as you edited it in this tab, wherever you choose.",
+            "Export .asc in the command bar's File menu writes the design as you edited it in this tab, wherever you choose.",
             "It does not add anything to your library. Save writes the whole .isdd design file instead.",
         ])
         .why("Use .asc to hand a schedule to another cutter or program. Use Save to keep working on the design later.")
@@ -116,7 +116,7 @@ fn export_asc() -> Guide {
             "Exporting re-solves every tier's depth from the design as it is now.",
         )
         .actions([
-            "Click Export .asc in the command bar (or choose File, Export Edited .asc).",
+            "Choose File > Export .asc in the command bar (or File, Export Edited .asc in the menu at the top of the window).",
             "In the Save dialog choose a folder and a name, then click Save.",
         ])
         .check("A toast says Exported edited schedule to the path you chose.")
@@ -163,10 +163,10 @@ fn export_gcs() -> Guide {
     .step(
         GuideStep::new(
             "Export it",
-            "The export sits on the command bar's Export... menu and in the File menu.",
+            "The export sits in the command bar's File menu and in the File menu at the top of the window.",
         )
         .actions([
-            "Click Export... in the command bar, then Export as Gem Cut Studio (.gcs)...",
+            "Click File in the command bar, then Export as Gem Cut Studio (.gcs)...",
             "In the Save dialog choose a folder and a name, then click Save.",
         ])
         .check("A toast names the file and reminds you to check it in Gem Cut Studio before cutting from it.")
@@ -211,10 +211,10 @@ fn cutting_sheet() -> Guide {
     .step(
         GuideStep::new(
             "Export it",
-            "The sheet is on the Export... menu of the command bar.",
+            "The sheet is in the File menu of the command bar.",
         )
         .actions([
-            "Click Export... in the command bar, then Export Cutting Sheet (HTML)...",
+            "Click File in the command bar, then Export Cutting Sheet (HTML)...",
             "In the Save dialog choose a folder and a name, then click Save.",
         ])
         .check("A toast says Wrote cutting sheet to the path you chose.")
@@ -256,10 +256,10 @@ fn diagram_png() -> Guide {
     .step(
         GuideStep::new(
             "Export it",
-            "The diagram is on the Export... menu of the command bar.",
+            "The diagram is in the File menu of the command bar.",
         )
         .actions([
-            "Click Export... in the command bar, then Export Diagram (PNG)...",
+            "Click File in the command bar, then Export Diagram (PNG)...",
             "In the Save dialog choose a folder and a name, then click Save.",
         ])
         .check("A toast says Wrote diagram to the path you chose.")
@@ -306,7 +306,7 @@ fn save() -> Guide {
             "Save writes the whole design into one .isdd file.",
         )
         .actions([
-            "Click Save in the command bar (or press Ctrl+S).",
+            "Choose File > Save in the command bar (or press Ctrl+S).",
             "The first time, a Save As dialog offers a name; choose a folder and click Save.",
         ])
         .check("A toast names the file, and the UNSAVED badge and the asterisk go away.")
@@ -355,7 +355,7 @@ fn open() -> Guide {
             "There has to be a file to open.",
         )
         .actions([
-            "Click Save in the command bar.",
+            "Choose File > Save in the command bar.",
             "Choose a folder, keep the name offered and click Save.",
         ])
         .check("A toast names the file you saved.")
@@ -369,7 +369,7 @@ fn open() -> Guide {
             "Open replaces the design in the editor with the one in the file.",
         )
         .actions([
-            "Click Open in the command bar (or press Ctrl+O).",
+            "Choose File > Open in the command bar (or press Ctrl+O).",
             "Choose the .isdd file you just saved.",
         ])
         .check("The window title names the file, and the design is as you saved it.")

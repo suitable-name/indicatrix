@@ -309,12 +309,11 @@ fn apply_loaded_ui_mirrors(
     // startup. 0 is also the property's default, so this normally fires no
     // `changed` handler at all.
     ui.global::<SolidPreviewModel>().set_view_mode(0);
-    // Restore the Live Render tab's own remembered view mode (0 Solid / 1
-    // Path-traced) -- see `AppSettings::live_view_mode`'s own doc comment. Same
-    // harmless-early-`changed`-fire caveat as `solid_view_mode` above: nothing is
-    // connected to `live_view_mode_changed` yet at this point in startup.
-    ui.global::<ViewportModel>()
-        .set_live_view_mode(i32::from(s.live_view_mode));
+    // The Live Render tab, where the app opens, always starts in Solid mode (0) too,
+    // whatever `AppSettings::live_view_mode` remembers: the selected design shows as the
+    // solid render first. The stored value is left alone like `solid_view_mode` above, and
+    // nothing is connected to `live_view_mode_changed` yet at this point in startup.
+    ui.global::<ViewportModel>().set_live_view_mode(0);
     // The "Edit" sub-tab's auto-solve budget (`gui::editor::auto_solve`) -- same
     // harmless-early-`changed`-fire caveat as `editor_solid_view_mode` above applies
     // here too.

@@ -98,7 +98,31 @@ fn open_material_editor(sc: &mut Sc<'_, '_>, material: &str) -> Result<(), Strin
     }
     pump(600);
     viewport.set_material_editor_open(true);
-    wait_component(sc, "MaterialEditorDialog")
+    wait_component(sc, "MaterialEditorDialog")?;
+    // The library row's planes load in the background and, when they land, put the design's
+    // own material back on the viewport, which can be after the pick above (the start-up Live
+    // Render view keeps the event loop busy). Keep re-picking until the choice holds for a
+    // while; the selection change refills the dialog's zone list.
+    let mut held = 0;
+    let _ = Sc::wait(10, || {
+        pump(100);
+        if viewport.get_traced_material_name().as_str() == name {
+            held += 1;
+        } else {
+            held = 0;
+            viewport.invoke_library_material_chosen(name.as_str().into());
+            if let Some(index) = index {
+                viewport.set_selected_material_index(index);
+            }
+        }
+        held >= 15
+    });
+    pump(300);
+    if viewport.get_traced_material_name().as_str() == name {
+        Ok(())
+    } else {
+        Err(format!("the viewport did not keep the material {name:?}"))
+    }
 }
 
 /// `new_design_dialog.png`: the New Design dialog over the Edit view.

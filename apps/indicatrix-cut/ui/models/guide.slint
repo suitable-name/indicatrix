@@ -22,12 +22,12 @@ import { PreferencesModel } from "preferences.slint";
 // `global_shortcuts` checks the same helper), so the step's own action is the only
 // thing left to click. Closing the guide lifts every lock.
 export struct GuideAllow {
-    // New Design... (command bar, File menu, Ctrl+N, the empty-state card).
+    // New Design... (command bar's File menu, File menu, Ctrl+N, the empty-state card).
     new_design: bool,
     // "+ Add Tier", the inspector's Tier tab pill, New Tier, Add/Save Tier.
     tier_form: bool,
     // The tier table's toolbar (Adopt all, Select, Steps / Mirror, quick add, batch
-    // actions) and the command bar's Duplicate/Delete/Move buttons.
+    // actions) and each tier row's Duplicate/Delete/Move buttons.
     tier_table: bool,
     // Design Settings: material, gear, symmetry, details and printed proportions.
     design_settings: bool,

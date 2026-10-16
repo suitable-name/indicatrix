@@ -52,6 +52,15 @@ pub fn show_live_render_view(ui: &MainWindow) {
     show_view(ui, VIEW_LIVE);
 }
 
+/// Shows the Live Render view of the 3D tab and fires the view pill's callback even when
+/// the view is already the current one: the start-up view, where Live Render is the
+/// property's default and the handlers must still hear it once.
+pub fn enter_live_render_view(ui: &MainWindow) {
+    show_tab(ui, TAB_3D);
+    ui.set_render_view_tab(VIEW_LIVE);
+    ui.invoke_render_view_tab_changed(VIEW_LIVE);
+}
+
 /// Opens the inspector's Tier tab ready to author a new tier.
 pub fn add_tier(ui: &MainWindow) {
     show_edit_view(ui);

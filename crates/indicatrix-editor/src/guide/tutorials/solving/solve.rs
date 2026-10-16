@@ -489,7 +489,7 @@ fn verdict_fixes() -> Guide {
         )
         .actions([
             "Click the Table row in the tier table.",
-            "Click Delete on the command bar.",
+            "Click the trash button at the end of the Table row (or press Delete).",
         ])
         .check("the Table row is gone from the tier table.")
         .why("You can undo it. The stone still closes: without a flat top the crown mains meet in a point.")

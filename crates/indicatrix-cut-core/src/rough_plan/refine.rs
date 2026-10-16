@@ -19,7 +19,7 @@ use super::{
     FINAL_TOP, PASSES, REFINE_TOP, REL_TOL,
     pareto::sanitize,
     piece::{ASSIGNMENTS, Norm, best_pick, stone_value},
-    rank::{as_layout, flatten_groups, rank_indices_min, take_indices},
+    rank::{as_layout, flatten_groups, rank_indices_capped, take_indices},
     shaped::parallel::run_lanes_dynamic,
     tree::{Bar, Leaf, Slab, Tree, layout_from_tree, to_canonical},
     types::{CandidateDesign, LayoutGroup, PlanProgress, PlanSettings, RoughBlock, RoughLayout},
@@ -422,6 +422,27 @@ pub fn own_pool(pool: &[CandidateDesign], layout: &RoughLayout) -> Vec<Candidate
         .collect()
 }
 
+/// [`refine`] of `layout` over the sanitised `pool`, within the design cap.
+///
+/// The re-pick may give a leaf a design the layout did not use. When that takes the layout
+/// past [`PlanSettings::max_designs`], the refinement is redone over the layout's own designs
+/// (taken from `all`, the sanitised catalogue), which can never add one.
+#[must_use]
+pub fn refine_capped(
+    rough: &RoughBlock,
+    settings: &PlanSettings,
+    pool: &[CandidateDesign],
+    all: &[CandidateDesign],
+    layout: &RoughLayout,
+) -> RoughLayout {
+    let refined = refine_with_pool(rough, settings, pool, layout);
+    if refined.design_count() <= settings.max_designs_usize() {
+        refined
+    } else {
+        refine_with_pool(rough, settings, &own_pool(all, layout), layout)
+    }
+}
+
 /// The final ranked top 10 of `refined`.
 ///
 /// Refinement can merge two compositions into one; when fewer than
@@ -438,19 +459,19 @@ pub fn final_ranking<L: Borrow<RoughLayout>>(
     flat: &[L],
     refined_indices: &[usize],
 ) -> Vec<RoughLayout> {
-    final_ranking_min(refined, flat, refined_indices, 1)
+    final_ranking_capped(refined, flat, refined_indices, usize::MAX)
 }
 
-/// [`final_ranking`] keeping only layouts of at least `min_stones` stones, in the refined
-/// list and in the top-up pool alike (refinement can merge a layout below the floor).
+/// [`final_ranking`] keeping only layouts of at most `max_designs` different designs, in the
+/// refined list and in the top-up pool alike.
 #[must_use]
-pub fn final_ranking_min<L: Borrow<RoughLayout>>(
+pub fn final_ranking_capped<L: Borrow<RoughLayout>>(
     refined: Vec<RoughLayout>,
     flat: &[L],
     refined_indices: &[usize],
-    min_stones: usize,
+    max_designs: usize,
 ) -> Vec<RoughLayout> {
-    let keep = rank_indices_min(&refined, FINAL_TOP, min_stones);
+    let keep = rank_indices_capped(&refined, FINAL_TOP, max_designs);
     if keep.len() >= FINAL_TOP || refined_indices.len() >= flat.len() {
         return take_indices(refined, &keep);
     }
@@ -466,7 +487,7 @@ pub fn final_ranking_min<L: Borrow<RoughLayout>>(
         .filter(|(_, done)| !**done)
         .map(|(layout, _)| as_layout(layout));
     let pool: Vec<&RoughLayout> = refined.iter().chain(unrefined).collect();
-    rank_indices_min(&pool, FINAL_TOP, min_stones)
+    rank_indices_capped(&pool, FINAL_TOP, max_designs)
         .into_iter()
         .map(|i| pool[i].clone())
         .collect()
@@ -510,8 +531,8 @@ pub fn finish_plan_lanes(
 ) -> Option<Vec<RoughLayout>> {
     let all = sanitize(designs);
     let (flat, group_of) = flatten_groups(groups);
-    let min_stones = settings.min_count_usize();
-    let ranked = rank_indices_min(&flat, usize::MAX, min_stones);
+    let max_designs = settings.max_designs_usize();
+    let ranked = rank_indices_capped(&flat, usize::MAX, max_designs);
     let split = ranked.len().min(REFINE_TOP);
     let refined = run_lanes_dynamic(
         (0..split).collect(),
@@ -527,14 +548,14 @@ pub fn finish_plan_lanes(
             } else {
                 sanitize(&group.pool)
             };
-            Some(refine_with_pool(rough, settings, &pool, flat[i]))
+            Some(refine_capped(rough, settings, &pool, &all, flat[i]))
         },
         on_progress,
     )?;
-    Some(final_ranking_min(
+    Some(final_ranking_capped(
         refined,
         &flat,
         &ranked[..split],
-        min_stones,
+        max_designs,
     ))
 }

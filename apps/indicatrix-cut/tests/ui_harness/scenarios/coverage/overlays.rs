@@ -6,7 +6,7 @@
 //! pressed once by the smoke engine, every text field, slider and spin box is touched (a field is
 //! set to the value it already holds, a slider is stepped up and back, which fires the real change
 //! callbacks), and none of it panics, opens an unexpected file dialog or raises an error toast.
-//! `coverage_export_menu` drives the Export split button's three items with a queued picker answer
+//! `coverage_export_menu` drives the File menu's three export items with a queued picker answer
 //! and looks for the file each one writes.
 //!
 //! The engine is [`smoke::run`] with a host limited to the overlay's component: a restore
@@ -473,7 +473,7 @@ fn press_typed(app: &HarnessApp, label: &str, kind: &str) -> bool {
     true
 }
 
-/// Opens the Export menu of the editor's command bar and presses its three items, each with a
+/// Opens the File menu of the editor's command bar and presses its three export items, each with a
 /// queued answer for the file dialog (a path in the profile's scratch folder). Proves the menu
 /// opens and each item reaches its writer; a missing file is a note (the item may write beside
 /// the chosen name).
@@ -484,24 +484,25 @@ fn export_menu(ctx: &mut Ctx<'_>) {
     main_window::select_top_tab_model(ctx.app, 0);
     main_window::select_render_view(ctx.app, 1);
     let items = [
-        ("Export Cutting Sheet (HTML)", "html"),
-        ("Export Diagram (PNG)", "png"),
-        ("Export as Gem Cut Studio (.gcs)", "gcs"),
+        ("Export Cutting Sheet (HTML)...", "html"),
+        ("Export Diagram (PNG)...", "png"),
+        ("Export as Gem Cut Studio (.gcs)...", "gcs"),
     ];
     for (label, extension) in items {
         let path = ctx.scratch_file(&format!("harness_export.{extension}"));
         let _ = std::fs::remove_file(&path);
         harness_support::queue_picker_path(path.clone());
-        let opened = press_typed(ctx.app, "Export", "Rectangle");
+        let opened = press_typed(ctx.app, "File", "Rectangle");
         ctx.expect(
             opened,
             "export-menu-opens",
-            "the Export split button was not found on the Edit view",
+            "the File menu button was not found on the Edit view",
         );
         if !opened {
             break;
         }
-        let pressed = press_typed(ctx.app, label, "Rectangle");
+        // A menu row is a `FileMenuItem` (a `Rectangle` component), the button a plain Rectangle.
+        let pressed = press_typed(ctx.app, label, "FileMenuItem");
         ctx.expect(
             pressed,
             "export-menu-item",

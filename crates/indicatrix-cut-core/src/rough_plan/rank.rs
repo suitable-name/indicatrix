@@ -18,7 +18,7 @@ use std::{
 
 use super::{
     SAME_SET_CAP,
-    types::{LayoutGroup, RoughLayout},
+    types::{CandidateDesign, LayoutGroup, RoughLayout},
 };
 
 /// Two volumes at most this far apart, relative to the larger, count as equal (2^-32).
@@ -65,29 +65,32 @@ pub fn as_layout<L: Borrow<RoughLayout>>(handle: &L) -> &RoughLayout {
 /// float noise below the tolerance. Volumes that straddle a group edge are ranked by volume.
 #[must_use]
 pub fn rank_indices<L: Borrow<RoughLayout>>(candidates: &[L], limit: usize) -> Vec<usize> {
-    rank_indices_min(candidates, limit, 1)
+    rank_indices_capped(candidates, limit, usize::MAX)
 }
 
-/// [`rank_indices`] over the candidates holding at least `min_stones` stones.
+/// [`rank_indices`] over the candidates that use at most `max_designs` different designs.
 ///
-/// This is the ONE place
-/// the planner's minimum stone count is applied. Layouts below it are dropped before sorting,
-/// dedup and the per-set cap, so every slot goes to a qualifying layout. `min_stones <= 1` is
-/// exactly [`rank_indices`] (empty layouts are skipped either way).
+/// This is the ONE place the planner's design cap is applied to a ranked list. Layouts above
+/// it are dropped before sorting, dedup and the per-set cap, so every slot goes to a
+/// qualifying layout. `usize::MAX` is exactly [`rank_indices`] (empty layouts are skipped
+/// either way).
 #[must_use]
-pub fn rank_indices_min<L: Borrow<RoughLayout>>(
+pub fn rank_indices_capped<L: Borrow<RoughLayout>>(
     candidates: &[L],
     limit: usize,
-    min_stones: usize,
+    max_designs: usize,
 ) -> Vec<usize> {
-    let min_stones = min_stones.max(1);
+    let max_designs = max_designs.max(1);
     let comps: Vec<Vec<(i64, usize)>> = candidates
         .iter()
         .map(|c| as_layout(c).composition())
         .collect();
     let volume = |i: usize| as_layout(&candidates[i]).total_volume_mm3;
     let mut order: Vec<usize> = (0..candidates.len())
-        .filter(|&i| as_layout(&candidates[i]).stones.len() >= min_stones)
+        .filter(|&i| {
+            let layout = as_layout(&candidates[i]);
+            !layout.stones.is_empty() && layout.design_count() <= max_designs
+        })
         .collect();
     order.sort_by(|&i, &j| volume(j).total_cmp(&volume(i)).then(i.cmp(&j)));
     let mut start = 0;
@@ -138,18 +141,18 @@ pub fn rank_indices_min<L: Borrow<RoughLayout>>(
 /// per-set cap drops the rest: a list that uses one design never has more than three.
 #[must_use]
 pub fn merge_and_rank(candidates: Vec<RoughLayout>, limit: usize) -> Vec<RoughLayout> {
-    merge_and_rank_min(candidates, limit, 1)
+    merge_and_rank_capped(candidates, limit, usize::MAX)
 }
 
-/// [`merge_and_rank`] keeping only layouts of at least `min_stones` stones (see
-/// [`rank_indices_min`]).
+/// [`merge_and_rank`] keeping only layouts of at most `max_designs` different designs (see
+/// [`rank_indices_capped`]).
 #[must_use]
-pub fn merge_and_rank_min(
+pub fn merge_and_rank_capped(
     candidates: Vec<RoughLayout>,
     limit: usize,
-    min_stones: usize,
+    max_designs: usize,
 ) -> Vec<RoughLayout> {
-    let keep = rank_indices_min(&candidates, limit, min_stones);
+    let keep = rank_indices_capped(&candidates, limit, max_designs);
     take_indices(candidates, &keep)
 }
 
@@ -189,4 +192,33 @@ pub fn most_used_design(layout: &RoughLayout) -> Option<i64> {
         }
     }
     best.map(|(id, _)| id)
+}
+
+/// The design that contributes the least finished volume to `layout` (the highest
+/// `entry_id` on a tie): the one the design-cap chain drops next.
+pub fn least_contributing_design(layout: &RoughLayout) -> Option<i64> {
+    let mut volume: BTreeMap<i64, f64> = BTreeMap::new();
+    for stone in &layout.stones {
+        *volume.entry(stone.entry_id).or_insert(0.0) += stone.volume_mm3;
+    }
+    let mut least: Option<(i64, f64)> = None;
+    for (id, v) in volume {
+        if least.is_none_or(|(_, l)| v <= l) {
+            least = Some((id, v));
+        }
+    }
+    least.map(|(id, _)| id)
+}
+
+/// The designs of `designs` (kept in their order) that `layout` uses, without `drop`.
+pub fn pool_without(
+    designs: &[CandidateDesign],
+    layout: &RoughLayout,
+    drop: i64,
+) -> Vec<CandidateDesign> {
+    designs
+        .iter()
+        .filter(|d| d.entry_id != drop && layout.stones.iter().any(|s| s.entry_id == d.entry_id))
+        .copied()
+        .collect()
 }

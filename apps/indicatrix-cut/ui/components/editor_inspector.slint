@@ -369,7 +369,8 @@ export component EditorInspector inherits Rectangle {
     // shared tail of `apply_load`/`clear_form`/`save_form`, all of which just
     // assigned (or left unchanged) exactly these fields and want `form_dirty` to
     // read `false` again immediately afterward.
-    function snapshot_form() {
+    // Also called by `EditorView.init` on a fresh mount (see there).
+    public function snapshot_form() {
         root.loaded_angle_snapshot = root.tier_angle;
         root.loaded_constraint_kind_snapshot = root.tier_constraint_kind;
         root.loaded_constraint_text_snapshot = root.tier_constraint_text;
@@ -864,22 +865,9 @@ export component EditorInspector inherits Rectangle {
                         : (!root.angle_field_invalid && GuideModel.allows_tier_form());
                     clicked => { root.save_form(); }
                 }
-                TipButton {
-                    // Named "New Tier" -- identical
-                    // to the command bar's "New Design..." button/menu item that
-                    // discards the WHOLE design, although this one only clears
-                    // the tier-edit form. "New Tier" (not "Clear") since it also
-                    // arms the form for the next Add Tier, matching the command
-                    // bar's own "+ Add Tier" affordance more than a plain reset.
-                    text: "New Tier";
-                    hint: "Clear the form for a new tier. The design is not changed.";
-                    enabled: GuideModel.allows_tier_form();
-                    clicked => {
-                        // The flat form is what "New Tier" arms, even from the concave one.
-                        EditorModel.inspector_concave_mode = false;
-                        root.request_new();
-                    }
-                }
+                // There is no "New Tier" button here: arming the form for the next tier is
+                // the tier table's "+ Add Tier" (one home for that action; Escape also
+                // returns to Add mode).
             }
         }
     }

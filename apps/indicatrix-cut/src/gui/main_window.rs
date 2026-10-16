@@ -192,15 +192,14 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     // due, the automatic check on a background thread (never before the user said yes).
     crate::gui::update_check::setup_update_check(&ui, &settings_store);
 
-    // The app always opens on the solid renderer view: the 3D Gem tab's Edit
-    // sub-tab in Solid view mode (`startup_settings` forces the view mode to 0).
-    // Goes through the same path as a user's click on the pill (set the property,
-    // then fire `render_view_tab_changed`), and runs only now that every handler
-    // is connected, so the visibility gate (`recompute_tab_visible`) keeps the
-    // live tracer idle and `edit_view_entered` reclaims the viewport for the
-    // editor. `EditorModel.enabled` is set unconditionally above, so there is no
-    // "enabled later" case to wait for.
-    crate::gui::commands::show_edit_view(&ui);
+    // The app always opens on the 3D tab's Live Render view in Solid mode, never on the
+    // editor (`startup_settings` forces both view modes to Solid): the selected library
+    // design shows as the solid render, and with nothing selected the view stays empty
+    // until a design is picked. Goes through the same path as a user's click on the pill
+    // (set the property, then fire `render_view_tab_changed`), even though Live Render is
+    // the property's default, and runs only now that every handler is connected, so the
+    // visibility gate (`recompute_tab_visible`) sees the real starting view.
+    crate::gui::commands::enter_live_render_view(&ui);
 
     Ok(MainWindowHandle {
         ui,

@@ -191,15 +191,34 @@ fn settings_and_extents_are_validated() {
     let good = settings_with(4, 0.3, 0.2, 1.0);
     assert_eq!(good.validate(), Ok(()));
     assert_eq!(
-        PlanSettings { count: 0, ..good }.validate(),
-        Err(PlanInputError::CountOutOfRange(0))
+        PlanSettings {
+            max_designs: 0,
+            ..good
+        }
+        .validate(),
+        Err(PlanInputError::DesignsOutOfRange(0))
     );
     assert_eq!(
-        PlanSettings { count: 100, ..good }.validate(),
-        Err(PlanInputError::CountOutOfRange(100))
+        PlanSettings {
+            max_designs: 100,
+            ..good
+        }
+        .validate(),
+        Err(PlanInputError::DesignsOutOfRange(100))
     );
-    for count in [1, 99] {
-        assert_eq!(PlanSettings { count, ..good }.validate(), Ok(()));
+    assert_eq!(
+        PlanInputError::DesignsOutOfRange(100).to_string(),
+        "the design count 100 is outside 1 to 99"
+    );
+    for max_designs in [1, 99] {
+        assert_eq!(
+            PlanSettings {
+                max_designs,
+                ..good
+            }
+            .validate(),
+            Ok(())
+        );
     }
     let field_of = |bad: PlanSettings| match bad.validate() {
         Err(PlanInputError::Setting { field, .. }) => field,
@@ -294,7 +313,10 @@ fn absurd_inputs_return_an_empty_or_finite_result_without_panicking() {
             min_width_mm: 0.0,
             ..good
         },
-        PlanSettings { count: 0, ..good },
+        PlanSettings {
+            max_designs: 0,
+            ..good
+        },
     ] {
         assert_eq!(
             plan_rough(&rough, &bad, &designs, &mut |_| true),
@@ -340,20 +362,18 @@ fn absurd_inputs_return_an_empty_or_finite_result_without_panicking() {
 }
 
 #[test]
-fn the_grid_of_a_thin_slab_at_k99_shrinks_to_45_45_7() {
-    // 100 x 100 x 2 mm at K = 99: the ideal grid is [48, 48, 8] (six units per expected
-    // piece, clamped to 48 on the long axes; 2 mm of 27.1 mm geometric mean gives 2.2,
-    // raised to the floor of 8). Its operation estimate summed over the six orders is
-    // 3.06e9 > 3e9 (the orders with the 8-unit axis as stage A cost 2.69e8 each, those with
-    // it as stage B 1.40e8 each, those with it as stage C 1.12e9 each), so the grid shrinks
-    // once by 5 % (48 -> 45, 8 -> 7) to 2.46e9, which fits.
+fn the_grid_of_a_thin_slab_keeps_its_ideal_size() {
+    // 100 x 100 x 2 mm: the ideal grid is [48, 48, 8] (30 units per axis scaled to the
+    // proportions, clamped to 48 on the long axes; 2 mm of 27.1 mm geometric mean gives 2.2,
+    // raised to the floor of 8). Without a stone dimension the DP's operation estimate is
+    // far below the cap (about 1.1e7 summed over the six orders), so the grid stays as it is.
     let slab = RoughBlock {
         x_mm: 100.0,
         y_mm: 100.0,
         z_mm: 2.0,
     };
-    let grid = choose_grid(&slab, &settings_with(99, 0.3, 0.2, 1.0));
-    assert_eq!(grid.cells(), [45, 45, 7]);
+    let grid = choose_grid(&slab, &settings_with(1, 0.3, 0.2, 1.0));
+    assert_eq!(grid.cells(), [48, 48, 8]);
 }
 
 #[test]
@@ -424,8 +444,7 @@ fn a_stone_at_the_minimum_width_is_feasible_on_every_path() {
 }
 
 #[test]
-#[ignore = "the 99-stone DP takes minutes without --release; run with --release -- --ignored"]
-fn k99_on_a_thirty_millimetre_cube_is_sorted_capped_valid_and_deterministic() {
+fn a_thirty_millimetre_cube_with_the_widest_design_cap_is_sorted_capped_valid_and_deterministic() {
     let mut rng = Lcg(99);
     let designs = random_designs(&mut rng, 4);
     let rough = cube(30.0);
@@ -440,7 +459,7 @@ fn k99_on_a_thirty_millimetre_cube_is_sorted_capped_valid_and_deterministic() {
     for layout in &first {
         let set: Vec<i64> = layout.composition().iter().map(|(id, _)| *id).collect();
         *per_set.entry(set).or_insert(0usize) += 1;
-        assert!(layout.stone_count() <= 99);
+        assert!(layout.design_count() <= 4, "only four designs exist");
         assert_layout_geometry(layout, &rough, &settings);
     }
     assert!(per_set.values().all(|&n| n <= SAME_SET_CAP), "{per_set:?}");

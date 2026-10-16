@@ -1,0 +1,152 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { RetargetModel } from "../../models/retarget.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { CuttingModeModel } from "../../models/cutting_mode.slint";
+import { GuideLockTip } from "../guide_lock.slint";
+
+// Retarget... / Tilt Curves / Cut Mode -- the bar's "do something with this design"
+// group. Wrapper and hint conventions are those of `edit_groups.slint`.
+export component AnalysisGroup inherits HorizontalLayout {
+    height: 34px;
+    spacing: 8px;
+
+    function set_hint(text: string) {
+        EditorModel.hover_hint = text;
+    }
+    function clear_hint(text: string) {
+        if EditorModel.hover_hint == text {
+            EditorModel.hover_hint = "";
+        }
+    }
+
+    // Proposes new facet angles for a different material, reviewed in a
+    // modal dialog before anything is applied.
+    TouchArea {
+        width: retarget_btn.preferred-width;
+        height: retarget_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Retarget: propose new facet angles so the design works in a different material, and review them before anything changes. See the glossary."); } else { root.clear_hint("Retarget: propose new facet angles so the design works in a different material, and review them before anything changes. See the glossary."); } }
+        retarget_btn := Button {
+            text: "Retarget...";
+            accessible-description: "Propose new facet angles so the design works in a different material. You review them before anything changes.";
+            enabled: GuideModel.allows_advanced();
+            clicked => { RetargetModel.open(); }
+        }
+        // The guide's Retarget lessons outline this button.
+        if GuideModel.highlight_target == "retarget_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
+        }
+        GuideLockTip { locked: !GuideModel.allows_advanced(); }
+    }
+
+    // Runs the full 4-axis tilt-performance sweep for the design currently open in the
+    // editor -- see `EditorModel.compute_tilt_curves_for_open_design` for what happens
+    // once it starts. Advanced: the Simple interface leaves it out.
+    if GuideModel.shows_advanced(): TouchArea {
+        width: compute_tilt_btn.preferred-width;
+        height: compute_tilt_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Tilt Curves: work out how bright, dark or see-through this stone looks as it is tilted, from table-up to a steep angle. Takes a few seconds. See the glossary."); } else { root.clear_hint("Tilt Curves: work out how bright, dark or see-through this stone looks as it is tilted, from table-up to a steep angle. Takes a few seconds. See the glossary."); } }
+        compute_tilt_btn := Button {
+            text: "Tilt Curves";
+            accessible-description: "Work out how bright, dark or see-through this stone looks as it is tilted. Takes a few seconds.";
+            enabled: GuideModel.allows_advanced();
+            clicked => { EditorModel.compute_tilt_curves_for_open_design(); }
+        }
+        GuideLockTip { locked: !GuideModel.allows_advanced(); }
+    }
+
+    // Cutting mode (`models/cutting_mode.slint`, `gui::editor::cutting_mode`): the cutting
+    // steps one page at a time over the whole window. Dim, with the reason in the hint, while
+    // there is nothing to cut (no design, no tiers, a design that does not solve).
+    TouchArea {
+        width: cut_mode_btn.preferred-width;
+        height: cut_mode_btn.preferred-height;
+        property <string> cut_mode_hint: CuttingModeModel.unavailable_reason() == ""
+            ? "Walk through the cutting steps one page at a time, with done marks that are kept for this design (Edit menu, Cutting Mode...)."
+            : CuttingModeModel.unavailable_reason();
+        property <string> cut_mode_tooltip_text: GuideModel.allows_advanced() ? self.cut_mode_hint : GuideModel.locked_hint;
+        changed has-hover => { if self.has-hover { root.set_hint(self.cut_mode_tooltip_text); } else { root.clear_hint(self.cut_mode_tooltip_text); } }
+        Tooltip { text: @markdown("\{cut_mode_tooltip_text}"); }
+        cut_mode_btn := Button {
+            text: "Cut Mode";
+            accessible-description: parent.cut_mode_tooltip_text;
+            enabled: GuideModel.allows_advanced() && !CuttingModeModel.open && CuttingModeModel.unavailable_reason() == "";
+            clicked => { CuttingModeModel.open_cutting_mode(); }
+        }
+        // The cutting-mode tutorial outlines this button.
+        if GuideModel.highlight_target == "cutting_mode_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
+        }
+    }
+}
+
+// Snapshot / Compare, handled by `callbacks::retarget_actions::setup_snapshot_callbacks`.
+// Both reuse the comparison-table dialog shell (`retarget_dialog.slint`). Advanced: the
+// Simple interface leaves both out.
+export component SnapshotGroup inherits HorizontalLayout {
+    height: 34px;
+    spacing: 8px;
+
+    function set_hint(text: string) {
+        EditorModel.hover_hint = text;
+    }
+    function clear_hint(text: string) {
+        if EditorModel.hover_hint == text {
+            EditorModel.hover_hint = "";
+        }
+    }
+
+    if GuideModel.shows_advanced(): TouchArea {
+        width: snapshot_btn.preferred-width;
+        height: snapshot_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Snapshot: keep a copy of the design as it is now, to compare with a later version. The copy lives only in this session and is not saved to disk. See the glossary."); } else { root.clear_hint("Snapshot: keep a copy of the design as it is now, to compare with a later version. The copy lives only in this session and is not saved to disk. See the glossary."); } }
+        snapshot_btn := Button {
+            text: "Snapshot";
+            accessible-description: "Keep a copy of the design as it is now, to compare with a later version. Not saved to disk.";
+            enabled: GuideModel.allows_advanced();
+            clicked => { EditorModel.snapshot_design(); }
+        }
+        // The guide's Snapshot lessons outline this button.
+        if GuideModel.highlight_target == "snapshot_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
+        }
+        GuideLockTip { locked: !GuideModel.allows_advanced(); }
+    }
+    // Gated on a snapshot existing (`EditorModel.has_snapshot`, pushed `true` the moment
+    // one is taken); the hover hint explains the greyed state before that.
+    if GuideModel.shows_advanced(): TouchArea {
+        width: compare_snapshot_btn.preferred-width;
+        height: compare_snapshot_btn.preferred-height;
+        changed has-hover => {
+            if self.has-hover {
+                root.set_hint(EditorModel.has_snapshot
+                    ? "Compare the current design with the last snapshot, side by side."
+                    : "Compare the current design with the last snapshot. Press Snapshot first: no snapshot has been taken this session.");
+            } else {
+                root.clear_hint("Compare the current design with the last snapshot, side by side.");
+            }
+        }
+        compare_snapshot_btn := Button {
+            text: "Compare";
+            accessible-description: EditorModel.has_snapshot
+                ? "Compare the current design with the last snapshot, side by side."
+                : "Compare the current design with the last snapshot. Not available until you take a snapshot.";
+            enabled: EditorModel.has_snapshot && GuideModel.allows_advanced();
+            clicked => { EditorModel.compare_to_snapshot(); }
+        }
+        // The guide's Snapshot and Compare lesson outlines this button.
+        if GuideModel.highlight_target == "compare_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
+        }
+        GuideLockTip { locked: !GuideModel.allows_advanced(); }
+    }
+}

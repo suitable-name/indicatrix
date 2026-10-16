@@ -190,7 +190,7 @@ pub const ALLOW: &[(&str, &str)] = &[
         "GPU render: VariantsModel.compare_pictures opens the Compare window, which renders both chosen variants (the pass denies the label)",
     ),
     (
-        "components/editor_command_bar.slint|AnalysisGroup|deep_solve_btn",
+        "components/editor_command_bar/edit_groups.slint|SolveGroup|deep_solve_btn",
         "long job: Deep Solve starts the slow verified solve on a worker (deep_solve_run::begin_deep_solve_run) and is enabled only for a design with printed proportions; its callback EditorModel.deep_solve has a direct-invoke row",
     ),
     (

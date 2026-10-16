@@ -30,7 +30,9 @@ mod table;
 pub(in crate::gui) use palette::setup_command_palette;
 // What the guide's Next button does on an unfinished step goes through the same functions the
 // buttons and the palette use.
-pub(in crate::gui) use run::{add_tier, set_solid_view_mode, show_edit_view, show_inspector_tab};
+pub(in crate::gui) use run::{
+    add_tier, enter_live_render_view, set_solid_view_mode, show_edit_view, show_inspector_tab,
+};
 // Read by the shortcut table's test, which checks every shortcut shown in the palette is a
 // real row of that table.
 #[cfg(test)]

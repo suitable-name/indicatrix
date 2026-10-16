@@ -242,6 +242,26 @@ impl WorkerHandler {
                         |reply| *reply,
                     ),
             ),
+            ToWorker::GpuCompile { .. } => Some(
+                self.require(WorkerRole::Gpu, "GpuCompile")
+                    .err()
+                    .map_or_else(
+                        || FromWorker::Error {
+                            message: "GpuCompile is not handled by CPU worker".into(),
+                        },
+                        |reply| *reply,
+                    ),
+            ),
+            ToWorker::TraceFullPass { .. } => Some(
+                self.require(WorkerRole::Gpu, "TraceFullPass")
+                    .err()
+                    .map_or_else(
+                        || FromWorker::Error {
+                            message: "TraceFullPass is not handled by CPU worker".into(),
+                        },
+                        |reply| *reply,
+                    ),
+            ),
         }
     }
 

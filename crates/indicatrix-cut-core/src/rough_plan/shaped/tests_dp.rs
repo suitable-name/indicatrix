@@ -77,11 +77,13 @@ struct ClipFixture {
 }
 
 impl ClipFixture {
-    fn new(model: &RoughModel, settings: PlanSettings, seed: u64) -> Self {
+    /// The fixture over a deliberately coarse grid of `cells` (the chosen resolution is far
+    /// too fine for a test that builds the whole clipped table many times).
+    fn new(model: &RoughModel, settings: PlanSettings, seed: u64, cells: [usize; 3]) -> Self {
         let designs = random_designs(&mut Lcg(seed), 4);
         let front = pareto_front(&designs);
         let ctx = ShapedCtx::new(model, &settings).expect("ctx");
-        let grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, &settings);
+        let grid = grid_with_cells(&ctx, &settings, cells);
         let size_table = grid
             .size_table(&settings, &front, &mut |_| true)
             .expect("size table");
@@ -122,7 +124,7 @@ fn cylinder_fixture() -> ClipFixture {
         },
         vec![],
     );
-    ClipFixture::new(&model, settings_with(1, 0.3, 0.2, 0.5), 99)
+    ClipFixture::new(&model, settings_with(1, 0.3, 0.2, 0.5), 99, [8, 8, 8])
 }
 
 #[test]
@@ -258,7 +260,12 @@ fn the_lane_build_reports_the_events_of_its_slices_and_cancels_across_lanes() {
 
 /// A small clipped-table fixture: the corner-cut block with a coarse grid.
 fn corner_cut_fixture() -> ClipFixture {
-    ClipFixture::new(&corner_cut_model(), settings_with(4, 0.3, 0.2, 0.5), 7)
+    ClipFixture::new(
+        &corner_cut_model(),
+        settings_with(4, 0.3, 0.2, 0.5),
+        7,
+        [6, 6, 6],
+    )
 }
 
 /// The whole-grid blocks of `fx` built one a-range at a time and concatenated.
@@ -389,7 +396,7 @@ fn alternatives_are_the_same_on_any_lane_count_and_report_their_own_progress() {
     let front = pareto_front(&designs);
     let settings = settings_with(4, 0.3, 0.2, 0.5);
     let ctx = ShapedCtx::new(&corner_cut_model(), &settings).expect("ctx");
-    let grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, &settings);
+    let grid = grid_with_cells(&ctx, &settings, [6, 6, 6]);
     let table = clipped_for(&ctx, &grid, &front, &settings);
     let mut mixed = Vec::new();
     for order in CutOrder::ALL {
@@ -600,33 +607,31 @@ fn the_dp_value_is_the_table_sum_of_its_tree_and_the_volume_of_the_layout_built_
             let table = clipped_for(&ctx, &grid, &front, &settings);
             let mut finite = 0;
             for order in CutOrder::ALL {
-                let dp = solve_order(&grid, &table, order, settings.count_usize(), &mut || true)
-                    .expect("dp");
-                for n in 1..=settings.count_usize() {
-                    let value = dp.root_value(n);
-                    if value == NEG {
-                        continue;
-                    }
-                    finite += 1;
-                    let what = format!("{name}, {cells:?}, {order:?}, n = {n}");
-                    let tree = dp.reconstruct(&grid, &table, n);
-                    assert_eq!(leaf_count(&tree), n, "{what}");
-                    let sum = table_sum(&grid, &table, order, &tree);
-                    assert!(
-                        close(sum, value, 1e-9),
-                        "{what}: table sum {sum} vs DP {value}"
-                    );
-
-                    // Every piece holds a stone, so nothing is merged and the layout's
-                    // volume is what the DP valued the tree at.
-                    let layout = layout_from_tree_shaped(&ctx, order, &tree, &front, &settings);
-                    assert_eq!(layout.stones.len(), n, "{what}");
-                    assert!(
-                        close(layout.total_volume_mm3, value, 1e-9),
-                        "{what}: layout {} vs DP {value}",
-                        layout.total_volume_mm3
-                    );
+                let dp = solve_order(&grid, &table, order, &mut || true).expect("dp");
+                let value = dp.root_value();
+                if value == NEG {
+                    continue;
                 }
+                finite += 1;
+                let what = format!("{name}, {cells:?}, {order:?}");
+                let tree = dp.reconstruct(&grid, &table);
+                let n = leaf_count(&tree);
+                assert_ne!(n, 0, "{what}");
+                let sum = table_sum(&grid, &table, order, &tree);
+                assert!(
+                    close(sum, value, 1e-9),
+                    "{what}: table sum {sum} vs DP {value}"
+                );
+
+                // Every piece holds a stone, so nothing is merged and the layout's
+                // volume is what the DP valued the tree at.
+                let layout = layout_from_tree_shaped(&ctx, order, &tree, &front, &settings);
+                assert_eq!(layout.stones.len(), n, "{what}");
+                assert!(
+                    close(layout.total_volume_mm3, value, 1e-9),
+                    "{what}: layout {} vs DP {value}",
+                    layout.total_volume_mm3
+                );
             }
             assert!(finite > 0, "{name}, {cells:?}: the DP found nothing");
         }
@@ -649,32 +654,13 @@ fn compositions(total: usize) -> Vec<Vec<usize>> {
     all
 }
 
-/// `(stones, value)` of every way to cut a region.
-type Outcomes = Vec<(usize, f64)>;
-
-/// Every way to take one outcome from each list, dropping those above `k` stones.
-fn combine(lists: &[Outcomes], k: usize) -> Outcomes {
-    let mut combined: Outcomes = vec![(0, 0.0)];
-    for list in lists {
-        combined = combined
-            .iter()
-            .flat_map(|&(n, v)| {
-                list.iter()
-                    .filter(move |&&(m, _)| n + m <= k)
-                    .map(move |&(m, w)| (n + m, v + w))
-            })
-            .collect();
-    }
-    combined
-}
-
 /// The three-stage guillotine cuts of a grid, enumerated without any dynamic
-/// programming: every composition of every axis, every piece read from the table.
+/// programming: every composition of every axis, every piece read from the table. The number
+/// of stones is free, so the result is the one best total.
 struct Brute<'a> {
     grid: &'a ShapedGrid,
     table: &'a ClippedTable,
     ord: [usize; 3],
-    k: usize,
 }
 
 impl Brute<'_> {
@@ -688,66 +674,59 @@ impl Brute<'_> {
         self.table.value(range[0], range[1], range[2])
     }
 
-    /// Every way to cut the bar `(a, b)` into pieces that all hold a stone.
-    fn bar(&self, a: (usize, usize), b: (usize, usize)) -> Outcomes {
-        let mut outcomes = Vec::new();
-        'compositions: for composition in compositions(self.grid.cells[self.ord[2]]) {
-            if composition.len() > self.k {
-                continue;
-            }
-            let (mut start, mut total) = (0, 0.0);
-            for len in &composition {
-                let value = self.piece(a, b, (start, start + len));
-                if value == NEG {
-                    continue 'compositions;
+    /// The best way to cut the bar `(a, b)` into pieces that all hold a stone (`-inf` when
+    /// every way has an empty piece).
+    fn bar(&self, a: (usize, usize), b: (usize, usize)) -> f64 {
+        compositions(self.grid.cells[self.ord[2]])
+            .iter()
+            .map(|composition| {
+                let mut start = 0;
+                let mut total = 0.0;
+                for len in composition {
+                    total += self.piece(a, b, (start, start + len));
+                    start += len;
                 }
-                total += value;
-                start += len;
-            }
-            outcomes.push((composition.len(), total));
-        }
-        outcomes
+                total
+            })
+            .fold(NEG, f64::max)
     }
 
-    /// Every way to cut the slab `a` into bars and the bars into pieces.
-    fn slab(&self, a: (usize, usize)) -> Outcomes {
-        let mut outcomes = Vec::new();
-        for composition in compositions(self.grid.cells[self.ord[1]]) {
-            let mut start = 0;
-            let mut bars = Vec::new();
-            for len in &composition {
-                bars.push(self.bar(a, (start, start + len)));
-                start += len;
-            }
-            outcomes.extend(combine(&bars, self.k));
-        }
-        outcomes
+    /// The best way to cut the slab `a` into bars and the bars into pieces.
+    fn slab(&self, a: (usize, usize)) -> f64 {
+        compositions(self.grid.cells[self.ord[1]])
+            .iter()
+            .map(|composition| {
+                let mut start = 0;
+                let mut total = 0.0;
+                for len in composition {
+                    total += self.bar(a, (start, start + len));
+                    start += len;
+                }
+                total
+            })
+            .fold(NEG, f64::max)
     }
 
-    /// The best value per stone count `0..=k` (`-inf` where no cut holds that many).
-    fn best_per_count(&self) -> Vec<f64> {
-        let mut best = vec![NEG; self.k + 1];
-        for composition in compositions(self.grid.cells[self.ord[0]]) {
-            let mut start = 0;
-            let mut slabs = Vec::new();
-            for len in &composition {
-                slabs.push(self.slab((start, start + len)));
-                start += len;
-            }
-            for (n, value) in combine(&slabs, self.k) {
-                if n >= 1 && value > best[n] {
-                    best[n] = value;
+    /// The best total over every cut of the grid (`-inf` when none holds a stone).
+    fn best(&self) -> f64 {
+        compositions(self.grid.cells[self.ord[0]])
+            .iter()
+            .map(|composition| {
+                let mut start = 0;
+                let mut total = 0.0;
+                for len in composition {
+                    total += self.slab((start, start + len));
+                    start += len;
                 }
-            }
-        }
-        best
+                total
+            })
+            .fold(NEG, f64::max)
     }
 }
 
 #[test]
 fn the_positional_dp_matches_a_brute_force_enumeration_on_a_3x3x3_grid() {
     let settings = settings_with(3, 0.3, 0.2, 0.5);
-    let k = settings.count_usize();
     let front = pareto_front(&random_designs(&mut Lcg(21), 3));
     let models = [
         ("plain block", plain_model()),
@@ -760,33 +739,29 @@ fn the_positional_dp_matches_a_brute_force_enumeration_on_a_3x3x3_grid() {
         let table = clipped_for(&ctx, &grid, &front, &settings);
         for order in CutOrder::ALL {
             let what = format!("{name}, {order:?}");
-            let brute = Brute {
+            let best_value = Brute {
                 grid: &grid,
                 table: &table,
                 ord: order.axes(),
-                k,
             }
-            .best_per_count();
-            let dp = solve_order(&grid, &table, order, k, &mut || true).expect("dp");
-            assert_eq!(dp.root_value(0), NEG, "{what}");
-            for (n, &expected) in brute.iter().enumerate().skip(1) {
-                let value = dp.root_value(n);
-                if expected == NEG {
-                    assert_eq!(value, NEG, "{what}, n = {n}");
-                } else {
-                    assert!(
-                        close(value, expected, 1e-9),
-                        "{what}, n = {n}: DP {value} vs enumeration {expected}"
-                    );
-                }
+            .best();
+            let dp = solve_order(&grid, &table, order, &mut || true).expect("dp");
+            let value = dp.root_value();
+            if best_value == NEG {
+                assert_eq!(value, NEG, "{what}");
+            } else {
+                assert!(
+                    close(value, best_value, 1e-9),
+                    "{what}: DP {value} vs enumeration {best_value}"
+                );
             }
 
-            // The layouts of the order hold the best cut: the same volume as the best
+            // The order's one layout holds the best cut: the same volume as the best
             // value, since every piece of the DP's tree holds a stone.
             let layouts =
                 plan_shaped_for_order(&grid, &table, &ctx, &front, order, &settings, &mut |_| true)
                     .expect("layouts");
-            let best_value = brute.iter().copied().fold(NEG, f64::max);
+            assert!(layouts.len() <= 1, "{what}: one candidate per order");
             let best_volume = layouts
                 .iter()
                 .map(|layout| layout.total_volume_mm3)

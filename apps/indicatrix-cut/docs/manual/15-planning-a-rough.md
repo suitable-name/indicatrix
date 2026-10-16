@@ -49,7 +49,7 @@ a screen that cannot hold that) and cannot be made smaller than 1040 x 560.
 - **Left column** — the rough and the plan. A scrolling upper part holds the
   **ROUGH** section (shape, size, material, weighed carat, the live readout) and
   the **SHAPE** section (Undo, Redo, the cut buttons and the cut list). The
-  **PLAN** section (stone count, candidate designs, losses, the **Plan** button
+  **PLAN** section (design limit, candidate designs, losses, the **Plan** button
   and the progress bar) stays pinned at the bottom.
 - **Centre** — the 3D view, with its buttons above the image and a hint line
   below it, so no control ever covers the picture.
@@ -134,7 +134,7 @@ weight failed: ...", or "The model changed while it was being scaled" if you
 edited the rough meanwhile): the model stays as it was and **Plan** stays
 available. The red line clears when you next change the rough, its material or
 the weighed carat, and when you press **Plan**. The other plan-form fields (the
-kerf, the allowance, the skin, the minimum width and the stone count) do not
+kerf, the allowance, the skin, the minimum width and the design limit) do not
 clear it.
 
 A mesh whose size is not believable in the chosen unit is refused as well: more
@@ -624,18 +624,13 @@ planned.
 The **PLAN** section sets up what the planner may use and how much it must
 leave.
 
-- **Stones (up to)** — from 1 to 99. This is a *maximum*, not a target: a layout
-  may cut fewer stones than this if that weighs more. Set it to 1 and you get the
-  best ten single stones for this rough.
-- **Min Stones** — from 1 up to **Stones (up to)**; the default 1 shows every
-  layout. This is a hard floor: a layout with fewer stones is left out of the list
-  altogether, and the ten places go to layouts that qualify, so asking for at
-  least 3 shows the ten best plans of three stones or more, even when a single big
-  stone weighs more. Raising it above the maximum raises the maximum with it, and
-  lowering the maximum below it lowers it. The summary line then names the range
-  ("3-5 stones"). If no layout reaches the floor on this rough, the window says
-  so; lower **Min Stones** or loosen the minimum width. The floor is saved with a
-  plan, and a plan saved before it existed opens with 1.
+- **Designs (up to)** — from 1 to 99: the most *different* designs one layout may
+  mix. The number of stones is not limited: the planner fits as many stones as
+  yield the most weight, one stone or dozens, within the losses and the minimum
+  width below. Set it to 1 and every layout uses a single design (as many stones of
+  it as fit best); raise it to let the planner combine a large stone of one design
+  with smaller stones of others in the space that is left. A plan saved before this
+  setting existed opens with its old stone limit as the design limit.
 - **Candidate Designs** — which designs the planner may use:
   - **Current Filter (N designs)** — only the designs the library's search and
     filters currently show (Chapter 2). This is the default, and the way to say
@@ -803,22 +798,24 @@ A finished stone's weight grows with the *cube* of its size. Cutting a rough in
 half along one axis does not give two half-weight stones; it gives two stones
 that are each only a fraction of the size, plus you lose a kerf and two more
 allowances. On a rough with a roughly even shape, one large stone that fills it
-therefore usually weighs more than two or three smaller ones, even when you allow
-many stones. That is why a plan with **Stones (up to)** set high often puts a
-layout of only one or two big stones at the top: the number is a limit, not a
-goal.
+therefore usually weighs more than two or three smaller ones. That is why the top
+layout on an evenly shaped rough is often one or two big stones: the planner
+places as many stones as weigh the most, and here that is few.
 
 A long, thin rough is the opposite. A single stone must fit inside the
 cross-section, so it can only grow as big as the thin sides allow, and the extra
 length goes unused. Cutting the rough into several pieces along its length gives
 each piece the full cross-section to work with, and several stones of that size
 weigh far more than one stone of the same size that leaves most of the rough
-behind. Raising **Stones (up to)** on such a rough shows this directly: the top
-layouts become a row of stones, and the yield climbs.
+behind. On such a rough the top layouts become a row of stones, and the planner
+fills what is left at the ends and sides with smaller stones where they add
+weight.
 
 A mix of different designs can beat any single design when the rough has an
 awkward shape: a broad, shallow stone from one design in one part of the rough
-and a slimmer one in another.
+and a slimmer one in another. **Designs (up to)** sets how many designs may be
+mixed; when the best layout would need more, the planner drops the design that
+adds the least weight and plans again until the layout is within the limit.
 
 ## The 3D View
 
@@ -1240,11 +1237,10 @@ planner's own; they are not part of the main window's list in Appendix B.
   continuously. To keep the plan quick and its memory use bounded, the grid has at
   most 48 steps per axis for a plain block and at most 20 per axis for a cut,
   cylindrical or pebble rough, and fewer where the table of pieces would otherwise
-  grow too large: a **Stones (up to)** of 99 in a 20 mm cube uses 16 steps per
-  axis. With many stones the pieces are only a few grid steps across, so the
-  layouts found for a high stone count in a shaped rough can be a little worse
-  than the best possible one; the continuous refinement of the best layouts
-  recovers part of the difference.
+  grow too large: a 20 mm cube uses 16 steps per axis. With many small stones the
+  pieces are only a few grid steps across, so the layouts found with many stones in
+  a shaped rough can be a little worse than the best possible one; the continuous
+  refinement of the best layouts recovers part of the difference.
 - **The single-stone search is a search.** It screens every design coarsely and
   searches orientations in detail for a shortlist of at least 48, so a design that
   only fits well in an unusual orientation can be missed.

@@ -62,7 +62,7 @@ use std::{
     sync::{Arc, Mutex, PoisonError, atomic::Ordering},
 };
 
-/// The weight boxes and yield slider as the command bar's Optimize button hands them over.
+/// The weight boxes and yield slider as the Optimize tab's button hands them over.
 #[derive(Clone, Copy)]
 pub(in crate::gui::editor) struct WeightBoxes<'a> {
     pub windowing: &'a str,

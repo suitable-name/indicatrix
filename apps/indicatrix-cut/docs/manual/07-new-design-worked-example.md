@@ -74,7 +74,7 @@ outlines (see "Starting from a Shape Instead" below).
 
 ## Step 1: The New Design Dialog
 
-Click **New Design...** on the command bar (or File -> New Design..., or the
+Choose **File**, then **New Design...**, on the command bar (or File -> New Design... at the top of the window, or the
 empty state's **New Design...** card) to open the New Design dialog. Its
 "Start From" section is a template gallery in three sections -- Shapes,
 Round Variants and Teaching Designs, and Blank. For this walkthrough, choose
@@ -189,7 +189,7 @@ the real one instead of a girdle, and the pavilion tiers below would end
 up bounded only by the cylinder preform's own wall rather than by a real
 girdle band.
 
-1. Click **+ Add Tier** (the hint over the viewport, the command bar, or the
+1. Click **+ Add Tier** (the hint over the viewport, or the
    tier table's toolbar), which opens the inspector's Tier tab in Add mode.
    **Angle (deg)**: `90.0` -- or click **Girdle Facet Preset**, which sets
    the angle to 90 and Meets to Exact Scale Value 1.0 in one click.

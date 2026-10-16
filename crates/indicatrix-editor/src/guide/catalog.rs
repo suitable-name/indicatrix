@@ -26,8 +26,8 @@ pub const WORKED_EXAMPLE_ID: &str = "new-design-walkthrough";
 /// component compare `GuideModel.highlight_target` against it.
 pub const HIGHLIGHT_TARGETS: &[&str] = &[
     "",
-    // The New Design dialog, and the New Design... button and empty-state card while it
-    // is closed.
+    // The New Design dialog, and the command bar's File button (its New Design... item once
+    // the menu is open) and the empty-state card while it is closed.
     "new_design_dialog",
     // The inspector's Tier tab.
     "inspector_tier",
@@ -80,15 +80,16 @@ pub const HIGHLIGHT_TARGETS: &[&str] = &[
     "render_output_tab",
     // The Cut Mode button of the command bar.
     "cutting_mode_button",
-    // The Export .asc button of the command bar.
+    // The five targets below outline the command bar's File button and, once its menu is
+    // open, the matching item: Export .asc,
     "export_asc_button",
-    // The Export... split menu of the command bar.
+    // the cutting sheet / diagram / .gcs exports,
     "export_menu",
-    // The Save button of the command bar.
+    // Save,
     "save_button",
-    // The Open button of the command bar.
+    // Open
     "open_button",
-    // The Load Selected button of the command bar.
+    // and Load Selected.
     "load_button",
     // The library search box in the header.
     "library_search",

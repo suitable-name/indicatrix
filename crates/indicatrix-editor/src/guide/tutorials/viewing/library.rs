@@ -41,7 +41,7 @@ fn import() -> Guide {
             "Import needs a design file. This one writes one from the design on screen.",
         )
         .actions([
-            "Click Export .asc in the command bar.",
+            "Choose File > Export .asc in the command bar.",
             "In the Save dialog choose a folder you will find again, then click Save.",
         ])
         .check("A toast says Exported edited schedule to the path you chose.")
@@ -239,7 +239,7 @@ fn load_design() -> Guide {
         )
         .actions([
             "Click the Edit tab above the picture.",
-            "Click Load Selected in the command bar. If the design on screen has unsaved changes you are asked first.",
+            "Choose File > Load Selected in the command bar. If the design on screen has unsaved changes you are asked first.",
         ])
         .check("The tiers of the design are in the tier table and its stone is in the Solid view.")
         .why("The design is built from the entry's own file (its .asc, else its .gem, else its .gcs). An entry with only an angle table is rebuilt from the table with placeholder depths, so solve it before you trust it.")
@@ -295,10 +295,10 @@ fn rough_planner() -> Guide {
     .step(
         GuideStep::new(
             "Plan",
-            "The PLAN section says how many stones to aim for and which designs to use.",
+            "The PLAN section says how many different designs a layout may mix and which designs to use.",
         )
         .actions([
-            "Set Stones (up to) to 1 to get the best ten single stones for this rough.",
+            "Set Designs (up to) to 1 to get the best layouts of a single design for this rough.",
             "Leave Candidate designs on Current filter, which uses the designs the library shows now. Narrow the library with a short search first so the first run is quick.",
             "Click Plan, or press Ctrl+Enter.",
         ])

@@ -19,7 +19,7 @@ use super::{
 use crate::rough_plan::{
     CandidateDesign, FitMesh, PASSES, PlanSettings, REL_TOL, RoughLayout,
     piece::{ASSIGNMENTS, Norm, min_width_floor, stone_value},
-    refine::{KinkFrame, optimise_boundary_samples},
+    refine::{KinkFrame, optimise_boundary_samples, own_pool},
     tree::{Bar, Leaf, Slab, Tree, orient_of_pose, to_canonical},
 };
 
@@ -400,6 +400,27 @@ pub fn refine_shaped(
         refined
     } else {
         layout.clone()
+    }
+}
+
+/// [`refine_shaped`] of `layout` over `pool`, within the design cap.
+///
+/// The re-pick may give a piece a design the layout did not use. When that takes the
+/// layout past [`PlanSettings::max_designs`], the refinement is redone over the layout's own
+/// designs (taken from `all`, the sanitised catalogue), which can never add one.
+#[must_use]
+pub fn refine_shaped_capped(
+    ctx: &ShapedCtx,
+    layout: &RoughLayout,
+    pool: &[CandidateDesign],
+    all: &[CandidateDesign],
+    settings: &PlanSettings,
+) -> RoughLayout {
+    let refined = refine_shaped(ctx, layout, pool, settings);
+    if refined.design_count() <= settings.max_designs_usize() {
+        refined
+    } else {
+        refine_shaped(ctx, layout, &own_pool(all, layout), settings)
     }
 }
 

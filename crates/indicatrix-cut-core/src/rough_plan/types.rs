@@ -12,8 +12,8 @@ pub use super::fit::StonePose;
 /// caller that wants the reason calls `validate` itself first.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlanInputError {
-    /// The stone count is outside `1..=99`.
-    CountOutOfRange(u8),
+    /// The design cap is outside `1..=99`.
+    DesignsOutOfRange(u8),
     /// A setting is not finite, is negative where it may not be, or is not positive where it
     /// must be.
     Setting {
@@ -34,8 +34,8 @@ pub enum PlanInputError {
 impl fmt::Display for PlanInputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CountOutOfRange(count) => {
-                write!(f, "the stone count {count} is outside 1 to 99")
+            Self::DesignsOutOfRange(count) => {
+                write!(f, "the design count {count} is outside 1 to 99")
             }
             Self::Setting { field, value } => {
                 write!(f, "the setting {field} = {value} is not usable")
@@ -97,12 +97,10 @@ impl RoughBlock {
 /// The planner's inputs other than the rough and the candidate designs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlanSettings {
-    /// The MAXIMUM number of stones to cut (`1..=99`); a layout may hold any
-    /// count from 1 up to this.
-    pub count: u8,
-    /// The MINIMUM number of stones a shown layout must hold (`1..=count`); layouts with
-    /// fewer stones are dropped before the final ranking. `1` keeps every layout.
-    pub min_count: u8,
+    /// The MAXIMUM number of different designs a layout may use (`1..=99`). The number of
+    /// stones is not capped: a layout holds as many as the rough, the losses and
+    /// [`Self::min_width_mm`] allow.
+    pub max_designs: u8,
     /// Saw kerf lost at every cut, in mm.
     pub kerf_mm: f64,
     /// Preforming and polishing allowance per side of every piece, in mm.
@@ -115,25 +113,14 @@ pub struct PlanSettings {
     pub specific_gravity: f64,
 }
 
-/// A stone-count cap as a `usize`, clamped to `1..=99`.
-pub fn clamp_count(count: u8) -> usize {
-    usize::from(count.clamp(1, 99))
-}
-
 impl PlanSettings {
-    /// The stone-count cap as a `usize`, clamped to `1..=99`.
+    /// The design cap as a `usize`, clamped to `1..=99`.
     #[must_use]
-    pub fn count_usize(&self) -> usize {
-        clamp_count(self.count)
+    pub fn max_designs_usize(&self) -> usize {
+        usize::from(self.max_designs.clamp(1, 99))
     }
 
-    /// The stone-count floor as a `usize`, clamped to `1..=count`.
-    #[must_use]
-    pub fn min_count_usize(&self) -> usize {
-        usize::from(self.min_count).clamp(1, self.count_usize())
-    }
-
-    /// Checks that the settings describe a cut the planner can reason about: a count in
+    /// Checks that the settings describe a cut the planner can reason about: a design cap in
     /// `1..=99`; finite, non-negative kerf, allowance, skin and specific gravity; a finite,
     /// positive minimum width.
     ///
@@ -144,14 +131,8 @@ impl PlanSettings {
     ///
     /// The first offending field, in declaration order.
     pub fn validate(&self) -> Result<(), PlanInputError> {
-        if !(1..=99).contains(&self.count) {
-            return Err(PlanInputError::CountOutOfRange(self.count));
-        }
-        if self.min_count < 1 || self.min_count > self.count {
-            return Err(PlanInputError::Setting {
-                field: "min_count",
-                value: f64::from(self.min_count),
-            });
+        if !(1..=99).contains(&self.max_designs) {
+            return Err(PlanInputError::DesignsOutOfRange(self.max_designs));
         }
         let non_negative = [
             ("kerf_mm", self.kerf_mm),
@@ -180,12 +161,11 @@ impl PlanSettings {
 }
 
 impl Default for PlanSettings {
-    /// One stone, kerf 0.30 mm, allowance 0.20 mm per side, no skin, minimum
+    /// One design, kerf 0.30 mm, allowance 0.20 mm per side, no skin, minimum
     /// width 1.00 mm, quartz-like specific gravity 2.65.
     fn default() -> Self {
         Self {
-            count: 1,
-            min_count: 1,
+            max_designs: 1,
             kerf_mm: 0.30,
             allowance_mm: 0.20,
             skin_mm: 0.0,
@@ -432,6 +412,15 @@ impl RoughLayout {
             *counts.entry(stone.entry_id).or_insert(0) += 1;
         }
         counts.into_iter().collect()
+    }
+
+    /// How many different designs this layout cuts.
+    #[must_use]
+    pub fn design_count(&self) -> usize {
+        let mut ids: Vec<i64> = self.stones.iter().map(|s| s.entry_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len()
     }
 }
 

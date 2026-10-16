@@ -37,7 +37,7 @@ pub fn welcome_tour_guide() -> Guide {
         .actions([
             "Type in the search box at the top of the window to find a design by name.",
             "Click a design in the list to see its picture and numbers.",
-            "Click Load Selected on the command bar to open it in the editor.",
+            "Choose File > Load Selected on the command bar to open it in the editor.",
         ])
         .why("The Import button in the top bar brings in .asc, .gem and .gcs files."),
     )
@@ -47,9 +47,8 @@ pub fn welcome_tour_guide() -> Guide {
             "The row of buttons above the viewport holds the actions you use most.",
         )
         .actions([
-            "New Design... starts a design. Load Selected opens the library design you picked.",
-            "Undo and Redo step through your changes.",
-            "Save writes your design to a file. Solve works out the depth of every tier.",
+            "Undo and Redo step through your changes. Solve works out the depth of every tier.",
+            "The File menu at the right holds New Design..., Open, Load Selected, Save and the exports.",
         ])
         .highlight("solve_button"),
     )
@@ -61,7 +60,7 @@ pub fn welcome_tour_guide() -> Guide {
         .actions([
             "Click a row to select it.",
             "Read across a row: its name, angle, index positions and what it meets.",
-            "Use the buttons above the table to add, copy and delete tiers.",
+            "Use + Add Tier above the table to add a tier, and the buttons on a row to move, copy or delete it.",
         ])
         .highlight("tier_table"),
     )

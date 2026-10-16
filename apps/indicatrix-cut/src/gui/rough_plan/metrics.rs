@@ -232,10 +232,11 @@ pub(in crate::gui::rough_plan) mod fixtures {
     /// block with no kerf, allowance or skin.
     ///
     /// By hand: a cube stone is limited by the 5 mm height, so four cubes of 5 mm fill
-    /// the block exactly (500 mm^3, yield 1), which no layout of fewer stones reaches and
-    /// the cap of four stones forbids more. How the two 5 mm splits are assigned to
-    /// slab, bar and piece depends on the cut order the planner prefers, so callers rely
-    /// only on the stone count.
+    /// the block exactly (500 mm^3, yield 1), which no layout of fewer stones reaches. Stones
+    /// are not capped, but smaller cubes only tie that total (32 cubes of 2.5 mm fill it
+    /// too) and a tie keeps the fewest stones, so the best layout is these four. How the two
+    /// 5 mm splits are assigned to slab, bar and piece depends on the cut order the planner
+    /// prefers, so callers rely only on the stone count.
     pub(in crate::gui::rough_plan) fn planned_four_stone_layout() -> RoughLayout {
         let rough = RoughBlock {
             x_mm: 10.0,
@@ -243,8 +244,7 @@ pub(in crate::gui::rough_plan) mod fixtures {
             z_mm: 5.0,
         };
         let settings = PlanSettings {
-            count: 4,
-            min_count: 1,
+            max_designs: 1,
             kerf_mm: 0.0,
             allowance_mm: 0.0,
             skin_mm: 0.0,

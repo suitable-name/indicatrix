@@ -449,8 +449,7 @@ and clicking Add Tier.
 
 ## Reordering Tiers
 
-The small up and down arrow buttons on a tier's row (and the same pair on
-the command bar), or **Alt+Up** / **Alt+Down** on the
+The small up and down arrow buttons on a tier's row, or **Alt+Up** / **Alt+Down** on the
 keyboard-selected row, swap that tier with its neighbour in the table. Each
 swap is its own undoable edit. The table order decides the cutting order
 inside each side of the stone: the pavilion and girdle tiers are cut first, in

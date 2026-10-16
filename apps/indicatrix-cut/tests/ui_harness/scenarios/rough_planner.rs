@@ -116,15 +116,15 @@ fn open_planner(ctx: &mut Ctx<'_>) -> Option<RoughPlannerWindow> {
 }
 
 /// Types a 40 x 30 x 25 mm block, asks all of the library, plans, and waits (real time, up to
-/// 60 s) for the layouts. `Err` carries what the window said.
-fn plan_block_raw(window: &RoughPlannerWindow, count: i32) -> Result<(), String> {
+/// 60 s) for the layouts, each of at most `max_designs` different designs (the stones are
+/// not capped). `Err` carries what the window said.
+fn plan_block_raw(window: &RoughPlannerWindow, max_designs: i32) -> Result<(), String> {
     let model = window.global::<RoughPlanModel>();
     model.invoke_set_base(0);
     model.set_rough_x("40".into());
     model.set_rough_y("30".into());
     model.set_rough_z("25".into());
-    model.set_count(count);
-    model.set_min_count(1);
+    model.set_max_designs(max_designs);
     model.set_use_filter(false);
     model.invoke_base_field_committed();
     pump(250);

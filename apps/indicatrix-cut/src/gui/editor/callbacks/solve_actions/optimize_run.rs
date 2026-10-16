@@ -57,8 +57,7 @@ use std::{
 /// or stash the WRONG result into `pending_optimize`.
 ///
 /// The five arguments are the weight boxes, the yield slider and the signed tone slider; the
-/// command bar's Optimize button and the tab's own pass them, and a preset other than
-/// "Custom" ignores them.
+/// Optimize tab's button passes them, and a preset other than "Custom" ignores them.
 ///
 /// When `design.material` names no preset and carries no RI override (a brand-new
 /// design, or an untouched `.asc` import), this resolves a `refractive_index_override`
