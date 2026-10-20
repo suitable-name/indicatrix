@@ -128,7 +128,9 @@ pub(in crate::gui::editor) fn pick_margin(ui: &MainWindow) -> (f32, f32) {
     let Some(render_ctx) = auto_solve::render_ctx() else {
         return (0.0, 0.0);
     };
-    let view_mode = u8::try_from(ui.global::<SolidPreviewModel>().get_view_mode()).unwrap_or(0);
+    let view_mode = crate::gui::render::camera_lighting::view_mode_index(
+        ui.global::<SolidPreviewModel>().get_view_mode(),
+    );
     let viewport_physical = (
         pixel_coordinate(ui.global::<SolidPreviewModel>().get_viewport_width() * scale),
         pixel_coordinate(ui.global::<SolidPreviewModel>().get_viewport_height() * scale),

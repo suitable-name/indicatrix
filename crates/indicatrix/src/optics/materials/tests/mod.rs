@@ -4,6 +4,7 @@
 
 mod ametrine;
 mod biaxial;
+mod built_in_hues;
 mod color_change_garnet;
 mod custom;
 mod dispersion;

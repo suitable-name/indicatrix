@@ -100,7 +100,15 @@ pub fn execute_job(
         Ok(env_map) => env_map,
         Err((kind, message)) => return failed(kind, message, 0),
     };
-    let scene = convert::snapshot_from_scene(&job.scene, env_map);
+    let mut scene = convert::snapshot_from_scene(&job.scene, env_map);
+    scene.engine = job.engine;
+    scene.optical_diagnostics = job
+        .optical_diagnostics
+        .map(convert::diagnostic_presentation);
+    // Before anything renders: a job file can carry a combination the live dialogs refuse.
+    if let Some(reason) = crate::bridge::optical_overlay::export::refusal(&scene) {
+        return failed(FailureKind::Input, reason.to_string(), 0);
+    }
     let remote = remote_selection_for(job, ctx);
     match &job.kind {
         JobKind::Still(still) => execute_still(job, still, ctx, &scene, &remote, cancel, sink),
@@ -134,6 +142,9 @@ pub(super) fn remote_selection_for(job: &RenderJobFile, ctx: &ExecContext) -> Re
     if let Some(contribute) = ctx.contribute_local_override {
         compute.contribute_local = contribute;
     }
+    if !crate::bridge::render_thread::remote_allowed(job.engine) {
+        compute.target = ComputeChoice::Local;
+    }
     convert::remote_selection(compute, ctx.worker.clone())
 }
 
@@ -155,6 +166,7 @@ fn execute_still(
     sink: &mut dyn JobSink,
 ) -> JobOutcome {
     let params = ExportParams {
+        engine: job.engine,
         width: job.scene.width,
         height: job.scene.height,
         samples_per_pixel: still.samples_per_pixel,

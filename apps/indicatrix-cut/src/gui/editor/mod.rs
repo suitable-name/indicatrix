@@ -400,7 +400,7 @@ pub fn setup_editor_callbacks(
         solid_last_solved,
     );
     optimize_panel::setup_optimize_panel(ui, &state);
-    tier_table_model::setup_tier_table_model(ui);
+    tier_table_model::setup_tier_table_model(ui, &state);
     // The "Compute Tilt Curves" analysis action.
     callbacks::setup_batch_tilt_for_open_design_callback(ui, &state, render_ctx, db);
     // The guide pushes its static steps once and re-checks a step's goal against
@@ -734,4 +734,7 @@ pub fn note_provisional_frame_planes(planes: &[(glam::Vec3, f32)]) {
 // The one resolution of a catalogue record's facet planes (design file first, angle
 // table as the fallback) -- the detail view's 3D preview and both batch engines
 // call it. See `loading::catalogue_planes`' own module doc comment.
-pub use loading::{CataloguePlanes, CataloguePlanesSource, resolve_catalogue_planes};
+pub use loading::{
+    CataloguePlanes, CataloguePlanesSource, resolve_catalogue_planes,
+    resolve_catalogue_planes_with_frosting, tools_from_table_rows,
+};

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use glam::Vec3;
 
 use crate::{
+    geometry::tool::{ToolPrimitive, pack_planes_and_tools},
     optics::raytracer::environment::environment_white_balance,
     render_setup::hash_planes,
     renderer::buffers::{GpuCameraParams, GpuGemMaterial, encode_facet_finishes},
@@ -103,6 +104,42 @@ impl GpuFrameRenderer {
         )
     }
 
+    /// [`Self::accumulate`] for a concave stone: the stone is `scene.planes` minus `tools`.
+    ///
+    /// The tool records ride in the `planes` storage binding after the planes (no extra
+    /// binding, so the storage-buffer budget is unchanged); `tools` empty is exactly
+    /// [`Self::accumulate`]. `scene.facet_finishes` is indexed by facet id, tool `k` being
+    /// `scene.planes.len() + k`. At most `GPU_MAX_TOOL_PRIMITIVES` tools: route with
+    /// `renderer::gpu_backend::scene_routes_to_gpu_with_tools` first.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::accumulate`]'s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `accum.len()` is not `width * height`.
+    pub fn accumulate_with_tools(
+        &mut self,
+        scene: &GpuFrameScene<'_>,
+        tools: &[ToolPrimitive],
+        sample_offset: u32,
+        spp: u32,
+        accum: &mut [Vec3],
+    ) -> Result<(), GpuFrameError> {
+        let pipeline_class = classify_material(scene.material);
+        self.accumulate_via_pipeline_geom(
+            scene,
+            tools,
+            pipeline_class,
+            sample_offset,
+            spp,
+            accum,
+            None,
+        )?;
+        Ok(())
+    }
+
     /// The body [`Self::accumulate`]/[`Self::accumulate_cancellable`] delegate to,
     /// parameterised on `pipeline_class` (one of `super::material_class`'s values) rather
     /// than deriving it from `scene.material` -- lets
@@ -138,9 +175,45 @@ impl GpuFrameRenderer {
         accum: &mut [Vec3],
         cancel: Option<&AtomicBool>,
     ) -> Result<AccumulateOutcome, GpuFrameError> {
+        self.accumulate_via_pipeline_geom(
+            scene,
+            &[],
+            pipeline_class,
+            sample_offset,
+            spp,
+            accum,
+            cancel,
+        )
+    }
+
+    /// [`Self::accumulate_via_pipeline`] for a concave stone: `tools` are the stone's
+    /// carving tools (`&[]` for a convex one, which is exactly the planar path).
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::accumulate`]'s.
+    ///
+    /// # Panics
+    ///
+    /// Same conditions as [`Self::accumulate`]'s.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the planar entry point's parameter list plus the tool slice; bundling them would re-introduce TurnRequest one level removed"
+    )]
+    pub(super) fn accumulate_via_pipeline_geom(
+        &mut self,
+        scene: &GpuFrameScene<'_>,
+        tools: &[ToolPrimitive],
+        pipeline_class: u32,
+        sample_offset: u32,
+        spp: u32,
+        accum: &mut [Vec3],
+        cancel: Option<&AtomicBool>,
+    ) -> Result<AccumulateOutcome, GpuFrameError> {
         let mut cursor = ChunkCursor::default();
         let request = TurnRequest {
             scene,
+            tools,
             pipeline_class,
             sample_offset,
             spp,
@@ -369,7 +442,10 @@ impl GpuFrameRenderer {
         // resolution it sizes the first chunk by the OLD per-sample cost and can overshoot
         // `TARGET_CHUNK_MS` by the ratio of the two. Clearing it makes the next dispatch
         // use the bounded first-dispatch cap again. Resumed turns of one scene share a key.
-        let scene_key = (scene.width, scene.height, hash_planes(scene.planes));
+        // The planes binding as the shader sees it: the planes, then the packed tool records
+        // (borrowed unchanged for a convex stone). Hashing it keys the EMA on the tools too.
+        let packed = pack_planes_and_tools(scene.planes, request.tools);
+        let scene_key = (scene.width, scene.height, hash_planes(&packed));
         if self.last_scene_key != Some(scene_key) {
             self.ns_per_tuple_ema = None;
             self.last_scene_key = Some(scene_key);
@@ -392,7 +468,10 @@ impl GpuFrameRenderer {
         let white_balance = environment_white_balance(scene.environment);
 
         let gpu_material = GpuGemMaterial::encode(scene.material);
-        let gpu_finishes = encode_facet_finishes(scene.facet_finishes, scene.planes.len());
+        // One entry per packed `planes` entry, not per facet: the binding sizes `planes` and
+        // `facet_finishes` from the same length, and a facet id (planes, then tools) only
+        // ever indexes the first `planes + tools` of them -- the rest are never read.
+        let gpu_finishes = encode_facet_finishes(scene.facet_finishes, packed.len());
 
         self.ensure_specialized_pipeline(request.pipeline_class);
 
@@ -446,7 +525,7 @@ impl GpuFrameRenderer {
             &SceneBufferInputs {
                 camera_params: &camera_params,
                 material: &gpu_material,
-                planes: scene.planes,
+                planes: &packed,
                 facet_finishes: &gpu_finishes,
                 environment: scene.environment,
             },
@@ -454,6 +533,9 @@ impl GpuFrameRenderer {
 
         let state = ChunkFrameState {
             scene,
+            packed_len: packed.len(),
+            tool_count: u32::try_from(request.tools.len())
+                .expect("a stone's tool count is bounded far below u32::MAX"),
             pipeline_class: request.pipeline_class,
             sample_offset: request.sample_offset,
             spp: request.spp,

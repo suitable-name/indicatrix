@@ -58,6 +58,17 @@ pub use save::{SaveError, SavedFile, asc_bytes, mark_saved, save_bytes};
 /// The title shown for a design with no title line and no file name.
 const UNTITLED: &str = "Untitled Design";
 
+/// Gives unsaved documents one durable variant family before their first variant.
+/// Later file/library saves reuse this metadata UUID; no duplicate catalogue entry
+/// is inserted merely to hold variants.
+pub fn ensure_document_id(state: &mut AppState) {
+    if state.document.metadata.id.trim().is_empty() {
+        state.document.metadata = stamp::stamped(&state.document.metadata);
+        state.session.mark_unsaved();
+        state.operations.invalidate();
+    }
+}
+
 /// Where the current design came from.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -184,15 +195,12 @@ pub fn display_title(state: &AppState) -> String {
 
 /// The custom-material snapshot a native save of `state`'s design carries.
 ///
-/// That is the one the opened file brought while the design still names it, else the one the Stone tab
-/// recorded for the design's (custom) material, so a material made on this device is
-/// written into the file too.
+/// Resolve by name from the session catalogue, which includes restored files and
+/// newly created materials. The opened document's unkeyed recipe may belong to a
+/// material that the working design no longer uses.
 #[must_use]
 pub fn save_snapshot(state: &AppState) -> Option<CustomMaterialSnapshot> {
     let design = &state.session.design;
-    if let Some(snapshot) = state.document.custom_snapshot(design) {
-        return Some(snapshot.clone());
-    }
     let name = design.material.name.as_deref()?;
     if builtin_name_conflict(name).is_some() {
         return None;
@@ -204,8 +212,9 @@ pub fn save_snapshot(state: &AppState) -> Option<CustomMaterialSnapshot> {
 /// files brought (`document`) and those made in the Stone tab (`props`).
 #[must_use]
 pub fn custom_catalogue(state: &AppState) -> Vec<GemMaterial> {
-    let mut all = state.document.custom_materials.clone();
-    for material in &state.props.custom_materials {
+    // The live, editable catalogue supersedes recipes retained by older documents.
+    let mut all = state.props.custom_materials.clone();
+    for material in &state.document.custom_materials {
         if !all
             .iter()
             .any(|known| known.name.eq_ignore_ascii_case(&material.name))
@@ -242,11 +251,31 @@ pub(crate) fn install(
         }
     }
     state.session.replace_with(session);
+    state.operations.replace_document();
     state.document = document;
     // `invalidate` (not `Default`) bumps the solve revision, so a solve still running
     // for the old design is recognised as stale when it lands.
     state.solve.invalidate();
     state.selected_tier = None;
+}
+
+/// Closes the open design: the session returns to the empty start-up design (its undo
+/// history goes with the old one), the document forgets where the design came from, the
+/// old solve and tier selection are dropped, and every long operation for the old design is
+/// cancelled (the same replacement `install` does for a new design). The autosave is
+/// removed so the design does not come back at the next start. Unsaved changes are the
+/// caller's question; this discards them.
+///
+/// Afterwards [`DocumentState::has_design`] is false and the Design page offers
+/// "Start a Design" again. Custom materials registered in the session stay available.
+pub fn close_design(state: &mut AppState) {
+    install(
+        state,
+        EditorSession::fresh(),
+        DocumentState::default(),
+        None,
+    );
+    autosave::remove_autosave(state);
 }
 
 /// Seconds since the Unix epoch (0 when the clock is before it).

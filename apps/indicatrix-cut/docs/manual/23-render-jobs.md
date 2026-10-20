@@ -15,6 +15,17 @@ You can add a job from two places:
 
 ### What a Job Keeps
 
+A job also freezes **Renderer**, and either the Path-Traced sample count or the
+Ray-Traced AA tap count and Fire option. Ray-Traced stills and tilt-video frames
+finish after their fixed taps and use no denoiser. Local, GPU and protocol-29
+remote routes honor the frozen engine. Later viewport or output-setting changes
+do not replace it.
+
+Path-Traced files retain `format: 1`; Ray-Traced files use `format: 2` and an
+explicit `engine` object. A legacy file without that field loads as Path-Traced.
+An older reader refuses a format-2 job instead of silently producing a spectral
+picture. The top-level job engine is authoritative and is copied to the wire scene.
+
 A job keeps a frozen copy of everything it needs: the finished stone, its width and material effects, the material and its color (the preview material, if you were previewing one), the lighting, the camera, the size, the samples and the other export settings. If you change the design afterwards, the job still renders what you saw when you added it.
 
 The job does not freeze the remote worker. Its address and certificates are read from Settings when the job runs (see Limitations). The job does remember your choices about where to render: local only, local and remote, or remote only, and the transfer.
@@ -93,9 +104,9 @@ If the program stops without asking (a crash or a power cut), the job is found a
 
 | Choice | Meaning |
 |---|---|
-| Script type: **Both**, **PowerShell (.ps1)**, **Shell (.sh)** | Which script files are written. |
-| Render on: **This computer**, or **This computer and the remote worker** (with its address) | The second choice is dimmed with "No remote worker is set up in Settings." when there is none. |
-| **Put the finished pictures and videos in the script folder** | Without it, each picture or video goes to the folder its job was added with. |
+| Script Type: **Both**, **PowerShell (.ps1)**, **Shell (.sh)** | Which script files are written. |
+| Render On: **This Computer**, or **This Computer and the Remote Worker** (with its address) | The second choice is dimmed with "No remote worker is set up in Settings." when there is none. |
+| **Put the Finished Pictures and Videos in the Script Folder** | Without it, each picture or video goes to the folder its job was added with. |
 
 Press **Choose Folder and Export** and pick a folder. The program makes a new folder in it, named `render-jobs-` with the date and time, so nothing is ever overwritten. It holds:
 
@@ -127,6 +138,7 @@ indicatrix-cli tilt-video FILE.job.json
 
 | Option | Meaning |
 |---|---|
+| `--engine path` or `ray` | Override the frozen image renderer. Ray-Traced uses the job's sanitized AA options and the required format rule. |
 | `--local cpu`, `gpu` or `cpu+gpu` | Which engines of this computer render. The default is `cpu+gpu`. Without GPU support in the build, everything renders on the processor and a note says so. |
 | `--remote HOST:PORT` with `--cert-dir FOLDER` | Also use a remote worker. The two go together. |
 | `--compute local`, `remote` or `both` | Replace the job's own choice. `remote` and `both` need `--remote`. |
@@ -148,6 +160,11 @@ The tool prints one line on standard output: the path of the finished file (for 
 | 5 | The render failed or was stopped. |
 
 ## Same Picture, or Nearly the Same
+
+Ray-Traced uses fixed AA taps, not a new random sample stream on each run. CPU
+execution is deterministic on one target, and GPU/remote output is checked against
+the CPU tolerance. It can still differ slightly across devices or numerical targets;
+the Monte Carlo noise discussion below applies to Path-Traced.
 
 A render done only on the CPU, or only on the GPU of one computer, gives the same picture every time. A render that splits its work between the CPU and the GPU, or that uses a remote worker, is only the same statistically. Each run shares the samples out by measured speed, so a few samples land on a different engine, and the noise differs a little from run to run. Both pictures are equally correct.
 

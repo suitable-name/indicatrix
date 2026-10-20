@@ -12,6 +12,8 @@ import { PerformanceCurvePanel } from "../settings_dialog/performance_curve_pane
 import { ToggleRow } from "../toggle_switch.slint";
 import { ExportModel } from "../../models/export.slint";
 import { GroupHeader, SliderRow, TextLink } from "parts.slint";
+import { SegmentPill } from "../pill_button.slint";
+import { SettingLabel } from "../settings_dialog/setting_label.slint";
 
 // The Parameters dock's Render & Output tab: the technical render options -- samples,
 // resolution, compute, ray bounces, denoise, the output defaults of the export dialogs, the
@@ -34,16 +36,18 @@ export component RenderOutputTab inherits VerticalLayout {
 
     // Simple mode hides some controls that are off their defaults: say so (see the callback's
     // own comment in `models/settings.slint`).
-    property <bool> advanced_note_visible: !GuideModel.shows_advanced() && SettingsModel.advanced_in_use(
+    property <bool> advanced_note_visible: (!GuideModel.shows_advanced() && SettingsModel.advanced_in_use(
         Math.round(SettingsModel.preview_size_val),
         Math.round(SettingsModel.preview_spp_val),
         SettingsModel.local_preview_scale_index,
         SettingsModel.live_compute_target_index,
         SettingsModel.contribute_to_final_picture,
         SettingsModel.local_compute_target_index,
-        SettingsModel.bounce_index);
+        SettingsModel.bounce_index)) || (!GuideModel.shows_advanced() && (SettingsModel.ray_taps != 8 || !SettingsModel.ray_fire || SettingsModel.thumbnail_renderer_index != 0 || SettingsModel.thumbnail_backdrop_index != 1));
 
     spacing: 14px;
+    // Rows keep their own height when the tab is shorter than the panel (see `StoneTab`).
+    alignment: start;
 
     // Simple mode hides some settings; one of them is off its default.
     if root.advanced_note_visible: Rectangle {
@@ -67,7 +71,6 @@ export component RenderOutputTab inherits VerticalLayout {
     }
 
     GroupHeader { text: "Live View Quality"; }
-
     // Target Samples moves in powers of two -- noise falls as 1/sqrt(N), so a linear 8..1024
     // control would spend ~97% of its travel above 32 spp where each step barely changes
     // anything visible. The slider drags the EXPONENT (3..=10); `sample_exponent` /
@@ -108,6 +111,36 @@ export component RenderOutputTab inherits VerticalLayout {
         hint: "Denoise live view: smooth the grain out of the live picture while it builds up. Turn off to see the raw samples.";
         checked: RemoteWorkerModel.denoise_enabled;
         toggled => { RemoteWorkerModel.denoise_toggled(!RemoteWorkerModel.denoise_enabled); }
+    }
+
+    if GuideModel.shows_advanced(): GroupHeader { text: "Ray-Traced View"; }
+    if GuideModel.shows_advanced(): VerticalLayout {
+        spacing: 6px;
+        SettingLabel {
+            text: "Anti-Aliasing";
+            hint: "How many fixed sample positions per pixel the Ray-Traced view averages; Off uses one ray through the pixel center.";
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            for taps in [1, 4, 8, 16]: SegmentPill {
+                text: taps == 1 ? "Off" : taps + "×";
+                hint: "Ray-Traced Anti-Aliasing: " + taps + " fixed taps per pixel.";
+                selected: SettingsModel.ray_taps == taps;
+                picked => { SettingsModel.ray_taps_selected(taps); }
+            }
+        }
+    }
+    if GuideModel.shows_advanced(): ToggleRow {
+        text: "Fire";
+        hint: "Separate three color rays using the material's dispersion.";
+        checked: SettingsModel.ray_fire;
+        toggled => { SettingsModel.ray_fire_selected(!SettingsModel.ray_fire); }
+    }
+    if GuideModel.shows_advanced(): Text {
+        text: "Ray-Traced uses an averaged tint and approximate frost; it omits polarization, double refraction, haze, zoning, edge rounding and paths beyond the bounce cap. Metrics and diagnostics use their own tracer.";
+        wrap: word-wrap;
+        font-size: 11px;
+        color: Theme.text-muted;
     }
 
     // Live Compute: which engine(s) trace the settled viewport image. Same segmented-pill idiom,
@@ -181,6 +214,28 @@ export component RenderOutputTab inherits VerticalLayout {
     // drag to stay fine-grained; the ranges are Rust's (`PREVIEW_SIZE_RANGE`,
     // `PREVIEW_SAMPLES_RANGE`). Advanced.
     if GuideModel.shows_advanced(): GroupHeader { text: "Library Thumbnails"; }
+    if GuideModel.shows_advanced(): Text { text: "Thumbnail Renderer"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+    if GuideModel.shows_advanced(): HorizontalLayout {
+        spacing: 4px;
+        for label[index] in ["Path-Traced", "Ray-Traced"]: SegmentPill {
+            text: label;
+            hint: "Changing the thumbnail renderer marks existing pictures outdated once; regenerate them to use this choice. Ray-Traced uses eight fixed taps with Fire.";
+            selected: SettingsModel.thumbnail_renderer_index == index;
+            picked => { SettingsModel.thumbnail_renderer_selected(index); }
+        }
+    }
+    if GuideModel.shows_advanced(): Text { text: "Thumbnail Backdrop"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+    if GuideModel.shows_advanced(): HorizontalLayout {
+        spacing: 4px;
+        // Backdrop indices: White 2, Grey 1, Black 3.
+        for choice[index] in [{ label: "White", value: 2 }, { label: "Grey", value: 1 }, { label: "Black", value: 3 }]: SegmentPill {
+            text: choice.label;
+            hint: "The tray the catalogue pictures are drawn on. Grey sets colorless stones apart from their background; changing it marks existing pictures outdated once.";
+            selected: SettingsModel.thumbnail_backdrop_index == choice.value;
+            picked => { SettingsModel.thumbnail_backdrop_selected(choice.value); }
+        }
+    }
+
     if GuideModel.shows_advanced(): SliderRow {
         text: "Preview Image Size";
         hint: "Preview Image Size: the width of the small pictures the catalogue draws for each design, in pixels. Larger pictures are sharper and take longer to draw.";
@@ -191,7 +246,7 @@ export component RenderOutputTab inherits VerticalLayout {
         value <=> SettingsModel.preview_size_val;
         edited(val) => { SettingsModel.preview_size_changed(Math.round(val)); }
     }
-    if GuideModel.shows_advanced(): SliderRow {
+    if GuideModel.shows_advanced() && SettingsModel.thumbnail_renderer_index == 0: SliderRow {
         text: "Preview Samples";
         hint: "Preview Samples: how many light paths are traced for each pixel of a catalogue picture. More samples mean less grain and a slower batch.";
         value_text: Math.round(SettingsModel.preview_spp_val) + "";

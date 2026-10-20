@@ -45,6 +45,9 @@ indicatrix = { workspace = true, features = ["serde"], optional = true }
 # `SceneState`/`RenderRequest` -- is turned on only by this crate's `worker` feature
 # below, never unconditionally).
 indicatrix-net = { workspace = true }
+# Durable server jobs (`worker` feature, `crate::jobs`): a stored job IS the desktop render
+# queue's `RenderJobFile` (`*.job.json`), and its states and recovery rule are that crate's.
+indicatrix-render-jobs = { workspace = true, optional = true }
 # Coordinator job execution (`worker` feature): the lane pool, sample cursor, rate
 # models and deterministic merge a coordinator fans a viewer's request out with.
 indicatrix-dispatch = { workspace = true, optional = true }
@@ -124,7 +127,7 @@ default = []
 # (protocol v14 -- `crate::assets`) with the exact decoder the viewer uses.
 # A worker build also accepts zoned scenes (it advertises the zoning capability bit and
 # handles the separate `ZoningPayload` message).
-worker = ["dep:indicatrix", "dep:indicatrix-dispatch", "dep:glam", "dep:bytemuck", "dep:postcard", "dep:serde_json", "dep:image", "indicatrix/hdr", "indicatrix-net/render"]
+worker = ["dep:indicatrix", "dep:indicatrix-dispatch", "dep:indicatrix-render-jobs", "dep:glam", "dep:bytemuck", "dep:postcard", "dep:serde_json", "dep:image", "indicatrix/hdr", "indicatrix-net/render"]
 # GPU with no render capacity is meaningless, so this implies `worker`. Routes tracing
 # through indicatrix's verified GPU megakernel (`indicatrix::renderer::gpu::frame::GpuFrameRenderer`,
 # wrapped by this crate's own `gpu_backend::GpuBackend`) for both `render` and `serve`,

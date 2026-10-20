@@ -29,9 +29,10 @@ crate-type = ["cdylib", "rlib"]
 # opaque "unreachable executed" trap.
 console_error_panic_hook = "0.1.7"
 # `GemMaterial` (the render material list) and `LightingPreset` (the lighting list).
-# `hdr` stays on for the HDR environment-map upload the render Workers decode;
-# the WebGPU (`gpu`) path is gone -- Chrome's GPU process dies compiling the
-# megakernel, so rendering runs on CPU Web Workers.
+# `hdr` stays on for the HDR environment-map upload the render Workers decode.
+# No `gpu` feature here: the page never compiles a kernel (Chrome's GPU process dies
+# compiling the megakernel). GPU rendering runs the event-wavefront
+# kernels in the separate GPU render Worker, crate `apps/indicatrix-web-gpu`.
 indicatrix = { workspace = true, features = ["hdr"] }
 # `Design`, the `.isdd` design file load/save string APIs, `History`.
 indicatrix-cut-core = { workspace = true }
@@ -92,7 +93,9 @@ web-sys = { version = "0.3.106", default-features = false, features = [
     "IdbRequest",
     "IdbTransaction",
     "IdbTransactionMode",
+    "Navigator",
     "Node",
+    "PageTransitionEvent",
     "Performance",
     "Storage",
     "Url",

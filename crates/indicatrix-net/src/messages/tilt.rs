@@ -74,13 +74,15 @@ impl AxisTiltCurves {
 /// Reuses [`SceneState`] as its geometry payload so `validate_scene` stays the one
 /// shared validation path for both `RENDER` and `TILT_CURVES`.
 ///
-/// Only FOUR fields actually feed the per-axis profile evaluation: `scene.planes`,
-/// `scene.material`, `scene.light_yaw`, `scene.light_pitch`. Every other field
-/// (`width`/`height`/`yaw`/`pitch`/`distance`/`exposure`/`max_bounces`/
-/// `lighting_preset`/`girdle_frosted`) is IGNORED -- a tilt sweep has no single camera
-/// frame; the evaluator derives its own 181 camera poses per axis. Ignored fields are
-/// still validated unconditionally, to avoid a second validation path to keep in sync
-/// with `RenderRequest`'s.
+/// Only these fields feed the per-axis profile evaluation: `scene.planes`,
+/// `scene.material`, `scene.light_yaw`, `scene.light_pitch`, and the finishes
+/// (`girdle_frosted` and `frosted_planes`: frosted facets scatter light, so they change the
+/// curves; a scene that frosts nothing sweeps as polished, bit for bit).
+/// Every other field (`width`/`height`/`yaw`/`pitch`/`distance`/`exposure`/`max_bounces`/
+/// `lighting_preset`) is IGNORED -- a tilt sweep has no single camera frame; the evaluator
+/// derives its own 181 camera poses per axis. Ignored fields are still validated
+/// unconditionally, to avoid a second validation path to keep in sync with
+/// `RenderRequest`'s.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TiltCurvesRequest {
     /// Client-chosen identifier echoed in the reply.
@@ -140,6 +142,7 @@ mod tests {
             optics::{materials::GemMaterial, raytracer::LightingPreset},
         };
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 4,
             height: 4,
             yaw: 0.4,
@@ -159,6 +162,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 

@@ -32,8 +32,8 @@ use slint::{
     ComponentHandle, Model,
     platform::{PointerEventButton, WindowEvent},
 };
-use slint_harness::{AccessibleRole, ElementHandle};
 use std::time::Duration;
+use uiprobe::{AccessibleRole, ElementHandle};
 
 /// The scenarios of this file.
 pub fn scenarios() -> Vec<Scenario> {

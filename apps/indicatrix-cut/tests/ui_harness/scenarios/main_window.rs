@@ -160,7 +160,7 @@ pub fn pieces() -> Vec<Piece> {
     all
 }
 
-/// Walks every top tab, every Parameters dock tab and the Solid view modes 1-4 on the Edit tab.
+/// Walks every top tab, every Parameters dock tab and the Solid view modes 1-5 on the Edit tab.
 /// Proves each selection is followed by the matching model property and that every screen
 /// reached sweeps clean.
 fn tabs_and_views(ctx: &mut Ctx<'_>) {
@@ -240,7 +240,7 @@ fn parameters_dock_tabs(ctx: &mut Ctx<'_>) {
     );
 }
 
-/// Solid view modes 1-4 on the Edit tab, by the digit keys (the global shortcut); the view mode
+/// Solid view modes 1-5 on the Edit tab, by the digit keys (the global shortcut); the view mode
 /// property must follow. Flaky only if keyboard focus is not on the shortcut scope.
 fn solid_view_modes(ctx: &mut Ctx<'_>) {
     select_top_tab(ctx.app, 0);
@@ -253,7 +253,7 @@ fn solid_view_modes(ctx: &mut Ctx<'_>) {
     ) {
         return;
     }
-    for key in 1..=4_i32 {
+    for key in 1..=5_i32 {
         ctx.press(&key.to_string());
         // The mode is written by a handler that Slint runs on the next event-loop pass, so the
         // value is read only after the loop has had its turns (not straight after the key).

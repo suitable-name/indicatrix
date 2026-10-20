@@ -483,6 +483,7 @@ fn a_claim_connection_cannot_issue_a_render_request() {
 
     // A real render-protocol RenderRequest -- what the render listener would accept.
     let scene = SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 4,
         height: 4,
         yaw: 0.4,
@@ -502,6 +503,7 @@ fn a_claim_connection_cannot_issue_a_render_request() {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     };
     let request = RenderRequest {
         intent: indicatrix_net::messages::RequestIntent::Batch,

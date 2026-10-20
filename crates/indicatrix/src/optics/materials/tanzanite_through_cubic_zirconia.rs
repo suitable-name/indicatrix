@@ -7,15 +7,46 @@ use crate::optics::{
 };
 use glam::Vec3;
 
+/// Heated tanzanite's trichroic absorption (alpha/beta/gamma -> `o_ray`/`beta_ray`/`e_ray`),
+/// fitted to measured polarised spectra; see the comment at the entry below for the sources and
+/// the one rescale. A separate function so the entry stays within clippy's function-length limit.
+fn tanzanite_absorption() -> AbsorptionTensor {
+    AbsorptionTensor::biaxial(
+        vec![
+            // alpha (o_ray) -- red-violet direction, the darkest ray after heating; b-ray
+            // x 2.119 (see the comment at the entry)
+            AbsorptionBand::energy(350.0, 5_083.0, 4.81),
+            AbsorptionBand::energy(505.0, 5_500.0, 2.11),
+            AbsorptionBand::energy(577.0, 3_037.0, 2.36),
+            AbsorptionBand::energy(751.0, 2_191.0, 0.326),
+        ],
+        vec![
+            // beta (beta_ray) -- the blue direction
+            AbsorptionBand::energy(340.0, 5_683.0, 12.2),
+            AbsorptionBand::energy(565.0, 5_493.0, 2.1),
+            AbsorptionBand::energy(610.0, 1_526.0, 0.873),
+            AbsorptionBand::energy(771.0, 2_423.0, 2.26),
+        ],
+        vec![
+            // gamma (e_ray, along c_axis) -- yellow-green before heating; blue after (no
+            // 445 nm band left)
+            AbsorptionBand::energy(385.0, 2_560.0, 9.86),
+            AbsorptionBand::energy(440.0, 3_095.0, 0.508),
+            AbsorptionBand::energy(538.0, 3_664.0, 1.35),
+            AbsorptionBand::energy(612.0, 2_209.0, 1.73),
+            AbsorptionBand::energy(742.0, 2_551.0, 1.33),
+        ],
+    )
+}
+
 impl GemMaterial {
     /// Fourth quarter of the built-in material table (Tanzanite through Cubic
     /// Zirconia). See `built_in_materials_diamond_through_emerald` for why the table is
     /// split into several functions.
     pub(super) fn built_in_materials_tanzanite_through_cubic_zirconia() -> Vec<Self> {
         vec![
-            // Tanzanite (unheated, trichroic Zoisite, Ca2Al3(SiO4)3(OH):V -- see the
-            // CHOICE note below for why this models the unheated stone rather than the
-            // heat-treated blue-violet commercial gem)
+            // Tanzanite (HEATED, Zoisite, Ca2Al3(SiO4)3(OH):V -- see the CHOICE note
+            // below; the entry models the heat-treated violet-blue commercial gem)
             //
             // No primary Sellmeier/Cauchy fit for zoisite/tanzanite exists (absent
             // from the refractiveindex.info database, and no dedicated visible-range
@@ -42,10 +73,8 @@ impl GemMaterial {
                 },
                 birefringence_delta: 0.0130,
                 // PLEOCHROISM: a genuine three-set `AbsorptionTensor::biaxial`
-                // (`o_ray`=alpha/`beta_ray`=beta/`e_ray`=gamma). This entry
-                // deliberately models UNHEATED tanzanite -- the genuinely trichroic
-                // mineral, not the heat-treated commercial gem (see the CHOICE note
-                // below).
+                // (`o_ray`=alpha/`beta_ray`=beta/`e_ray`=gamma). This entry models
+                // the HEATED commercial stone (see the CHOICE note below).
                 //
                 // Band positions: C.S. Hurlbut, American Mineralogist 54, 702 (1969),
                 // citing B.W. Anderson (1968)'s polarized absorption data for blue
@@ -53,8 +82,9 @@ impl GemMaterial {
                 // reports tanzanite as trichroic: X-axis red, Y-axis blue, Z-axis
                 // yellow-green. Corroborated by K. Schwarzinger, T. Ulatowski & G.R.
                 // Rossman's V3+-in-zoisite work, which places V3+ absorption at 530nm
-                // and 600nm in all three polarization directions (consistent with the
-                // 528/595nm positions used here), and identifies the 455nm band as
+                // and 600nm in all three polarization directions (the literature
+                // positions; the fitted band centres below differ, see FITTED), and
+                // identifies the 455nm band as
                 // Fe2+-Ti4+ intervalence charge transfer (IVCT), present only in the
                 // gamma ray and destroyed by heat treatment above 550C -- the
                 // mechanism by which heating collapses tanzanite's trichroism to the
@@ -67,42 +97,39 @@ impl GemMaterial {
                 // Z=yellow-green is gamma. Maps directly onto this crate's
                 // `AbsorptionTensor3` alpha/beta/gamma convention: `o_ray` (alpha) ->
                 // red, `beta_ray` (beta) -> blue, `e_ray` (gamma, along `c_axis`
-                // below) -> the 455nm-bearing yellow-green ray.
+                // below) -> the ray that carries the 455nm band in UNHEATED stones.
                 //
-                // CHOICE: this entry models UNHEATED tanzanite, not the heat-treated
-                // stone sold as "tanzanite" almost universally -- unheated tanzanite
-                // is the textbook trichroic example. The heated form's 455nm-band
-                // loss could be modelled later by a "Tanzanite (heated)" entry
-                // omitting the third `AbsorptionBand` below.
+                // CHOICE (changed 2026-10-19): "Tanzanite" is the HEATED stone, the
+                // form sold as "tanzanite" almost universally (the unheated trichroic
+                // stone, whose gamma ray carries a strong 455nm band, mixes to a
+                // near-grey and was the previous model; an "(unheated)" entry would
+                // be appended to `all_materials` later, an owner decision).
                 //
-                // Amplitudes are tuned for plausible saturation; band positions
-                // (595nm, 528nm, 455nm) are cited. The qualitative amplitude pattern
-                // (beta strongest on both V3+ bands, blocking red and green-yellow to
-                // leave blue; alpha weakest, leaving red open; gamma carries the
-                // 455nm band exclusively, blocking blue to leave yellow-green)
-                // follows directly from the three colors Hurlbut reports.
-                absorption: AbsorptionTensor::biaxial(
-                    vec![
-                        // alpha (o_ray) -- X-axis, red: both V3+ bands weak, leaving
-                        // red comparatively open.
-                        AbsorptionBand::new(595.0, 45.0, 1.3),
-                        AbsorptionBand::new(528.0, 35.0, 1.8),
-                    ],
-                    vec![
-                        // beta (beta_ray) -- Y-axis, blue: both V3+ bands strong,
-                        // absorbing red and green-yellow, leaving a blue window.
-                        AbsorptionBand::new(595.0, 45.0, 3.2),
-                        AbsorptionBand::new(528.0, 35.0, 2.8),
-                    ],
-                    vec![
-                        // gamma (e_ray) -- Z-axis, yellow-green: V3+ absorption weaker
-                        // than beta's, plus the gamma-exclusive 455nm Fe2+-Ti4+ IVCT
-                        // band, which blocks blue to complete yellow-green.
-                        AbsorptionBand::new(595.0, 45.0, 1.6),
-                        AbsorptionBand::new(528.0, 35.0, 1.0),
-                        AbsorptionBand::new(455.0, 40.0, 2.6),
-                    ],
-                ),
+                // FITTED 2026-10-19 by bounded
+                // least-squares energy-Gaussian fits (log residual, 380-780 nm) to
+                // the three polarised Caltech Mineral Spectroscopy Server spectra of
+                // zoisite GRR 2292, blue zone (Arusha, Tanzania; E||a = gamma and
+                // E||c = beta from a 3.150 mm piece, E||b = alpha from a 5.142 mm
+                // piece; NIR baselines removed), the files
+                // `caltech_zoisite_grr2292_blue_a_gamma_3p150mm.csv`,
+                // `caltech_zoisite_grr2292_blue_b_alpha_5p142mm.csv` and
+                // `caltech_zoisite_grr2292_blue_c_beta_3p150mm.csv` in
+                // `data/reference_spectra/`. The blue zone's gamma ray has no
+                // 445 nm Fe2+-Ti4+ band, the band that heating removes, so this
+                // natural blue is the heated stone's spectrum; the digitised
+                // Caltech GRR 3045 after-heating curves
+                // (`caltech_zoisite_grr3045_after_heating_digitized_5p747mm.csv`)
+                // agree ray for ray. The alpha ray is scaled by 2.119 so that
+                // alpha(540 nm)/gamma(600 nm) = 1.48, the ratio measured on single
+                // crystals (GRR 1265: 1.49, GRR 3045: 1.47; the two-piece 2292 pair
+                // gives 0.70). Concentration: the crystal's own (about 0.6 wt%
+                // V2O3, a top-colour blue) over the 8.8 mm face-up path of a 7 mm
+                // stone. V3+ bands at ~540 and ~600 nm in all rays, an NIR band at
+                // 740-770 nm (beta, gamma), UV edges. Swatch (7 mm, D65): L*45 C*49
+                // h=292; p = 1.5: h 296, p = 2: h 301. Alpha is the darkest and most
+                // purplish ray (L*31 h 317), beta blue (L*45 h 291), gamma the
+                // lightest (L*54 h 268).
+                absorption: tanzanite_absorption(),
                 c_axis: Vec3::Y,
                 // n_beta - n_alpha at the D line. Source: C.S. Hurlbut, American
                 // Mineralogist 54, 702 (1969), reporting per-specimen tanzanite

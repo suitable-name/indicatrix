@@ -8,6 +8,7 @@ mod fixtures;
 
 mod anchored;
 mod candidate_search;
+mod concave_scoring;
 mod cost_probe;
 mod driven;
 mod free_tiers;
@@ -16,7 +17,9 @@ mod multistart;
 mod objective_weights;
 mod optimize_design;
 mod polish;
+mod preservation;
 mod presets;
+mod projection_report;
 mod search_helpers;
 mod search_results;
 mod shape_target;

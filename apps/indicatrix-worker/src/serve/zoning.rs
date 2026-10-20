@@ -168,6 +168,7 @@ mod tests {
             material = material.with_zoning(zones());
         }
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 8,
             height: 8,
             yaw: 0.4,
@@ -187,6 +188,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 

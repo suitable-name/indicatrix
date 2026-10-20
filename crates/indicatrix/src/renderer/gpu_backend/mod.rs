@@ -172,9 +172,17 @@
 //! configurations so a caller needs no `#[cfg]` of its own.
 
 use glam::Vec3;
+mod limits;
+mod tool_routing;
+pub mod whitted;
+pub use limits::GpuWorkLimits;
+pub use tool_routing::{GpuRouteDecline, scene_decline_with_tools, scene_routes_to_gpu_with_tools};
 
 use crate::{
-    geometry::{GpuFacetPlane, tool::StoneGeometry},
+    geometry::{
+        GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
     optics::{
         fluorescence::Fluorescence,
         materials::GemMaterial,
@@ -190,6 +198,8 @@ mod recovery;
 mod stub;
 #[cfg(all(test, feature = "gpu"))]
 mod tests;
+#[cfg(all(test, feature = "gpu"))]
+mod tool_tests;
 #[cfg(feature = "gpu")]
 mod turnstile;
 #[cfg(all(test, feature = "gpu"))]
@@ -236,6 +246,10 @@ pub struct GpuSceneRef<'a> {
 pub struct GpuBatchItem<'a> {
     /// The scene to trace.
     pub scene: GpuSceneRef<'a>,
+    /// Concave tools of the stone (`&[]` for a convex one), at most
+    /// [`GPU_MAX_TOOL_PRIMITIVES`](crate::geometry::tool::GPU_MAX_TOOL_PRIMITIVES); see
+    /// [`scene_routes_to_gpu_with_tools`]. Tool `k` has facet id `scene.planes.len() + k`.
+    pub tools: &'a [ToolPrimitive],
     /// Absolute index of the first sample (see "Sample-range additivity").
     pub first_sample: u32,
     /// Number of samples to trace.
@@ -244,7 +258,8 @@ pub struct GpuBatchItem<'a> {
     pub out: &'a mut [Vec3],
 }
 
-/// Whether a scene may be dispatched to the GPU at all.
+/// Whether a scene may be dispatched to the GPU at all, for a caller that CANNOT hand the
+/// GPU a tool list.
 ///
 /// The material must be one the GPU supports, the stone must be convex (no tools), the
 /// material must not fluoresce (`fluorescence` empty) and the lighting must not be a UV
@@ -252,17 +267,19 @@ pub struct GpuBatchItem<'a> {
 ///
 /// Fluorescence is single-wavelength CPU transport (`optics::fluorescence`), and the UV
 /// lamps' spectra and the excitation paths below 380 nm exist only on the CPU, so such
-/// a scene is traced entirely by the CPU, like a concave one. `lighting` is the analytic
-/// lighting preset of the scene (`EnvironmentSource::lighting_preset`; for an HDR
-/// panorama pass the preset's default, as no lamp is in play).
+/// a scene is traced entirely by the CPU.
 ///
-/// The WGSL intersection, NEE probes and edge-rounding know nothing about tools, and
-/// changing them needs an adapter to verify (see `docs/gpu.md`). Until that lands a
-/// concave stone must take the CPU tracer, which is the shipped behaviour for it; a
-/// caller that gets `false` renders the whole frame with
+/// A concave stone is declined here because [`GpuSceneRef`] carries planes only: a caller
+/// built on it (the mobile backend) that rendered a concave stone on the GPU would drop its
+/// tools. The GPU kernels do trace tools (`GpuBackend::try_accumulate_geom`,
+/// `GpuBatchItem::tools`); a caller that passes them asks
+/// [`scene_routes_to_gpu_with_tools`] instead, which accepts up to
+/// `GPU_MAX_TOOL_PRIMITIVES` tools and otherwise renders the whole frame with
 /// [`crate::renderer::cpu_frame::trace_pixels_interleaved_geom`], i.e. a
-/// `HybridSplit::cpu_only` split. A pure function of the scene so it is unit-tested
-/// without an adapter.
+/// `HybridSplit::cpu_only` split. `lighting` is the analytic lighting preset of the scene
+/// (`EnvironmentSource::lighting_preset`; for an HDR panorama pass the preset's default, as
+/// no lamp is in play). A pure function of the scene so it is unit-tested without an
+/// adapter.
 ///
 /// Not `const`: `GemMaterial::gpu_supported` inspects a zoned material's zone list (mesh shells,
 /// scattering and oversized band sets are CPU only; this is also how a zoned material the
@@ -339,41 +356,12 @@ pub enum GpuPipelineKind {
 mod routing_tests {
     use super::*;
     use crate::{
-        geometry::{cuts::StandardGemCuts, tool::ToolPrimitive},
+        geometry::cuts::StandardGemCuts,
         optics::{
             absorption::AbsorptionBand,
             fluorescence::{EmissionBand, FluorescentEmitter},
         },
     };
-    use glam::Vec3;
-
-    #[test]
-    fn scene_routes_to_gpu_is_false_whenever_tools_are_present() {
-        let planes = StandardGemCuts::standard_round_brilliant();
-        let tools = [ToolPrimitive::ball(Vec3::new(0.0, 0.3, 0.0), 0.1)];
-        let material = GemMaterial::diamond();
-        assert!(
-            material.gpu_supported(),
-            "test premise: a supported material"
-        );
-        let none = Fluorescence::none();
-        let daylight = LightingPreset::Daylight;
-        assert!(scene_routes_to_gpu(
-            &material,
-            StoneGeometry::planes_only(&planes),
-            none,
-            daylight
-        ));
-        assert!(!scene_routes_to_gpu(
-            &material,
-            StoneGeometry {
-                planes: &planes,
-                tools: &tools,
-            },
-            none,
-            daylight
-        ));
-    }
 
     #[test]
     fn scene_routes_to_gpu_is_false_for_fluorescence_or_a_uv_lamp() {

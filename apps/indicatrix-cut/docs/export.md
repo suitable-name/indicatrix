@@ -3,21 +3,39 @@
 How `.asc` files move in and out of the local library. For everything else see
 [the README](../README.md).
 
-**Import**: choose a single `.asc` file or a folder (scanned non-recursively for
-`*.asc`, case-insensitive). Choosing runs the import immediately — there is no
-path field and no separate confirm step; cancelling the picker does nothing at
-all. The work happens on a worker thread, reporting `Importing N / M` as it
-goes, so a large folder never freezes the window. Each file is parsed via
-`indicatrix_formats::asc::parse_asc` and saved through `indicatrix_vault::local::import_asc`.
-Per-file failures are collected and reported in a summary rather than aborting
-the batch.
+For rendered pictures, the export dialog selects **Path-Traced** or **Ray-Traced**.
+Ray-Traced freezes 1/4/8/16 AA taps and Fire with the job, finishes at that tap count,
+and bypasses denoising; it does not use a progressive sample target. Path-Traced
+keeps its spectral sampling and denoising controls. Frozen Ray-Traced jobs use
+render-job format 2; historical format-1 jobs remain Path-Traced. Remote peers must
+all use protocol 29 to carry this choice. See the
+[rendering manual](manual/09-rendering-and-export.md) for the approximation's limits.
 
-**Designs that replace an existing entry are called out.** A locally imported
+**Import**: the Import Designs panel has **Choose File...** (one `.asc`, `.gem` or
+`.gcs` file) and **Choose Folder...** (every `.asc`, `.gem` and `.gcs` file in it,
+and any stand-alone `.isdd` or legacy `.indicatrix` design file; the extension is
+compared case-insensitively). The **Include Subfolders (Set This First)** switch
+makes a folder import descend into the folders inside it; set it before pressing
+**Choose Folder...**. Choosing runs the import immediately, with no path field and no
+separate confirm step (apart from the replace question below); cancelling the picker
+does nothing at all. The work happens on a worker thread, reporting `Importing N / M`
+as it goes, so a large folder never freezes the window. A `.gem` (GemCAD) or `.gcs`
+(Gem Cut Studio) file is converted to `.asc` cutting instructions, and the original
+file stays attached to the design; an `.asc` is parsed via
+`indicatrix_formats::asc::parse_asc` and saved through
+`indicatrix_vault::local::import_asc`. Per-file failures are collected and reported
+in a summary rather than aborting the batch. When the import has finished, the
+program asks whether to generate catalogue previews (see `import_preview_choice` in
+[settings.md](settings.md)).
+
+**Designs that replace an existing entry are asked about first.** A locally imported
 design is keyed by `local://<file_name>`, and `diagram_entries.url` is unique, so
 re-importing the same *filename* updates that design in place — which is what you
 want for a genuine re-import, but means two different designs that happen to share
-a filename collapse into one. The summary says how many entries were replaced, so
-this is never silent.
+a filename collapse into one. Before anything is imported, a "Replace Existing
+Design(s)?" question says how many of the files share a name with a design already
+in the catalogue; **Continue** goes ahead and declining leaves the catalogue
+untouched. The question cannot be switched off.
 
 ### Metadata the `.asc` File Doesn't Carry
 
@@ -63,6 +81,11 @@ marker (see `indicatrix-formats`'s README on `mark_reconstructed`). Exported fil
 sanitized (`\ / : * ? " < > |` stripped) and offered as the default name in a
 native Save As dialog. Cancelling that dialog writes nothing at all — an export
 the user declined to name is not quietly written somewhere else.
+
+**Export as Gem Cut Studio File**, next to it in the detail header (Advanced interface
+only), writes the catalogue's cutting instructions as a Gem Cut Studio `.gcs` file. It
+is experimental; a design with concave tiers is first asked about with the "Export
+Anyway" question (manual Chapter 16).
 
 **Choosing paths.** Export destinations, the HDR environment map and the
 remote-worker certificate folder all open a native OS dialog (`rfd`), seeded from

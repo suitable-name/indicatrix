@@ -76,6 +76,7 @@ use indicatrix::{
         materials::GemMaterial,
         raytracer::{Camera, DEFAULT_FOV_DEG, DEFAULT_POSE, LightingPreset},
     },
+    render_setup::Backdrop,
     renderer::{
         env_map::EnvironmentMap,
         gpu_backend::{GpuBackend, GpuSceneRef},
@@ -87,7 +88,7 @@ use indicatrix_vault::model::material_match::RiPresetCandidate;
 use std::{
     io::Cursor,
     sync::{
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
@@ -96,10 +97,12 @@ use std::{
 
 mod cpu_permits;
 mod fingerprint;
+mod ray;
 mod solid;
+pub use ray::render_rgba_at_pose_ray;
 
-pub use fingerprint::{CacheKind, FingerprintMaterial, cache_fingerprint};
-pub use solid::render_view_solid;
+pub use fingerprint::{CacheKind, FingerprintMaterial, cache_fingerprint, frosting_hash};
+pub use solid::render_view_solid_with_tools;
 
 /// Refractive index is conventionally quoted at the sodium D line -- see
 /// `indicatrix_vault::model::material_match`'s module doc comment for why every
@@ -125,9 +128,9 @@ pub fn material_ri_at_sodium_d(material: &GemMaterial) -> f64 {
 /// Camera pose shared by both preview views -- see this module's doc comment for the
 /// pitch convention. `yaw`/`distance`/`light_yaw`/`light_pitch`/`exposure` all match
 /// `settings::model::app_settings::DEFAULT_CAMERA_*`/`DEFAULT_LIGHT_*` (the live
-/// viewport's own fresh-install defaults), so a preview thumbnail looks like a plain,
-/// undialled-in render of the design -- not a special "thumbnail" look a user has never
-/// otherwise seen.
+/// viewport's own fresh-install defaults), so a preview thumbnail frames and exposes like
+/// a plain, undialled-in render of the design. The one deliberate difference is the
+/// surround: see [`PREVIEW_LIGHTING_PRESET`] (white tray, 8 degree head shadow).
 const PREVIEW_YAW: f32 = DEFAULT_POSE.yaw;
 const PREVIEW_DISTANCE: f32 = DEFAULT_POSE.distance;
 /// `pub` (effectively crate-visible only -- see [`SODIUM_D_NM`]'s note): `gui::batch::tilt`'s
@@ -148,14 +151,85 @@ pub const PREVIEW_LIGHT_PITCH: f32 = 0.95;
 /// lights before 2026-10-07. Its label is part of the tilt-curve cache fingerprint, so
 /// curves scored under another preset count as stale and are recomputed.
 pub const BATCH_TILT_LIGHTING_PRESET: LightingPreset = LightingPreset::IsoHemisphere;
+/// Exposure of every catalogue preview. Part of the preview fingerprint
+/// (`fingerprint::cache_fingerprint`), so changing it renders the previews again.
 const PREVIEW_EXPOSURE: f32 = 1.0;
-/// The lighting rig every preview renders under -- `LightTent` is this app's own
-/// default lighting-preset label (`DEFAULT_LIGHTING_RIG`), matching `PREVIEW_YAW`'s own
-/// "look like an undialled-in render" reasoning above.
-const PREVIEW_LIGHTING_PRESET: LightingPreset = LightingPreset::LightTent;
-/// The backdrop every preview renders against -- `GemRay`'s grey, the live view's own
-/// default, so a catalogue thumbnail matches the Live Render tab.
-const PREVIEW_BACKDROP: f32 = indicatrix::optics::raytracer::BACKDROP_GREY;
+/// The lighting rig every catalogue preview renders under: a bright WHITE surround
+/// ([`LightingPreset::WhiteTray`]: perfectly uniform walls and a bright floor, D65, no
+/// black cards and no spot), so a stone's body color reads at its swatch value and the
+/// windows of the top view are white instead of black. Chosen over `ShopLights`, whose
+/// floor is dark (0.05) and whose pinpoint spark would put hot spots into a catalogue
+/// comparison.
+///
+/// This is a CATALOGUE decision only. The live viewport's default rig stays `LightTent`
+/// (`DEFAULT_LIGHTING_RIG`, "Light tent + black cards"): a photo tent is the right model
+/// for looking at one stone, a white surround the right one for comparing many stones'
+/// colors side by side. The Compare window's Traced mode renders under this same rig, so
+/// a compared stone still reads like a thumbnail of itself.
+const PREVIEW_LIGHTING_PRESET: LightingPreset = LightingPreset::WhiteTray;
+/// Radius in degrees of the observer's head shadow in a catalogue preview (the live view's
+/// default is 16): smaller, so the shadow does not black out the table of a stone seen
+/// from above. Part of the preview fingerprint.
+const PREVIEW_HEAD_SHADOW_DEG: f32 = 8.0;
+/// The tray every catalogue preview renders on: the user's Thumbnail Backdrop
+/// (`AppSettings::thumbnail_backdrop`, Grey by default, so a colorless stone stands apart
+/// from it), as a [`Backdrop`] index. Held here, process-wide, so every preview path (local,
+/// remote, Ray-Traced drafts, the Compare window) and the preview fingerprint read the same
+/// choice; the settings wiring sets it at startup and on every change
+/// ([`set_thumbnail_backdrop_index`]).
+static THUMBNAIL_BACKDROP: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(Backdrop::Grey.index());
+
+/// Sets the tray catalogue previews render on (a [`Backdrop`] index). Changing it changes the
+/// preview fingerprint, so every stored preview reads as outdated once.
+pub fn set_thumbnail_backdrop_index(index: i32) {
+    THUMBNAIL_BACKDROP.store(
+        Backdrop::from_index(index).index(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// The tray catalogue previews currently render on.
+fn thumbnail_backdrop() -> Backdrop {
+    Backdrop::from_index(THUMBNAIL_BACKDROP.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The name of the thumbnail tray in the preview fingerprint (with `TRAY_MODEL_VERSION`),
+/// instead of a radiance: a future change of the light pose or of the preview rig then does
+/// not silently rename it, and a change of the tray model makes every stored preview stale
+/// exactly once.
+fn thumbnail_backdrop_name() -> &'static str {
+    match thumbnail_backdrop() {
+        Backdrop::AsLit => "as-lit",
+        Backdrop::Grey => "grey",
+        Backdrop::White => "white",
+        Backdrop::Black => "black",
+    }
+}
+
+/// The tray radiance every preview carries: the thumbnail tray resolved under
+/// [`PREVIEW_LIGHTING_PRESET`] at the fixed preview light pose.
+///
+/// Every choice is resolved ONCE per process. The resolve integrates the rig's irradiance
+/// (about 2-3 ms) and the library keeps a one-entry cache keyed by (preset, pose); the live
+/// view, the exports and the preview workers resolve different keys on different threads, so
+/// a per-preview call would evict the live view's entry on every thumbnail and make it pay
+/// the integral again.
+fn preview_backdrop() -> f32 {
+    static TRAYS: LazyLock<[f32; 4]> = LazyLock::new(|| {
+        [0, 1, 2, 3].map(|index| {
+            Backdrop::from_index(index).resolve(
+                PREVIEW_LIGHTING_PRESET,
+                PREVIEW_LIGHT_YAW,
+                PREVIEW_LIGHT_PITCH,
+            )
+        })
+    });
+    TRAYS[usize::try_from(thumbnail_backdrop().index()).unwrap_or(1)]
+}
+/// The surface glare every preview renders with (the live view's neutral value). Part of the
+/// preview fingerprint with [`PREVIEW_BACKDROP_NAME`]: both decide pixels.
+const PREVIEW_SURFACE_GLARE: f32 = 1.0;
 
 /// Which of the two cached preview images a [`render_view`] call produces -- see this
 /// module's doc comment for the pitch each maps to.
@@ -211,8 +285,21 @@ pub fn ri_candidates() -> Vec<RiPresetCandidate> {
 /// resolved by the caller (`gui::batch::preview`); this module only renders what it's
 /// given.
 pub struct PreviewJob<'a> {
+    /// Image-forming engine, independent of local/remote compute.
+    pub engine: indicatrix::renderer::engine::EngineSpec,
     /// Facet planes of the stone.
     pub planes: &'a [GpuFacetPlane],
+    /// The concave tools cut into `planes` (grooves, dimples), empty for a planar design:
+    /// the stone is rendered WITH them, as the Compare window and the exports render it
+    /// (`gui::editor::CataloguePlanes::render_tools`). The GPU traces them with the planes
+    /// (`GpuBackend::try_accumulate_geom`, up to `GPU_MAX_TOOL_PRIMITIVES`); beyond that the
+    /// CPU tracer does. A planar job is unchanged.
+    pub tools: &'a [ToolPrimitive],
+    /// The planes the design frosts: ascending indices into `planes`
+    /// (`gui::editor::resolve_catalogue_planes_with_frosting`), traced `Frosted` locally and
+    /// on a remote worker, as the live viewport and the exports trace them. Empty for a
+    /// polished design, which renders exactly as it always did.
+    pub frosted: &'a [u32],
     /// Gem material the stone is rendered with.
     pub material: &'a GemMaterial,
     /// Square render dimension in pixels -- `AppSettings::preview_size` (or a caller-
@@ -239,7 +326,12 @@ pub struct PreviewJob<'a> {
 /// in `catch_unwind` at the single-item granularity its progress reports at.
 #[must_use]
 pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) -> Option<Vec<u8>> {
+    if job.engine.is_ray() {
+        return ray::render_view_ray(job, view);
+    }
     let scene = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: PREVIEW_YAW,
         pitch: view.pitch(),
         distance: PREVIEW_DISTANCE,
@@ -249,25 +341,31 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         lighting_preset: PREVIEW_LIGHTING_PRESET,
         max_bounces: job.max_bounces,
         exposure: PREVIEW_EXPOSURE,
-        backdrop: PREVIEW_BACKDROP,
+        backdrop: preview_backdrop(),
         active_planes: job.planes.to_vec(),
-        // A catalogue row's stored design is planar.
-        tools: Vec::new(),
+        // A concave design's grooves and dimples; empty for a planar one.
+        tools: job.tools.to_vec(),
         fluorescence: Arc::default(),
-        // No frosted-girdle finish for a catalogue thumbnail -- matches the export's
-        // own "empty means every facet Polished" convention
-        // (`trace_spectral_ray_with_finish`'s doc comment) rather than reading a
-        // per-design setting that doesn't exist for a design that has never been
-        // opened in the live viewport this session.
-        facet_finishes: Vec::new(),
+        // No frosted-girdle finish for a catalogue thumbnail (the girdle flag is a live
+        // viewport setting that doesn't exist for a design that has never been opened
+        // this session), but the planes the design itself frosts are traced frosted. The
+        // composition returns an empty list when nothing is frosted -- the export's "empty
+        // means every facet Polished" convention
+        // (`trace_spectral_ray_with_finish`'s doc comment) -- so a polished design keeps
+        // its bytes.
+        facet_finishes: indicatrix::geometry::facet_finishes_with_frosted(
+            job.planes,
+            false,
+            job.frosted,
+        ),
         // Catalogue thumbnails always use the analytic studio rig, same reasoning as
         // `facet_finishes` above: there is no per-design HDR map setting to read, and a
         // batch-generated thumbnail for all ~3,187 designs must not depend on whatever
         // HDR map happened to be loaded in the live viewport during the session that
         // triggered the batch.
         env_map: None,
-        surface_glare: 1.0,
-        head_shadow_deg: 16.0,
+        surface_glare: PREVIEW_SURFACE_GLARE,
+        head_shadow_deg: PREVIEW_HEAD_SHADOW_DEG,
     };
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
     let environment = scene
@@ -287,7 +385,9 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
 
     let pixel_count = (job.size as usize) * (job.size as usize);
     let mut accum = vec![Vec3::ZERO; pixel_count];
-    if !gpu.try_accumulate(&gpu_scene, 0, job.spp, &mut accum) {
+    // The tools ride with the planes to the GPU (`try_accumulate_geom`); a stone beyond the
+    // kernels' tool limit declines there and is traced on the CPU, which reads them too.
+    if !gpu.try_accumulate_geom(&gpu_scene, job.tools, 0, job.spp, &mut accum) {
         // The batch runs `cores - 1` lanes: each fallback render takes its fair share of
         // the core pool and spawns exactly that many threads (see `cpu_permits`).
         let permits = cpu_permits::acquire_share();
@@ -325,10 +425,17 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
 /// CPU only ([`export_thread::batch::render_batch`], the tracer [`render_view`]
 /// falls back to): the compare window must never compete with the live viewport for
 /// the shared GPU adapter. A zero `size` component returns an empty buffer.
+/// `frosted` lists the planes the design frosts (indices into `planes`, ascending), traced
+/// `Frosted` like the live viewport and the exports do; empty for a design without frosting.
 #[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pose render's seven parameters plus the frosted planes; a bundling struct would only rename them"
+)]
 pub fn render_rgba_at_pose(
     planes: &[GpuFacetPlane],
     tools: &[ToolPrimitive],
+    frosted: &[u32],
     material: &GemMaterial,
     camera_pose: (f32, f32, f32),
     size: (u32, u32),
@@ -342,6 +449,8 @@ pub fn render_rgba_at_pose(
     let (yaw, pitch, distance) = camera_pose;
     let spp = spp.max(1);
     let scene = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw,
         pitch,
         distance,
@@ -351,18 +460,18 @@ pub fn render_rgba_at_pose(
         lighting_preset: PREVIEW_LIGHTING_PRESET,
         max_bounces,
         exposure: PREVIEW_EXPOSURE,
-        backdrop: PREVIEW_BACKDROP,
+        backdrop: preview_backdrop(),
         active_planes: planes.to_vec(),
         // The compare window's concave tools (grooves, dimples), empty for a planar
         // stone (see `gui::editor::compare`).
         tools: tools.to_vec(),
         fluorescence: Arc::default(),
-        // Same "every facet Polished, analytic studio rig" reasoning as
-        // `render_view`'s own snapshot.
-        facet_finishes: Vec::new(),
+        // Every facet Polished (the analytic studio rig, as `render_view`'s own snapshot) except
+        // the planes the design frosts; empty when it frosts none.
+        facet_finishes: indicatrix::geometry::facet_finishes_with_frosted(planes, false, frosted),
         env_map: None,
-        surface_glare: 1.0,
-        head_shadow_deg: 16.0,
+        surface_glare: PREVIEW_SURFACE_GLARE,
+        head_shadow_deg: PREVIEW_HEAD_SHADOW_DEG,
     };
     let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
     let mut accum = vec![Vec3::ZERO; (width as usize) * (height as usize)];
@@ -430,6 +539,7 @@ pub fn render_view_remote_checked(
 /// batch path ([`remote_batch_item`]).
 fn remote_scene(job: &PreviewJob<'_>, view: PreviewView) -> SceneState {
     SceneState {
+        engine: job.engine,
         width: job.size,
         height: job.size,
         yaw: PREVIEW_YAW,
@@ -443,12 +553,13 @@ fn remote_scene(job: &PreviewJob<'_>, view: PreviewView) -> SceneState {
         material: job.material.clone(),
         planes: job.planes.to_vec(),
         girdle_frosted: false,
-        backdrop: PREVIEW_BACKDROP,
+        backdrop: preview_backdrop(),
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
-        surface_glare: 1.0,
-        tools: Vec::new(),
+        surface_glare: PREVIEW_SURFACE_GLARE,
+        tools: job.tools.to_vec(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
-        head_shadow_deg: 16.0,
+        head_shadow_deg: PREVIEW_HEAD_SHADOW_DEG,
+        frosted_planes: job.frosted.to_vec(),
     }
 }
 
@@ -651,163 +762,5 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classify_maps_terminal_and_progress_updates() {
-        assert!(matches!(
-            classify(RemoteUpdate::Done {
-                request_id: 1,
-                cancelled: false
-            }),
-            Step::Terminal(Ok(()))
-        ));
-        assert!(matches!(
-            classify(RemoteUpdate::Done {
-                request_id: 1,
-                cancelled: true
-            }),
-            Step::Terminal(Err(RemoteShortfall::Cancelled))
-        ));
-        assert!(matches!(
-            classify(RemoteUpdate::Failed {
-                request_id: 1,
-                message: "x".to_owned()
-            }),
-            Step::Terminal(Err(RemoteShortfall::Failed(_)))
-        ));
-        assert!(matches!(
-            classify(RemoteUpdate::Progress {
-                request_id: 1,
-                samples_done: 7
-            }),
-            Step::Progress(7)
-        ));
-        assert!(matches!(
-            classify(RemoteUpdate::Preview { request_id: 1 }),
-            Step::Ignore
-        ));
-    }
-
-    #[test]
-    fn preview_view_pitch_matches_the_documented_front_and_top_convention() {
-        assert_eq!(PreviewView::Front.pitch(), 0.0);
-        assert!((PreviewView::Top.pitch() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
-    }
-
-    /// `Camera::new`'s own origin formula (`d*sin(pitch)` for the Y component) must
-    /// place `PreviewView::Top`'s camera directly overhead -- pins the actual
-    /// consequence of the pitch convention above, not just the raw angle.
-    #[test]
-    fn top_pitch_places_the_camera_directly_overhead() {
-        let camera = Camera::new(
-            0.0,
-            PreviewView::Top.pitch(),
-            PREVIEW_DISTANCE,
-            DEFAULT_FOV_DEG,
-        );
-        assert!((camera.origin.x).abs() < 1e-3);
-        assert!((camera.origin.y - PREVIEW_DISTANCE).abs() < 1e-3);
-        assert!((camera.origin.z).abs() < 1e-3);
-    }
-
-    /// `Front`'s pitch must place the camera ON the horizontal plane (zero Y), for any
-    /// yaw -- an edge-on/profile view by construction, not merely "not the top pole".
-    #[test]
-    fn front_pitch_places_the_camera_on_the_horizontal_plane() {
-        for yaw in [0.0, 0.6, 3.0] {
-            let camera = Camera::new(
-                yaw,
-                PreviewView::Front.pitch(),
-                PREVIEW_DISTANCE,
-                DEFAULT_FOV_DEG,
-            );
-            assert!((camera.origin.y).abs() < 1e-3, "yaw={yaw}");
-        }
-    }
-
-    #[test]
-    fn ri_candidates_covers_every_unzoned_built_in_material_with_a_finite_ri() {
-        let candidates = ri_candidates();
-        let unzoned: Vec<String> = GemMaterial::all_materials()
-            .into_iter()
-            .filter(is_unzoned)
-            .map(|material| material.name)
-            .collect();
-        assert_eq!(
-            candidates
-                .iter()
-                .map(|c| c.name.clone())
-                .collect::<Vec<_>>(),
-            unzoned
-        );
-        assert!(
-            !candidates.iter().any(|c| c.name == "Ametrine"),
-            "a zoned built-in is never the write-once guess for a nameless design"
-        );
-        for c in &candidates {
-            assert!(
-                c.refractive_index.is_finite() && c.refractive_index > 1.0,
-                "material {:?} produced an implausible RI {}",
-                c.name,
-                c.refractive_index
-            );
-        }
-    }
-
-    /// `ri_candidates` must agree with this crate's own documented convention
-    /// (`material.dispersion.evaluate(589.3)`, the sodium D line every other RI-reading
-    /// call site in `indicatrix::optics::materials` uses) for a material whose RI is
-    /// well known -- Diamond's is ~2.417.
-    #[test]
-    fn ri_candidates_evaluates_at_the_sodium_d_line() {
-        let candidates = ri_candidates();
-        let diamond = candidates
-            .iter()
-            .find(|c| c.name == "Diamond")
-            .expect("Diamond is a built-in material");
-        assert!(
-            (diamond.refractive_index - 2.417).abs() < 0.01,
-            "got {}",
-            diamond.refractive_index
-        );
-    }
-
-    /// A remote worker's `BATCH_ITEM_DONE` PNG and a local preview come from the same
-    /// shared function; this pins that function to the encoding the local path used
-    /// before it was shared (tone-map at `1 / spp`, then `image`'s default PNG writer),
-    /// so no cached thumbnail's bytes changed.
-    #[test]
-    fn the_shared_preview_png_matches_the_encoding_the_local_path_used_before() {
-        let accum: Vec<Vec3> = (0..16)
-            .map(|i| Vec3::new(0.3, 0.2, 0.1) * (i as f32 + 1.0) * 4.0)
-            .collect();
-        let rgba = tonemap_to_rgba(&accum, 1.0 / 4.0);
-        let legacy = encode_png(4, 4, &rgba).expect("the legacy encoder accepts a 4x4 buffer");
-        let shared = indicatrix::render_setup::encode_preview_png(4, 4, &accum, 4)
-            .expect("the shared encoder accepts a 4x4 sum");
-        assert_eq!(shared, legacy);
-    }
-
-    #[test]
-    fn render_view_produces_a_decodable_png_at_the_requested_size() {
-        use indicatrix::geometry::cuts::StandardGemCuts;
-
-        let planes = StandardGemCuts::standard_round_brilliant();
-        let material = GemMaterial::diamond();
-        let job = PreviewJob {
-            planes: &planes,
-            material: &material,
-            size: 8,
-            spp: 1,
-            max_bounces: 4,
-        };
-        let gpu = GpuBackend::disabled();
-        let png = render_view(&job, PreviewView::Top, &gpu).expect("render must succeed");
-
-        let decoded = image::load_from_memory(&png).expect("must be a valid PNG");
-        assert_eq!(decoded.width(), 8);
-        assert_eq!(decoded.height(), 8);
-    }
-}
+#[path = "preview_render_tests.rs"]
+mod tests;

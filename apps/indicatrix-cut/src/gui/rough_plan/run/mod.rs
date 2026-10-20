@@ -155,7 +155,7 @@ pub enum IdSource {
 
 /// Shown when the source has designs but every one of them is excluded from the planner.
 pub const ALL_EXCLUDED_MESSAGE: &str = "Every candidate design is excluded from planning. \
-     Restore one under Candidate designs, or widen the filter.";
+     Restore one under Candidate Designs, or widen the filter.";
 
 /// The ids a run plans, and how many of the source's designs were left out
 /// because they are excluded from the planner.
@@ -232,7 +232,7 @@ pub struct PlanJob {
     pub ids: IdSource,
     /// The modelled rough.
     pub model: RoughModel,
-    /// Design cap, losses, minimum width and specific gravity.
+    /// Design cap, stone cap, losses, minimum width and specific gravity.
     pub settings: PlanSettings,
     /// The material's name (for saving and labels).
     pub material_name: String,

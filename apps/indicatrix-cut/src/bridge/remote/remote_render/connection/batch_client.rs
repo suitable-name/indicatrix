@@ -538,6 +538,7 @@ mod tests {
             BatchItem {
                 item_id: 1,
                 scene: indicatrix_net::SceneState {
+                    engine: indicatrix::renderer::engine::EngineSpec::default(),
                     width: 8,
                     height: 8,
                     yaw: 0.4,
@@ -557,6 +558,7 @@ mod tests {
                     tools: Vec::new(),
                     fluorescence: Fluorescence::default(),
                     head_shadow_deg: 16.0,
+                    frosted_planes: Vec::new(),
                 },
                 first_sample: 0,
                 samples: 4,

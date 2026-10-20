@@ -69,6 +69,7 @@ fn evaluate_survivors_with_no_survivors_needs_no_thread_scope_and_matches_the_ol
     let baseline = candidate::BaselineWarningCounts::default();
     let space = SearchSpace::default();
     let ctx = candidate::SearchContext {
+        cancel: None,
         material: &material,
         weights: &EQUAL_WEIGHTS,
         baseline_warnings: &baseline,
@@ -100,6 +101,7 @@ fn evaluate_survivors_with_one_survivor_evaluates_it_inline() {
     let material = GemMaterial::diamond();
     let baseline = candidate::BaselineWarningCounts::default();
     let ctx = candidate::SearchContext {
+        cancel: None,
         material: &material,
         weights: &EQUAL_WEIGHTS,
         baseline_warnings: &baseline,
@@ -131,6 +133,7 @@ fn evaluate_survivors_with_two_survivors_evaluates_both() {
     let material = GemMaterial::diamond();
     let baseline = candidate::BaselineWarningCounts::default();
     let ctx = candidate::SearchContext {
+        cancel: None,
         material: &material,
         weights: &EQUAL_WEIGHTS,
         baseline_warnings: &baseline,
@@ -147,7 +150,7 @@ fn evaluate_survivors_with_two_survivors_evaluates_both() {
     let lowest = result
         .accepted
         .iter()
-        .map(|&(_, score)| score)
+        .map(|(_, score)| *score)
         .min_by(f32::total_cmp);
     assert_eq!(result.best.map(|(_, score)| score), lowest);
 }
@@ -195,7 +198,7 @@ fn the_configured_lighting_preset_reaches_the_candidate_score() {
         None,
         candidate::preform_volume(&design),
     ) {
-        candidate::CandidateOutcome::Accepted { score } => score,
+        candidate::CandidateOutcome::Accepted { score, .. } => score,
         candidate::CandidateOutcome::Rejected => {
             panic!("the unmodified RBC-445 must be accepted under {lighting:?}")
         }

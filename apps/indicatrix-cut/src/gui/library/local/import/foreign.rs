@@ -58,6 +58,12 @@ pub struct ConvertedDesign {
     /// missing refractive index, unknown `.gcs` elements or attributes. Empty for
     /// a clean file.
     pub warnings: Vec<String>,
+    /// What a `.gcs` file states as frosted, by tier position and facet slot (`.asc`
+    /// has no notation for it). A caller that opens the design applies it with
+    /// `Design::apply_imported_frosting`; the library import stores it with the row
+    /// (`ImportedAsc::with_frosting`, written by `local::apply_imported_extras`), because
+    /// the `.asc` text it also stores cannot.
+    pub frosting: Vec<(usize, indicatrix_formats::gcs::GcsTierFrosting)>,
 }
 
 /// Parses `bytes` as a `format` file and converts it to `.asc` cutting
@@ -76,6 +82,7 @@ pub fn convert_foreign_design(
         ConvertedDesign {
             asc_text: file.asc_text,
             warnings: file.warnings,
+            frosting: file.frosting,
         }
     })
 }

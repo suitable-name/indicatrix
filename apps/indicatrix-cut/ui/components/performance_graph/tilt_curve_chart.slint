@@ -1,3 +1,4 @@
+import { TiltModel } from "../../models/tilt.slint";
 import { Theme } from "../../theme.slint";
 
 // High-Resolution 181-Point (±90°, 1°-step) Performance Chart Canvas, the
@@ -285,13 +286,11 @@ export component TiltCurveChart inherits Rectangle {
             root.request_tilt_hover_preview(root.selected_axis_index, self.tilt_deg);
         }
 
-        // This mini preview is an all-polished trace of the bare
-        // resolved material -- the same honesty this dialog's own
-        // header caption states, repeated here since a reader hovering
-        // the card may never scroll up to the header. Not a layout
+        // This mini preview traces the finished stone with the scene's
+        // captured material and lighting, like the sweep. Not a layout
         // child (Tooltip's own requirement) -- a sibling of the
         // VerticalLayout below, inside this Rectangle.
-        Tooltip { text: @markdown("All-polished preview: inclusions, c-axis orientation, edge rounding, physical size and frosted girdle are excluded."); }
+        Tooltip { text: @markdown("Finished stone with the current material, finish and lighting; 2 samples per pixel."); }
 
         VerticalLayout {
             padding: 5px;
@@ -301,6 +300,7 @@ export component TiltCurveChart inherits Rectangle {
                 alignment: center;
                 Image {
                     source: root.tilt_hover_preview_image;
+                    opacity: TiltModel.hover_ready ? 1.0 : 0.0;
                     width: 48px;
                     height: 48px;
                 }

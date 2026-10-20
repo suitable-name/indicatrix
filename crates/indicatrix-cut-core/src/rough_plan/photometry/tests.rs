@@ -737,7 +737,7 @@ fn the_stone_compression_sigma_is_estimated_from_the_stone_frame() {
     // The oracle: the same robust Laplacian spread, taken on the ERROR image (decoded minus the
     // smooth truth, encoded domain), with the rounding added back to the estimate.
     let quantisation = 1.0_f64 / (255.0 * 255.0 * 12.0);
-    for c in 0..3 {
+    for (c, &sigma) in estimate.iter().enumerate() {
         let error = |x: usize, y: usize| {
             let truth = linear_to_srgb(truth_linear(x, y) * (1.0 - 0.1 * c as f32));
             f64::from(linear_to_srgb(decoded.pixels[y * w + x][c]) - truth)
@@ -762,11 +762,11 @@ fn the_stone_compression_sigma_is_estimated_from_the_stone_frame() {
         deviations.sort_by(f64::total_cmp);
         let robust = deviations[n / 2] / 0.6745 / 20.0_f64.sqrt();
         let rms = (squares / n as f64 / 20.0).sqrt();
-        let reported = f64::from(estimate[c]).hypot(quantisation.sqrt());
+        let reported = f64::from(sigma).hypot(quantisation.sqrt());
         println!(
             "channel {c}: estimate {:.3} codes (with rounding {:.3}), robust oracle {:.3}, \
              rms oracle {:.3}",
-            f64::from(estimate[c]) * 255.0,
+            f64::from(sigma) * 255.0,
             reported * 255.0,
             robust * 255.0,
             rms * 255.0

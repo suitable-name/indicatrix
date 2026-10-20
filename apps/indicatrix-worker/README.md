@@ -122,13 +122,19 @@ nothing networked to debug at the same time, and has standalone value of its own
 planes and a real material, never a name or a database id — see `indicatrix-net`'s
 README for why). In practice you get one by exporting from the `indicatrix-cut`
 editor, or by constructing one programmatically with `indicatrix`'s public API and
-serializing it:
+serializing it. Every field after `planes` has a serde default, so a `scene.json`
+written by an older build (without `tools`, `head_shadow_deg` or
+`frosted_planes`) still loads:
 
 ```rust
-use indicatrix::{geometry::cuts::StandardGemCuts, optics::materials::GemMaterial, optics::raytracer::LightingPreset};
-use indicatrix_net::{SceneState, scene::SceneEnvironment};
+use indicatrix::{
+    geometry::cuts::StandardGemCuts,
+    optics::{materials::GemMaterial, raytracer::LightingPreset},
+};
+use indicatrix_net::{SceneState, scene::{SceneEnvironment, default_head_shadow_deg}};
 
 let scene = SceneState {
+    engine: Default::default(), // Path-Traced; opt into Ray-Traced explicitly
     width: 800, height: 600,
     yaw: 0.4, pitch: 0.3, distance: 3.0,
     light_yaw: 0.85, light_pitch: 0.95, exposure: 1.0,
@@ -140,6 +146,9 @@ let scene = SceneState {
     backdrop: 0.0,
     environment: SceneEnvironment::Studio,
     surface_glare: 1.0, // 0.0..=1.0 scale of the first-surface reflection
+    tools: Vec::new(), // concave-facet tool primitives; empty for a convex stone
+    head_shadow_deg: default_head_shadow_deg(), // 0.0..=30.0 degrees; 16.0 by default
+    frosted_planes: Vec::new(), // indices into `planes` of authored frosted facets
 };
 std::fs::write("scene.json", serde_json::to_string_pretty(&scene)?)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -221,11 +230,11 @@ each on its own worker connection, so a desktop batch that keeps several picture
 flight keeps several workers busy. They still count against `--max-job-memory-mib`.
 `--whole-image-secs 0 --whole-image-pixel-samples 0` turns the routing off.
 
-**Batched previews (protocol v24).** A plain worker (and a coordinator's own render lane)
+**Batched previews (added in protocol v24; the current protocol is v29).** A plain worker (and a coordinator's own render lane)
 also serves `BatchRenderRequest`: up to 32 pictures per request on one persistent
 connection, two requests in flight, each picture answered with a finished sRGB PNG
 (byte-identical to the desktop's own preview). GPU-eligible pictures of a request go to
-the GPU as one batch call; concave, fluorescent and GPU-declined pictures are traced on
+the GPU as one batch call; concave and GPU-declined pictures are traced on
 the CPU; PNG encoding runs on its own thread so it overlaps the next request's tracing.
 A coordinator does not forward a batch to its joined workers (batches do not count against
 `--jobs-per-viewer`): a coordinator with no render lane of its own answers
@@ -540,6 +549,8 @@ neither should hand attacker- or fat-finger-controlled numbers straight through.
 | In-flight multi-lane job buffers | `--max-job-memory-mib` (default 2048 MiB); charged per job and per lane | `serve` with joined workers |
 | Unauthenticated connections per source IP | `--max-preauth-per-ip` (default 8) | `serve` viewer port |
 | HDR map file size | 256 MiB (the protocol's asset limit), and at most the asset cache cap | `serve`, `join` |
+| Max facet planes per scene | 4096 | both |
+| Max concave tool primitives per scene | 128 | both |
 | Max bounces | 128 | both |
 | Plausible refractive index | 1.0 – 6.0, checked at 380nm/589.3nm/780nm | both |
 
@@ -623,6 +634,12 @@ request, e.g. on a machine without internet access.
 - **`cert init` refuses, saying a CA already exists** — there's no `--force`;
   delete `ca.pem`/`ca.key` yourself first if you really mean to start over
   (understanding this invalidates every certificate already issued from that CA).
+- **`no wgpu adapter is available on this system`** — GPU tracing uses Vulkan, DX12
+  or Metal only. OpenGL is left out on purpose: wgpu's GL backend panics when its
+  instance is torn down (the WGL and EGL context guards unwrap), and the wavefront
+  kernel needs more storage buffers than GL offers. A machine with OpenGL only
+  renders on the CPU tracer. Setting `WGPU_BACKEND=gl` tries OpenGL anyway, at your
+  own risk.
 
 ## Testing
 
@@ -667,3 +684,19 @@ allowlist checks, a real `join`. Mocking the handshake there would test the mock
 still need no external network and no provisioned certificates — every CA and
 certificate is generated in-process, and every listener binds an ephemeral loopback
 port.
+
+### Ray-Traced Engine
+
+`render --engine ray --samples 8` selects deterministic Ray-Traced rendering; use
+1, 4, 8 or 16 anti-aliasing taps. `--engine path` selects the existing spectral
+path tracer. Without `--engine`, the scene JSON choice is preserved. Legacy JSON
+without `engine` keeps Path-Traced. Ray-Traced approximates tint and frost, and omits polarization, double images,
+scattering, zones and rounding. Optical metrics keep their own spectral tracer.
+
+The network protocol (version 29; the engine was added in 28) carries the engine beside
+each scene. Old peers are refused
+at the handshake. Ray-Traced uses the independent four-storage-buffer GPU kernel
+when permitted, with complete CPU fallback; `--only-cpu` never probes that kernel.
+It skips spectral hybrid calibration and denoising. Remote live views, exports,
+preview batches and durable still jobs use disjoint absolute AA tap ranges.
+Durable Ray-Traced jobs use file format 2; Path-Traced jobs retain format 1.

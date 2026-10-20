@@ -14,6 +14,7 @@ pub(super) struct RowsKey {
     pub(super) generation: u64,
     pub(super) solve_revision: u64,
     pub(super) selected: Option<usize>,
+    pub(super) selected_concave: Option<usize>,
     pub(super) multi: BTreeSet<usize>,
 }
 
@@ -96,7 +97,10 @@ pub(super) fn sync_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, it
 }
 
 /// A display value narrowed to the `f32` Slint properties carry.
-#[allow(clippy::cast_possible_truncation)] // a position on a screen: f32 precision is plenty
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a value shown on a screen: f32 precision is plenty"
+)]
 pub(super) const fn narrow(value: f64) -> f32 {
     value as f32
 }

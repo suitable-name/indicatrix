@@ -67,6 +67,7 @@ pub fn apply_setup(c: &TrainingController<'_>, s: &ProgressSnapshot) {
     c.set_rollout_size(clamp_i32(s.rollout_size));
     c.set_batch_size(clamp_i32(s.batch_size));
     c.set_epochs(clamp_i32(s.ppo_epochs));
+    c.set_updates_per_round(clamp_i32(s.updates_per_round));
     c.set_worker_count(clamp_i32(s.worker_count));
 }
 

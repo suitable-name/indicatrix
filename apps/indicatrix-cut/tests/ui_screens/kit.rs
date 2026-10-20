@@ -17,8 +17,8 @@ use slint::{
     ComponentHandle, LogicalPosition, Model,
     platform::{PointerEventButton, WindowEvent},
 };
-use slint_harness::screenshot::{self, Shot};
 use std::time::{Duration, Instant};
+use uiprobe::screenshot::{self, Shot};
 
 /// The main window's logical size in every shot.
 pub const MAIN_SIZE: (u32, u32) = (1920, 1152);

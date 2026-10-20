@@ -73,7 +73,7 @@ pub(super) struct Session {
     /// The design ids the open-time background query found, shared with that thread.
     pub(super) ids: Arc<Mutex<CachedIds>>,
     /// The designs excluded from the planner, as last read from the library; the rows'
-    /// Excluded pills and the Candidate designs list mirror it.
+    /// Excluded pills and the Candidate Designs list mirror it.
     pub(super) excluded: BTreeMap<i64, String>,
     /// The latest shape worker mesh, in the centred frame (bounding-box centre at the
     /// origin, mm).

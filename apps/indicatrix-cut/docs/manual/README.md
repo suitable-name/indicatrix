@@ -3,7 +3,7 @@
 Indicatrix Cut is a desktop program for lapidaries: a catalogue
 browser for faceting designs, a physically based spectral renderer that
 shows any design in a chosen gem material and reports its optical
-performance, and — on the standard build — a cutting-design editor that
+performance, and a cutting-design editor that
 lets you build a design from scratch, edit it tier by tier, solve it for
 real cutting depths, and check or improve its performance before you touch
 a lap. This manual covers all three, in the order you are likely to need
@@ -103,6 +103,11 @@ exporting a design of your own.
     and Pause Queue, what Pause keeps, closing the app while a job renders, exporting
     a PowerShell or shell script, running a job file with `indicatrix-cli`, and the
     limitations.
+24. [Rough Color and Color Zoning](24-rough-colour-and-zoning.md) — the Rough Color
+    wizard of the Rough Planner: fitting the color of a piece of rough from backlit
+    photos on the camera rig, describing color zones, reading how certain the
+    result is, using the color in the planner and on a design, and the built-in
+    Ametrine material.
 
 ### Appendices
 

@@ -4,29 +4,29 @@
 //! view-model split").
 
 use super::{
-    apply::{RetargetApplyError, apply_pending_retarget},
     material::{
         initial_target_index, resolve_target_selection, resolved_material_from_selection,
         target_display_name, target_material_selection,
     },
-    proposal_view::{candidate_row_views, retarget_view, search_summary_line},
+    proposal_view::{candidate_row_views, plan_view, retarget_view, search_summary_line},
     snapshot::{diff_row_view, diff_rows_from_deltas},
 };
 use crate::gui::editor::{
-    retarget::{AnchorChange, CrownShift, RetargetMode},
-    state::{EditorState, design_material_index_from_name, design_material_options},
+    retarget::{CrownShift, RetargetMode},
+    state::{design_material_index_from_name, design_material_options},
 };
 use indicatrix::{geometry::meet_solver::MeetConstraint, optics::materials::GemMaterial};
 use indicatrix_cut_core::{
-    ConstraintTier, Design, History, MaterialSelection, OptimizeConfig, PreformSpec,
-    ResolvedMaterial, ScheduleMeta, diff_tiers,
+    ConstraintTier, Design, MaterialSelection, OptimizeConfig, PreformSpec, ResolvedMaterial,
+    ScheduleMeta, diff_tiers,
 };
 use indicatrix_editor::retarget::{
     metrics::RetargetMetrics,
-    search::{CandidateKind, CandidateNumbers, SearchCandidate, SearchReport, StartPoint},
+    search::{
+        CandidateKind, CandidateNumbers, CandidateRole, SearchCandidate, SearchReport, StartPoint,
+    },
     validity::{InvalidReason, RetargetValidity, ValidityStatus},
 };
-use std::sync::atomic::Ordering as AtomicOrdering;
 
 /// Test-only convenience composing [`target_material_selection`] (the lenient,
 /// production wrapper) with [`resolved_material_from_selection`] -- these tests
@@ -103,26 +103,50 @@ fn resolve_target_material_falls_back_when_the_ri_override_text_is_invalid() {
     assert_eq!(target.gem.name, "Diamond");
 }
 
+/// The dialog seeds the RI field from the design's own override and the combo's `selected`
+/// handler clears it (`retarget_dialog.slint`): with the field cleared, a different material
+/// resolves to its own `n_D`; left at the seeded number it would win over the material.
+#[test]
+fn choosing_a_material_changes_the_resolved_target_ri_once_the_seeded_override_is_cleared() {
+    let mut design = diamond_design();
+    design.material.refractive_index_override = Some(1.54);
+    let custom: [GemMaterial; 0] = [];
+    let options = design_material_options(&custom);
+    let sapphire = design_material_index_from_name(Some("Sapphire"), &options);
+
+    let seeded = resolve_target_material(&design, &custom, sapphire, "1.54");
+    assert!(
+        (seeded.n_d - 1.54).abs() < 1e-9,
+        "override wins: {}",
+        seeded.n_d
+    );
+
+    let cleared = resolve_target_material(&design, &custom, sapphire, "");
+    assert_eq!(cleared.gem.name, "Sapphire");
+    assert!(
+        (cleared.n_d - 1.768).abs() < 0.02,
+        "Sapphire n_D expected near 1.768, got {}",
+        cleared.n_d
+    );
+}
+
 // --- retarget_view routing ---
 
 #[test]
-fn retarget_view_shift_mode_populates_rows_not_errors() {
+fn shift_plan_view_populates_rows_before_the_geometry_check() {
     let design = diamond_design();
     let custom: [GemMaterial; 0] = [];
     let options = design_material_options(&custom);
     let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
     let target = resolve_target_material(&design, &custom, quartz_index, "");
-    let (view, proposal) = retarget_view(
-        &design,
-        &target,
-        CrownShift::default(),
-        RetargetMode::Shift,
-        &[],
-    );
+    let plan =
+        indicatrix_editor::retarget::build_plan(&design, &target, CrownShift::default(), &[]);
+    let view = plan_view(&plan);
     assert!(!view.rows.is_empty());
     assert_eq!(view.anchored_errors, Vec::<String>::new());
     assert_eq!(view.solve_error, "");
-    assert!(proposal.is_some());
+    // Showing the preferred angles is independent of permission to apply them.
+    // Apply tests exercise the real, completed preservation check.
 }
 
 #[test]
@@ -149,161 +173,6 @@ fn retarget_view_optimize_mode_populates_anchored_errors_not_rows_when_anchored(
     assert_ne!(view.anchored_errors, Vec::<String>::new());
     assert!(view.anchored_errors[0].contains("P1"));
     assert!(proposal.is_none());
-}
-
-// --- apply_pending_retarget ---
-
-fn fresh_state_with(design: Design) -> EditorState {
-    let mut state = EditorState::fresh();
-    state.design = design;
-    state.history = History::new();
-    state
-}
-
-#[test]
-fn apply_pending_retarget_pushes_exactly_one_retarget_angles_edit_and_solves() {
-    let design = diamond_design();
-    let custom: [GemMaterial; 0] = [];
-    let options = design_material_options(&custom);
-    let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
-    let target = resolve_target_material(&design, &custom, quartz_index, "");
-    let (_, proposal) = retarget_view(
-        &design,
-        &target,
-        CrownShift::default(),
-        RetargetMode::Shift,
-        &[],
-    );
-    let proposal = proposal.expect("shift mode never fails");
-
-    let mut state = fresh_state_with(design);
-    let generation = state.generation.load(AtomicOrdering::Relaxed);
-    let applied = apply_pending_retarget(&mut state, (proposal, generation), None, &[])
-        .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
-    assert_eq!(applied, 1);
-    assert!(state.history.can_undo());
-    assert!(
-        state.design.solve().is_ok(),
-        "the retargeted design must still solve"
-    );
-}
-
-#[test]
-fn apply_pending_retarget_combines_a_material_change_into_one_undo_step() {
-    let design = diamond_design();
-    let custom: [GemMaterial; 0] = [];
-    let options = design_material_options(&custom);
-    let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
-    let target = resolve_target_material(&design, &custom, quartz_index, "");
-    let (_, proposal) = retarget_view(
-        &design,
-        &target,
-        CrownShift::default(),
-        RetargetMode::Shift,
-        &[],
-    );
-    let proposal = proposal.expect("shift mode never fails");
-
-    let mut state = fresh_state_with(design);
-    let generation = state.generation.load(AtomicOrdering::Relaxed);
-    let material_change = MaterialSelection {
-        name: Some("Quartz".to_string()),
-        specific_gravity_override: None,
-        refractive_index_override: None,
-        body_color_override: None,
-        body_color_bands_override: None,
-        absorption_path_scale_override: None,
-    };
-    apply_pending_retarget(
-        &mut state,
-        (proposal, generation),
-        Some(material_change),
-        &[],
-    )
-    .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
-    assert_eq!(state.design.material.name.as_deref(), Some("Quartz"));
-
-    // ONE undo step reverts both the angle retarget and the material change.
-    assert!(state.undo().unwrap());
-    assert_eq!(state.design.material.name.as_deref(), Some("Diamond"));
-    assert!(!state.history.can_undo());
-}
-
-#[test]
-fn apply_pending_retarget_commits_masts_angles_and_material_as_one_undo_step() {
-    let design = diamond_design();
-    let original = design.clone();
-    let custom: [GemMaterial; 0] = [];
-    let options = design_material_options(&custom);
-    let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
-    let target = resolve_target_material(&design, &custom, quartz_index, "");
-    let (_, proposal) = retarget_view(
-        &design,
-        &target,
-        CrownShift::default(),
-        RetargetMode::Shift,
-        &[],
-    );
-    let proposal = proposal.expect("shift mode never fails");
-
-    let mut state = fresh_state_with(design);
-    let generation = state.generation.load(AtomicOrdering::Relaxed);
-    let anchors = [AnchorChange {
-        tier_index: 0,
-        old_mast: 0.5,
-        new_mast: 0.55,
-    }];
-    let material_change = MaterialSelection {
-        name: Some("Quartz".to_string()),
-        specific_gravity_override: None,
-        refractive_index_override: None,
-        body_color_override: None,
-        body_color_bands_override: None,
-        absorption_path_scale_override: None,
-    };
-    apply_pending_retarget(
-        &mut state,
-        (proposal, generation),
-        Some(material_change),
-        &anchors,
-    )
-    .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
-    assert!(matches!(
-        state.design.tiers[0].constraint,
-        MeetConstraint::ScaleReference(mast) if (mast - 0.55).abs() < 1e-12
-    ));
-    assert_eq!(state.design.material.name.as_deref(), Some("Quartz"));
-
-    // The angle, the re-anchored mast and the material are ONE history entry.
-    assert!(state.undo().unwrap());
-    assert_eq!(state.design, original);
-    assert!(!state.history.can_undo());
-}
-
-#[test]
-fn apply_pending_retarget_refuses_a_stale_generation() {
-    let design = diamond_design();
-    let custom: [GemMaterial; 0] = [];
-    let options = design_material_options(&custom);
-    let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
-    let target = resolve_target_material(&design, &custom, quartz_index, "");
-    let (_, proposal) = retarget_view(
-        &design,
-        &target,
-        CrownShift::default(),
-        RetargetMode::Shift,
-        &[],
-    );
-    let proposal = proposal.expect("shift mode never fails");
-
-    let mut state = fresh_state_with(design);
-    let stale_generation = state.generation.load(AtomicOrdering::Relaxed) + 1;
-    let result = apply_pending_retarget(&mut state, (proposal, stale_generation), None, &[]);
-    assert!(matches!(result, Err(RetargetApplyError::Stale)));
-    assert!(
-        !state.history.can_undo(),
-        "nothing should have been applied"
-    );
 }
 
 // --- initial_target_index ---
@@ -518,7 +387,9 @@ fn candidate_with(kind: CandidateKind, score: f32) -> SearchCandidate {
     validity.status = ValidityStatus::Valid;
     validity.reasons.clear();
     SearchCandidate {
+        preservation: None,
         kind,
+        role: None,
         angles: Vec::new(),
         anchors: Vec::new(),
         validity,
@@ -550,6 +421,7 @@ fn report_with(candidates: Vec<SearchCandidate>, evaluations: usize) -> SearchRe
         evaluations,
         free_tiers: 4,
         keep_look: false,
+        baseline: None,
     }
 }
 
@@ -573,6 +445,70 @@ fn the_candidate_list_numbers_the_options_and_says_where_each_came_from() {
     assert_eq!(rows[0].extinction, "3.0 %");
     assert_eq!(rows[0].yield_loss, "40.5 %");
     assert!(rows.iter().all(|row| row.verdict == "Valid"));
+}
+
+/// Real facts for a candidate: the identity validation of a closed bipyramid.
+fn real_facts() -> indicatrix_cut_core::meet_preservation::PreservationFacts {
+    use indicatrix_cut_core::meet_preservation::{MeetPreservationBaseline, PreservationPolicy};
+    let tiers = [45.0, -45.0]
+        .into_iter()
+        .enumerate()
+        .map(|(index, angle_deg)| ConstraintTier {
+            angle_deg,
+            name: format!("Tier {index}"),
+            indices: vec![0.0, 24.0, 48.0, 72.0],
+            constraint: MeetConstraint::ScaleReference(0.5),
+            imported_meet: None,
+            original_notes: None,
+            detached: Vec::new(),
+        })
+        .collect();
+    let meta = ScheduleMeta {
+        symmetry_order: 4,
+        ..ScheduleMeta::standard_round_brilliant()
+    };
+    let mut design = Design::new(PreformSpec::block(4.0, 4.0, 4.0), meta, tiers);
+    design.ensure_tier_ids();
+    MeetPreservationBaseline::capture(&design)
+        .expect("closed baseline")
+        .validate(&design, PreservationPolicy::RETARGET)
+        .expect("the design preserves its own meets")
+}
+
+#[test]
+fn the_role_label_follows_the_selected_role_not_the_list_position() {
+    let facts = real_facts();
+    let with_role = |role: Option<CandidateRole>, kind: CandidateKind| {
+        let mut candidate = candidate_with(kind, 8.0);
+        candidate.preservation = Some(facts);
+        candidate.role = role;
+        candidate
+    };
+    // The closest option is listed FIRST here: a positional rule would call it "Best".
+    let rows = candidate_row_views(&[
+        with_role(Some(CandidateRole::Closest), CandidateKind::Optimized),
+        with_role(Some(CandidateRole::BestOptics), CandidateKind::Shift),
+        with_role(
+            Some(CandidateRole::Balanced),
+            CandidateKind::Partial { percent: 40 },
+        ),
+        with_role(None, CandidateKind::Optimized),
+    ]);
+    assert_eq!(rows[0].label, "Closest to original - Searched angles");
+    assert_eq!(rows[1].label, "Best optics within limits - Shift result");
+    assert_eq!(rows[2].label, "Balanced - Part of the Shift change (40 %)");
+    // An option with no role is named by its origin alone, never called "Balanced".
+    assert_eq!(rows[3].label, "Searched angles");
+}
+
+#[test]
+fn an_option_without_preservation_facts_gets_no_role_label() {
+    let mut candidate = candidate_with(CandidateKind::Optimized, 8.0);
+    candidate.role = Some(CandidateRole::BestOptics);
+    assert_eq!(
+        candidate_row_views(&[candidate])[0].label,
+        "Searched angles"
+    );
 }
 
 #[test]

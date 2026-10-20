@@ -25,17 +25,12 @@
 //!
 //! # Conditioning of the composed mean under PPO
 //!
-//! The mean is `-MEAN_BOUND * g / (g_max + SLOPE_EPS)` per tier: a direction, normalised by the
-//! steepest tier. Its Jacobian with respect to the sensitivities scales with `1 / g_max`, so
-//! while the sensitivities are small (at initialisation, or on a design whose score is flat) a
-//! parameter change moves the means by a multiple of the policy's std. Measured on the unit-test
-//! model: one Adam step at a learning rate of `1e-3` shifts the means by about 0.3 pre-squash units
-//! (60 % of the initial std) and lowers the log-probability of the policy's own samples by nats;
-//! the approximate KL of a single update reaches 1 to 40, so the KL stop fires. PPO through this
-//! head therefore needs a learning rate around `1e-4` and still couples the value loss into the
-//! means through the shared trunk. That is why imitation, which fits the sensitivities directly
-//! (a well-conditioned regression) and the direction by a scale-free cosine, is the primary
-//! algorithm; PPO is kept for experiments.
+//! The mean divides each mobile tier's composed score slope by
+//! `max(max_mobile_abs_slope, SLOPE_NORM_FLOOR)`. The floor is 0.05 score points per degree:
+//! below it, the sensitivity-to-mean amplification is bounded by `MEAN_BOUND / floor`; above it,
+//! the scale-free direction is unchanged. This is a deliberate stabilization hyperparameter, not
+//! an empirically optimal value. The shared trunk still couples value and policy gradients, so PPO
+//! remains the secondary algorithm while imitation directly regresses the component sensitivities.
 //!
 //! # Gradient clipping
 //!
@@ -66,6 +61,7 @@ use burn::{
     prelude::*,
     tensor::TensorData,
 };
+use std::time::Instant;
 
 pub(crate) use super::burn_model::{host_scalar, host_vec};
 use super::{
@@ -136,18 +132,18 @@ pub(crate) fn ratio_stats(
     ratio: Tensor<2>,
     log_ratio: Tensor<2>,
     eps: f32,
-) -> Result<(f32, f32), TrainError> {
-    let ratios = host_vec(ratio)?;
-    let log_ratios = host_vec(log_ratio)?;
-    let denom = ratios.len().max(1) as f32;
-    let clip_count = ratios.iter().filter(|&&r| (r - 1.0).abs() > eps).count();
-    let kl = ratios
-        .iter()
-        .zip(&log_ratios)
-        .map(|(&r, &lr)| (r - 1.0) - lr)
-        .sum::<f32>()
-        / denom;
-    Ok((clip_count as f32 / denom, kl.max(0.0)))
+) -> (Tensor<1>, Tensor<1>) {
+    let clip_fraction = (ratio
+        .clone()
+        .sub_scalar(1.0)
+        .abs()
+        .greater_elem(eps)
+        .float())
+    .mean();
+    let approx_kl = (ratio.sub_scalar(1.0) - log_ratio)
+        .mean()
+        .clamp(0.0, COUNT_CLAMP_MAX);
+    (clip_fraction, approx_kl)
 }
 
 /// Sums the squared entries of every parameter gradient into one device scalar.
@@ -447,61 +443,6 @@ impl BurnTrainer {
         self
     }
 
-    /// Create a trainer targeting the GPU (via WebGPU / Vulkan / DX12).
-    ///
-    /// # Errors
-    ///
-    /// [`TrainError::DeviceUnavailable`] when no usable adapter exists (checked with a one-element tensor
-    /// operation); there is no silent fallback. Use [`Self::new_auto`] to opt into one.
-    pub fn new_gpu(shape: ModelShape, config: PpoConfig) -> Result<Self, TrainError> {
-        let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let device = Device::wgpu(burn::tensor::DeviceKind::default());
-            probe_device(&device).map(|()| device)
-        }));
-        match attempt {
-            Ok(Ok(device)) => Self::new(shape, config, device),
-            Ok(Err(e)) => Err(e),
-            Err(payload) => {
-                let msg = payload
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| payload.downcast_ref::<&str>().copied())
-                    .unwrap_or("panic while initialising the GPU backend");
-                Err(TrainError::DeviceUnavailable(msg.to_owned()))
-            }
-        }
-    }
-
-    /// Create a trainer targeting CPU SIMD (Flex).
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::new`].
-    pub fn new_cpu(shape: ModelShape, config: PpoConfig) -> Result<Self, TrainError> {
-        Self::new(shape, config, Device::flex())
-    }
-
-    /// Create a trainer on the GPU when one works, otherwise on the CPU.
-    ///
-    /// The second tuple element carries the reason the GPU was skipped (`None` when the GPU is in use);
-    /// the caller is expected to log it as a warning.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::new`]; a GPU failure alone is not an error here.
-    pub fn new_auto(
-        shape: ModelShape,
-        config: PpoConfig,
-    ) -> Result<(Self, Option<TrainError>), TrainError> {
-        match Self::new_gpu(shape, config.clone()) {
-            Ok(t) => Ok((t, None)),
-            Err(gpu_err @ TrainError::DeviceUnavailable(_)) => {
-                Self::new_cpu(shape, config).map(|t| (t, Some(gpu_err)))
-            }
-            Err(other) => Err(other),
-        }
-    }
-
     /// Replace the model weights with those of a pure-Rust network and reset the optimizer state.
     ///
     /// Used to resume from a checkpoint and to move a trained model to a freshly created trainer on
@@ -630,7 +571,10 @@ impl BurnTrainer {
         batch: &TrainBatch<'_>,
         idx: &[usize],
     ) -> Result<TrainingMetrics, TrainError> {
+        let packing_started = Instant::now();
         let p = self.pack(batch, idx);
+        let packing_ms = packing_started.elapsed().as_secs_f64() as f32 * 1000.0;
+        let update_started = Instant::now();
         let out = self.model.forward(p.tiers, p.globals, p.mask);
         let (new_log_prob, entropy_per_sample) =
             masked_log_prob_and_entropy(p.actions, out.mean, out.log_std, p.action_mask);
@@ -638,6 +582,7 @@ impl BurnTrainer {
         let eps = self.config.clip_epsilon;
         let (policy_loss, ratio, log_ratio) =
             clipped_surrogate(new_log_prob, p.old_log_probs, p.advantages, eps);
+        let (clip_fraction, approx_kl) = ratio_stats(ratio, log_ratio, eps);
 
         let val_diff = out.value - p.returns;
         let value_loss = (val_diff.clone() * val_diff).mean().mul_scalar(0.5);
@@ -647,14 +592,22 @@ impl BurnTrainer {
             + value_loss.clone().mul_scalar(self.config.value_loss_coeff)
             - entropy.clone().mul_scalar(self.config.entropy_coeff);
 
-        // One read-back for the three reported scalars.
-        let stats = host_vec(Tensor::cat(vec![policy_loss, value_loss, entropy], 0))?;
-        let [p_loss, v_loss, ent] = <[f32; 3]>::try_from(stats).map_err(|v| {
-            TrainError::Tensor(format!("expected 3 loss statistics, read {}", v.len()))
-        })?;
-        if ![p_loss, v_loss, ent].iter().all(|v| v.is_finite()) {
+        // One read-back for losses and the device-reduced KL/clip metrics, before any optimizer step.
+        let stats = host_vec(Tensor::cat(
+            vec![policy_loss, value_loss, entropy, approx_kl, clip_fraction],
+            0,
+        ))?;
+        let [p_loss, v_loss, ent, approx_kl, clip_fraction] =
+            <[f32; 5]>::try_from(stats).map_err(|v| {
+                TrainError::Tensor(format!("expected 5 PPO statistics, read {}", v.len()))
+            })?;
+        if ![p_loss, v_loss, ent, approx_kl, clip_fraction]
+            .iter()
+            .all(|v| v.is_finite())
+        {
             return Err(TrainError::NonFinite(format!(
-                "policy loss {p_loss}, value loss {v_loss}, entropy {ent}; optimizer step skipped"
+                "policy loss {p_loss}, value loss {v_loss}, entropy {ent}, approx KL {approx_kl}, \
+                 clip fraction {clip_fraction}; optimizer step skipped"
             )));
         }
 
@@ -670,7 +623,6 @@ impl BurnTrainer {
             .step(f64::from(lr), self.model.clone(), grads);
         self.updates += 1;
 
-        let (clip_fraction, approx_kl) = ratio_stats(ratio, log_ratio, eps)?;
         Ok(TrainingMetrics {
             policy_loss: p_loss,
             value_loss: v_loss,
@@ -679,6 +631,8 @@ impl BurnTrainer {
             clip_fraction,
             early_stopped: false,
             grad_norm,
+            packing_ms,
+            update_ms: update_started.elapsed().as_secs_f64() as f32 * 1000.0,
         })
     }
 
@@ -747,6 +701,8 @@ impl BurnTrainer {
             clip_fraction: sum.clip_fraction / denom,
             early_stopped,
             grad_norm: sum.grad_norm / denom,
+            packing_ms: sum.packing_ms,
+            update_ms: sum.update_ms,
         })
     }
 }
@@ -759,20 +715,8 @@ fn add_metrics(sum: &mut TrainingMetrics, m: &TrainingMetrics) {
     sum.clip_fraction += m.clip_fraction;
     sum.approx_kl += m.approx_kl;
     sum.grad_norm += m.grad_norm;
-}
-
-/// Run a one-element tensor operation to prove the device works.
-fn probe_device(device: &Device) -> Result<(), TrainError> {
-    let t =
-        Tensor::<2>::from_data(TensorData::new(vec![1.0f32, 2.0], [1, 2]), device).add_scalar(1.0);
-    let v = host_vec(t)?;
-    if v == [2.0, 3.0] {
-        Ok(())
-    } else {
-        Err(TrainError::DeviceUnavailable(format!(
-            "device probe returned {v:?}, expected [2.0, 3.0]"
-        )))
-    }
+    sum.packing_ms += m.packing_ms;
+    sum.update_ms += m.update_ms;
 }
 
 #[cfg(test)]

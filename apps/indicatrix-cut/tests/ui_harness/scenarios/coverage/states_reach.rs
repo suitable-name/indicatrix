@@ -37,8 +37,8 @@ use indicatrix_cut::{
     SettingsModel, TiltModel, TiltVideoExportModel, VerdictModel, VerdictReasonData, ViewportModel,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use slint_harness::AccessibleRole;
 use std::time::Duration;
+use uiprobe::AccessibleRole;
 
 /// The pieces of this file: one `overlay:reach-*:<state>` piece per state.
 pub fn pieces() -> Vec<Piece> {

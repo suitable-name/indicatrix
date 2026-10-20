@@ -38,7 +38,15 @@ export component TabViewPillRow inherits HorizontalLayout {
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
-        tabpill0_touch := TouchArea { clicked => { root.active_tab = 0; root.active_tab_changed(0); } }
+        tabpill0_touch := TouchArea {
+            accessible-role: AccessibleRole.tab;
+            accessible-label: "3D Spectral Preview";
+            accessible-item-selectable: true;
+            accessible-item-selected: root.active_tab == 0;
+            accessible-checked: root.active_tab == 0;
+            accessible-action-default => { root.active_tab = 0; root.active_tab_changed(0); }
+            clicked => { root.active_tab = 0; root.active_tab_changed(0); }
+        }
         HorizontalLayout {
             padding-left: root.compact ? 8px : 12px;
             padding-right: root.compact ? 8px : 12px;
@@ -61,7 +69,17 @@ export component TabViewPillRow inherits HorizontalLayout {
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
-        tabpill1_touch := TouchArea { enabled: GuideModel.allows_view_tabs(); clicked => { root.active_tab = 1; root.active_tab_changed(1); } }
+        tabpill1_touch := TouchArea {
+            enabled: GuideModel.allows_view_tabs();
+            accessible-role: AccessibleRole.tab;
+            accessible-label: "Cutting Instructions";
+            accessible-item-selectable: true;
+            accessible-item-selected: root.active_tab == 1;
+            accessible-checked: root.active_tab == 1;
+            accessible-enabled: GuideModel.allows_view_tabs();
+            accessible-action-default => { root.active_tab = 1; root.active_tab_changed(1); }
+            clicked => { root.active_tab = 1; root.active_tab_changed(1); }
+        }
         GuideLockTip { locked: !GuideModel.allows_view_tabs(); }
         HorizontalLayout {
             padding-left: root.compact ? 8px : 12px;
@@ -83,7 +101,17 @@ export component TabViewPillRow inherits HorizontalLayout {
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
-        tabpill2_touch := TouchArea { enabled: GuideModel.allows_view_tabs(); clicked => { root.active_tab = 2; root.active_tab_changed(2); } }
+        tabpill2_touch := TouchArea {
+            enabled: GuideModel.allows_view_tabs();
+            accessible-role: AccessibleRole.tab;
+            accessible-label: "Files & Downloads";
+            accessible-item-selectable: true;
+            accessible-item-selected: root.active_tab == 2;
+            accessible-checked: root.active_tab == 2;
+            accessible-enabled: GuideModel.allows_view_tabs();
+            accessible-action-default => { root.active_tab = 2; root.active_tab_changed(2); }
+            clicked => { root.active_tab = 2; root.active_tab_changed(2); }
+        }
         GuideLockTip { locked: !GuideModel.allows_view_tabs(); }
         HorizontalLayout {
             padding-left: root.compact ? 8px : 12px;
@@ -115,6 +143,13 @@ export component TabViewPillRow inherits HorizontalLayout {
             border-color: root.render_view_tab == 0 || GuideModel.highlight_target == "live_render_tab" ? Theme.accent-cyan : Theme.border-subtle;
             live_render_tab_touch := TouchArea {
                 enabled: GuideModel.allows_view_tabs();
+                accessible-role: AccessibleRole.tab;
+                accessible-label: "Live Render";
+                accessible-item-selectable: true;
+                accessible-item-selected: root.render_view_tab == 0;
+                accessible-checked: root.render_view_tab == 0;
+                accessible-enabled: GuideModel.allows_view_tabs();
+                accessible-action-default => { root.render_view_tab = 0; root.render_view_tab_changed(0); }
                 clicked => { root.render_view_tab = 0; root.render_view_tab_changed(0); }
             }
             GuideLockTip { locked: !GuideModel.allows_view_tabs(); }
@@ -149,6 +184,12 @@ export component TabViewPillRow inherits HorizontalLayout {
             border-width: 1px;
             border-color: root.render_view_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
             edit_tab_touch := TouchArea {
+                accessible-role: AccessibleRole.tab;
+                accessible-label: "Edit";
+                accessible-item-selectable: true;
+                accessible-item-selected: root.render_view_tab == 1;
+                accessible-checked: root.render_view_tab == 1;
+                accessible-action-default => { root.render_view_tab = 1; root.render_view_tab_changed(1); }
                 clicked => { root.render_view_tab = 1; root.render_view_tab_changed(1); }
             }
             HorizontalLayout {

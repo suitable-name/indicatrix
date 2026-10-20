@@ -114,13 +114,31 @@ fn basics() -> Vec<TableEntry> {
             "Nudge with the keys",
             Perform::Tier(TierEntry::of("Crown Main").angle("34.7")),
         ),
-        // The Quick add buttons pin their own heights; there is no form entry that reproduces
-        // the Culet's pavilion side under that name.
-        skip(quick, "Quick add a girdle"),
-        skip(quick, "Quick add a table"),
-        skip(quick, "Quick add a culet"),
-        // The chip that detaches one facet has no form equivalent.
+        recipe(
+            quick,
+            "Quick add a girdle",
+            Perform::add_tier("90", 2, "1", "Girdle", ""),
+        ),
+        recipe(
+            quick,
+            "Quick add a table",
+            Perform::add_tier("0", 2, "0.32", "Table", ""),
+        ),
+        recipe(
+            quick,
+            "Quick add a culet",
+            Perform::add_tier("-0", 2, "0.88", "Culet", ""),
+        ),
+        // The lesson teaches the chips under Facets: the + Add, x, detach, Rotate and Mirror
+        // buttons. A Tier form edit that lands on the same indices is a different gesture, so
+        // none of the six steps gets a derived recipe; the tutorial videos film the real
+        // clicks (`apps/indicatrix-cut/tests/tutorial_videos/chip_routes.rs`).
+        skip("tiers-facet-chips", "Add a facet"),
+        skip("tiers-facet-chips", "Remove a facet"),
         skip("tiers-facet-chips", "Detach one facet"),
+        skip("tiers-facet-chips", "Remove only that facet"),
+        skip("tiers-facet-chips", "Rotate the tier"),
+        skip("tiers-facet-chips", "Mirror the tier"),
     ]
 }
 
@@ -162,7 +180,8 @@ fn meets() -> Vec<TableEntry> {
             "Set the girdle thickness",
             Perform::Tier(TierEntry::of("Girdle").meets(4, "0.3")),
         ),
-        // The design to adopt from is one the learner opens from a file.
+        // The design to adopt from is one the learner opens from a file or loads from the library;
+        // the tutorial videos film the library route (`open_routes.rs` of the video harness).
         skip(adopt, "Open an imported design"),
         skip(adopt, "Adopt one tier"),
         recipe(
@@ -170,13 +189,12 @@ fn meets() -> Vec<TableEntry> {
             "Adopt the rest at once",
             Perform::command(CMD_ADOPT_ALL),
         ),
+        skip(pin, "Pin the solved depth"),
         recipe(
             pin,
             "Let the solver decide a depth",
             Perform::Tier(TierEntry::of("Upper Girdle").meets(1, "Lower Girdle")),
         ),
-        // Pin is a button of the table row.
-        skip(pin, "Pin the solved depth"),
     ]
 }
 
@@ -242,8 +260,6 @@ fn series() -> Vec<TableEntry> {
             "Calculate a scale value",
             Perform::Tier(TierEntry::of("Table").meets(2, "0.5-0.15")),
         ),
-        // The position box under the facet chips.
-        skip(arithmetic, "Calculate a facet position"),
     ]
 }
 
@@ -303,6 +319,9 @@ fn editing() -> Vec<TableEntry> {
         recipe(delete, "Take it back", Perform::undo()),
         // Ticking rows is a gesture of the table.
         skip(multi, "Pick two tiers"),
+        // The batch Offset button of the bar above the table acts on the whole ticked group in
+        // one step; offsetting the rows one by one is not what the lesson shows.
+        skip(multi, "Offset them together"),
         recipe(
             multi,
             "Delete them together",

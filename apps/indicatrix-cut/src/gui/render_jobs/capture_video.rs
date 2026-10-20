@@ -14,7 +14,7 @@ use crate::{
 use indicatrix::color::metrics::PROFILE_AZIMUTHS_DEG;
 use indicatrix_render_jobs::{
     codec,
-    job::{DesignInfo, JOB_FORMAT_VERSION},
+    job::{DesignInfo, format_for_engine},
     paths::reserve_unique_folder,
 };
 use indicatrix_vault::model::render_job::NewRenderJob;
@@ -169,7 +169,7 @@ fn queue_request(
                 summary: &summary,
                 frames_total: u32::try_from(request.total_frames).unwrap_or(u32::MAX),
                 output_path: &output,
-                snapshot_version: JOB_FORMAT_VERSION,
+                snapshot_version: format_for_engine(request.scene.engine),
                 snapshot: &text,
             },
             now,

@@ -27,7 +27,12 @@ pub fn remap_ratio(from_gear: i32, to_gear: i32) -> f64 {
 
 /// Converts one index-wheel position from `from_gear` teeth to `to_gear` teeth,
 /// rounding per `rounding` -- see [`Edit::RemapIndices`]'s own doc comment.
-fn remap_index(index: f64, from_gear: i32, to_gear: i32, rounding: RemapRounding) -> f64 {
+pub(super) fn remap_index(
+    index: f64,
+    from_gear: i32,
+    to_gear: i32,
+    rounding: RemapRounding,
+) -> f64 {
     let scaled = index * remap_ratio(from_gear, to_gear);
     match rounding {
         RemapRounding::Nearest => scaled.round(),
@@ -191,6 +196,9 @@ impl Design {
             Edit::SetTierRelation { index, relation } => {
                 self.apply_set_tier_relation(index, relation, tier_count)
             }
+            Edit::SetTierFrosting { index, frosting } => {
+                self.apply_set_tier_frosting(index, frosting, tier_count)
+            }
             Edit::RestoreTierId { index, id } => self.apply_restore_tier_id(index, id, tier_count),
             Edit::AddConcaveTier { index, tier } => self.apply_add_concave_tier(index, tier),
             Edit::RemoveConcaveTier { index } => self.apply_remove_concave_tier(index),
@@ -239,7 +247,7 @@ impl Design {
     /// leave `self` partly modified even when the edit is about to be rejected,
     /// breaking [`Self::apply_edit`]'s own "without modifying `self`" error
     /// contract for every OTHER variant in between.
-    fn sync_tier_ids(&mut self) {
+    pub(super) fn sync_tier_ids(&mut self) {
         match self.tier_ids.len().cmp(&self.tiers.len()) {
             std::cmp::Ordering::Less => self.ensure_tier_ids(),
             std::cmp::Ordering::Greater => self.tier_ids.truncate(self.tiers.len()),
@@ -329,6 +337,7 @@ impl Design {
         // alone here (they would dangle): an editor session clears them in the same
         // undo step, see `indicatrix_editor::session`.
         let removed_relation = self.tier_relations.remove(&removed_id);
+        let removed_frosting = self.tier_frosting.remove(&removed_id);
         let removed_offset = self.shift_cheater_offsets_for_remove(index);
         let removed_note = self.shift_tier_notes_for_remove(index);
         let mut steps = vec![
@@ -379,6 +388,12 @@ impl Design {
             steps.push(Edit::SetTierRelation {
                 index,
                 relation: Some(relation),
+            });
+        }
+        if let Some(frosting) = removed_frosting {
+            steps.push(Edit::SetTierFrosting {
+                index,
+                frosting: Some(frosting),
             });
         }
         // Always at least `[AddTier, RestoreTierId]` now, so this is always a
@@ -677,12 +692,20 @@ impl Design {
                 .collect();
         }
         let flat_inverse = Edit::RestoreIndices { tiers };
+        // Facet-by-facet frosting names its facets by index-wheel position, so it
+        // moves with the tiers' own indices. Empty for every design without it.
+        let frosting_inverse = self.remap_frosted_facets(from_gear, to_gear, rounding);
         // A gear change must carry concave placements along too, or they would
         // silently keep their old tooth numbers. Only a design that has concave
-        // tiers gets the `Batch`, so every existing design's inverse stays exactly
-        // the plain `RestoreIndices` it has always been.
+        // tiers (or facet frosting) gets the `Batch`, so every existing design's
+        // inverse stays exactly the plain `RestoreIndices` it has always been.
         if self.concave_tiers.is_empty() {
-            return Ok(flat_inverse);
+            if frosting_inverse.is_empty() {
+                return Ok(flat_inverse);
+            }
+            let mut steps = vec![flat_inverse];
+            steps.extend(frosting_inverse);
+            return Ok(Edit::Batch(steps));
         }
         let snapshot = self
             .concave_tiers
@@ -694,10 +717,12 @@ impl Design {
             tier.indices = indices;
         }
         // The two halves touch disjoint lists, so their order is immaterial.
-        Ok(Edit::Batch(vec![
+        let mut steps = vec![
             flat_inverse,
             Edit::RestoreConcaveIndices { tiers: snapshot },
-        ]))
+        ];
+        steps.extend(frosting_inverse);
+        Ok(Edit::Batch(steps))
     }
 
     /// [`Edit::RestoreIndices`]'s own apply/inverse half. Validates every named

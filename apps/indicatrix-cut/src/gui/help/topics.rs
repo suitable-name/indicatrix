@@ -29,7 +29,7 @@ pub const TIER_TABLE: &str = "03-loading-and-tier-list#reading-the-tier-list";
 /// The Design Settings panel above the tier table.
 pub const DESIGN_SETTINGS: &str = "06-materials-and-refractive-index#ri-override-vs-material";
 /// The Solid viewport.
-pub const SOLID_VIEW: &str = "13-solid-inspection-view#the-four-view-modes";
+pub const SOLID_VIEW: &str = "13-solid-inspection-view#the-five-view-modes";
 /// The Diagram view.
 pub const DIAGRAM_VIEW: &str = "13-solid-inspection-view#diagram-view";
 /// The Live Render viewport.

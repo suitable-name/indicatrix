@@ -15,7 +15,6 @@
 
 use super::{PlanesOwner, RenderContext, resolve_material_with_override};
 use indicatrix::optics::materials::GemMaterial;
-use std::sync::OnceLock;
 
 /// Who a colour pick in the Live Render toolbar changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,10 +54,9 @@ pub const fn effective_view_color(
 }
 
 /// The built-in material table, built once: the hook below runs every frame while a
-/// view colour is in force.
+/// view color is in force.
 fn builtin_materials() -> &'static [GemMaterial] {
-    static BUILTINS: OnceLock<Vec<GemMaterial>> = OnceLock::new();
-    BUILTINS.get_or_init(GemMaterial::all_materials)
+    GemMaterial::built_in()
 }
 
 impl RenderContext {

@@ -41,8 +41,18 @@ pub fn run_export(
     remote: &RemoteSelection,
     local_compute: LocalComputeTarget,
     cancel: &AtomicBool,
-    report_progress: impl FnMut(ExportProgress),
+    mut report_progress: impl FnMut(ExportProgress),
 ) -> ExportOutcome {
+    if params.engine.is_ray() && scene.optical_diagnostics.is_some() {
+        return ExportOutcome::Failed(
+            "Optical Diagnostics require Path-Traced rendering.".to_string(),
+        );
+    }
+    // Refused before the beauty render, not after it: the pass is costly and the answer
+    // does not depend on it.
+    if let Some(reason) = crate::bridge::optical_overlay::export::refusal(scene) {
+        return ExportOutcome::Failed(reason.to_string());
+    }
     // Acquired once for this (single-frame) export: adapter acquisition and shader
     // compilation are far too slow to repeat per batch, let alone per export.
     //
@@ -59,12 +69,27 @@ pub fn run_export(
     } else {
         LocalComputeTarget::Cpu
     };
-    let gpu = match local_compute {
-        LocalComputeTarget::Cpu => GpuBackend::disabled(),
-        LocalComputeTarget::CpuGpu | LocalComputeTarget::Gpu => GpuBackend::acquire(),
+    let gpu = if params.engine.is_ray() {
+        GpuBackend::disabled()
+    } else {
+        match local_compute {
+            LocalComputeTarget::Cpu => GpuBackend::disabled(),
+            LocalComputeTarget::CpuGpu | LocalComputeTarget::Gpu => GpuBackend::acquire(),
+        }
     };
     let mut carry = AccumulationCarry::default();
-    let rgba = match render_image_rgba(
+    // With diagnostics the beauty render fills the first half of the bar and the
+    // diagnostic pass the second half.
+    let beauty_share = if scene.optical_diagnostics.is_some() {
+        0.5
+    } else {
+        1.0
+    };
+    let mut report_beauty = |mut progress: ExportProgress| {
+        progress.fraction *= beauty_share;
+        report_progress(progress);
+    };
+    let mut rgba = match render_image_rgba(
         scene,
         scene.yaw,
         scene.pitch,
@@ -75,7 +100,7 @@ pub fn run_export(
         local_compute,
         &mut carry,
         cancel,
-        report_progress,
+        &mut report_beauty,
     ) {
         RenderedImage::Cancelled => return ExportOutcome::Cancelled,
         RenderedImage::Failed(message) => return ExportOutcome::Failed(message),
@@ -88,8 +113,49 @@ pub fn run_export(
         return ExportOutcome::Failed(format!("Could not create output directory: {e}"));
     }
 
-    match save_png(output_path, params.width, params.height, &rgba, color_space) {
-        Ok(()) => ExportOutcome::Completed(output_path.to_path_buf()),
-        Err(e) => ExportOutcome::Failed(format!("Failed to write PNG: {e}")),
+    // The diagnostic pass fills the second half of the bar and announces itself once.
+    let mut announced = false;
+    let mut report_diagnostics = |fraction: f32| {
+        let note = (!announced).then(|| "Tracing Optical Diagnostics".to_string());
+        announced = true;
+        report_progress(ExportProgress {
+            fraction: fraction.mul_add(0.5, 0.5),
+            samples_done: 0,
+            samples_total: params.samples_per_pixel,
+            preview: None,
+            note,
+        });
+    };
+    let metadata = match crate::bridge::optical_overlay::export::apply(
+        scene,
+        [scene.yaw, scene.pitch],
+        crate::bridge::optical_overlay::export::Picture {
+            width: params.width,
+            height: params.height,
+            color_space,
+            rgba: &mut rgba,
+        },
+        cancel,
+        &mut report_diagnostics,
+    ) {
+        Ok(metadata) => metadata,
+        Err(reason) => {
+            return if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                ExportOutcome::Cancelled
+            } else {
+                ExportOutcome::Failed(reason)
+            };
+        }
+    };
+    // The picture first: a failed PNG must not leave an orphan legend behind. If only the
+    // legend fails, the picture stays and the export is reported as failed.
+    if let Err(e) = save_png(output_path, params.width, params.height, &rgba, color_space) {
+        return ExportOutcome::Failed(format!("Failed to write PNG: {e}"));
     }
+    if let Some(metadata) = metadata
+        && let Err(e) = std::fs::write(output_path.with_extension("optical.txt"), metadata)
+    {
+        return ExportOutcome::Failed(format!("Could not write diagnostic metadata: {e}"));
+    }
+    ExportOutcome::Completed(output_path.to_path_buf())
 }

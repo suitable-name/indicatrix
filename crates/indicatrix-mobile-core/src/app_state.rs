@@ -82,6 +82,8 @@ pub struct AppState {
     pub hdr: HdrState,
     /// The local library (`library`, lane M5-a).
     pub library: LibraryState,
+    /// Cancellation and identity of immutable long-operation inputs.
+    pub operations: crate::operations::OperationState,
     platform: Arc<dyn Platform>,
     store: SettingsStore,
 }
@@ -108,6 +110,7 @@ impl AppState {
             analysis: AnalysisState::default(),
             hdr: HdrState::default(),
             library: LibraryState::default(),
+            operations: crate::operations::OperationState::default(),
             platform,
             store,
         }
@@ -147,6 +150,10 @@ impl AppState {
         self.render.lifecycle(event);
         match event {
             Lifecycle::Paused | Lifecycle::Stopping => {
+                // In-flight work stops; a finished Optimize or Retarget result survives a
+                // round trip to the file picker or the share sheet.
+                self.operations.interrupt();
+                self.analysis.cancel_all();
                 // Android may kill a paused app without another callback: keep the
                 // design (cheap when nothing changed) before the settings.
                 if let Err(error) = crate::document::autosave(self) {

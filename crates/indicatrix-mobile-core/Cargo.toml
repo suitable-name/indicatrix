@@ -10,6 +10,10 @@ repository = { workspace = true }
 publish = { workspace = true }
 
 [dependencies]
+indicatrix-net = { workspace = true, features = ["render"] }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+zeroize = "1.9.1"
 # The CPU spectral tracer, materials, lighting presets and the `.hdr` decoder.
 # Zoning (the color-zoned built-ins such as Ametrine, and their CPU zone kernel) is always
 # on in `indicatrix` (owner decision M-D10).
@@ -33,6 +37,10 @@ toml = { workspace = true }
 # The progress-file key of a design without an id (`cutting::key`).
 sha2 = { workspace = true }
 tracing = { workspace = true }
+
+[features]
+default = []
+device-gpu = ["indicatrix/gpu"]
 
 [lints]
 workspace = true

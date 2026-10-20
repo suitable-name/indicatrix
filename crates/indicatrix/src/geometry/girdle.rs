@@ -86,11 +86,128 @@ pub fn girdle_facet_finishes(planes: &[GpuFacetPlane]) -> Vec<FacetFinish> {
         .collect()
 }
 
+/// The per-facet finishes of a stone whose girdle toggle and authored frosting both apply.
+///
+/// `frosted` lists the plane indices (into `planes`) a design authors as frosted: whole tiers
+/// and single facets alike, already resolved to planes. The girdle band is frosted as well
+/// when `girdle_frosted` is on (see [`girdle_facet_finishes`]). An index past the end of
+/// `planes` is ignored.
+///
+/// Returns an EMPTY list when no facet ends up frosted, which is
+/// `trace_spectral_ray_with_finish`'s documented equivalent of the all-polished path: a stone
+/// without any frosting keeps exactly the data (and so the bytes) it had before frosting
+/// could be authored.
+#[must_use]
+pub fn facet_finishes_with_frosted(
+    planes: &[GpuFacetPlane],
+    girdle_frosted: bool,
+    frosted: &[u32],
+) -> Vec<FacetFinish> {
+    if !girdle_frosted && frosted.is_empty() {
+        return Vec::new();
+    }
+    let mut finishes = if girdle_frosted {
+        girdle_facet_finishes(planes)
+    } else {
+        vec![FacetFinish::Polished; planes.len()]
+    };
+    for &index in frosted {
+        if let Some(finish) = usize::try_from(index)
+            .ok()
+            .and_then(|index| finishes.get_mut(index))
+        {
+            *finish = FacetFinish::Frosted;
+        }
+    }
+    if finishes.contains(&FacetFinish::Frosted) {
+        finishes
+    } else {
+        Vec::new()
+    }
+}
+
+/// A resolved finish list as the two pieces a wire scene holds: the girdle toggle and the
+/// authored frosted planes.
+///
+/// [`facet_finishes_with_frosted`] on them rebuilds `finishes`, the list a scene snapshot
+/// carries.
+///
+/// An empty list is `(false, [])`. A list that is exactly the girdle band
+/// ([`girdle_facet_finishes`]) is `(true, [])`, the form a scene without authored frosting has
+/// always had. Anything else is `(false, every frosted plane)`.
+#[must_use]
+pub fn finishes_wire_form(planes: &[GpuFacetPlane], finishes: &[FacetFinish]) -> (bool, Vec<u32>) {
+    if finishes.is_empty() {
+        return (false, Vec::new());
+    }
+    if finishes == girdle_facet_finishes(planes).as_slice() {
+        return (true, Vec::new());
+    }
+    let frosted = finishes
+        .iter()
+        .enumerate()
+        .filter(|(_, finish)| **finish == FacetFinish::Frosted)
+        .filter_map(|(index, _)| u32::try_from(index).ok())
+        .collect();
+    (false, frosted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::geometry::cuts::{STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS, StandardGemCuts};
     use glam::Vec3;
+
+    /// The wire form of a finish list rebuilds that list: no frosting stays empty, the plain
+    /// girdle band keeps its old `(true, [])` form, and authored frosting is listed by plane.
+    #[test]
+    fn finishes_wire_form_round_trips_through_facet_finishes_with_frosted() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        assert_eq!(finishes_wire_form(&planes, &[]), (false, Vec::new()));
+        let girdle = girdle_facet_finishes(&planes);
+        assert_eq!(finishes_wire_form(&planes, &girdle), (true, Vec::new()));
+        for (toggle, authored) in [(false, vec![2_u32, 7]), (true, vec![2, 7])] {
+            let finishes = facet_finishes_with_frosted(&planes, toggle, &authored);
+            let (girdle_flag, frosted) = finishes_wire_form(&planes, &finishes);
+            assert_eq!(
+                facet_finishes_with_frosted(&planes, girdle_flag, &frosted),
+                finishes,
+                "toggle {toggle}"
+            );
+        }
+    }
+
+    /// No toggle and no authored frosting is the plain path (an empty list); authored
+    /// frosting marks exactly the named planes, ORs with the girdle band, and ignores an
+    /// index past the end.
+    #[test]
+    fn facet_finishes_with_frosted_marks_exactly_the_named_planes() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        assert_eq!(facet_finishes_with_frosted(&planes, false, &[]), Vec::new());
+        assert_eq!(
+            facet_finishes_with_frosted(&planes, true, &[]),
+            girdle_facet_finishes(&planes)
+        );
+        let only = facet_finishes_with_frosted(&planes, false, &[0, 5, 9_999]);
+        assert_eq!(only.len(), planes.len());
+        for (i, finish) in only.iter().enumerate() {
+            let expected = if i == 0 || i == 5 {
+                FacetFinish::Frosted
+            } else {
+                FacetFinish::Polished
+            };
+            assert_eq!(*finish, expected, "index {i}");
+        }
+        let both = facet_finishes_with_frosted(&planes, true, &[0]);
+        assert_eq!(both[0], FacetFinish::Frosted);
+        for i in STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS {
+            assert_eq!(both[i], FacetFinish::Frosted, "girdle index {i}");
+        }
+        assert_eq!(
+            facet_finishes_with_frosted(&planes, false, &[9_999]),
+            Vec::new()
+        );
+    }
 
     /// Cross-check against the hand-verified [`STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS`]
     /// constant (`33..49`); if this disagrees, the classifier is wrong, not the constant.

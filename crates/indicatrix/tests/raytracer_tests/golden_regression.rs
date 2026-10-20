@@ -58,8 +58,9 @@ fn studio_rig_trace_output_is_pinned_to_current_values() {
             // This ray (dir (0,-1,0)) hits the crown at exactly normal incidence with
             // Sapphire's default `c_axis == Vec3::Y` -- the degenerate wave-normal-
             // parallel-to-optic-axis limit, where both eigenmodes collapse to a single
-            // isotropic response at `n_o`.
-            [0x3ab2_8ba3, 0x3a3f_8369, 0x3ba5_03d6],
+            // isotropic response at `n_o`. Re-pinned on 2026-10-19 after the measured
+            // sapphire color refit (owner decision; bits from the owner's Windows run).
+            [0x3b1b_2cf1, 0x3ade_bee5, 0x3c0b_3654],
         ),
         (
             Ray {
@@ -83,8 +84,9 @@ fn studio_rig_trace_output_is_pinned_to_current_values() {
             // axis) stopped taking its own isotropic fallback and went through the
             // general partial-Fresnel path like the GPU;
             // re-pinned to the new value. Moved again by 6 / 7 / 9 ULP on 2026-10-01
-            // with the optimised test profile (see the diamond row above).
-            [0x3d14_993a, 0x3c30_fa2d, 0x3e3f_4faa],
+            // with the optimised test profile (see the diamond row above). Re-pinned on
+            // 2026-10-19 after the measured sapphire color refit (owner's Windows run).
+            [0x3ddc_ddc6, 0x3d38_6677, 0x3f13_264c],
         ),
         (
             Ray {
@@ -102,7 +104,8 @@ fn studio_rig_trace_output_is_pinned_to_current_values() {
             // Z moved by 2 ULP on 2026-10-01 with the optimised test profile (see the
             // seed=42 diamond row above).
             [0x3d22_0c97, 0x3d2b_789c, 0x3d45_c546],
-            [0x3a80_d76b, 0x3958_89d5, 0x3b9b_fbb5],
+            // Re-pinned on 2026-10-19 after the measured sapphire color refit.
+            [0x3acb_dc76, 0x3a2c_6f2f, 0x3bf3_5083],
         ),
         (
             Ray {
@@ -121,10 +124,15 @@ fn studio_rig_trace_output_is_pinned_to_current_values() {
             // case above. Y moved by three ULPs (0x38d4_1626 -> 0x38d4_1623) on
             // 2026-09-28 for the same reason as the seed=42 case (the degenerate
             // uniaxial entry now takes the general partial-Fresnel path); re-pinned.
-            [0x39fe_e521, 0x38dd_b2d2, 0x3b18_c493],
+            // Re-pinned again on 2026-10-19 after the measured sapphire color refit.
+            [0x3aa6_a762, 0x3a17_81a5, 0x3bd5_ba42],
         ),
     ];
 
+    // Every row is traced before anything is compared, so one failing run prints the
+    // whole table (all rows that drifted, not only the first).
+    let mut got = Vec::with_capacity(cases.len());
+    let mut want = Vec::with_capacity(cases.len());
     for (ray, seed, preset, lyaw, lpitch, expected_diamond, expected_ruby) in cases {
         let xyz_d = trace_spectral_ray(
             ray,
@@ -146,17 +154,19 @@ fn studio_rig_trace_output_is_pinned_to_current_values() {
             (hash_u32(seed) as f32) / 4_294_967_295.0,
             None,
         );
-        assert_eq!(
+        got.push((
+            seed,
+            preset,
             [xyz_d.x.to_bits(), xyz_d.y.to_bits(), xyz_d.z.to_bits()],
-            expected_diamond,
-            "diamond trace drifted from the pinned baseline for seed {seed}, preset {preset:?}; re-pin only after an intended physics change"
-        );
-        assert_eq!(
             [xyz_r.x.to_bits(), xyz_r.y.to_bits(), xyz_r.z.to_bits()],
-            expected_ruby,
-            "sapphire trace drifted from the pinned baseline for seed {seed}, preset {preset:?}; re-pin only after an intended physics change"
-        );
+        ));
+        want.push((seed, preset, expected_diamond, expected_ruby));
     }
+    assert_eq!(
+        got, want,
+        "diamond / sapphire trace drifted from the pinned baseline (seed, preset, diamond \
+         bits, sapphire bits); re-pin only after an intended physics change"
+    );
 
     // sample_studio_environment direct sampling across a grid of directions.
     let env_dirs = [

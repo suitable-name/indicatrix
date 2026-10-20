@@ -12,14 +12,16 @@
 //! threshold) further split into its own [`render_export`] submodule folder.
 
 pub mod advanced_in_use;
+pub mod camera_handles;
 pub mod camera_lighting;
 pub mod design_lighting;
-mod fit_view;
+pub mod fit_view;
 pub mod lighting_presets;
 pub mod material;
 pub mod output_defaults;
 pub mod parameter_constants;
 pub mod quality;
+pub mod ray_settings;
 pub mod render_body_color;
 pub mod render_export;
 pub mod render_visibility;

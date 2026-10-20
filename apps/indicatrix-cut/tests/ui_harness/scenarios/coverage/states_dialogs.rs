@@ -443,6 +443,23 @@ fn batch_and_preferences_states() -> Vec<State> {
             },
         ),
         state(
+            "Preview batch, offered at startup",
+            Base::Library,
+            Some("PreviewBatchDialog"),
+            DENY_IMPORT_BATCH,
+            |a| {
+                // The startup offer (also the shape of the Regenerate offer's quality block): no
+                // import extras, but the same "Picture Quality" sliders. Moving one counts the
+                // library again with the new values; "Generate" stays off while it counts.
+                let batch = a.ui().global::<BatchModel>();
+                batch.set_preview_confirming(true);
+                batch.set_preview_offer_count(2);
+                batch.set_preview_offer_from_import(false);
+                batch.set_preview_offer_regenerate(false);
+                batch.set_preview_visible(true);
+            },
+        ),
+        state(
             "Preferences, tutorials section",
             Base::Startup,
             Some("PreferencesDialog"),

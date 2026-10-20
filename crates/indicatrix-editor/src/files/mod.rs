@@ -19,7 +19,7 @@
 
 use indicatrix_formats::{
     asc::{AscSchedule, to_asc_string},
-    gcs::{gcs_to_asc_schedule, parse_gcs_bytes},
+    gcs::{GcsTierFrosting, gcs_frosting, gcs_to_asc_schedule, parse_gcs_bytes},
     gem::{gem_to_asc_schedule, parse_gem},
     native::design::{DESIGN_READ_EXTENSIONS, FileKind, detect_kind},
 };
@@ -102,6 +102,11 @@ pub struct ConvertedDesign {
     /// converted, `.gcs` hidden or guide tiers, a missing refractive index, unknown
     /// `.gcs` elements). Empty for a clean file.
     pub warnings: Vec<String>,
+    /// What a `.gcs` file states as frosted, by tier position and facet slot of the
+    /// converted schedule (`.asc` has no notation for it). Empty for a `.gem` and for a
+    /// `.gcs` that frosts nothing. Apply it with `Design::apply_imported_frosting` once the
+    /// design is built from `asc_text`.
+    pub frosting: Vec<(usize, GcsTierFrosting)>,
 }
 
 /// `file_name`'s stem plus `.asc` (`round.gem` -> `round.asc`); `design.asc` for a
@@ -131,6 +136,7 @@ pub fn convert_foreign_design(
     kind: InputFileKind,
     bytes: &[u8],
 ) -> Result<ConvertedDesign, String> {
+    let mut frosting = Vec::new();
     let (mut schedule, dotted) = match kind {
         InputFileKind::Gem => (
             parse_gem(bytes)
@@ -140,7 +146,10 @@ pub fn convert_foreign_design(
         ),
         InputFileKind::Gcs => (
             parse_gcs_bytes(bytes)
-                .map(|design| gcs_to_asc_schedule(&design))
+                .map(|design| {
+                    frosting = gcs_frosting(&design);
+                    gcs_to_asc_schedule(&design)
+                })
                 .map_err(|e| format!("not a readable .gcs file: {e}"))?,
             ".gcs",
         ),
@@ -157,6 +166,7 @@ pub fn convert_foreign_design(
         asc_file_name: converted_asc_file_name(file_name),
         asc_text,
         warnings,
+        frosting,
     })
 }
 

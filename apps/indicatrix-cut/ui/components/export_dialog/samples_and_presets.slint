@@ -4,6 +4,7 @@ import { ExportModel } from "../../models/export.slint";
 import { SettingsModel } from "../../models/settings.slint";
 import { GuideModel } from "../../models/guide.slint";
 import { TipBox } from "../tip_box.slint";
+import { WrappedNote } from "wrapped_note.slint";
 
 // One row of the preset list: a check box drawn by hand, built as a real check box for the
 // keyboard (Tab, then Space or Enter) and for a screen reader.
@@ -120,7 +121,7 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
     // useful range (8..32768) is now far too wide for a handful of presets.
     // "higher = slower" is honest at 4096 but understates it badly at 32768,
     // hence the plain-language cost hint that appears near the top of the range.
-    VerticalLayout {
+    if ExportModel.engine_index == 0: VerticalLayout {
         spacing: 6px;
         Rectangle {
             height: samples_caption.preferred-height;
@@ -152,7 +153,7 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
             }
         }
 
-        if root.sample_exponent >= SettingsModel.export_samples_max_exponent - 1: Text {
+        if root.sample_exponent >= SettingsModel.export_samples_max_exponent - 1: WrappedNote {
             text: "Very high sample counts can take hours to render, especially at large output sizes.";
             font-size: 11px;
             color: Theme.text-muted;
@@ -179,7 +180,7 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
                 accessible-role: AccessibleRole.text;
             }
         }
-        Text {
+        WrappedNote {
             text: "Each checked lighting produces an ADDITIONAL file alongside the current view -- export time multiplies linearly with how many are selected.";
             font-size: 11px;
             color: Theme.text-muted;

@@ -88,7 +88,7 @@ fn deep_solve() -> Guide {
             "The button turns into Cancel Deep Solve, and the status strip shows that Deep Solve is running.",
         ])
         .check("the button reads Cancel Deep Solve.")
-        .why("It runs off the main thread, so you can keep working. On the program's own reference designs it tried about 68 solves on average, which can mean minutes on a large design. Cancel stops waiting for it; the work itself finishes in the background and its result is discarded.")
+        .why("It runs off the main thread, so you can keep working. On the program's own reference designs it tried about 68 solves on average, which can mean minutes on a large design. Cancel stops the search at its next step and discards its result.")
         .goal(event(events::DEEP_SOLVE_STARTED), "a Deep Solve run started")
         .highlight("deep_solve_button")
         .allow(TOOLS),

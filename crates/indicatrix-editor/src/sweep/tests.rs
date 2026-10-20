@@ -3,7 +3,10 @@
 
 use super::*;
 use crate::solve_policy::SolveCostEstimate;
-use indicatrix::optics::{materials::GemMaterial, raytracer::LightingPreset};
+use indicatrix::{
+    color::metrics::evaluate_gem_optical_metrics,
+    optics::{materials::GemMaterial, raytracer::LightingPreset},
+};
 use indicatrix_cut_core::{ConstraintTier, History, PreformSpec, ScheduleMeta};
 use std::sync::Mutex;
 

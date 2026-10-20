@@ -25,12 +25,18 @@
 //!   equal.
 //! - `governor`: the pure thermal and battery rules.
 //! - `export`: [`ExportJob`].
+//! - `remote_session`: the interactive remote session of an epoch, with reconnection after
+//!   a lost transport or a stay in the background.
 
+mod backend;
 mod export;
 mod governor;
 mod pool;
+mod remote_session;
 mod scene;
 
+#[cfg(test)]
+mod geometry_tests;
 #[cfg(test)]
 mod tests;
 
@@ -40,7 +46,7 @@ use indicatrix::color::ColorSpace;
 use indicatrix_web_core::{
     display::{MAX_EXPORT_EDGE, export_size},
     render::{EXPORT_MAX_SPP, EXPORT_MIN_SPP},
-    scene::OwnedScene,
+    scene::GeometrySceneSpec,
 };
 
 pub use export::{CANCELLED, ExportJob};
@@ -229,13 +235,24 @@ impl Drop for RenderState {
 
 // The pool's state is shared behind an `Arc`, so several methods need no `&mut self`; they
 // take it anyway so the owner of the `AppState` serialises every call (the agreed contract).
-#[allow(clippy::needless_pass_by_ref_mut)]
+// (Clippy's `needless_pass_by_ref_mut` does not fire on this block as it stands.)
 impl RenderState {
+    /// Shared budget for long editor operations and exports as well as tracing.
+    #[must_use]
+    pub fn compute_policy(&self) -> Arc<crate::compute_policy::ComputePolicy> {
+        Arc::clone(&self.shared.policy)
+    }
     /// Cancels the running epoch and keeps the pool. The last pictures are dropped; the
     /// next [`start`] begins afresh.
     pub fn stop(&mut self) {
         self.shared.stop();
         self.attempt = None;
+    }
+
+    /// Cancels a socket session without scheduling an automatic re-upload. Explicit
+    /// Retry or a changed scene starts a fresh remote request at sample zero.
+    pub fn cancel_remote(&mut self) {
+        self.shared.stop();
     }
 
     /// Pauses or resumes tracing at the user's request. A paused render keeps its picture.
@@ -280,7 +297,15 @@ impl RenderState {
     /// Applies the thermal and battery rules; call it every ten seconds with the platform's
     /// thermal headroom. Battery saver changes the sample target from the next [`start`].
     pub fn govern(&mut self, thermal_headroom: Option<f32>, battery_saver: bool) {
-        self.thermal = thermal_headroom;
+        // Stay paused until a valid reading drops below the recovery threshold.
+        // Missing readings do not prove that a previously hot device cooled down.
+        self.thermal = if self.thermal.is_some_and(|value| value > 1.0)
+            && !thermal_headroom.is_some_and(|value| value.is_finite() && value < 0.90)
+        {
+            self.thermal
+        } else {
+            thermal_headroom
+        };
         self.battery_saver = battery_saver;
         self.apply_governor();
     }
@@ -329,6 +354,7 @@ impl RenderState {
                 battery_saver,
             });
             control.workers_allowed = decision.workers.min(control.max_workers);
+            self.shared.policy.set_capacity(decision.workers);
             control.hot = decision.paused == Some(PauseReason::Hot);
         });
     }
@@ -357,6 +383,7 @@ impl RenderState {
         prepared: Result<Prepared, String>,
         denoise: bool,
         battery_saver: bool,
+        remote: Option<crate::remote::rendering::RemoteConfig>,
     ) -> Result<u64, String> {
         if self.shared.is_closed() {
             return Err(CLOSED.to_owned());
@@ -376,12 +403,45 @@ impl RenderState {
         self.next_epoch += 1;
         let id = self.next_epoch;
         let Prepared { key, hdr } = prepared;
-        let (spec, target) = (key.spec.clone(), key.target);
+        let engine = key.engine;
+        let spec = GeometrySceneSpec {
+            scene: key.spec.clone(),
+            tools: key.tools.clone(),
+        };
+        let customs = key.customs.clone();
+        let target = key.target;
         self.attempt = Some(Ok(key));
         self.shared.begin_epoch(id, target, denoise);
         let shared = Arc::clone(&self.shared);
         self.aux().submit(move || {
-            let built = OwnedScene::build(&spec, hdr).map_err(|error| error.to_string());
+            if let Some(remote) = remote {
+                remote_session::run(
+                    &shared,
+                    id,
+                    &remote,
+                    &spec,
+                    &customs,
+                    engine,
+                    hdr.as_ref(),
+                    target,
+                    denoise,
+                );
+                return;
+            }
+            let Some(_permit) = shared.policy.acquire(&|| !shared.is_current(id)) else {
+                return;
+            };
+            if !shared.is_current(id) {
+                return;
+            }
+            let built = spec
+                .build_with_customs(hdr, &customs)
+                .and_then(|mut scene| {
+                    scene
+                        .set_engine(engine)
+                        .map_err(|reason| reason.message().to_owned())?;
+                    Ok(scene)
+                });
             shared.install_scene(id, built, target);
         });
         Ok(id)
@@ -394,6 +454,10 @@ impl RenderState {
 #[must_use]
 pub fn live_target_spp(state: &AppState) -> u32 {
     let render = &state.settings.render;
+    let engine = render.engine_spec();
+    if engine.is_ray() {
+        return engine.target_samples(0);
+    }
     let normal = if state.window_class == WindowClass::Compact {
         render.live_spp_compact
     } else {
@@ -426,10 +490,21 @@ pub fn live_target_spp(state: &AppState) -> u32 {
 /// down. The running epoch is cancelled and [`RenderState::status`] reports the same
 /// sentence as [`RenderStatus::Failed`].
 pub fn start(state: &mut AppState, view: RenderView) -> Result<u64, String> {
+    state.render.select_backend(state.settings.render.backend);
     let prepared = scene::prepare(state, view);
-    let denoise = state.settings.render.denoise;
-    let battery_saver = state.settings.battery_saver;
-    state.render.begin(view, prepared, denoise, battery_saver)
+    let denoise = state.settings.render.denoise && state.settings.render.engine_spec().denoises();
+    let battery_saver =
+        state.settings.battery_saver || state.platform().system_power_save().unwrap_or(false);
+    let remote =
+        (state.settings.render.backend == crate::settings::RenderBackend::Remote).then(|| {
+            crate::remote::rendering::RemoteConfig {
+                platform: Arc::clone(state.platform()),
+                settings: state.settings.remote.clone(),
+            }
+        });
+    state
+        .render
+        .begin(view, prepared, denoise, battery_saver, remote)
 }
 
 /// Whether [`start`] would trace something other than what runs now.
@@ -470,6 +545,10 @@ const fn pixel_size(width: f32, height: f32) -> (u32, u32) {
 /// A sentence for the user when there is nothing to render (see [`start`]).
 pub fn export_job(state: &AppState, request: &ExportRequest) -> Result<ExportJob, String> {
     let settings = &state.settings.render;
+    let mut engine = settings.engine_spec();
+    if engine.is_ray() {
+        engine.ray.aa_taps = 16;
+    }
     let (view_width, view_height) = state.render.view.map_or_else(
         || {
             let (width, height) = state.viewport.view_size;
@@ -486,18 +565,32 @@ pub fn export_job(state: &AppState, request: &ExportRequest) -> Result<ExportJob
         .clamp(MIN_EXPORT_EDGE, MAX_EXPORT_EDGE);
     let long_edge = request.long_edge_px.clamp(MIN_EXPORT_EDGE, cap);
     let (width, height) = export_size(view_width, view_height, long_edge);
-    let spp = request
+    let path_spp = request
         .spp
         .clamp(EXPORT_MIN_SPP, EXPORT_MAX_SPP)
         .min(settings.export_cap_spp.max(1));
+    let spp = engine.target_samples(path_spp);
     let prepared = scene::prepare(state, RenderView { width, height })?;
-    let scene =
-        OwnedScene::build(&prepared.key.spec, prepared.hdr).map_err(|error| error.to_string())?;
     Ok(ExportJob::new(
-        Arc::new(scene),
+        GeometrySceneSpec {
+            scene: prepared.key.spec,
+            tools: prepared.key.tools,
+        },
+        prepared.key.customs,
+        engine,
+        prepared.hdr,
         spp,
         request.color_space.space(),
         base_workers(state.render.cores),
         state.render.shared.rate_per_thread(),
+        Arc::clone(&state.render.shared.policy),
+        settings.backend,
+        state.render.shared.backend.probe(),
+        (settings.backend == crate::settings::RenderBackend::Remote).then(|| {
+            crate::remote::rendering::RemoteConfig {
+                platform: Arc::clone(state.platform()),
+                settings: state.settings.remote.clone(),
+            }
+        }),
     ))
 }

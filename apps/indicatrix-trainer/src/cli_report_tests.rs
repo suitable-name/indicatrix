@@ -83,13 +83,24 @@ fn the_algorithm_and_the_objectives_are_described_for_the_banner() {
 fn the_imitation_progress_line_shows_loss_cosine_and_labels_instead_of_the_critic() {
     let mut point = blank_point();
     point.imitation_loss = 0.123;
+    point.update_of_iteration = Some(4);
     point.train_cosine = Some(0.71);
     point.labelled_samples = 4096;
+    point.component_support = [10, 9, 8, 7, 6, 5, 4];
+    point.packing_ms = 12.0;
+    point.training_host_ms = 34.0;
+    point.weight_export_ms = 5.0;
+    point.rollout_forward_ms = 6.0;
     point.explained_variance = Some(0.97);
     let line = progress_line(&point, true, 5, 10, &[0.5, 1.0]);
     assert!(line.contains("loss 0.123"), "{line}");
     assert!(line.contains("cos +0.71"), "{line}");
     assert!(line.contains("labels 4096"), "{line}");
+    assert!(line.contains("support 10/9/8/7/6/5/4"), "{line}");
+    assert!(
+        line.contains("host ms pack/update/export/fwd 12/34/5/6"),
+        "{line}"
+    );
     assert!(!line.contains("ev "), "{line}");
     assert!(line.contains(" 50.0%"), "{line}");
     assert!(line.contains("iter    5/10"), "{line}");
@@ -139,6 +150,52 @@ fn the_progress_line_shows_the_evaluation_rate_and_the_model_oracle_ratio() {
 }
 
 #[test]
+fn the_banner_names_the_updates_per_round_or_the_epochs() {
+    let config = config_for(&[]);
+    let bounded = describe_rollout(&config);
+    assert!(
+        bounded.contains("64 updates per round, mini-batch 256"),
+        "{bounded}"
+    );
+    assert!(!bounded.contains("epochs"), "{bounded}");
+
+    let mut config = config_for(&[]);
+    config.imitation.updates_per_round = 0;
+    config.imitation.epochs_per_round = 3;
+    let epochs = describe_rollout(&config);
+    assert!(epochs.contains("3 epochs per round"), "{epochs}");
+    assert!(!epochs.contains("updates per round"), "{epochs}");
+
+    let ppo = describe_rollout(&config_for(&["--algo", "ppo"]));
+    assert!(ppo.contains("epochs per iteration"), "{ppo}");
+    assert!(!ppo.contains("updates per round"), "{ppo}");
+}
+
+#[test]
+fn the_first_iteration_shows_no_update_yet() {
+    let mut point = blank_point();
+    point.labelled_samples = 512;
+    let line = progress_line(&point, true, 1, 10, &[]);
+    assert!(line.contains("loss - |"), "{line}");
+    assert!(line.contains("upd -"), "{line}");
+    assert!(line.contains("labels 512"), "{line}");
+    // A PPO line has no update segment.
+    assert!(!progress_line(&point, false, 1, 10, &[]).contains("upd"));
+}
+
+#[test]
+fn an_imitation_line_shows_the_update_its_wait_and_its_iteration() {
+    let mut point = blank_point();
+    point.update_secs = 4.26;
+    point.update_wait_secs = 0.04;
+    point.update_of_iteration = Some(12);
+    let line = progress_line(&point, true, 13, 100, &[]);
+    assert!(line.contains("upd 4.3s (waited 0.0s, of #12)"), "{line}");
+    assert!(line.contains("loss 0.000"), "{line}");
+    assert!(line.is_ascii(), "{line}");
+}
+
+#[test]
 fn the_phase_seconds_are_averaged_over_the_iterations() {
     assert_eq!(mean_phase_seconds(&[]), None);
     let mut a = blank_point();
@@ -164,6 +221,15 @@ fn the_evaluation_rate_of_a_run_sums_the_rounds() {
     b.rollout_secs = 2.0;
     b.update_secs = 1.0;
     let rate = overall_evaluations_per_sec(&[a, b]).unwrap();
+    assert!((rate - 1000.0).abs() < 1e-3, "{rate}");
+    // An overlapping update counts by the main thread's wait, not by its own duration.
+    let mut c = blank_point();
+    c.evaluations_this_round = 3000;
+    c.rollout_secs = 3.0;
+    c.update_secs = 9.0;
+    c.update_wait_secs = 0.0;
+    c.update_of_iteration = Some(0);
+    let rate = overall_evaluations_per_sec(&[c]).unwrap();
     assert!((rate - 1000.0).abs() < 1e-3, "{rate}");
     // Points without recorded time or evaluations (old files) give no rate.
     assert_eq!(overall_evaluations_per_sec(&[blank_point()]), None);

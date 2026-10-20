@@ -163,15 +163,18 @@ pub fn save_gcs(ctx: &Ctx) {
             let mut schedule =
                 design.to_asc_schedule_from_solved_with(&solved, &app.custom_materials);
             design.append_concave_footnotes(&mut schedule);
-            indicatrix_formats::gcs::to_gcs_string(&schedule)
-                .map(|text| {
-                    (
-                        text,
-                        gcs_file_name(&state.save_asc_name()),
-                        design.concave_tiers.len(),
-                    )
-                })
-                .map_err(|e| format!("Cannot write this schedule as .gcs: {e}"))
+            indicatrix_formats::gcs::to_gcs_string_with_frosting(
+                &schedule,
+                &design.gcs_frosting_spec(),
+            )
+            .map(|text| {
+                (
+                    text,
+                    gcs_file_name(&state.save_asc_name()),
+                    design.concave_tiers.len(),
+                )
+            })
+            .map_err(|e| format!("Cannot write this schedule as .gcs: {e}"))
         };
         match built {
             Ok((text, name, concave)) => {

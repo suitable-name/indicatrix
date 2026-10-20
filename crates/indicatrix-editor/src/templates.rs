@@ -21,7 +21,7 @@ use crate::{
     EditorSession,
     material::GEAR_PRESETS,
     retarget::{
-        CrownShift, apply_with_anchors,
+        CrownShift,
         check::{CheckInputs, check_retarget},
         plan::build_plan_from,
         validity::ValidityStatus,
@@ -387,7 +387,7 @@ fn adapt_angles(
     if check.validity.status != ValidityStatus::Valid {
         return Err(check.validity.headline());
     }
-    let edit = apply_with_anchors(design, &plan.proposal(), &check.anchors);
+    let edit = check.validated_edit(design)?;
     design
         .apply_edit(edit)
         .map(|_inverse| ())

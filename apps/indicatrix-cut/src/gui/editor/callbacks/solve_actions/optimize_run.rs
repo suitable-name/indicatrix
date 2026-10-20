@@ -18,13 +18,11 @@ use crate::{
     },
 };
 use indicatrix::optics::materials::GemMaterial;
-use indicatrix_cut_core::{Design, MaterialSelection, OptimizeOutcome};
-// The RI defaulting, the "only selected tiers" pinning and the start status line moved to
-// `indicatrix_editor::optimize_view` (shared with the web Optimize tab); imported at
-// their old names, which this module's tests exercise through `super::*`.
-use indicatrix_editor::optimize_view::{
-    default_optimize_material_ri, optimize_start_status, pin_non_selected_free_tiers,
-};
+#[cfg(test)]
+use indicatrix_cut_core::Design;
+use indicatrix_cut_core::{MaterialSelection, OptimizeOutcome};
+// Shared material defaulting and status text; selection is a search-variable mask.
+use indicatrix_editor::optimize_view::{default_optimize_material_ri, optimize_start_status};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{
     cell::RefCell,
@@ -233,17 +231,10 @@ fn begin_tier_optimize_run(
     // table needs the ORIGINAL design's tiers/names to label its rows,
     // regardless of whichever design the search actually ran against below.
     let design_snapshot = st.design.clone();
-    // When `EditorModel.optimize_only_selected` is on and at
-    // least one tier is multi-selected, every OTHER free tier is pinned to
-    // its own current mast before the search ever sees it, so the free tiers
-    // are only the ones the cutter actually asked it to touch. `AngleChange::index`
-    // stays valid against `design_snapshot`/the real `st.design` either
-    // way -- see `pin_non_selected_free_tiers`'s own doc comment. The same selection
-    // limits which anchored tiers may vary.
+    // Keep the original authored design. The worker restricts independent variables
+    // through OptimizeOptions instead of pinning unselected meet-derived depths.
     let only_selected = ui.global::<EditorModel>().get_optimize_only_selected();
-    let Some(design) = optimize_target_design(ui, &st, only_selected) else {
-        return;
-    };
+    let design = st.design.clone();
     let only_tiers =
         (only_selected && !st.multi_selected.is_empty()).then(|| st.multi_selected.clone());
     let OptimizeRunPrep {
@@ -330,49 +321,6 @@ fn begin_tier_optimize_run(
     st.optimize = Some(handle);
 }
 
-/// The design [`begin_tier_optimize_run`] actually hands to the search --
-/// `st.design` unchanged, or (when multi-selection is active)
-/// [`pin_non_selected_free_tiers`]'s restricted clone. Pulled out purely to keep
-/// `begin_tier_optimize_run` under clippy's function-length lint.
-///
-/// Reuses the cached last solve, so the UI thread never solves synchronously here,
-/// instead of calling [`Design::solve`] inline. Returns `None` (having already
-/// toasted) rather than silently falling back to the unrestricted design, when no
-/// cached solve matches this design's current tier count.
-fn optimize_target_design(
-    ui: &MainWindow,
-    st: &EditorState,
-    only_selected: bool,
-) -> Option<Design> {
-    if !only_selected || st.multi_selected.is_empty() {
-        return Some(st.design.clone());
-    }
-    let Some(solved) = auto_solve::solid_last_solved()
-        .and_then(|cache| {
-            cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-        })
-        // the shared cache is now generation-tagged -- only the masts
-        // themselves matter here.
-        .filter(|(_, solved)| solved.len() == st.design.tiers.len())
-        .map(|(_, solved)| solved)
-    else {
-        show_toast(
-            ui,
-            "Solve first, then Optimize with \"Only Selected Tiers\".",
-            "error",
-        );
-        return None;
-    };
-    Some(pin_non_selected_free_tiers(
-        &st.design,
-        &solved,
-        &st.multi_selected,
-    ))
-}
-
 /// The running "Optimizing..." status line for each progress tick -- the wording lives in
 /// `indicatrix_editor::optimize_view::optimize_progress_status` (shared with the web
 /// Optimize tab); this only unpacks the desktop's progress struct.
@@ -391,6 +339,7 @@ mod tests {
     use super::*;
     use indicatrix::geometry::meet_solver::MeetConstraint;
     use indicatrix_cut_core::optimize::SearchStage;
+    use indicatrix_editor::optimize_view::pin_non_selected_free_tiers;
     use std::{collections::BTreeSet, time::Duration};
 
     // --- progress_fraction ---

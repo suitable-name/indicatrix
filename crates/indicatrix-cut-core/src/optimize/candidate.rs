@@ -8,8 +8,8 @@
 use super::{
     guard::ShapeGuard,
     objective::{
-        ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights, evaluate_objective_under,
-        evaluate_objective_with_tone_under, to_gpu_planes,
+        ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights, evaluate_objective_geom_under,
+        evaluate_objective_with_tone_geom_under_threaded,
     },
     options::{OptimizeOptions, ShapeTarget},
     space::SearchSpace,
@@ -25,6 +25,7 @@ use glam::DVec3;
 use indicatrix::{
     color::metrics::FaceUpTone,
     geometry::{
+        StoneGeometry,
         meet_solver::MeetConstraint,
         stone_metrics::{
             SolidMesh, SolidMetrics, SolidStatus, StoneProportions, build_solid_mesh, measure_solid,
@@ -32,6 +33,8 @@ use indicatrix::{
     },
     optics::{materials::GemMaterial, raytracer::LightingPreset},
 };
+
+pub(super) use super::scored_stone::ScoredStone;
 
 /// A candidate's yield loss (`0.0` to `100.0`, LOWER is better), for
 /// [`ObjectiveWeights::score_with_yield`] -- `100.0` minus
@@ -142,9 +145,9 @@ pub struct FinishedScore {
 ///
 /// The tone is measured when `fidelity` is `Full` (always reported) or the weights carry a
 /// tone term; without either it costs nothing and the components are exactly
-/// [`evaluate_objective_under`]'s.
+/// [`evaluate_objective_geom_under`]'s.
 pub(super) fn measure_with_tone(
-    planes: &[indicatrix::geometry::GpuFacetPlane],
+    geom: StoneGeometry<'_>,
     material: &GemMaterial,
     weights: &ObjectiveWeights,
     fidelity: ObjectiveFidelity,
@@ -152,8 +155,9 @@ pub(super) fn measure_with_tone(
 ) -> (ObjectiveComponents, Option<FaceUpTone>, f32) {
     let weighted = weights.tone_weight > 0.0;
     if weighted || fidelity == ObjectiveFidelity::Full {
-        let (components, tone) =
-            evaluate_objective_with_tone_under(planes, material, fidelity, lighting);
+        let (components, tone) = evaluate_objective_with_tone_geom_under_threaded(
+            geom, material, fidelity, lighting, None,
+        );
         let loss = if weighted {
             weights.tone_goal.loss_pct(&tone)
         } else {
@@ -162,7 +166,7 @@ pub(super) fn measure_with_tone(
         (components, Some(tone), loss)
     } else {
         (
-            evaluate_objective_under(planes, material, fidelity, lighting),
+            evaluate_objective_geom_under(geom, material, fidelity, lighting),
             None,
             0.0,
         )
@@ -174,8 +178,10 @@ pub(super) fn measure_with_tone(
 ///
 /// For a caller that changes a design after the search, for example by re-anchoring tiers
 /// that follow a relation, and wants numbers that describe the design it actually delivers.
-/// `planes` are the design's own ([`Design::planes_from_solved`]); `weights` are the ones
-/// the search ran with, so the score is comparable with the search's. With a
+/// `planes` are the design's own ([`Design::planes_from_solved`]); the design's concave
+/// tools are cut out of them ([`Design::tools_for_scoring`]), so the figures are those of
+/// the stone with its tools, as the search measured it. `weights` are the ones the search
+/// ran with, so the score is comparable with the search's. With a
 /// `shape_target` (the one the search ran with) the score carries the same penalty for
 /// drifting from the target's table size and crown-to-pavilion ratio.
 #[must_use]
@@ -188,15 +194,14 @@ pub fn score_finished_design(
     lighting: LightingPreset,
     shape_target: Option<ShapeTarget>,
 ) -> FinishedScore {
-    let (after, tone, tone_loss) = measure_with_tone(
-        &to_gpu_planes(planes),
-        material,
-        weights,
-        fidelity,
-        lighting,
-    );
+    let stone = ScoredStone::of(design, planes);
+    let (after, tone, tone_loss) =
+        measure_with_tone(stone.geometry(), material, weights, fidelity, lighting);
     let metrics = measure_solid(planes);
-    let loss = yield_loss_pct(design, metrics.as_ref());
+    let loss = yield_loss_pct(
+        design,
+        stone.yield_metrics(planes, metrics.as_ref()).as_ref(),
+    );
     let mut score = weights.score_with_tone(&after, loss, tone_loss);
     if shape_target.is_some() {
         score += shape_penalty_for_planes(shape_target, metrics.as_ref(), planes);
@@ -251,6 +256,10 @@ pub fn free_tier_indices_with(design: &Design, options: &OptimizeOptions) -> Vec
         .enumerate()
         .filter(|(index, tier)| {
             angle_is_variable(tier.angle_deg)
+                && options
+                    .only_tiers
+                    .as_ref()
+                    .is_none_or(|selected| selected.contains(index))
                 && !design.is_tier_driven(*index)
                 && (!matches!(tier.constraint, MeetConstraint::ScaleReference(_))
                     || options.anchored_hinge(design, *index).is_some())
@@ -305,13 +314,10 @@ pub(super) fn candidate_angle_is_safe(original_deg: f64, candidate_deg: f64) -> 
 
 /// One candidate's fully-evaluated outcome: either rejected outright (unsolvable,
 /// non-closed, a manufacturability regression, or a lost girdle), or accepted with
-/// its [`ObjectiveFidelity::Fast`] score. Deliberately does not carry the candidate's
-/// solved masts: the search always re-solves the next candidate from scratch (see
-/// the module doc comment's "Cost first" section), so there is no "previous" this
-/// outcome would ever be threaded into.
+/// its [`ObjectiveFidelity::Fast`] score and exact accepted authored state.
 pub(super) enum CandidateOutcome {
     Rejected,
-    Accepted { score: f32 },
+    Accepted { score: f32, design: Box<Design> },
 }
 
 /// Solves `design`, checks closure, the shape guard and manufacturability against
@@ -322,10 +328,16 @@ pub(super) enum CandidateOutcome {
 /// The candidate's plane list, mesh and solid measurement are built once and shared by the
 /// guard, the manufacturability gate, the score and the shape penalty; `preform_volume` is
 /// [`preform_volume`] of `design`, measured once per run by the caller.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "every input is a fixed search setting or the candidate; bundling them is SearchContext, which the tests deliberately bypass"
+// `cfg(doc)` builds run no clippy, where an unfulfilled `expect` cannot be reported; the
+// lint fires (and the expectation is met) in the `test` build clippy checks.
+#[cfg_attr(
+    test,
+    expect(
+        clippy::too_many_arguments,
+        reason = "every input is a fixed search setting or the candidate; bundling them is SearchContext, which the tests deliberately bypass"
+    )
 )]
+#[cfg(any(test, doc))]
 pub(super) fn evaluate_candidate(
     design: &Design,
     material: &GemMaterial,
@@ -336,9 +348,44 @@ pub(super) fn evaluate_candidate(
     shape_target: Option<ShapeTarget>,
     preform_volume: Option<f64>,
 ) -> CandidateOutcome {
-    let Ok(solved) = design.solve() else {
+    evaluate_candidate_controlled(
+        design,
+        material,
+        weights,
+        baseline_warnings,
+        lighting,
+        guard,
+        shape_target,
+        preform_volume,
+        None,
+        None,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the two callers pass the search's fixed settings plus cancel/telemetry; bundling them is SearchContext, which `evaluate_candidate` deliberately bypasses"
+)]
+pub(super) fn evaluate_candidate_controlled(
+    design: &Design,
+    material: &GemMaterial,
+    weights: &ObjectiveWeights,
+    baseline_warnings: &BaselineWarningCounts,
+    lighting: LightingPreset,
+    guard: Option<&ShapeGuard>,
+    shape_target: Option<ShapeTarget>,
+    preform_volume: Option<f64>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    telemetry: Option<&crate::meet_preservation::telemetry::Telemetry>,
+) -> CandidateOutcome {
+    let solve_timer = telemetry.map(|t| t.phase(2));
+    let Ok(solved) = design.solve_with(&cancel.map_or_else(
+        indicatrix::geometry::meet_solver::SolveControl::default,
+        indicatrix::geometry::meet_solver::SolveControl::with_cancel,
+    )) else {
         return CandidateOutcome::Rejected;
     };
+    drop(solve_timer);
     let planes = design.planes_from_solved(&solved);
     let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) else {
         return CandidateOutcome::Rejected;
@@ -359,9 +406,12 @@ pub(super) fn evaluate_candidate(
     if manufacturability_regressed(baseline_warnings, &warnings) {
         return CandidateOutcome::Rejected;
     }
-    let gpu_planes = to_gpu_planes(&planes);
+    // The stone with its concave tools (none for a flat design), as every scoring path
+    // measures it.
+    let stone = ScoredStone::of(design, &planes);
+    let _optics = telemetry.map(|t| t.phase(4));
     let (components, _, tone_loss) = measure_with_tone(
-        &gpu_planes,
+        stone.geometry(),
         material,
         weights,
         ObjectiveFidelity::Fast,
@@ -369,18 +419,37 @@ pub(super) fn evaluate_candidate(
     );
     let mut score = weights.score_with_tone(
         &components,
-        yield_loss_pct_with_preform(preform_volume, metrics.as_ref()),
+        yield_loss_pct_with_preform(
+            preform_volume,
+            stone.yield_metrics(&planes, metrics.as_ref()).as_ref(),
+        ),
         tone_loss,
     );
     if shape_target.is_some() {
         score += shape_penalty(shape_target, metrics.as_ref(), &mesh, &planes);
     }
-    CandidateOutcome::Accepted { score }
+    if !score.is_finite() {
+        return CandidateOutcome::Rejected;
+    }
+    CandidateOutcome::Accepted {
+        score,
+        design: Box::new(design.clone()),
+    }
 }
 
 /// [`evaluate_candidate`] with every fixed input taken from `ctx`.
 pub(super) fn evaluate_in_context(design: &Design, ctx: &SearchContext) -> CandidateOutcome {
-    evaluate_candidate(
+    let projected;
+    let design = if let Some(feasible) = &ctx.space.feasible {
+        let Some(candidate) = feasible.project(design, ctx.space, ctx.cancel) else {
+            return CandidateOutcome::Rejected;
+        };
+        projected = candidate;
+        &projected
+    } else {
+        design
+    };
+    evaluate_candidate_controlled(
         design,
         ctx.material,
         ctx.weights,
@@ -389,6 +458,11 @@ pub(super) fn evaluate_in_context(design: &Design, ctx: &SearchContext) -> Candi
         ctx.guard,
         ctx.shape_target,
         ctx.preform_volume,
+        ctx.cancel,
+        ctx.space
+            .feasible
+            .as_ref()
+            .map(|f| f.baseline.telemetry.as_ref()),
     )
 }
 
@@ -405,6 +479,9 @@ pub(super) fn apply_free_angles(
 ) -> Option<Design> {
     let mut candidate = base.clone();
     for (&tier_index, &angle) in free.iter().zip(angles) {
+        if candidate.tiers[tier_index].angle_deg.to_bits() == angle.to_bits() {
+            continue;
+        }
         if !space.write_angle(&mut candidate, tier_index, angle) {
             return None;
         }
@@ -447,6 +524,7 @@ pub(super) fn build_free_angle_candidate(
 /// search, bundled purely to keep that function's (and [`super::optimize_design`]'s)
 /// argument count reasonable.
 pub(super) struct SearchContext<'a> {
+    pub(super) cancel: Option<&'a std::sync::atomic::AtomicBool>,
     pub(super) material: &'a GemMaterial,
     pub(super) weights: &'a ObjectiveWeights,
     pub(super) baseline_warnings: &'a BaselineWarningCounts,
@@ -562,12 +640,12 @@ fn evaluate_two_survivors(
 pub(super) struct SurvivorEvaluation {
     /// `Some((candidate_deg, score))` for the best accepted direction that also beats
     /// the score it was compared against; `None` if no direction does.
-    pub(super) best: Option<(f64, f32)>,
+    pub(super) best: Option<(Design, f32)>,
     /// How many directions were actually solved (0, 1 or 2).
     pub(super) evaluations: usize,
     /// Every accepted direction with its score, whether or not it beat the comparison
     /// score -- what a run that keeps several candidates feeds its pool.
-    pub(super) accepted: Vec<(f64, f32)>,
+    pub(super) accepted: Vec<(Design, f32)>,
 }
 
 /// Evaluates every surviving `(candidate_deg, Design)` from
@@ -595,14 +673,18 @@ pub(super) fn evaluate_survivors(
         };
 
     let mut evaluations = 0usize;
-    let mut best: Option<(f64, f32)> = None;
+    let mut best: Option<(Design, f32)> = None;
     let mut accepted = Vec::new();
-    for (candidate_deg, outcome) in outcomes {
+    for (_candidate_deg, outcome) in outcomes {
         evaluations += 1;
-        if let CandidateOutcome::Accepted { score } = outcome {
-            accepted.push((candidate_deg, score));
-            if score < current_score && best.is_none_or(|(_, best_score)| score < best_score) {
-                best = Some((candidate_deg, score));
+        if let CandidateOutcome::Accepted { score, design } = outcome {
+            accepted.push(((*design).clone(), score));
+            if score < current_score
+                && best
+                    .as_ref()
+                    .is_none_or(|(_, best_score)| score < *best_score)
+            {
+                best = Some((*design, score));
             }
         }
     }
@@ -683,7 +765,7 @@ impl BaselineWarningCounts {
 /// candidate. Equal or fewer warnings than baseline is accepted (an optimizer that
 /// only ever matches the starting design's manufacturability is not a regression, even
 /// if it does not improve it either).
-fn manufacturability_regressed(
+pub(super) fn manufacturability_regressed(
     baseline: &BaselineWarningCounts,
     candidate_warnings: &[ManufacturabilityWarning],
 ) -> bool {

@@ -137,6 +137,7 @@ fn probe_scene() -> indicatrix_net::SceneState {
         optics::{materials::GemMaterial, raytracer::LightingPreset},
     };
     indicatrix_net::SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 512,
         height: 512,
         yaw: 0.4,
@@ -156,6 +157,7 @@ fn probe_scene() -> indicatrix_net::SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 

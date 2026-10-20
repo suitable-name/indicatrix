@@ -402,7 +402,7 @@ fn sample_cell(
         }
 
         match classification {
-            RayClassification::EntryBlocked => {}
+            RayClassification::EntryBlocked | RayClassification::Invalid => {}
             RayClassification::Windowed => acc.windowed_rays += 1,
             RayClassification::Extinct => acc.extinct_rays += 1,
             RayClassification::Returned(ray) => {

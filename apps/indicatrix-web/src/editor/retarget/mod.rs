@@ -4,11 +4,19 @@
 //!
 //! # Two algorithms
 //!
-//! Shift mode is pure angle arithmetic and is built right here on the page
-//! (`indicatrix_editor::retarget::retarget_view`), so dragging the crown slider is live.
-//! Optimize mode then searches the free tiers for the target material; that search runs
-//! in the solve Worker as `SolveRequest::Retarget`, with the same progress and cancel as
-//! the Optimize tab, and its rows come back as plain data that the page turns back into a
+//! Shift mode on a design with nothing pinned is angle arithmetic checked against the original
+//! meets, built right here on the page (`indicatrix_editor::retarget::retarget_view`), so
+//! dragging the crown slider is live. A design whose crown or pavilion facets are pinned by a
+//! scale reference (every imported design) cannot take an angle-only change without detaching
+//! meets, so Shift asks the solve Worker for the desktop's own check instead
+//! (`SolveRequest::Retarget` in Shift mode): the answer carries the angles AND the masts the
+//! check moved, and Apply commits both together with `retarget::apply_with_anchors`, which
+//! validates the exact state once more. A change the check refuses shows its verdict and
+//! offers nothing to apply.
+//!
+//! Optimize mode searches the free tiers for the target material; that search runs in the
+//! solve Worker as `SolveRequest::Retarget`, with the same progress and cancel as the Optimize
+//! tab, and its rows come back as plain data that the page turns back into a
 //! `RetargetProposal`. A tier still pinned by a scale reference cannot be searched, so
 //! Optimize mode refuses up front and names the tiers, exactly as the desktop does.
 //!
@@ -33,7 +41,7 @@ use indicatrix_cut_core::{Edit, MaterialSelection, ResolvedMaterial};
 use indicatrix_editor::{
     material::design_material_options,
     retarget::{
-        self, CrownShift, RetargetMode, RetargetProposal,
+        self, AnchorChange, CrownShift, RetargetMode, RetargetProposal,
         view::{
             RetargetView, initial_target_index, resolve_target_selection,
             resolved_material_from_selection, retarget_view, target_display_name,
@@ -48,9 +56,11 @@ use indicatrix_web_core::{
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 
-/// The proposal waiting for Apply, with the generation it was built against.
+/// The proposal waiting for Apply, with the generation it was built against and the masts that
+/// go with its angles (empty for an angle-only proposal).
 struct Held {
     proposal: RetargetProposal,
+    anchors: Vec<AnchorChange>,
     generation: u64,
 }
 
@@ -171,7 +181,15 @@ fn rebuild(ctx: &Ctx) {
     view::push_target_readout(&model, &selection, &target);
     if mode_optimize {
         if anchored.is_empty() {
-            start_search(ctx, epoch, generation, &selection, target, crown);
+            start_search(
+                ctx,
+                epoch,
+                generation,
+                &selection,
+                target,
+                crown,
+                RetargetModeData::Optimize,
+            );
         } else {
             let refusal = RetargetView {
                 anchored_errors: anchored
@@ -183,6 +201,20 @@ fn rebuild(ctx: &Ctx) {
             view::push_view(&model, &refusal);
             model.set_can_apply(false);
         }
+        return;
+    }
+    if !anchored.is_empty() {
+        // Pinned facets: an angle-only change would detach their meets and the page has no
+        // way to carry the masts that keep them, so the Worker runs the desktop's check.
+        start_search(
+            ctx,
+            epoch,
+            generation,
+            &selection,
+            target,
+            crown,
+            RetargetModeData::Shift,
+        );
         return;
     }
     let (built, proposal) = {
@@ -199,14 +231,15 @@ fn rebuild(ctx: &Ctx) {
         )
     };
     view::push_view(&model, &built);
-    hold(&model, epoch, proposal, generation);
+    hold(&model, epoch, proposal, Vec::new(), generation);
 }
 
-/// Keeps `proposal` for Apply (when it is still this epoch's).
+/// Keeps `proposal` and the masts that go with it for Apply (when it is still this epoch's).
 fn hold(
     model: &RetargetModel<'_>,
     epoch: u64,
     proposal: Option<RetargetProposal>,
+    anchors: Vec<AnchorChange>,
     generation: u64,
 ) {
     let has = proposal.is_some();
@@ -215,6 +248,7 @@ fn hold(
         if rt.epoch == epoch {
             rt.held = proposal.map(|proposal| Held {
                 proposal,
+                anchors,
                 generation,
             });
         }
@@ -222,7 +256,8 @@ fn hold(
     model.set_can_apply(has);
 }
 
-/// Sends the Optimize-mode search to the Worker.
+/// Sends the Retarget request to the Worker: the Optimize-mode search, or (for a design with
+/// pinned facets) the Shift-mode check.
 fn start_search(
     ctx: &Ctx,
     epoch: u64,
@@ -230,19 +265,23 @@ fn start_search(
     selection: &MaterialSelection,
     target: ResolvedMaterial,
     crown: CrownShift,
+    mode: RetargetModeData,
 ) {
     let Some(ui) = ctx.ui.upgrade() else {
         return;
     };
     let model = ui.global::<RetargetModel>();
+    let checking = mode == RetargetModeData::Shift;
     if is_solving(ctx) {
+        let note = if checking {
+            "The design is still solving -- change any control to check the change when it has finished."
+        } else {
+            "The design is still solving -- change any control to start the search when it has finished."
+        };
         view::push_view(
             &model,
             &RetargetView {
-                notes: vec![
-                    "The design is still solving -- change any control to start the search when it has finished."
-                        .to_string(),
-                ],
+                notes: vec![note.to_string()],
                 ..RetargetView::default()
             },
         );
@@ -279,7 +318,7 @@ fn start_search(
             crown_fraction: crown.fraction,
             scale_crown_by_ratio: crown.scale_by_ratio,
             crown_follows_pavilion: crown.follow_pavilion,
-            mode: RetargetModeData::Optimize,
+            mode,
             optimize: optimize::params_or_default(&ui),
         },
         custom_materials: custom,
@@ -287,7 +326,14 @@ fn start_search(
     RUNTIME.with(|rt| rt.borrow_mut().searching = true);
     model.set_is_busy(true);
     model.set_can_apply(false);
-    model.set_progress_text("Seeding from the critical-angle shift, then searching...".into());
+    model.set_progress_text(
+        if checking {
+            "Checking the change against the original meets..."
+        } else {
+            "Seeding from the critical-angle shift, then searching..."
+        }
+        .into(),
+    );
     view::push_view(&model, &RetargetView::default());
     let weak = ctx.ui.clone();
     let future = pool
@@ -330,17 +376,23 @@ fn finish_search(
     match result {
         Ok(SolveResponse::Retargeted(data)) => {
             let proposal = data.to_proposal(target.clone());
+            let anchors = data.to_anchors();
+            // The check's verdict heads the notes of a change it accepted.
+            let mut notes = data.notes;
+            if proposal.is_some() && !data.validity_headline.is_empty() {
+                notes.insert(0, data.validity_headline);
+            }
             let shown = RetargetView {
                 rows: proposal
                     .iter()
                     .flat_map(|p| p.rows.iter().map(retarget::view::row_view))
                     .collect(),
-                notes: data.notes,
+                notes,
                 anchored_errors: data.anchored_errors,
                 solve_error: data.solve_error,
             };
             view::push_view(&model, &shown);
-            hold(&model, epoch, proposal, generation);
+            hold(&model, epoch, proposal, anchors, generation);
         }
         Ok(SolveResponse::InvalidDesign { message }) => {
             show_message(
@@ -425,11 +477,23 @@ fn apply(ctx: &Ctx) {
             let selection = target_material_selection(design, &custom, combo_index, &ri_text);
             let name = target_display_name(&selection);
             let material_change = (selection != design.material).then_some(selection);
-            let angle_edit = retarget::apply(design, &held.proposal);
+            // Angles and masts together, validated once more against the design as it is now.
+            let angle_edit =
+                match retarget::apply_with_anchors(design, &held.proposal, &held.anchors) {
+                    Ok(edit) => edit,
+                    Err(error) => {
+                        show_message(ctx, MessageKind::Error, &error.to_string());
+                        return;
+                    }
+                };
             let edit = match material_change {
                 Some(material) => Edit::Batch(vec![angle_edit, Edit::SetMaterial { material }]),
                 None => angle_edit,
             };
+            let edit = indicatrix_editor::optimize_view::edits_for_relation_session(
+                &design_state.session.design,
+                edit,
+            );
             design_state
                 .session
                 .apply(edit)

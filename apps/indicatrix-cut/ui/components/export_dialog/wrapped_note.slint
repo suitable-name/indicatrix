@@ -1,0 +1,11 @@
+// A wrapped paragraph whose height is STATED from its own text and width.
+//
+// Slint measures a `wrap: word-wrap` Text's preferred height as one unwrapped line, so inside the
+// export dialog's scrolling body every multi-line note made the scroll range too short and cut the
+// last rows (the samples-per-pixel slider) off below the buttons. This estimate (an average glyph of
+// 0.55 em, a line of 1.4 em) errs on the generous side: a little spare space below a note, never a
+// row that cannot be reached.
+export component WrappedNote inherits Text {
+    wrap: word-wrap;
+    height: max(1, Math.ceil(self.text.character-count * self.font-size * 0.55 / max(self.width, 1px))) * self.font-size * 1.4;
+}

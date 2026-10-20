@@ -6,10 +6,16 @@
 //! other threads (platform callbacks, lifecycle notifications) reaches it only through
 //! `slint::invoke_from_event_loop` / `Weak::upgrade_in_event_loop`.
 //!
-//! The Back key: `ui/app.slint` handles `Key.Back` (and Escape) in a root `FocusScope`
-//! (dialog, info sheet, full sheet, More sub-page, then the Design destination). When
-//! nothing is left to close it rejects the key; the Android backend maps a rejected
-//! key to `InputStatus::Unhandled`, so the activity's default Back action runs.
+//! The Back key: the `Navigation` global (`ui/navigation.slint`) names what Back would
+//! close (dialog, info sheet, a Design screen or sheet, a Library or More page, the
+//! Design destination) as a target plus a version, and reports every change to the
+//! platform (`Platform::update_back_target`). On Android 13 and later the activity owns
+//! the dispatcher callback and answers with `nativeBackCommitted` / `nativeBackProgress`
+//! (`platform_android/back.rs`, `crate::navigation::back`); the pinned Slint backend
+//! (`vendor/slint-android-activity-1.18.1/PATCH.md`) leaves Back to the app. Older
+//! versions keep the legacy key route: `ui/app.slint` handles `Key.Back` (and Escape) in
+//! a root `FocusScope`, and a key nothing consumed is rejected so the activity's default
+//! Back action runs. At the root Back is left to Android.
 
 mod ui_state;
 
@@ -44,6 +50,8 @@ pub struct RunOptions {
     pub sheet: Option<i32>,
     /// Puts the Design viewport in this mode (0 Solid, 1 Diagram, 2 Render).
     pub view: Option<i32>,
+    /// Preview-only explicit image engine: 0 Path-Traced or 1 Ray-Traced.
+    pub engine: Option<u8>,
     /// How long the screenshot run waits before capturing, instead of the default (longer in
     /// Render mode). A large library takes a while to open.
     pub screenshot_delay: Option<Duration>,
@@ -106,19 +114,22 @@ pub fn run_with(
     #[cfg(feature = "desktop-preview")]
     if let Some(path) = options.screenshot.clone() {
         // A render needs time to converge before the picture is worth keeping.
-        let delay = options
-            .screenshot_delay
-            .unwrap_or(if options.view == Some(2) {
+        let delay = options.screenshot_delay.unwrap_or_else(|| {
+            if options.view == Some(2) {
                 RENDER_SCREENSHOT_DELAY
             } else {
                 SCREENSHOT_DELAY
-            });
+            }
+        });
         schedule_screenshot(&window, path, delay);
     }
 
     tracing::info!("mobile app: event loop starting");
     let result = window.run();
 
+    // Cancel long operations before joining their worker queues.
+    state.borrow_mut().operations.cancel();
+    crate::remote::shutdown();
     crate::design::shutdown();
     state.borrow_mut().shutdown();
     ui_state::clear();
@@ -129,6 +140,11 @@ pub fn run_with(
 /// Applies the options that only select what the Design page shows (the tab and the sheet
 /// detent). Runs after the first push, so every surface is wired.
 fn apply_view_options(window: &AppWindow, options: &RunOptions) {
+    if let Some(engine) = options.engine {
+        window
+            .global::<crate::RenderModel>()
+            .invoke_engine_selected(i32::from(engine));
+    }
     if let Some(tab) = options.tab {
         window
             .global::<PropsModel>()
@@ -189,11 +205,17 @@ pub fn notify_lifecycle(event: Lifecycle) {
         return;
     }
     let queued = slint::invoke_from_event_loop(move || {
+        if matches!(event, Lifecycle::Paused | Lifecycle::Stopping) {
+            crate::remote::interrupt();
+        }
         let handled = ui_state::with_state(|state| {
             state.lifecycle(event);
             // Cutting Mode lets the screen sleep while paused and keeps it on again after.
             crate::cut::mode::on_lifecycle(state, event);
         });
+        if handled.is_some() {
+            ui_state::refresh_editor();
+        }
         if handled.is_none() {
             tracing::warn!(
                 ?event,

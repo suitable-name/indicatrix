@@ -37,12 +37,11 @@ use glam::Vec3;
 use indicatrix::renderer::tonemap::tonemap_to_rgba_with_threads;
 use indicatrix_web_core::{
     display::{DenoiseFrame, Denoiser},
-    render::{
-        Accumulator, ChunkAssignment, ChunkOutcome, ChunkPlanner, ChunkRange, trace_chunk_abortable,
-    },
+    render::{Accumulator, ChunkAssignment, ChunkOutcome, ChunkPlanner, ChunkRange},
     scene::OwnedScene,
 };
 
+use super::backend::{BackendManager, TraceBackend};
 use super::{PauseReason, RenderFrame, RenderStatus};
 
 /// How long an idle worker sleeps before it looks for work again (a wake-up is also sent
@@ -109,6 +108,8 @@ impl Control {
 
 /// One scene being traced.
 struct Epoch {
+    backend: TraceBackend,
+    cancel: Arc<AtomicBool>,
     id: u64,
     scene: Arc<OwnedScene>,
     planner: ChunkPlanner,
@@ -124,6 +125,8 @@ struct Epoch {
 
 /// A chunk handed to a thread.
 pub(super) struct Job {
+    backend: TraceBackend,
+    cancel: Arc<AtomicBool>,
     epoch_id: u64,
     assignment: ChunkAssignment,
     scene: Arc<OwnedScene>,
@@ -179,6 +182,8 @@ impl Inner {
                 epoch.cursor = (partition + 1) % partitions;
                 epoch.busy[slot] = true;
                 return Some(Job {
+                    backend: epoch.backend.clone(),
+                    cancel: Arc::clone(&epoch.cancel),
                     epoch_id: epoch.id,
                     assignment,
                     scene: Arc::clone(&epoch.scene),
@@ -259,7 +264,7 @@ impl Inner {
             sum: epoch.acc.sum().to_vec(),
             scene: Arc::clone(&epoch.scene),
             last: epoch.finished,
-            denoise: self.control.denoise,
+            denoise: self.control.denoise && epoch.scene.engine().denoises(),
         })
     }
 }
@@ -274,6 +279,8 @@ struct FrameSlot {
 
 /// The state every render thread and the owning `RenderState` share.
 pub(super) struct Shared {
+    pub(super) backend: BackendManager,
+    pub(super) policy: Arc<crate::compute_policy::ComputePolicy>,
     inner: Mutex<Inner>,
     wake: Condvar,
     frames: Mutex<FrameSlot>,
@@ -290,6 +297,8 @@ impl Shared {
     /// A pool state for `max_workers` threads (none spawned yet).
     pub(super) fn new(max_workers: usize) -> Self {
         Self {
+            backend: BackendManager::new(),
+            policy: Arc::new(crate::compute_policy::ComputePolicy::new(max_workers)),
             inner: Mutex::new(Inner {
                 control: Control {
                     max_workers,
@@ -311,7 +320,7 @@ impl Shared {
             current_epoch: AtomicU64::new(0),
             halt: AtomicBool::new(false),
             closed: AtomicBool::new(false),
-            denoiser: Mutex::new(Denoiser::new()),
+            denoiser: Mutex::new(Denoiser::single_thread()),
         }
     }
 
@@ -320,12 +329,21 @@ impl Shared {
         self.closed.load(Ordering::Acquire)
     }
 
+    /// Preparation can wait through cooling, but must discard superseded scenes.
+    pub(super) fn is_current(&self, epoch: u64) -> bool {
+        !self.is_closed() && self.current_epoch.load(Ordering::Acquire) == epoch
+    }
+
     /// Ends the pool: the threads leave their loops.
     pub(super) fn close(&self) {
+        self.policy.close();
         self.closed.store(true, Ordering::Release);
         self.current_epoch.store(0, Ordering::Release);
         {
             let mut inner = relock(&self.inner);
+            if let Some(epoch) = &inner.epoch {
+                epoch.cancel.store(true, Ordering::Release);
+            }
             inner.epoch = None;
             inner.phase = Phase::Idle;
         }
@@ -349,6 +367,10 @@ impl Shared {
         {
             let mut inner = relock(&self.inner);
             edit(&mut inner.control);
+            let paused = inner.control.paused_reason().is_some();
+            if let Some(epoch) = &inner.epoch {
+                epoch.cancel.store(paused, Ordering::Release);
+            }
             self.halt
                 .store(inner.control.paused_reason().is_some(), Ordering::Release);
         }
@@ -363,10 +385,12 @@ impl Shared {
     /// Starts epoch `id` towards `target` samples; the scene follows through
     /// [`Self::install_scene`].
     pub(super) fn begin_epoch(&self, id: u64, target: u32, denoise: bool) {
+        self.backend.begin(id);
         self.current_epoch.store(id, Ordering::Release);
         {
             let mut inner = relock(&self.inner);
             if let Some(old) = inner.epoch.take() {
+                old.cancel.store(true, Ordering::Release);
                 inner.prev_planner = Some(old.planner);
             }
             inner.phase = Phase::Active;
@@ -383,15 +407,27 @@ impl Shared {
     /// Hands epoch `id` its built scene (or the reason there is none). Dropped when the
     /// epoch was replaced meanwhile.
     pub(super) fn install_scene(&self, id: u64, built: Result<OwnedScene, String>, target: u32) {
+        if !self.is_current(id) {
+            return;
+        }
+        let built = built.and_then(|scene| {
+            self.backend
+                .prepare(&scene, id)
+                .map(|backend| (scene, backend))
+        });
         {
             let mut inner = relock(&self.inner);
             if self.is_closed() || self.current_epoch.load(Ordering::Acquire) != id {
                 return;
             }
             match built {
-                Ok(scene) => {
+                Ok((scene, backend)) => {
                     let (width, height) = (scene.width(), scene.height());
-                    let partitions = u32::try_from(inner.control.max_workers).unwrap_or(1).max(1);
+                    let partitions = if backend.is_gpu() {
+                        1
+                    } else {
+                        u32::try_from(inner.control.max_workers).unwrap_or(1).max(1)
+                    };
                     let pixels = width.saturating_mul(height);
                     let planner = inner.prev_planner.take().map_or_else(
                         || ChunkPlanner::new(partitions, pixels, target),
@@ -400,6 +436,8 @@ impl Shared {
                         },
                     );
                     inner.epoch = Some(Epoch {
+                        backend,
+                        cancel: Arc::new(AtomicBool::new(inner.control.paused_reason().is_some())),
                         id,
                         scene: Arc::new(scene),
                         planner,
@@ -416,12 +454,69 @@ impl Shared {
         self.wake.notify_all();
     }
 
+    /// Remote display images are published independently of the local radiance ledger.
+    pub(super) fn remote_frame(
+        &self,
+        id: u64,
+        width: u32,
+        height: u32,
+        target: u32,
+        update: crate::remote::rendering::FrameUpdate,
+    ) {
+        if !self.is_current(id) || update.samples > target {
+            return;
+        }
+        {
+            let mut inner = relock(&self.inner);
+            if !self.is_current(id) {
+                return;
+            }
+            inner.samples = inner.samples.max(update.samples);
+            if update.done {
+                inner.phase = Phase::Done;
+            }
+        }
+        if let Some(rgba) = update.rgba {
+            if rgba.len() != width as usize * height as usize * 4 {
+                return;
+            }
+            self.publish(
+                RenderFrame {
+                    epoch: id,
+                    width,
+                    height,
+                    rgba,
+                    samples: update.samples,
+                    target,
+                    denoised: update.denoised,
+                },
+                false,
+            );
+        }
+    }
+    pub(super) fn remote_failed(&self, id: u64, message: &str) {
+        self.fail(id, message);
+    }
+
+    /// A remote session starts over from sample zero (a reconnect): the sample count and
+    /// the newest-frame guard, which drops frames with fewer samples than the last one,
+    /// are reset so the restarted render is shown from its first picture. The previous
+    /// picture stays visible until then.
+    pub(super) fn remote_restarted(&self, id: u64) {
+        if !self.is_current(id) {
+            return;
+        }
+        relock(&self.inner).samples = 0;
+        relock(&self.frames).last = None;
+    }
+
     /// Cancels the epoch and goes idle, keeping the threads.
     pub(super) fn stop(&self) {
         self.current_epoch.store(0, Ordering::Release);
         {
             let mut inner = relock(&self.inner);
             if let Some(old) = inner.epoch.take() {
+                old.cancel.store(true, Ordering::Release);
                 inner.prev_planner = Some(old.planner);
             }
             inner.phase = Phase::Idle;
@@ -439,8 +534,9 @@ impl Shared {
 
     /// Marks the running epoch `id` as failed (a thread panicked).
     fn fail(&self, id: u64, message: &str) {
-        if self.current_epoch.load(Ordering::Acquire) == id {
-            relock(&self.inner).phase = Phase::Failed(message.to_owned());
+        let mut inner = relock(&self.inner);
+        if self.is_current(id) {
+            inner.phase = Phase::Failed(message.to_owned());
         }
     }
 
@@ -490,7 +586,7 @@ impl Shared {
 
     /// Shows the settled picture of `follow`, denoised or plain, whatever was shown.
     pub(super) fn show_settled(&self, follow: &Follow, denoised: bool) {
-        if denoised {
+        if denoised && follow.scene.engine().denoises() {
             self.show_denoised(follow, true);
         } else {
             self.publish(plain_frame(follow), true);
@@ -516,6 +612,9 @@ impl Shared {
     }
 
     fn show_denoised(&self, follow: &Follow, force: bool) {
+        let Some(_permit) = self.policy.acquire(&|| !self.is_current(follow.epoch_id)) else {
+            return;
+        };
         let picture = catch_unwind(AssertUnwindSafe(|| {
             relock(&self.denoiser).denoised_rgba(&DenoiseFrame {
                 guide_key: follow.epoch_id,
@@ -523,6 +622,7 @@ impl Shared {
                 height: follow.height,
                 camera: follow.scene.camera(),
                 planes: follow.scene.planes(),
+                tools: follow.scene.tools(),
                 n_d: follow.scene.material().dispersion.n_d(),
                 sample_count: follow.samples,
                 sum: &follow.sum,
@@ -628,7 +728,15 @@ pub(super) fn worker_loop(shared: &Shared, index: usize) {
         let aborted = || shared.abort_requested(job.epoch_id);
         let started = Instant::now();
         let traced = catch_unwind(AssertUnwindSafe(|| {
-            trace_chunk_abortable(&job.scene, range, &aborted)
+            let _permit = shared.policy.acquire(&aborted)?;
+            shared.backend.trace(
+                &job.backend,
+                &job.scene,
+                range,
+                &job.cancel,
+                &aborted,
+                job.epoch_id,
+            )
         }));
         let elapsed = started.elapsed();
         if let Ok(sums) = traced {

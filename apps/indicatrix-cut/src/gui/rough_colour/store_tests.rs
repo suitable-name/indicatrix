@@ -546,6 +546,7 @@ fn zones_are_applied_in_place_and_unusable_rows_are_reported() {
 
 fn scene(material: GemMaterial) -> SceneState {
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 64,
         height: 48,
         yaw: 0.4,
@@ -565,6 +566,7 @@ fn scene(material: GemMaterial) -> SceneState {
         tools: Vec::new(),
         fluorescence: Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 

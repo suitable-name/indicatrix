@@ -15,8 +15,8 @@ use super::{
 };
 use indicatrix_cut::{LibraryModel, harness_support};
 use slint::{ComponentHandle, Model};
-use slint_harness::{backend::wait_until_labeled, report::Report, smoke::Smoke, timing};
 use std::{path::PathBuf, time::Duration};
+use uiprobe::{backend::wait_until_labeled, report::Report, smoke::Smoke, timing};
 
 /// The window sizes every state is swept at: a common laptop and the declared minimum.
 pub const SWEEP_SIZES: [(u32, u32); 2] = [DEFAULT_SIZE, MINIMUM_SIZE];
@@ -228,7 +228,7 @@ impl Ctx<'_> {
         };
         let stats = smoke::run(&mut host, smoke);
         println!(
-            "slint-harness:   smoke {}: {} control(s), {} activated, {} denied, {} gone, {} restore(s)",
+            "uiprobe:   smoke {}: {} control(s), {} activated, {} denied, {} gone, {} restore(s)",
             smoke.state,
             stats.enumerated,
             stats.activated,

@@ -71,6 +71,35 @@ impl StandardGemCuts {
         dedup_planes(planes)
     }
 
+    /// For every authored tier/index instance, the plane retained by production dedup.
+    /// Indices address [`Self::from_asc_schedule`]'s output. A tier without indices has
+    /// one entry. Aliases refer to the first retained plane, including near duplicates.
+    /// Consumers applying later transforms must transform that retained plane once,
+    /// rather than transforming each alias independently.
+    #[must_use]
+    pub fn asc_plane_provenance(schedule: &AscSchedule) -> Vec<Vec<usize>> {
+        let (planes, ends) = Self::raw_asc_planes(schedule, schedule.gear_reference_angle);
+        let representatives = dedup_representatives(&planes);
+        let mut output_indices = vec![0; planes.len()];
+        let mut count = 0;
+        for (index, &representative) in representatives.iter().enumerate() {
+            if index == representative {
+                output_indices[index] = count;
+                count += 1;
+            } else {
+                output_indices[index] = output_indices[representative];
+            }
+        }
+        let mut start = 0;
+        ends.into_iter()
+            .map(|end| {
+                let tier = output_indices[start..end].to_vec();
+                start = end;
+                tier
+            })
+            .collect()
+    }
+
     /// Cumulative facet-plane count of `schedule.tiers[0..=i]` for every `i`: entry `i` is
     /// exactly `from_asc_schedule` of the schedule cut down to its first `i + 1` tiers,
     /// length only, with `gear_reference_angle` standing in for the schedule's own.
@@ -241,6 +270,15 @@ pub(super) fn dedup_planes(planes: Vec<GpuFacetPlane>) -> Vec<GpuFacetPlane> {
 /// exactly when no earlier KEPT plane coincides with it, so the answer for a prefix of
 /// `planes` is the prefix of the answer for all of them.
 fn dedup_keep_mask(planes: &[GpuFacetPlane]) -> Vec<bool> {
+    dedup_representatives(planes)
+        .into_iter()
+        .enumerate()
+        .map(|(index, representative)| index == representative)
+        .collect()
+}
+
+/// Raw index of the first retained plane representing each raw input plane.
+fn dedup_representatives(planes: &[GpuFacetPlane]) -> Vec<usize> {
     // Relative to the larger of the two offsets (floored at `1.0`, the common
     // sub-unit mast range every real schedule up to now has used): a schedule
     // authored at a larger `ScaleReference` has proportionally larger masts, and
@@ -250,21 +288,23 @@ fn dedup_keep_mask(planes: &[GpuFacetPlane]) -> Vec<bool> {
     // Below the `1.0` floor this is exactly the old ~5e-4 absolute quantum.
     const OFFSET_REL_EPSILON: f32 = 1.0 / 2048.0;
 
-    let mut kept: Vec<&GpuFacetPlane> = Vec::with_capacity(planes.len());
-    let mut mask = Vec::with_capacity(planes.len());
-    for plane in planes {
+    let mut kept: Vec<usize> = Vec::with_capacity(planes.len());
+    let mut representatives = Vec::with_capacity(planes.len());
+    for (index, plane) in planes.iter().enumerate() {
         let pn = plane_normal_f64(plane);
-        let is_duplicate = kept.iter().any(|k| {
+        let representative = kept.iter().copied().find(|&i| {
+            let k = &planes[i];
             let offset_scale = k.d.abs().max(plane.d.abs()).max(1.0);
             normals_coincide(plane_normal_f64(k), pn)
                 && (k.d - plane.d).abs() <= OFFSET_REL_EPSILON * offset_scale
         });
-        if !is_duplicate {
-            kept.push(plane);
-        }
-        mask.push(!is_duplicate);
+        let representative = representative.unwrap_or_else(|| {
+            kept.push(index);
+            index
+        });
+        representatives.push(representative);
     }
-    mask
+    representatives
 }
 
 /// The plane's stored `f32` normal widened to `f64`.

@@ -25,14 +25,20 @@
 use glam::Vec3;
 use indicatrix::{
     color::ColorSpace,
-    geometry::GpuFacetPlane,
+    geometry::{
+        GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
     optics::raytracer::Camera,
     render_setup::encode_png_with_icc,
     renderer::{
         denoise::{AtrousDenoiser, AtrousParams, GBuffers},
         frame_denoise::{DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame},
-        guide_pass::{GuideBuffers, generate_guide_buffers_with_index},
-        tonemap::{tonemap_accumulation, tonemap_to_rgba},
+        guide_pass::{
+            GuideBuffers, generate_guide_buffers_geom_single_thread,
+            generate_guide_buffers_geom_with_index,
+        },
+        tonemap::{tonemap_accumulation, tonemap_to_rgba, tonemap_to_rgba_with_threads},
     },
 };
 
@@ -83,6 +89,7 @@ pub fn export_color_space(index: i32) -> ColorSpace {
 /// scene -- the desktop's `GuideCache` rule.
 #[derive(Default)]
 pub struct Denoiser {
+    single_thread: bool,
     guides: Option<(u64, u32, GuideBuffers)>,
     filter: AtrousDenoiser,
     avg: Vec<Vec3>,
@@ -102,6 +109,8 @@ pub struct DenoiseFrame<'a> {
     pub camera: &'a Camera,
     /// The planes the frame was traced with.
     pub planes: &'a [GpuFacetPlane],
+    /// The exact subtracted geometry the frame was traced with (empty for planar scenes).
+    pub tools: &'a [ToolPrimitive],
     /// The material's reference index `n_d` (`material.dispersion.n_d()`): the guides'
     /// path signature follows the rays through the stone with it.
     pub n_d: f32,
@@ -118,6 +127,15 @@ impl Denoiser {
         Self::default()
     }
 
+    /// Keep every stage inside the one worker permit held by a mobile caller.
+    #[must_use]
+    pub fn single_thread() -> Self {
+        Self {
+            single_thread: true,
+            ..Self::default()
+        }
+    }
+
     /// Whether the guides for `guide_key` are already built (the next call skips the
     /// guide pass, provided the frame's `n_d` is unchanged).
     #[must_use]
@@ -129,7 +147,10 @@ impl Denoiser {
 
     /// Drops the guides and scratch buffers (a large export's memory, say).
     pub fn clear(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            single_thread: self.single_thread,
+            ..Self::default()
+        };
     }
 
     /// Builds the guides for `frame` unless they are already held.
@@ -142,11 +163,19 @@ impl Denoiser {
         if !held {
             // Free the old guides before building new ones.
             self.guides = None;
-            let guides = generate_guide_buffers_with_index(
+            let generate = if self.single_thread {
+                generate_guide_buffers_geom_single_thread
+            } else {
+                generate_guide_buffers_geom_with_index
+            };
+            let guides = generate(
                 frame.width,
                 frame.height,
                 frame.camera,
-                frame.planes,
+                StoneGeometry {
+                    planes: frame.planes,
+                    tools: frame.tools,
+                },
                 frame.n_d,
             );
             self.guides = Some((frame.guide_key, n_d_bits, guides));
@@ -156,6 +185,9 @@ impl Denoiser {
     /// The settled live view: `denoise_and_tonemap_frame` exactly as the desktop's
     /// display thread calls it.
     pub fn denoised_rgba(&mut self, frame: &DenoiseFrame<'_>) -> Vec<u8> {
+        if self.single_thread {
+            return tonemap_to_rgba_with_threads(&self.denoised_mean(frame), 1.0, 1);
+        }
         self.ensure_guides(frame);
         let Some((_, _, guides)) = &self.guides else {
             return live_rgba(frame.sum, frame.sample_count);
@@ -200,8 +232,12 @@ impl Denoiser {
             spp: frame.sample_count.max(1),
         };
         let mut filtered = Vec::new();
-        self.filter
-            .denoise_into(&gbuffers, &AtrousParams::default(), &mut filtered);
+        self.filter.denoise_into_with_threads(
+            &gbuffers,
+            &AtrousParams::default(),
+            &mut filtered,
+            usize::from(self.single_thread),
+        );
         filtered
     }
 }

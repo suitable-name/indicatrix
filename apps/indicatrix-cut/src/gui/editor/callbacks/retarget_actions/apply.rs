@@ -13,7 +13,7 @@ use crate::{
     gui::{
         editor::{
             relation_ui::edit_error_text,
-            retarget::{self, AnchorChange, RetargetProposal},
+            retarget::RetargetProposal,
             stale::{self, ResultKind},
             stall_guard::stall_guard,
             state::EditorState,
@@ -52,23 +52,25 @@ pub(super) enum RetargetApplyError {
 /// tier index can never leave the design half-retargeted), so the whole "Retarget for
 /// material" action is ONE undo step; `None` (the target already matches
 /// `state.design.material`, e.g. a Shift-mode preview the user never actually
-/// retargeted) pushes the angle edit alone, exactly as before.
+/// retargeted) commits the checked geometry without a material edit.
 ///
-/// `anchors` are the `ScaleReference` masts the validity check re-anchored
-/// ([`retarget::apply_with_anchors`]); they travel in the SAME batch as the angles, so the
-/// angles, the masts and the material are one undo step. Empty keeps the plain
-/// `Edit::RetargetAngles`. Returns the number of tiers the retarget named on success.
+/// The current successful check supplies the exact accepted angles and masts;
+/// callers cannot substitute unchecked depth changes. Material joins the same
+/// batch. Returns the number of tiers the retarget named on success.
 pub(super) fn apply_pending_retarget(
     state: &mut EditorState,
     pending: (RetargetProposal, u64),
     material_change: Option<MaterialSelection>,
-    anchors: &[AnchorChange],
 ) -> Result<usize, RetargetApplyError> {
     let (proposal, started_generation) = pending;
     if state.generation.load(AtomicOrdering::Relaxed) != started_generation {
         return Err(RetargetApplyError::Stale);
     }
-    let angle_edit = retarget::apply_with_anchors(&state.design, &proposal, anchors);
+    if !matches!(apply_gate(started_generation), ApplyGate::Open) {
+        return Err(RetargetApplyError::Stale);
+    }
+    let angle_edit = super::check_run::validated_candidate_edit(&state.design)
+        .map_err(|_| RetargetApplyError::Stale)?;
     let applied = proposal.rows.len();
     let edit = match material_change {
         Some(material) => {
@@ -83,6 +85,7 @@ pub(super) fn apply_pending_retarget(
         }
         None => angle_edit,
     };
+    let edit = indicatrix_editor::optimize_view::edits_for_relation_session(&state.design, edit);
     state
         .apply(edit)
         .map(|()| applied)
@@ -136,8 +139,8 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
             // Shift mode's validity gate: the Apply button is already disabled while the
             // check runs or fails, but the Return key and the compare window's "Keep
             // after" reach this handler too. A refused proposal stays pending.
-            let anchors = match apply_gate(pending.1) {
-                ApplyGate::Open(anchors) => anchors,
+            match apply_gate(pending.1) {
+                ApplyGate::Open => {}
                 ApplyGate::Checking => {
                     keep_pending(&mut st, optimize_mode, pending);
                     show_toast(
@@ -158,7 +161,7 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
                     );
                     return;
                 }
-            };
+            }
             // The pending result is being consumed right now (applied, or attempted
             // and refused) either way -- nothing is left to badge as stale.
             stale::clear(ResultKind::Retarget);
@@ -200,7 +203,7 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
             // Cache miss on a design too costly to solve here: the masts arrive later.
             let solve_in_background = original_solved.is_none() && !inline_solve_ok;
 
-            match apply_pending_retarget(&mut st, pending, material_change, &anchors) {
+            match apply_pending_retarget(&mut st, pending, material_change) {
                 Ok(applied) => finish_applied_retarget(
                     &ui,
                     st,

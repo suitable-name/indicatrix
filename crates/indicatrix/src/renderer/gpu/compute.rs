@@ -100,6 +100,30 @@ pub fn create_compute_pipeline_with_constants(
     create_compute_pipeline_cached(device, None, label, wgsl_source, entry_point, constants)
 }
 
+/// Names the pipeline being compiled when a panic unwinds out of wgpu.
+///
+/// naga's backends panic (rather than return an error) on IR they cannot lower, for example
+/// "Expression [89] is not cached!" in the SPIR-V writer. That message names neither the
+/// kernel nor the material class, which is the first thing a failing run needs; this guard
+/// prints both as the panic unwinds through [`create_compute_pipeline_cached`]. It does
+/// nothing on the normal path.
+struct CompileTrace<'a> {
+    label: &'a str,
+    entry_point: &'a str,
+    constants: &'a [(&'a str, f64)],
+}
+
+impl Drop for CompileTrace<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "panic while compiling compute pipeline `{}` (entry point `{}`, pipeline constants {:?})",
+                self.label, self.entry_point, self.constants
+            );
+        }
+    }
+}
+
 /// Like [`create_compute_pipeline_with_constants`], but compiles through `cache` when one
 /// is given (see [`create_pipeline_cache`]); `None` behaves exactly as the uncached call.
 ///
@@ -115,6 +139,11 @@ pub fn create_compute_pipeline_cached(
     entry_point: &str,
     constants: &[(&str, f64)],
 ) -> wgpu::ComputePipeline {
+    let _trace = CompileTrace {
+        label,
+        entry_point,
+        constants,
+    };
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),

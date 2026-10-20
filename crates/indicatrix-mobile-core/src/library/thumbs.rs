@@ -25,7 +25,7 @@ use indicatrix_solid::preview::{
 use indicatrix_web_core::solve::{SolveResponse, solve_design, to_solved_tiers};
 
 use super::{
-    EntryId, LibraryHandle, Thumbnail, design_source::design_of, handle::db_error,
+    EntryId, LibraryHandle, Thumbnail, design_source::design_of_with_frosting, handle::db_error,
     import::panic_text,
 };
 use crate::viewport::{
@@ -70,7 +70,7 @@ impl LibraryHandle {
             .get_diagram_full(id)
             .map_err(db_error("The design could not be read"))?
             .ok_or_else(|| "That design is no longer in the library.".to_owned())?;
-        let design = design_of(&record.attached_files)?;
+        let design = design_of_with_frosting(&record.attached_files, &record.frosting)?;
         let thumbnail = match catch_unwind(AssertUnwindSafe(|| draw(design, edge))) {
             Ok(result) => result?,
             Err(payload) => {

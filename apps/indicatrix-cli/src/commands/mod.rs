@@ -4,6 +4,8 @@
 //! [`CommandResult`]: the text for stdout, the files to write and the exit code, never a print
 //! and never a write. The pieces every command shares are here.
 
+mod batch;
+mod census;
 mod export;
 mod info;
 mod metrics;
@@ -35,6 +37,7 @@ pub fn dispatch(command: &Command) -> CommandResult {
             "indicatrix-cli {}\n",
             env!("CARGO_PKG_VERSION")
         ))),
+        Command::Batch(batch) => batch::run(batch),
         Command::Info(args) => info::run(args),
         Command::Solve(args) => solve::run(args),
         Command::Metrics(args) => metrics::run(args),
@@ -43,6 +46,7 @@ pub fn dispatch(command: &Command) -> CommandResult {
         Command::Retarget(args) => retarget::run(args),
         Command::Sweep(args) => sweep::run(args),
         Command::Export(args) => export::run(args),
+        Command::Census(args) => census::run(args),
         Command::Render(_) | Command::TiltVideo(_) => Err(CliError::usage(
             "internal: render commands need dispatch_streaming",
         )),
@@ -52,8 +56,8 @@ pub fn dispatch(command: &Command) -> CommandResult {
 /// Runs a parsed command, streaming progress to `progress` for the two render commands.
 ///
 /// `render` and `tilt-video` write their pictures themselves and report progress as they go
-/// (`terminal` says `progress` is a terminal, which rewrites one line); every other command
-/// is [`dispatch`].
+/// (`terminal` says `progress` is a terminal, which rewrites one line); `census` writes one
+/// line per design it has measured; every other command is [`dispatch`].
 ///
 /// # Errors
 ///
@@ -67,6 +71,7 @@ pub fn dispatch_streaming(
         Command::Render(args) | Command::TiltVideo(args) => {
             render_job::run(args, progress, terminal)
         }
+        Command::Census(args) => census::run_streaming(args, progress),
         other => dispatch(other),
     }
 }

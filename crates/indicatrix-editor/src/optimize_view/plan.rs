@@ -272,6 +272,7 @@ pub fn build_run_plan(
         candidate_separation_deg: Some(CANDIDATE_SEPARATION_DEG),
         // The Optimize tab has no "keep the look" choice: it ranks by the objective alone.
         shape_target: None,
+        ..OptimizeOptions::default()
     };
     Ok(RunPlan {
         config,
@@ -283,17 +284,16 @@ pub fn build_run_plan(
 /// Puts the hinges a run varies anchored tiers about into `options`.
 ///
 /// `hinges` is `tier_hinge_points` of the solved design. A tier that follows a relation
-/// gets none (it is never moved), and with `only` (the tiers selected in the tier table)
+/// retains depth freedom while its angle follows the relation. With `only` (selected tiers),
 /// only those tiers keep one, so "Only selected tiers" also holds for anchored tiers.
 pub fn fill_anchor_hinges(
     options: &mut OptimizeOptions,
-    design: &Design,
+    _design: &Design,
     hinges: &BTreeMap<usize, DVec3>,
     only: Option<&BTreeSet<usize>>,
 ) {
     options.anchor_hinges = hinges
         .iter()
-        .filter(|(index, _)| !design.is_tier_driven(**index))
         .filter(|(index, _)| only.is_none_or(|selected| selected.contains(*index)))
         .map(|(index, hinge)| (*index, *hinge))
         .collect();
@@ -302,7 +302,7 @@ pub fn fill_anchor_hinges(
 /// Measures the hinges of the solved `design` and puts them into `options`.
 ///
 /// A hinge is the vertex of each tier's first facet that [`tier_hinge_points`] picks, filtered
-/// by [`fill_anchor_hinges`]'s rules (no hinge for a tier that follows a relation; only `only`
+/// by [`fill_anchor_hinges`]'s selection rule (only `only`
 /// when it is given).
 ///
 /// This is the one place the desktop's Optimize tab and the command line's `optimize` get

@@ -71,10 +71,26 @@ fn back_marks_the_step_as_revisited_and_going_forward_clears_it() {
 #[test]
 fn a_revisited_step_does_not_advance_by_itself_and_offers_next() {
     let panel = read("ui/components/guide_panel.slint");
-    assert!(
-        panel.contains("running: GuideModel.step_done && !GuideModel.revisiting;"),
-        "the advance timer must stop while the learner re-reads a step"
-    );
+    let overlay = body_of(&panel, "export component GuideOverlayLayer");
+    let advance_timer = body_of(overlay, "Timer {");
+    let running = advance_timer
+        .split(';')
+        .find_map(|statement| statement.trim().strip_prefix("running:"))
+        .expect("the advance timer must have a running condition");
+    // Additional AND guards (such as the recorder's presentation hold) must not
+    // invalidate the revisit check. Inspect the advance timer, not another timer.
+    let guards: Vec<_> = running.split("&&").map(str::trim).collect();
+    for required in [
+        "GuideModel.step_done",
+        "!GuideModel.revisiting",
+        "!GuideModel.presentation_hold",
+    ] {
+        assert!(
+            guards.contains(&required),
+            "advance timer is missing {required}"
+        );
+    }
+    assert!(advance_timer.contains("GuideModel.complete_advance();"));
     assert!(
         panel.contains("enabled: (!GuideModel.step_done || GuideModel.revisiting)"),
         "the Next button must stay usable on a revisited step that is done"

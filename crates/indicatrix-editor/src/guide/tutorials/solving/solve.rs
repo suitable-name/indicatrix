@@ -569,7 +569,7 @@ fn verdict_fixes() -> Guide {
         .actions([
             "Remove: after a confirmation, takes out the facets of a tier that later tiers cut away entirely (the whole tier when none is left), once it has checked that the finished stone is unchanged.",
             "Move Later: moves a tier to just after the last tier it meets, so the schedule is cut in a workable order.",
-            "Steepen: turns a pavilion facet that is below the critical angle to the critical angle plus 2 degrees about its girdle-side edge, so the girdle stays where it is.",
+            "Steepen: turns a pavilion facet that is below the critical angle to the critical angle plus 2 degrees about its girdle corners, so the girdle outline stays where it is.",
         ])
         .why("A fix is refused, with the reason and no change, when it cannot be made safely: for example a pavilion angle that follows a relation, an angle the material would need beyond 89.5 degrees, or a result that no longer solves. While a lesson locks the tier table the Fix buttons are dimmed.")
         .allow(SOLVE),

@@ -1,13 +1,16 @@
 //! Orientation-sign pleochroism tests: Tourmaline/Ruby/Alexandrite face-up
 //! luminance must be darker or brighter depending on how their `c_axis` sits
-//! relative to the view axis, and Sapphire's side-on hue must rotate toward green
+//! relative to the view axis, Aquamarine's face-up color must be blue only with `c_axis`
+//! in the table plane, and Sapphire's side-on hue must rotate toward green
 //! relative to face-up -- each sign-discriminating in a way a simple "looks dark"
 //! sanity check is not.
 
 use glam::Vec3;
 use indicatrix::{
+    color::body_color::{lab_to_lch, xyz_to_lab},
     geometry::{GpuFacetPlane, cuts::StandardGemCuts},
     optics::{
+        birefringence::{AbsorptionTensor3, BirefringenceParams},
         materials::GemMaterial,
         raytracer::{
             LightingPreset, Ray, cie_1931_cmf, hash_u32, spectral_absorption, trace_spectral_ray,
@@ -47,8 +50,9 @@ fn average_luminance(
 }
 
 /// The DECISIVE orientation-sign test. Tourmaline's
-/// `c_axis` was deliberately set to `Vec3::X` (into the table plane) rather than every
-/// other material's `Vec3::Y` default (see the Tourmaline entry's comment in
+/// `c_axis` was deliberately set to `Vec3::X` (into the table plane) rather than the
+/// `Vec3::Y` default of every material without a cut-orientation override (Aquamarine is
+/// the only other material with one, `Vec3::X` as well; see the Tourmaline entry's comment in
 /// `GemMaterial::all_materials` and `test_gem_materials_default_c_axis_to_y`), because
 /// real tourmaline cutters orient the table PERPENDICULAR to the c-axis specifically
 /// because face-up down the closed ("dark ray"/o-ray) axis is tourmaline's worst
@@ -60,8 +64,8 @@ fn average_luminance(
 ///
 /// Compares the SAME cut, lighting and fixed face-up ray for two variants of Tourmaline
 /// differing only in `c_axis`: the real, as-shipped `Vec3::X`, versus a clone forced to
-/// `Vec3::Y` (every other material's default -- i.e. "cut the wrong way", face-up
-/// straight down the closed/dark axis, where the wave normal is exactly parallel to
+/// `Vec3::Y` (the default of every material without an override -- i.e. "cut the wrong way",
+/// face-up straight down the closed/dark axis, where the wave normal is exactly parallel to
 /// `c_axis` and the polarization quadratic form degenerates to pure o-ray for every
 /// polarization state -- see `birefringence::AbsorptionTensor3::quadratic_form`).
 /// Luminance (CIE Y) is averaged over many independent seeds, following
@@ -120,10 +124,113 @@ fn tourmaline_face_up_is_darker_with_c_axis_along_view_axis_than_in_table_plane(
     );
 }
 
+/// `[L*, C*, h]` of the unpolarised light that `material` transmits over `units` model units of
+/// path along the face-up wave normal (straight down through the table, `-Y`), relative to an
+/// equal-energy white. Half the light travels in each eigenmode (unpolarised light couples
+/// equally into both), so the transmitted spectrum is the mean of the two modes' Beer-Lambert
+/// transmittances, each with its own absorption from the polarization quadratic form at the
+/// material's own `c_axis` -- what the interior transport (one assigned mode per path,
+/// `assigned_mode_alpha`) averages to over many paths.
+fn face_up_lch(material: &GemMaterial, units: f32) -> [f64; 3] {
+    let k_hat = Vec3::NEG_Y;
+    let o_hat = BirefringenceParams::ordinary_eigen_polarization(k_hat, material.c_axis);
+    let e_hat = BirefringenceParams::extraordinary_eigen_polarization(k_hat, material.c_axis);
+    let mut xyz = [0.0f64; 3];
+    let mut white = [0.0f64; 3];
+    for step in 0..=(780 - 380) {
+        let lambda = 380.0f32 + step as f32;
+        let tensor = AbsorptionTensor3::uniaxial(
+            spectral_absorption(&material.absorption.o_ray, lambda),
+            spectral_absorption(&material.absorption.e_ray, lambda),
+            material.c_axis,
+        );
+        let transmittance = f32::midpoint(
+            (-tensor.quadratic_form(o_hat) * units).exp(),
+            (-tensor.quadratic_form(e_hat) * units).exp(),
+        );
+        for ((x, w), c) in xyz
+            .iter_mut()
+            .zip(white.iter_mut())
+            .zip(cie_1931_cmf(lambda).to_array())
+        {
+            *x += f64::from(c * transmittance);
+            *w += f64::from(c);
+        }
+    }
+    lab_to_lch(xyz_to_lab(xyz, white))
+}
+
+/// The orientation-sign test for Aquamarine (owner decision 2026-10-19, the Caltech GRR 1488
+/// fit). Aquamarine's color is the e-ray (E parallel to c) while the o-ray is nearly colorless,
+/// so which ray a face-up view engages decides whether the stone reads blue. The D65 swatch
+/// quoted in the Aquamarine entry's comment (`aquamarine_through_citrine.rs`, one model unit of
+/// path, the swatch's own) gives the e-ray as a deep violet-blue, L* 44 C* 88 h 287 under D65,
+/// and the o-ray as nearly colorless, L* 97 C* 13 h 155 under D65. Like Tourmaline, the
+/// as-shipped `c_axis` is `Vec3::X` (c in the table plane, how aquamarine is cut): the face-up
+/// wave normal (`-Y`) is then perpendicular to c, the two eigenmodes are the o- and the e-ray,
+/// and the unpolarised mix is a light blue. A clone forced to `Vec3::Y` (the default of every
+/// material without a cut-orientation override, c along the view axis) has the wave normal
+/// parallel to c, where both eigenmodes collapse to the o-ray -- see
+/// `AbsorptionTensor3::quadratic_form` -- and reads practically colorless with a
+/// greenish-yellow cast.
+///
+/// This is the first-segment (face-up wave normal) relation at one model unit, the path the
+/// swatch is quoted at. It is the hue and the lightness that discriminate; C* is compared only
+/// at this path, because over longer paths the o-ray alone gains chroma from its red cut-off
+/// (the Fe2+ band tail) and C* stops separating the two orientations.
+///
+/// The expected values below are the ones `face_up_lch` measures, against an EQUAL-ENERGY white
+/// (not the D65 of the swatch figures above), and for the unpolarised 50/50 mix of the two
+/// eigenmodes (the swatch mixes (2o + e)/3). So they differ from the swatch figures, and the
+/// o-ray's hue is not contradictory: it is h 155 under D65 and h 153 under the equal-energy
+/// white, the same greenish, near-colorless ray. Against an equal-energy white: c in the table
+/// plane (o- and e-ray) L* 77.5 C* 27.3 h 262; c along the view axis (o-ray only) L* 96.9 C* 13.3
+/// h 153.
+#[test]
+fn aquamarine_face_up_sees_the_blue_ray_with_c_axis_in_table_plane() {
+    let real = GemMaterial::by_name("Aquamarine").expect("Aquamarine must be a built-in material");
+    assert_eq!(
+        real.c_axis,
+        Vec3::X,
+        "test premise: Aquamarine's real (as-shipped) c_axis must be Vec3::X"
+    );
+    let mut wrong_way = real.clone();
+    wrong_way.c_axis = Vec3::Y;
+
+    let [l_real, c_real, h_real] = face_up_lch(&real, 1.0);
+    let [l_wrong, c_wrong, h_wrong] = face_up_lch(&wrong_way, 1.0);
+
+    println!(
+        "[aquamarine orientation] face-up c_axis=X (real, table-plane): L* {l_real:.1} C* \
+         {c_real:.1} h {h_real:.1}; c_axis=Y (forced, along the view axis): L* {l_wrong:.1} C* \
+         {c_wrong:.1} h {h_wrong:.1}"
+    );
+
+    assert!(
+        (230.0..=290.0).contains(&h_real),
+        "face-up with c in the table plane must be blue, got hue {h_real:.1}"
+    );
+    assert!(
+        h_wrong < 190.0,
+        "face-up with c along the view axis sees the o-ray only (greenish, not blue), got hue \
+         {h_wrong:.1}"
+    );
+    assert!(
+        c_real > c_wrong + 8.0,
+        "the blue face-up view must be more saturated than the o-ray-only view -- got C* \
+         {c_real:.1} vs {c_wrong:.1}"
+    );
+    assert!(
+        l_real < l_wrong - 10.0,
+        "the e-ray's absorption must darken the face-up view -- got L* {l_real:.1} vs \
+         {l_wrong:.1}"
+    );
+}
+
 /// Ruby variant of the orientation-sign test above, with a deliberately LOOSER bound:
 /// Ruby's `c_axis` stays at the every-material default `Vec3::Y` (Ruby was not given a
-/// cut-orientation override -- only Tourmaline was), so this compares the real material
-/// against a clone with `c_axis` forced to `Vec3::X` instead, at the same fixed face-up
+/// cut-orientation override -- only Tourmaline and Aquamarine were), so this compares the real
+/// material against a clone with `c_axis` forced to `Vec3::X` instead, at the same fixed face-up
 /// ray. Ruby's o-ray/e-ray amplitude ratio (~1.8x, see the Ruby entry's comment in
 /// `GemMaterial::all_materials`) is far milder than Tourmaline's (~3x), so this test
 /// uses a looser (smaller required) margin than the decisive Tourmaline test above --

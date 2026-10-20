@@ -26,20 +26,50 @@ use std::{
 /// therefore first recognised once a batch has resolved it and persisted that state
 /// (`gui::batch::catalogue_material`); the vault migration clears the fingerprints of the
 /// previews rendered before, so such a design is listed as missing until then.
+#[cfg(test)]
 fn scan_missing_preview_ids(db: &Mutex<Database>, preview_size: u32, preview_spp: u32) -> Vec<i64> {
-    db.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry_ids_missing_previews(|state| {
+    scan_missing_preview_ids_for_engine(
+        db,
+        preview_size,
+        preview_spp,
+        indicatrix::renderer::engine::EngineSpec::default(),
+    )
+}
+
+fn scan_missing_preview_ids_for_engine(
+    db: &Mutex<Database>,
+    preview_size: u32,
+    preview_spp: u32,
+    engine: indicatrix::renderer::engine::EngineSpec,
+) -> Vec<i64> {
+    let guard = db.lock().unwrap_or_else(PoisonError::into_inner);
+    // A frosted design's picture is stored under a fingerprint naming its frosting, which the
+    // vault's scan cannot see per row: `frosting_scan` judges each design by its own.
+    let outdated = crate::gui::batch::frosting_scan::outdated_ids(
+        &guard,
+        |state, frosting| {
             crate::bridge::preview_render::cache_fingerprint(
-                crate::bridge::preview_render::CacheKind::Preview {
-                    size: preview_size,
-                    spp: preview_spp,
-                    max_bounces: super::engine::PREVIEW_MAX_BOUNCES,
+                if engine.is_ray() {
+                    crate::bridge::preview_render::CacheKind::RayPreview {
+                        size: preview_size,
+                        taps: engine.ray.sanitized().aa_taps,
+                        fire: engine.ray.fire,
+                    }
+                } else {
+                    crate::bridge::preview_render::CacheKind::Preview {
+                        size: preview_size,
+                        spp: preview_spp,
+                        max_bounces: super::engine::PREVIEW_MAX_BOUNCES,
+                    }
                 },
-                crate::bridge::preview_render::FingerprintMaterial::from_state(state),
+                crate::bridge::preview_render::FingerprintMaterial::from_state(state)
+                    .with_frosting(frosting),
             )
-        })
-        .unwrap_or_default()
+        },
+        |db, fingerprint| db.entry_ids_missing_previews(fingerprint),
+    );
+    drop(guard);
+    outdated
 }
 
 /// Runs [`scan_missing_preview_ids`] on its own worker thread and reports the result
@@ -51,11 +81,18 @@ pub(super) fn spawn_missing_preview_scan(
     db: std::sync::Arc<Mutex<Database>>,
     preview_size: u32,
     preview_spp: u32,
+    engine: indicatrix::renderer::engine::EngineSpec,
     on_result: impl FnOnce(&MainWindow, Vec<i64>) + Send + 'static,
 ) {
+    #[cfg(feature = "ui-harness")]
+    let pending = crate::harness_support::begin_startup_preview_scan();
     thread::spawn(move || {
-        let ids = scan_missing_preview_ids(&db, preview_size, preview_spp);
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| on_result(&ui, ids));
+        let ids = scan_missing_preview_ids_for_engine(&db, preview_size, preview_spp, engine);
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            on_result(&ui, ids);
+            #[cfg(feature = "ui-harness")]
+            pending.store(false, std::sync::atomic::Ordering::Release);
+        });
     });
 }
 
@@ -95,12 +132,18 @@ mod tests {
     /// it current. The fingerprint such a design had before the size and the source were
     /// tracked reads as stale, once.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one sequential fixture-and-assert scenario; splitting would scatter the shared setup"
+    )]
     fn a_design_files_material_and_size_are_part_of_the_stored_fingerprint() {
         let db = Mutex::new(Database::new(Some(":memory:")).expect("in-memory database opens"));
         let entry_id = sapphire_design(&db);
         let gpu_retired = AtomicBool::new(false);
         let angle_table_entries = Mutex::new(BTreeSet::new());
         let ctx = BatchContext {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
+            ray_draft: false,
             db: &db,
             material_candidates: &[],
             custom_materials: &[],
@@ -156,8 +199,44 @@ mod tests {
         };
 
         // Stored the way a finished batch stores them: current.
-        assert!(store(&preview_fingerprint(&ctx, &state)));
+        assert!(store(&preview_fingerprint(&ctx, &state, 0)));
         assert_eq!(scan_missing_preview_ids(&db, SIZE, SPP), Vec::<i64>::new());
+
+        let ray = indicatrix::renderer::engine::EngineSpec {
+            engine: indicatrix::renderer::engine::RenderEngine::RayTraced,
+            ..Default::default()
+        };
+        assert_eq!(
+            scan_missing_preview_ids_for_engine(&db, SIZE, SPP, ray),
+            vec![entry_id]
+        );
+        let ray_fingerprint = cache_fingerprint(
+            CacheKind::RayPreview {
+                size: SIZE,
+                taps: 8,
+                fire: true,
+            },
+            FingerprintMaterial::from_state(&state),
+        );
+        assert!(store(&ray_fingerprint));
+        assert_eq!(
+            scan_missing_preview_ids_for_engine(&db, SIZE, SPP, ray),
+            [] as [i64; 0]
+        );
+        assert_eq!(scan_missing_preview_ids(&db, SIZE, SPP), vec![entry_id]);
+        let draft = cache_fingerprint(
+            CacheKind::RayDraft {
+                size: SIZE,
+                taps: 8,
+                fire: true,
+            },
+            FingerprintMaterial::from_state(&state),
+        );
+        assert!(store(&draft));
+        assert_eq!(
+            scan_missing_preview_ids_for_engine(&db, SIZE, SPP, ray),
+            vec![entry_id]
+        );
 
         // Stored the way the same design was stored before the size and the source were
         // tracked: only the name in the fingerprint, so it is rendered again.

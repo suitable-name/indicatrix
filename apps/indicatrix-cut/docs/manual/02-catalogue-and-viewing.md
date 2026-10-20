@@ -103,7 +103,9 @@ The **Library** menu (Advanced interface only) has **Regenerate Preview Images..
 moment of "counting...") renders just the designs with no picture or curve, a missing
 front or top view, or a result made with other render settings, while **All Designs**
 redoes the whole library. When nothing is missing the first choice reads "All designs
-are up to date" and only **All Designs** can be started. The two
+are up to date" and only **All Designs** can be started. The question also holds the
+**Picture Quality** sliders described below; moving one counts the designs again for the
+new values (the choice reads "counting..." and **Generate** stays off meanwhile). The two
 **Regenerate for Filtered Set** buttons ask the same question about the filtered
 designs. The offer at start-up, and **Compute Missing Tilt Curves**, are the "missing
 or outdated only" choice without the question. Ignored designs are never included.
@@ -118,6 +120,19 @@ Live Compute includes it, and keeps several pictures in flight on the remote
 at the same time — how many is **Remote Lanes for Batches** in the Remote
 Coordinator panel (Chapter 10).
 
+Every preview question (the offer at start-up, the Regenerate entries and the question
+after an import), in the Simple and the Advanced interface alike, has a **Picture
+Quality** block with the two sliders that decide how the pictures look: **Preview Image
+Size** and **Preview Samples**. They are the same sliders as Library Thumbnails in the
+Render & Output tab (below), so a change is saved at once, and a note under them says
+where to change them later (the Advanced interface, Render & Output, Library Thumbnails).
+Changing a slider counts the designs again for the new values. The start-up question then
+reads "Counting..." with **Generate** off, and afterwards shows the new number, or, when
+every design already has a picture at these settings, "All designs already have pictures
+at these settings." with only **Not Now** left. The Regenerate question counts again the
+same way. The question after an import is never counted again: it keeps the designs it
+was opened for, and the sliders only change how their pictures look.
+
 After an import you are asked whether to generate previews for the new designs:
 **Full Render** traces them as above, **Quick (Solid)** draws a flat-shaded solid
 picture of each in moments on the CPU, and **Skip** generates nothing. Tick
@@ -125,6 +140,15 @@ picture of each in moments on the CPU, and **Skip** generates nothing. Tick
 solid picture counts as a stand-in: the designs that only have one are offered again for
 full rendering at the next start, from the library menu's regenerate entries, or one at a
 time from a design's context menu.
+
+**Quick (Ray-Traced)** is another import stand-in: eight fixed AA taps with Fire.
+Its draft cache identity differs from a full preview, so a quick draft remains eligible
+for full regeneration. **Render & Output → Library Thumbnails** independently selects
+Path-Traced (the unchanged default) or Ray-Traced for persistent catalogue pictures, and
+**Thumbnail Backdrop** the tray they are drawn on: **Grey** by default, so a colorless stone
+stands apart from its background, or **White** or **Black**. It is independent of the live
+view's Backdrop. Changing either setting marks the old pictures outdated once; regenerate
+to replace them.
 
 When several materials fit a design's refractive index, the one its previews and tilt
 curves use is the one that serves the stone best on windowing, extinction and
@@ -202,13 +226,17 @@ genuine right-drag gesture.)
 
 **Toolbar controls:**
 
-- **Material chip and badge** — the toolbar shows the material the view is drawn in
-  as a small read-only chip (material name, a color swatch and the refractive
-  index). It is not a drop-down any more: the material belongs to the design, and
-  you change it in the **Stone** tab of the Parameters dock (below and Chapter 6).
-  While you look at the stone in another material, an amber badge, **Previewing
-  <material>: not the design's material**, replaces the chip and carries a
-  **Back to Design** button. The badge also shows in the Edit view's toolbar, in the
+- **View mode** — Solid, Path-Traced or Ray-Traced. Ray-Traced is deterministic,
+  uses the Advanced Render & Output tab's fixed AA taps and Fire, and bypasses denoising.
+  It approximates tint and frost and omits polarization, doubling, haze,
+  zoning and edge rounding. Its metrics and optical overlay
+  are hidden; metrics and tilt curves themselves keep their existing analytic model.
+
+- **Material and the Previewing badge** — the material belongs to the design; you see and
+  change it in the **Stone** tab of the Parameters dock (the gem button at the right of
+  the toolbar, below and Chapter 6). While you look at the stone in another material, an
+  amber badge, **Previewing <material>: not the design's material**, shows in the
+  toolbar and carries a **Back to Design** button. The badge also shows in the Edit view's toolbar, in the
   Design Settings material row, and in the Export and Tilt Video dialogs, so you
   always know which material a picture or a file will use. Nothing starts a
   preview by itself.
@@ -271,7 +299,7 @@ genuine right-drag gesture.)
   direct reflection of a light source clips to white; use Exposure to go darker
   or brighter.
 - **Exposure** (Lighting & Environment tab, "Overall Brightness") — the overall brightness of the picture, a
-  slider from 0.4× to 2.5× (default 1×, shown next to the label). It scales the light
+  slider from 0.2× to 5× (default 1×, shown next to the label). It scales the light
   of every built-in lighting rig, the lit models and the Studio rigs alike. It does
   not apply while an HDR environment map is loaded, which replaces the exposure and
   light-position controls (the map brings its own brightness). A stored value outside
@@ -296,7 +324,7 @@ genuine right-drag gesture.)
   loaded map away and returns to its lighting rig; applying one that stores
   no camera pose leaves your current turn around the stone alone. (Views saved by an
   older version did not store glare, backdrop or head shadow; they open with 100 %
-  glare, the grey backdrop and a 16° head shadow.) Seven views come
+  glare, the white backdrop and a 16° head shadow.) Seven views come
   with the app and cannot be renamed or deleted:
 
   | View | Lighting rig | Light azimuth / elevation | Exposure | Camera |
@@ -321,11 +349,25 @@ genuine right-drag gesture.)
   row, built-in or yours, has a small save toggle, the "usable for" mark: switch it on
   and the view is offered in the export dialog's list of lightings, so one export can
   render the stone under several of them (Chapter 9). New views start with it off.
-- **Backdrop** (Lighting & Environment tab, Environment section) — what the camera sees behind
-  the stone: **As Lit** (the environment's own ground), **Grey** (the default:
-  a neutral grey card, the convention gem-design programs use for like-for-like
-  comparisons) or **White**. Only
-  the camera sees it; the stone's optics never do, so leakage and windows stay dark.
+- **Backdrop** (Lighting & Environment tab, Environment section) — the surface the stone
+  lies on: a matte tray under the stone, lit by the lighting rig and extending to the
+  horizon. It is seen around the stone and through the stone's windows alike, so what
+  shows behind a window is what is really there. Four choices: **White** (the default;
+  white paper, 90 % reflectance), **Grey** (an 18 % grey card, the photographic
+  standard), **Black** (black velvet, 2 %) and **As Lit** (the lighting's own ground; for
+  the Grading tray that is nothing below the girdle, the ISO convention for light return,
+  so windows look black). The tray is lit, not a light source: its brightness follows the
+  lighting rig, the light direction (for the rigs that have one) and the exposure. In a
+  view from the side the horizon is where it physically is, sky above and tray below with
+  a soft band between. Under the Studio rigs' ring lights a white tray is very bright, so
+  two built-in looks bring their own tray: **Studio Softbox** sets Grey and **Dramatic
+  Spotlight** sets Black (you can still pick another pill after applying them). An HDR environment
+  map ignores the backdrop (the map is the whole world), and the choice greys out while
+  one is loaded. The backdrop does not change the numbers: brilliance, extinction,
+  windowing and the tilt curves are the same on every choice. Windowing is light that
+  leaves through the pavilion; the render shows what that light looks at. Because the
+  default changed, catalogue thumbnails render on the white tray and are regenerated
+  once (Missing or Outdated Only); saved settings and saved lightings keep their choice.
 - **Surface Glare** (Lighting & Environment tab, Observer section) — a 0–100 % slider in steps of 5
   (default 100 %). It scales the white mirror image of the light that a polished
   surface reflects, which is what a cross-polarised photograph removes: at 0 % the
@@ -532,7 +574,8 @@ In **Simple mode** (Chapter 17) the tab shows Target Samples, Render Resolution,
 Live View and the output defaults. It hides Library Thumbnails (Preview Image Size and
 Preview Samples), Motion Preview Resolution, the Compute section (Live Compute with Live
 Transfer, Local Compute), Max Ray Bounces and the Tilt Performance Curve panel; those are
-the Advanced settings below. A hidden setting keeps its value and still applies. If one of
+the Advanced settings below. A hidden setting keeps its value and still applies. (The two
+Library Thumbnails sliders are also shown in the preview question in either interface.) If one of
 them is not at its default, the tab says "Some advanced settings are in use. Switch to
 Advanced to see them."
 
@@ -567,7 +610,8 @@ Advanced to see them."
   has no such choice and always renders on CPU. Even "GPU Only" quietly
   falls back to CPU for a scene the GPU can't handle (no usable graphics
   adapter, or an HDR environment map too large for the graphics card's
-  memory limits), so nothing ever fails to render outright.
+  memory limits), so nothing ever fails to render outright. Concave tools
+  (Chapter 16) are traced on the graphics card like any other facet.
 
 **Output Defaults.** The Export and Tilt Video dialogs open with the settings of your last
 run: output size, samples, bounces, color space, compute target and transfer (and, for the
@@ -577,8 +621,11 @@ dialogs, where you can still change them for a single run. The links **Open Expo
 Dialog...** and **Open Tilt Video...** under the lines open those dialogs. Resetting the tab puts the
 defaults back.
 
-**Library Thumbnails (Advanced)** — **Preview Image Size** (96 to 256 pixels) and
-**Preview Samples** (32 to 512) for the small pictures the catalogue draws.
+**Library Thumbnails (Advanced)** — **Thumbnail Renderer**, **Thumbnail Backdrop** (White,
+Grey or Black; Grey by default), **Preview Image Size** (96 to 256 pixels) and **Preview
+Samples** (32 to 512) for the small pictures the catalogue draws. The same choices appear as
+**Picture Quality** in the preview question, in either interface (above); both places change
+the same settings.
 
 **Tilt Performance (Advanced)** — the button that opens the tilt-performance graph
 (below).
@@ -617,6 +664,10 @@ Computing all four full sweeps takes about a second and a half; the dialog
 shows an explicit "Sweeping..." message rather than a silent spinner while
 it works, and the result is kept so reopening the dialog on the same
 inputs doesn't repeat the wait.
+
+The sweep follows the stone's frosting: facets a design cuts frosted (Chapter 4,
+"Frosting a Tier") scatter light, so a frosted design's curves differ from its
+polished ones, while a design without frosting is swept exactly as before.
 
 **Hovering the chart** snaps to the nearest whole degree and shows a small
 floating card with a live mini-render of the stone at exactly that tilt

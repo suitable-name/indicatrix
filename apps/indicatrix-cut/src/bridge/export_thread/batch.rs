@@ -49,6 +49,16 @@ const LOCAL_RETRY_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Everything one export batch needs, bundled so the hybrid helpers stay
 /// within clippy's argument-count limit.
 pub(super) struct ExportCtx<'a> {
+    /// Frozen GPU uploads for this frame, reused by all local claims.
+    pub(super) ray_gpu: Option<(
+        &'a indicatrix::renderer::gpu_backend::whitted::WhittedGpuBackend,
+        &'a indicatrix::renderer::gpu_backend::whitted::WhittedGpuPrepared,
+    )>,
+    /// Preparation and plane arena shared by every absolute-tap claim in this frame.
+    pub(super) ray: Option<(
+        &'a indicatrix::renderer::whitted::WhittedPrep<'a>,
+        &'a indicatrix::simd::PlanesSoA32,
+    )>,
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) camera: &'a Camera,
@@ -58,7 +68,7 @@ pub(super) struct ExportCtx<'a> {
     /// Set once a joined GPU-thread panic is observed in [`hybrid_batch`]
     /// and never cleared for the rest of this export -- `GpuBackend` itself only
     /// retires its own internal `lost` flag on a cleanly-reported `DeviceLost`, which a
-    /// raw thread panic never reaches. Every `ctx.gpu.try_accumulate` call site in this
+    /// raw thread panic never reaches. Every `ctx.gpu.try_accumulate_geom` call site in this
     /// module checks this FIRST, so a panic mid-export retires the backend for every
     /// later batch (both the hybrid split and the single-engine fallback in
     /// [`run_local_batches`]), not just the one batch it happened in.
@@ -87,14 +97,14 @@ pub(super) fn calibrate_split(
     // A prior batch's joined GPU-thread panic retired the backend for the
     // rest of this export -- decline exactly like a normal `try_accumulate` decline,
     // without touching the (possibly corrupted) renderer again.
-    if ctx.gpu_retired.load(Ordering::Relaxed) {
+    if ctx.scene.engine.is_ray() || ctx.gpu_retired.load(Ordering::Relaxed) {
         return None;
     }
     // Untimed warm-up sample: a real export sample (counted below), just not the one
     // whose wall-clock cost feeds the split.
     if !ctx
         .gpu
-        .try_accumulate(ctx.gpu_scene, *samples_done, 1, gpu_accum)
+        .try_accumulate_geom(ctx.gpu_scene, &ctx.scene.tools, *samples_done, 1, gpu_accum)
     {
         return None;
     }
@@ -103,7 +113,7 @@ pub(super) fn calibrate_split(
     let start = std::time::Instant::now();
     if !ctx
         .gpu
-        .try_accumulate(ctx.gpu_scene, *samples_done, 1, gpu_accum)
+        .try_accumulate_geom(ctx.gpu_scene, &ctx.scene.tools, *samples_done, 1, gpu_accum)
     {
         return None;
     }
@@ -192,17 +202,25 @@ pub(super) fn hybrid_batch(
 
     let (gpu_ok, gpu_elapsed, cpu_elapsed) = if cpu_share == 0 {
         let start = std::time::Instant::now();
-        let ok = ctx
-            .gpu
-            .try_accumulate(ctx.gpu_scene, samples_done, gpu_share, gpu_accum);
+        let ok = ctx.gpu.try_accumulate_geom(
+            ctx.gpu_scene,
+            &ctx.scene.tools,
+            samples_done,
+            gpu_share,
+            gpu_accum,
+        );
         (ok, start.elapsed(), std::time::Duration::ZERO)
     } else {
         thread::scope(|s| {
             let gpu_task = s.spawn(|| {
                 let start = std::time::Instant::now();
-                let ok = ctx
-                    .gpu
-                    .try_accumulate(ctx.gpu_scene, samples_done, gpu_share, gpu_accum);
+                let ok = ctx.gpu.try_accumulate_geom(
+                    ctx.gpu_scene,
+                    &ctx.scene.tools,
+                    samples_done,
+                    gpu_share,
+                    gpu_accum,
+                );
                 (ok, start.elapsed())
             });
             let cpu_start = std::time::Instant::now();
@@ -320,12 +338,20 @@ pub(super) fn run_local_batches(
             continue;
         };
 
-        if gpu_frac.is_some() {
+        if ctx.ray.is_some() {
+            if super::worker::export_ray::accumulate(ctx, start, count, accum, cancel) {
+                return true;
+            }
+        } else if gpu_frac.is_some() {
             hybrid_batch(ctx, start, count, gpu_frac, accum, gpu_accum);
         } else if ctx.gpu_retired.load(Ordering::Relaxed)
-            || !ctx
-                .gpu
-                .try_accumulate(ctx.gpu_scene, start, count, gpu_accum)
+            || !ctx.gpu.try_accumulate_geom(
+                ctx.gpu_scene,
+                &ctx.scene.tools,
+                start,
+                count,
+                gpu_accum,
+            )
         {
             // `ctx.gpu_retired` short-circuits `try_accumulate` entirely
             // once a prior batch's GPU-thread panic retired the backend -- this is the

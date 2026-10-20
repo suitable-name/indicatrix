@@ -59,8 +59,9 @@ export component TierTableToolbar inherits VerticalLayout {
     // button here toggles it, and the tier table's header/rows both read it
     // (the checkbox column, and per-row multi-select toggling).
     in-out property <bool> select_mode: false;
-    // Read-only here: the "Mirror" and multi-select "Offset" actions both
-    // apply to whichever tier the tier list's own keyboard cursor is on.
+    // Read-only here: "Mirror" applies to the tier the tier list's own keyboard cursor is on.
+    // The multi-select "Offset" acts on the ticked group and only uses the cursor to pick
+    // which ticked row anchors it.
     in property <int> keyboard_focus_index: -1;
 
     // Whether the "Generate steps..." inline form is open. Local to this
@@ -435,11 +436,11 @@ export component TierTableToolbar inherits VerticalLayout {
             clicked => { EditorModel.adopt_selected(); }
         }
         // A batch "offset angle by X" mini-form, reusing `nudge_angle` instead
-        // of adding a new callback. `root.keyboard_focus_index` is the anchor.
-        // Edge case: applying after a Ctrl+click that just removed a row from
-        // the group offsets only that single (now-deselected) tier. The text goes
-        // through Rust (`TierTableModel.offset_selected`), which reads a plain
-        // number or a small calculation and says in a toast when it cannot.
+        // of adding a new callback. `root.keyboard_focus_index` is only a hint for
+        // the anchor: Rust (`TierTableModel.offset_selected`) uses it when it is a
+        // ticked row and otherwise the first ticked row, so the bar works without
+        // moving the cursor. The text goes through the same call, which reads a
+        // plain number or a small calculation and says in a toast when it cannot.
         offset_edit := TipField {
             width: 54px;
             placeholder: "deg";

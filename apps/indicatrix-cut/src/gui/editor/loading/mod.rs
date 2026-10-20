@@ -14,7 +14,10 @@
 mod catalogue_planes;
 mod design;
 
-pub use catalogue_planes::{CataloguePlanes, CataloguePlanesSource, resolve_catalogue_planes};
+pub use catalogue_planes::{
+    CataloguePlanes, CataloguePlanesSource, resolve_catalogue_planes,
+    resolve_catalogue_planes_with_frosting, tools_from_table_rows,
+};
 
 pub(in crate::gui::editor) use design::{
     design_from_full_record, external_proportions_from_full_record,

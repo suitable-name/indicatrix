@@ -54,6 +54,21 @@ fn degenerate_suspects_note(design: &Design, solved: &[SolvedTier]) -> String {
     format!(" -- check {}", names.join(", "))
 }
 
+/// `flat` (the [`measure_solid`] of the design's planes) with the volume of the stone carved
+/// by the design's concave tools ([`Design::carved_metrics`]), so the banner, the cut sheet and
+/// the CLI quote the same volume. A design without concave tiers, or whose tiers do not resolve,
+/// keeps `flat` exactly. `solved` must be the design's own solve.
+fn carved_volume(design: &Design, solved: &[SolvedTier], flat: SolidMetrics) -> SolidMetrics {
+    if design.concave_tiers.is_empty() {
+        return flat;
+    }
+    design
+        .geometry_from_solved(solved)
+        .ok()
+        .and_then(|(planes, tools, _)| Design::carved_metrics(Some(flat), &planes, &tools))
+        .unwrap_or(flat)
+}
+
 /// GemCad/GemCutStudio-style external proportion ratios (`L/W`, `H/W`, and
 /// `C/W`/`P/W` where a live girdle facet exists) computed from `m`, so the
 /// validation banner reports figures a cutter can compare against
@@ -137,13 +152,17 @@ pub fn status_text_and_is_problem(design: &Design) -> (String, bool) {
                 .flatten()
                 .map(|m| {
                     // A second, independent `solve()` (same "no caching" reasoning
-                    // as `measure()`'s own doc comment above) purely to read
-                    // `yield_report`'s scale factor -- `status_text_and_is_problem_
-                    // from_solved` below avoids this because it already has one.
-                    let mm_per_unit = design
-                        .solve()
-                        .ok()
-                        .and_then(|solved| design.yield_report(&solved).mm_per_unit);
+                    // as `measure()`'s own doc comment above) to read `yield_report`'s
+                    // scale factor and, for a design with concave tiers, the tools the
+                    // volume is carved by -- `status_text_and_is_problem_from_solved`
+                    // below avoids this because it already has one.
+                    let solved = design.solve().ok();
+                    let mm_per_unit = solved
+                        .as_ref()
+                        .and_then(|solved| design.yield_report(solved).mm_per_unit);
+                    let m = solved
+                        .as_ref()
+                        .map_or(m, |solved| carved_volume(design, solved, m));
                     format!(
                         " -- volume {:.4} (model units^3){}",
                         m.volume,
@@ -243,6 +262,7 @@ pub fn status_text_and_is_problem_from_solved(
             // is needed to read `yield_report`'s scale factor.
             let mm_per_unit = design.yield_report(solved).mm_per_unit;
             let volume_note = measure_solid(&planes)
+                .map(|m| carved_volume(design, solved, m))
                 .map(|m| {
                     format!(
                         " -- volume {:.4} (model units^3){}",

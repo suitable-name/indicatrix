@@ -4,7 +4,7 @@
 use super::types::{ExportFormat, LIGHTING_NAMES, MaterialArg, Mode, PRESET_NAMES};
 use indicatrix::optics::LightingPreset;
 use indicatrix_cut_core::ObjectivePreset;
-use indicatrix_editor::optimize_view::MAX_CANDIDATES;
+use indicatrix_editor::{optimize_view::MAX_CANDIDATES, retarget::CrownShift};
 use indicatrix_formats::native::design::{DESIGN_EXTENSION, LEGACY_DESIGN_EXTENSION};
 use std::path::PathBuf;
 
@@ -67,27 +67,25 @@ impl<'a> Cursor<'a> {
         )
     }
 
-    /// Takes `word` as the design file, or says why it cannot be one.
-    pub(super) fn design_word(
-        &self,
-        word: &str,
-        design: &mut Option<PathBuf>,
-    ) -> Result<(), String> {
+    /// Takes `word` as one more design file, or says why it cannot be one.
+    pub(super) fn design_word(&self, word: &str, designs: &mut Vec<PathBuf>) -> Result<(), String> {
         if word.starts_with('-') {
             return Err(self.unknown(word));
         }
-        if design.is_some() {
-            return Err(format!(
-                "unexpected extra argument {word:?} for \"{}\": give one design file (see --help)",
-                self.command
-            ));
-        }
-        *design = Some(PathBuf::from(word));
+        designs.push(PathBuf::from(word));
         Ok(())
     }
 
-    pub(super) fn require_design(&self, design: Option<PathBuf>) -> Result<PathBuf, String> {
-        design.ok_or_else(|| format!("\"{}\" needs a design file (see --help)", self.command))
+    /// The design files the line named, in order; an error when it named none.
+    pub(super) fn require_designs(&self, designs: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+        if designs.is_empty() {
+            Err(format!(
+                "\"{}\" needs a design file (see --help)",
+                self.command
+            ))
+        } else {
+            Ok(designs)
+        }
     }
 }
 
@@ -188,6 +186,101 @@ pub(super) fn parse_preset(name: &str) -> Result<ObjectivePreset, String> {
                 names.join(", ")
             )
         })
+}
+
+/// The materials a `--targets` list names: built-in names (`cz` is Cubic Zirconia, `-` and
+/// `_` stand for a space) or bare refractive indices.
+pub(super) fn parse_targets(text: &str) -> Result<Vec<MaterialArg>, String> {
+    let mut targets = Vec::new();
+    for word in text.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+        if let Ok(number) = word.parse::<f64>() {
+            targets.push(MaterialArg::Ri(parse_ri(number)?));
+            continue;
+        }
+        let name = word.replace(['-', '_'], " ");
+        let name = if name.eq_ignore_ascii_case("cz") {
+            "Cubic Zirconia".to_string()
+        } else {
+            name
+        };
+        targets.push(MaterialArg::Named(name));
+    }
+    if targets.is_empty() {
+        return Err("--targets needs at least one material, for example diamond,sapphire".into());
+    }
+    Ok(targets)
+}
+
+/// The modes a `--modes` list names, shift before optimize, each once.
+pub(super) fn parse_modes(text: &str) -> Result<Vec<Mode>, String> {
+    let mut shift = false;
+    let mut optimize = false;
+    for word in text.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+        match parse_mode(word)? {
+            Mode::Shift => shift = true,
+            Mode::Optimize => optimize = true,
+        }
+    }
+    let mut modes = Vec::new();
+    if shift {
+        modes.push(Mode::Shift);
+    }
+    if optimize {
+        modes.push(Mode::Optimize);
+    }
+    if modes.is_empty() {
+        return Err("--modes needs shift, optimize or both".into());
+    }
+    Ok(modes)
+}
+
+/// The crown rule a `--crown` word names: `follow`, `fixed`, `ratio` or `fraction=F`.
+pub(super) fn parse_crown_mode(word: &str) -> Result<CrownShift, String> {
+    let lower = word.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "follow" => Ok(CrownShift::default()),
+        "fixed" => Ok(CrownShift::fixed()),
+        "ratio" => Ok(CrownShift {
+            scale_by_ratio: true,
+            follow_pavilion: false,
+            ..CrownShift::fixed()
+        }),
+        other => {
+            let number = other
+                .strip_prefix("fraction=")
+                .and_then(|text| text.parse::<f64>().ok())
+                .ok_or_else(|| {
+                    format!("--crown needs follow, fixed, ratio or fraction=F, got {word:?}")
+                })?;
+            Ok(CrownShift {
+                fraction: parse_crown_fraction(number)?,
+                scale_by_ratio: false,
+                follow_pavilion: false,
+            })
+        }
+    }
+}
+
+/// The library entry ids an `--ids` list names.
+pub(super) fn parse_ids(text: &str) -> Result<Vec<i64>, String> {
+    let mut ids = Vec::new();
+    for word in text.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+        ids.push(
+            word.parse::<i64>()
+                .map_err(|_| format!("--ids needs whole numbers, got {word:?}"))?,
+        );
+    }
+    if ids.is_empty() {
+        return Err("--ids needs at least one entry id".into());
+    }
+    Ok(ids)
+}
+
+/// A whole count for `flag`.
+pub(super) fn parse_count(flag: &str, text: &str) -> Result<usize, String> {
+    text.trim()
+        .parse::<usize>()
+        .map_err(|_| format!("{flag} needs a whole number, got {text:?}"))
 }
 
 /// The candidate count `--candidates` names.

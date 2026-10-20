@@ -14,7 +14,7 @@ The tool is the **Rough Color** wizard. It uses the same eight-view rig as **Loc
 
 - **One light gives one color.** The photos are taken with one backlight. The result is the stone's color for that light, plus a prediction of its color in other light (D65 daylight and a warm lamp, "A") that comes from the fitted spectrum. For a stone whose color changes with the light, such as an alexandrite or a color-change garnet, the prediction under another light is a guess from three camera channels. The program says so (see "How Sure Is the Color?"). It does not recover a color change.
 - **No pleochroism.** The color does not depend on the direction the light travels in the crystal. A strongly pleochroic stone gets one average color.
-- **No scattering.** Silk, milkiness and fluorescence are not fitted. The inclusion values you set elsewhere are used as they are.
+- **No scattering.** Silk and milkiness are not fitted. The inclusion values you set elsewhere are used as they are.
 - **Birefringence is ignored.** Light is traced with the ordinary index.
 - **At most four zones** besides the base color, and each zone is one of five simple shapes. A free-form zone cannot be drawn.
 - **The mesh must be a scan.** The wizard needs a mesh rough in the Rough Planner and its alignment to the rig.
@@ -317,7 +317,7 @@ This version of the manual contains no measured agreement figures. Add your own 
 
 ## Limitations
 
-- One backlight, one color. No color change, no pleochroism, no scattering, no fluorescence.
+- One backlight, one color. No color change, no pleochroism, no scattering.
 - The camera's sensitivities are a model unless you give measured curves or a filter set. The sRGB fallback is the least certain.
 - A frosted or uneven skin hides the body color. Immersion helps most.
 - At most four zones plus the base, each a half space, a slab, a cylinder, a prism or a sector.

@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("usage: write_pgo_scene <output.json>")?;
 
     let scene = SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 640,
         height: 360,
         yaw: 0.60,
@@ -53,12 +54,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         material: GemMaterial::diamond(),
         planes: StandardGemCuts::standard_round_brilliant(),
         girdle_frosted: false,
+        // Since protocol v29 the field is a tray radiance seen by every escape; the old Grey
+        // card level 0.23 is kept as a literal (a 0.23 tray). The owner regenerates PGO
+        // profiles on the owner's schedule.
         backdrop: BACKDROP_GREY,
         environment: SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     };
 
     let file = File::create(&out)?;

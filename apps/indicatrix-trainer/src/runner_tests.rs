@@ -8,7 +8,7 @@
 use indicatrix_ai::{
     env::{
         DEFAULT_LINE_SEARCH, StepInfo, StepRejection, TeacherLabel, TierSensitivity,
-        design_source_material, weight_fractions,
+        objective_coefficients, weight_fractions,
     },
     training::{ImitationConfig, LrSchedule, TrainingMetrics},
 };
@@ -216,6 +216,7 @@ fn every_rejection_reason_has_its_bucket() {
         (Some(StepRejection::UnsafeAngle), Bucket::Unsafe),
         (Some(StepRejection::NoUsableMast), Bucket::Unsafe),
         (Some(StepRejection::NonFiniteDelta), Bucket::Unsafe),
+        (Some(StepRejection::PreservationViolation), Bucket::Unsafe),
         (Some(wrong_length), Bucket::Unsafe),
         (Some(StepRejection::Unsolvable), Bucket::Unsolvable),
         (Some(StepRejection::RelationsUnsolvable), Bucket::Unsolvable),
@@ -269,7 +270,7 @@ fn a_rollout_counts_each_step_in_one_bucket() {
 /// A label of `evaluations` candidates with one tier of the given score slope.
 fn label(score: f32, gain: Option<f32>, evaluations: usize) -> TeacherLabel {
     let tier = TierSensitivity {
-        components: [score; 4],
+        components: [score; 7],
         score,
         forward_probe: true,
     };
@@ -331,15 +332,17 @@ fn the_evaluation_thread_count_is_the_core_count_capped_by_the_designs() {
 }
 
 #[test]
-fn a_retarget_episode_can_be_judged_in_the_designs_own_material() {
+fn a_retarget_episode_can_be_judged_in_its_sampled_source_material() {
     let design = Design::concave_fixture();
     let mut cfg = config_with(|c| c.same_material_frac = 1.0);
     for seed in 0..8 {
         let target = pick_target(&cfg, seed, &design)
             .unwrap()
             .expect("a retarget episode has a target");
-        assert_eq!(target.name, design_material_name(&design));
-        assert!((target.material.n_d - design_source_material(&design).n_d).abs() < 1e-12);
+        let (source_name, source_material, augmentation) = sampled_source_material(seed).unwrap();
+        assert_eq!(target.name, source_name);
+        assert_eq!(target.material, source_material);
+        assert_eq!(target.augmentation, augmentation);
     }
 
     // Without the share the target is drawn from the spectrum, reproducibly.
@@ -372,16 +375,35 @@ fn a_retarget_episode_can_be_judged_in_the_designs_own_material() {
 }
 
 #[test]
+fn generalization_gap_requires_matching_training_and_validation_fidelity() {
+    let mut runner = fixture_runner_with(|cfg| {
+        cfg.train_fidelity = indicatrix_cut_core::ObjectiveFidelity::Fast;
+        cfg.validation_fidelity = EvalFidelity::Fast;
+    });
+    runner.stats.recent_improvements.push_back(0.4);
+    runner.stats.last_validation = Some(EvalReport {
+        designs: MIN_GAP_DESIGNS,
+        mean_improvement: 0.2,
+        mean_improvement_sampled: Some(0.1),
+        ..EvalReport::default()
+    });
+    assert!((runner.generalization_gap().unwrap() - 0.3).abs() < 1e-6);
+
+    runner.cfg.validation_fidelity = EvalFidelity::Full;
+    assert_eq!(runner.generalization_gap(), None);
+}
+
+#[test]
 fn the_same_material_share_of_the_draws_follows_the_fraction() {
     let design = Design::concave_fixture();
-    let own = design_material_name(&design);
     let cfg = config_with(|c| c.same_material_frac = 0.25);
     let draws: u64 = 2000;
     let same = (0..draws)
         .filter(|&seed| {
+            let source_name = sampled_source_material(seed).unwrap().0;
             pick_target(&cfg, seed, &design)
                 .unwrap()
-                .is_some_and(|target| target.name == own)
+                .is_some_and(|target| target.name == source_name)
         })
         .count();
     let share = same as f64 / draws as f64;
@@ -392,7 +414,7 @@ fn the_same_material_share_of_the_draws_follows_the_fraction() {
 
 /// A CPU runner on the built-in fixture, retargeted to sapphire, with `edit` applied to its
 /// configuration (one worker unless the edit says otherwise).
-fn fixture_runner_with(edit: impl FnOnce(&mut RunConfig)) -> TrainingRunner {
+pub(super) fn fixture_runner_with(edit: impl FnOnce(&mut RunConfig)) -> TrainingRunner {
     let mut cfg = config_with(|c| {
         c.device = DeviceChoice::Cpu;
         c.workers = 1;
@@ -413,8 +435,25 @@ fn every_episode_draws_its_own_objective_weights_into_its_environment() {
     for slot in &runner.slots {
         let weights = *slot.env.weights();
         assert!(presets.contains(&weights), "{weights:?}");
-        // The observation carries the same weights as fractions.
-        assert_eq!(slot.obs.global.weight_fractions, weight_fractions(&weights));
+        // The observation carries the same weights as coefficients: the first six are the
+        // fractions of the optical, yield and tone weights (the fixture's block preform makes
+        // the yield measurable), the seventh is the episode's sampled shape weight (0 or 1).
+        let global = &slot.obs.global;
+        assert_eq!(global.yield_available, 1.0);
+        assert!(
+            [0.0, 1.0].contains(&global.shape_weight),
+            "{}",
+            global.shape_weight
+        );
+        assert_eq!(
+            global.weight_fractions,
+            objective_coefficients(&weights, true, global.shape_weight)
+        );
+        assert_eq!(
+            global.weight_fractions[..6],
+            weight_fractions(&weights)[..6]
+        );
+        assert_eq!(global.weight_fractions[6], global.shape_weight);
     }
     assert!(runner.display_weights().is_some());
 
@@ -493,7 +532,7 @@ fn hyperparameters_are_the_ppo_ones_in_ppo_mode() {
     assert_eq!(runner.config().ppo.epochs_per_batch, 2);
     assert_eq!(runner.config().ppo.learning_rate, 5e-5);
     assert_eq!(runner.config().imitation, imitation_before);
-    assert_eq!(runner.trainer.config.mini_batch_size, 16);
+    assert_eq!(runner.cfg.ppo.mini_batch_size, 16);
 
     // The PPO mini-batch still has to fit the rollout.
     let too_big = Hyperparams {
@@ -521,20 +560,32 @@ fn one_imitation_round_labels_states_and_trains_on_them() {
         c.label_capacity = 5;
         c.imitation.mini_batch_size = 8;
     });
+    let first = runner
+        .iterate(&mut || true)
+        .expect("the round runs")
+        .expect("it was not interrupted");
+    assert_eq!(first.steps, 8);
+    assert!(first.labels_this_round > 0, "{first:?}");
+    assert!(first.evaluations_this_round > 0);
+    assert!(
+        first
+            .oracle_gain_mean
+            .is_none_or(|gain| gain.is_finite() && gain >= 0.0)
+    );
+    assert!(first.rollout_secs > 0.0);
+    assert!(first.label_secs <= first.rollout_secs);
+    // The update of iteration 0 trains during rollout 1: nothing to report yet.
+    assert_eq!(first.update_of_iteration, None);
+    assert!(first.imitation.is_none() && first.update_secs == 0.0);
+    assert!(runner.stats().last_imitation.is_none());
+
+    // The second iteration installs the update of the first.
     let report = runner
         .iterate(&mut || true)
         .expect("the round runs")
         .expect("it was not interrupted");
-    assert_eq!(report.steps, 8);
-    assert!(report.labels_this_round > 0, "{report:?}");
-    assert!(report.evaluations_this_round > 0);
-    assert!(
-        report
-            .oracle_gain_mean
-            .is_none_or(|gain| gain.is_finite() && gain >= 0.0)
-    );
-    assert!(report.rollout_secs > 0.0 && report.update_secs >= 0.0);
-    assert!(report.label_secs <= report.rollout_secs);
+    assert_eq!(report.update_of_iteration, Some(0));
+    assert!(report.update_secs > 0.0 && report.update_wait_secs >= 0.0);
 
     // The update was the imitation one: its metrics are there and finite, the PPO ones zero.
     let metrics = report
@@ -557,10 +608,13 @@ fn one_imitation_round_labels_states_and_trains_on_them() {
 
     // The aggregate holds the labelled states, newest 5 at most.
     let stats = runner.stats();
-    assert_eq!(stats.labelled_samples, report.labels_this_round.min(5));
-    assert_eq!(runner.aggregate.len(), stats.labelled_samples);
+    assert_eq!(stats.labelled_samples, runner.aggregate.len());
+    assert_eq!(
+        stats.labelled_samples,
+        (first.labels_this_round + report.labels_this_round).min(5)
+    );
     assert!(stats.last_imitation.is_some());
-    assert_eq!(stats.iteration, 1);
+    assert_eq!(stats.iteration, 2);
     assert!(
         runner.buffer.is_empty(),
         "imitation does not fill the PPO buffer"
@@ -597,6 +651,9 @@ fn one_ppo_round_trains_the_policy_and_leaves_the_aggregate_alone() {
         .expect("the round runs")
         .expect("it was not interrupted");
     assert_eq!(report.steps, 8);
+    // PPO is on-policy: its update runs on this rollout and is installed before iterate returns.
+    assert_eq!(report.update_of_iteration, Some(0));
+    assert!(runner.updater.in_flight().is_none());
     assert!(report.imitation.is_none());
     assert_eq!(report.labels_this_round, 0);
     assert!(report.oracle_gain_mean.is_none());

@@ -13,6 +13,7 @@
 //! print, clipboard, keep-awake, thermal, open URL) are synchronous JNI calls; Kotlin
 //! hops to the UI thread itself where Android requires it.
 
+pub(crate) mod back;
 mod jvm;
 mod logging;
 mod natives;
@@ -39,6 +40,10 @@ pub(crate) use logging::init as init_logging;
 const KIND_DESIGNS: i32 = 0;
 const KIND_HDR_MAP: i32 = 1;
 const KIND_DESIGN_FOLDER: i32 = 2;
+
+/// What the user is told when the stored remote credentials cannot be unlocked.
+const UNLOCK_FAILED: &str =
+    "Could not unlock remote credentials. Enroll again if the Android key was lost.";
 
 /// The platform services of a running Android activity.
 pub struct AndroidPlatform {
@@ -82,6 +87,21 @@ impl AndroidPlatform {
 }
 
 impl indicatrix_mobile_core::platform::Platform for AndroidPlatform {
+    fn update_back_target(&self, target: i32, version: i32) {
+        let result = self.jvm.with_env(|env, activity| {
+            env.call_method(
+                activity,
+                jni_str!("setBackTarget"),
+                jni::jni_sig!("(II)V"),
+                &[JValue::Int(target), JValue::Int(version)],
+            )?;
+            Ok(())
+        });
+        if let Err(error) = result {
+            tracing::warn!(%error, "could not mirror Android Back state");
+        }
+    }
+
     fn app_dirs(&self) -> &AppDirs {
         &self.dirs
     }
@@ -203,6 +223,68 @@ impl indicatrix_mobile_core::platform::Platform for AndroidPlatform {
             .ok()?;
         // Kotlin returns NaN when the device (or an Android below 11) does not report it.
         headroom.is_finite().then_some(headroom)
+    }
+
+    fn store_remote_credentials(&self, bundle: &str) -> Result<(), PlatformError> {
+        self.call_with_string(jni_str!("storeRemoteCredentials"), bundle)
+    }
+    fn load_remote_credentials(&self) -> Result<Option<String>, PlatformError> {
+        self.jvm
+            .with_env(|env, activity| {
+                let value = env.call_method(
+                    activity,
+                    jni_str!("loadRemoteCredentials"),
+                    jvm::SIG_NO_ARGS_STRING,
+                    &[],
+                )?;
+                error_message(env, value)
+            })
+            .map_err(|_| PlatformError::new(UNLOCK_FAILED))
+    }
+    fn forget_remote_credentials(&self) -> Result<(), PlatformError> {
+        into_unit(self.jvm.with_env(|env, activity| {
+            let value = env.call_method(
+                activity,
+                jni_str!("forgetRemoteCredentials"),
+                jvm::SIG_NO_ARGS_STRING,
+                &[],
+            )?;
+            error_message(env, value)
+        }))
+    }
+
+    fn system_power_save(&self) -> Option<bool> {
+        self.jvm
+            .with_env(|env, activity| {
+                env.call_method(
+                    activity,
+                    jni_str!("systemPowerSave"),
+                    jvm::SIG_SYSTEM_POWER_SAVE,
+                    &[],
+                )?
+                .z()
+            })
+            .ok()
+    }
+
+    fn network_metered(&self) -> Option<bool> {
+        let code = self
+            .jvm
+            .with_env(|env, activity| {
+                env.call_method(
+                    activity,
+                    jni_str!("networkMetered"),
+                    jvm::SIG_NETWORK_METERED,
+                    &[],
+                )?
+                .i()
+            })
+            .ok()?;
+        match code {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {

@@ -61,6 +61,7 @@ impl Design {
             concave_tiers: Vec::new(),
             concave_tier_ids: Vec::new(),
             tier_relations: BTreeMap::new(),
+            tier_frosting: BTreeMap::new(),
             render_effects: super::render_effects::StoneRenderEffects::default(),
             file_extras: None,
         }
@@ -97,6 +98,7 @@ impl Design {
             concave_tiers: Vec::new(),
             concave_tier_ids: Vec::new(),
             tier_relations: BTreeMap::new(),
+            tier_frosting: BTreeMap::new(),
             render_effects: super::render_effects::StoneRenderEffects::default(),
             file_extras: None,
         }
@@ -220,6 +222,10 @@ impl Design {
             concave_tiers: Vec::new(),
             concave_tier_ids: Vec::new(),
             tier_relations: BTreeMap::new(),
+            // `.asc` has no notation for frosting: an imported schedule is all polished.
+            // (A `.gcs` import applies its frosting afterwards, see
+            // `Design::apply_imported_frosting`.)
+            tier_frosting: BTreeMap::new(),
             render_effects: super::render_effects::StoneRenderEffects::default(),
             file_extras: None,
         }

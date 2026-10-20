@@ -42,6 +42,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
     reason = "shared render-thread state; the flags are independent switches set by different callbacks"
 )]
 pub struct RenderContext {
+    /// Image renderer and deterministic anti-aliasing options, separate from compute.
+    pub engine: indicatrix::renderer::engine::EngineSpec,
     /// Live render resolution, set via the Parameters panel's pill selector
     /// (`gui::mod::on_resolution_changed`). Restricted to fixed choices (640x480 ...
     /// 1920x1080) because Slint has no way to report a widget's rendered size back to
@@ -86,7 +88,8 @@ pub struct RenderContext {
     pub material_linked: bool,
     /// Lighting preset the render uses.
     pub lighting_preset: LightingPreset,
-    /// What the camera sees behind the stone -- `AppSettings::backdrop`.
+    /// The tray the stone lies on -- `AppSettings::backdrop`; resolved with
+    /// `Backdrop::resolve` at `lighting_preset` and the light pose wherever it is used.
     pub backdrop: crate::settings::model::Backdrop,
     /// Surface-glare scale, `0.0..=1.0` (`AppSettings::surface_glare`): `1.0` is the
     /// unscaled render, `0.0` hides the mirror image of the light on the table (first
@@ -144,6 +147,16 @@ pub struct RenderContext {
     /// actual deep copy on the rare frame where a render-loop snapshot is still
     /// outstanding.
     pub active_planes: Arc<Vec<GpuFacetPlane>>,
+    /// The frosted facet planes of the active design: indices into [`Self::active_planes`],
+    /// ascending (`Design::frosted_planes_from_solved`). Empty for every design without
+    /// frosting, which keeps its render exactly as it was; the girdle toggle
+    /// ([`Self::girdle_frosted`]) is independent and adds to it.
+    ///
+    /// Cleared by every claim of the planes ([`Self::claim_active_geometry`]), so a writer
+    /// that knows nothing of frosting shows a polished stone; a writer that does follows its
+    /// claim with [`Self::claim_active_frosted`]. An `Arc` for the same reason `active_planes`
+    /// is one.
+    pub active_frosted: Arc<Vec<u32>>,
     /// The concave tools that cut into [`Self::active_planes`], in cutting order; empty
     /// for every planar design (the overwhelmingly common case, so the default and every
     /// writer that knows nothing about tools leave the stone convex).
@@ -467,6 +480,12 @@ impl RenderContext {
         }
         self.swap_editor_material(owner);
         self.active_planes = planes;
+        // The frosting named planes of the previous stone: a new claim starts polished.
+        // Kept as the same `Arc` when it is already empty, so re-claiming a design without
+        // frosting is no scene change.
+        if !self.active_frosted.is_empty() {
+            self.active_frosted = Arc::new(Vec::new());
+        }
         // Kept as the same `Arc` when both the old and new set are empty, so a planar
         // design re-claimed on every edit does not look like a scene change to
         // `scene_identity` (which compares `Arc` identity).
@@ -477,6 +496,16 @@ impl RenderContext {
         self.design_gear = design_gear;
         self.planes_owner = owner;
         true
+    }
+
+    /// Sets the frosted planes of the stone [`Self::claim_active_geometry`] just claimed
+    /// (indices into [`Self::active_planes`], ascending). Call it right after an accepted
+    /// claim, under the same lock. The `Arc` is kept when the list is unchanged, so an edit
+    /// that moves no frosted plane is no scene change. Does NOT set `dirty`, like the claim.
+    pub fn claim_active_frosted(&mut self, frosted: Vec<u32>) {
+        if *self.active_frosted != frosted {
+            self.active_frosted = Arc::new(frosted);
+        }
     }
 
     /// Keeps the editor's viewport material across a Library selection: stashed when a
@@ -669,6 +698,7 @@ impl RenderContext {
 impl Default for RenderContext {
     fn default() -> Self {
         Self {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 800,
             height: 600,
             yaw: DEFAULT_POSE.yaw,
@@ -694,6 +724,7 @@ impl Default for RenderContext {
             edge_rounding_radius: 0.0,
             stone_width_mm: 0.0,
             active_planes: Arc::new(StandardGemCuts::standard_round_brilliant()),
+            active_frosted: Arc::new(Vec::new()),
             active_tools: Arc::new(Vec::new()),
             active_placements: Vec::new(),
             design_gear: None,

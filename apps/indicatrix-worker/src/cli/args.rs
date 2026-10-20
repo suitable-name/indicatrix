@@ -31,6 +31,8 @@ pub enum ComputeMode {
 /// Arguments of `indicatrix-worker render`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderArgs {
+    /// Optional image-engine override; absent preserves the JSON scene choice.
+    pub engine: Option<String>,
     /// Scene file to render.
     pub scene: PathBuf,
     /// Output image path.

@@ -13,7 +13,7 @@
 
 mod tiers;
 
-use super::{Perform, WORKED_EXAMPLE_ID, lesson_start_spec};
+use super::{Perform, TierEntry, WORKED_EXAMPLE_ID, lesson_start_spec};
 
 /// The eight main positions of a ring on a 96-tooth, 8-fold gear, as the Indices field shows them.
 pub(super) const MAIN_RING: &str = "0, 12, 24, 36, 48, 60, 72, 84";
@@ -60,11 +60,65 @@ pub(super) const fn skip(guide: &'static str, step: &'static str) -> TableEntry 
     }
 }
 
-/// Every listed step: the worked example's, then the tiers tutorials'.
+/// Every listed step: the worked example's, then the solving lessons', then the tiers tutorials'.
 pub(super) fn entries() -> Vec<TableEntry> {
     let mut entries = worked_example();
+    entries.extend(solving());
+    entries.extend(viewing());
     entries.extend(tiers::entries());
     entries
+}
+
+/// The solving and optimizing lessons' steps whose goal is a `Check` (a test, not a value to read a recipe from).
+fn solving() -> Vec<TableEntry> {
+    vec![
+        recipe(
+            "solving-status",
+            "Fix it and solve again",
+            Perform::Tier(TierEntry::of("Girdle").meets(2, "1")).then(Perform::solve()),
+        ),
+        recipe(
+            "solving-verdict-fixes",
+            "Take the table away",
+            Perform::delete("Table"),
+        ),
+        recipe(
+            "solving-history",
+            "Change the pavilion",
+            Perform::Tier(TierEntry::of("Pavilion Main").angle("41")),
+        ),
+        recipe("solving-history", "Go back one step", Perform::undo()),
+        recipe("solving-history", "Go back to Start", Perform::undo()),
+        recipe(
+            "solving-history",
+            "Undo from where you stand",
+            Perform::undo(),
+        ),
+        recipe("solving-raw-text", "Undo the text edit", Perform::undo()),
+        recipe(
+            "optimizing-retarget-shift",
+            "Undo the retarget",
+            Perform::undo(),
+        ),
+        recipe(
+            "optimizing-retarget-optimize",
+            "Undo the retarget",
+            Perform::undo(),
+        ),
+        recipe("optimizing-sweep", "Undo it", Perform::undo()),
+    ]
+}
+
+/// The viewing lessons' steps whose goal is a `Check`.
+fn viewing() -> Vec<TableEntry> {
+    vec![
+        recipe(
+            "viewing-drag-handles",
+            "One drag, one undo",
+            Perform::undo(),
+        ),
+        recipe("viewing-slice", "Undo the new tier", Perform::undo()),
+    ]
 }
 
 /// The worked example: the values its steps tell the learner to type.

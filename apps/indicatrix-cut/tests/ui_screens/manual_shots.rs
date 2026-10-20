@@ -12,8 +12,8 @@ use indicatrix_cut::{
     harness_support,
 };
 use slint::{ComponentHandle, Model};
-use slint_harness::screenshot::Shot;
 use std::time::Duration;
+use uiprobe::screenshot::Shot;
 
 /// How many tiers the History shot changes (each its own step).
 const HISTORY_EDITS: usize = 3;

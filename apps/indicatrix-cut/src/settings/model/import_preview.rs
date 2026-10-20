@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// The remembered answer to "generate preview images for what was just imported?".
 ///
-/// `Ask` (the default) shows the question after every import; the other three are the
+/// `Ask` (the default) shows the question after every import; the other choices are the
 /// answers the question's "remember my choice" box stores, applied without asking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ImportPreviewChoice {
@@ -18,6 +18,9 @@ pub enum ImportPreviewChoice {
     Solid,
     /// Generate nothing after an import.
     Skip,
+    /// Make quick deterministic drafts after an import.
+    #[serde(rename = "ray", alias = "Ray")]
+    Ray,
 }
 
 #[cfg(test)]
@@ -32,6 +35,7 @@ mod tests {
             ImportPreviewChoice::Full,
             ImportPreviewChoice::Solid,
             ImportPreviewChoice::Skip,
+            ImportPreviewChoice::Ray,
         ] {
             #[derive(Serialize, Deserialize)]
             struct Holder {

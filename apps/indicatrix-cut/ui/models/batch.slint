@@ -35,6 +35,9 @@ export global BatchModel {
     // and a "remember my choice" box. `preview_import_choice` mirrors
     // `AppSettings::import_preview_choice` (0 ask, 1 full, 2 solid, 3 skip).
     in property <bool> preview_offer_from_import: false;
+    // True from a picture-quality slider change in the confirm step until the re-count for
+    // the new values lands (`gui::batch::preview::offer_quality`); Generate stays off meanwhile.
+    in property <bool> preview_offer_counting: false;
     in-out property <bool> preview_remember_choice: false;
     in-out property <int> preview_import_choice: 0;
 
@@ -43,6 +46,7 @@ export global BatchModel {
     callback preview_dismiss_offer();
     callback preview_generate_confirmed();
     callback preview_generate_solid_confirmed();
+    callback preview_generate_ray_confirmed();
 
     in-out property <bool> tilt_visible: false;
     in property <bool> tilt_confirming: false;

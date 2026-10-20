@@ -5,6 +5,9 @@
 // are the same decimal literals as the Rust constants. The head-shadow cone is a scene
 // parameter (`EnvironmentSource::Studio::head_shadow_deg`), evaluated to two cosines on the
 // CPU (`head_shadow_cosines`) and threaded in as `shadow` = (outer, inner).
+// `tray` is the backdrop tray radiance at exposure 1 (`EnvironmentSource::Studio::backdrop`;
+// 0 = As Lit, the preset's own ground). The `tray > 0.0` branches mirror the CPU's `_tray`
+// expressions operation for operation; the As Lit expressions are untouched.
 const TENT_KEY_OUTER_COS: f32 = 0.7660444;
 const TENT_KEY_INNER_COS: f32 = 0.9396926;
 const SPARK_OUTER_COS: f32 = 0.9961947;
@@ -27,8 +30,15 @@ fn horizon_blend(d: vec3<f32>) -> f32 {
     return smoothstep_f32(-0.05, 0.05, d.y);
 }
 
-fn sample_iso_hemisphere(d: vec3<f32>, spec_power: f32, exposure: f32, observer: vec3<f32>, shadow: vec2<f32>) -> f32 {
-    return (horizon_blend(d) * observer_visibility(d, observer, shadow)) * (spec_power * exposure);
+fn sample_iso_hemisphere(d: vec3<f32>, spec_power: f32, exposure: f32, observer: vec3<f32>, shadow: vec2<f32>, tray: f32) -> f32 {
+    let horizon = horizon_blend(d);
+    let vis = observer_visibility(d, observer, shadow);
+    if (tray > 0.0) {
+        // Lit tray below the horizon: `fma((1 - h) * vis, tray, h * vis)`.
+        let factor = fma((1.0 - horizon) * vis, tray, horizon * vis);
+        return factor * (spec_power * exposure);
+    }
+    return (horizon * vis) * (spec_power * exposure);
 }
 
 fn sample_daylight_dome(
@@ -38,6 +48,7 @@ fn sample_daylight_dome(
     key_dir: vec3<f32>,
     observer: vec3<f32>,
     shadow: vec2<f32>,
+    tray: f32,
 ) -> f32 {
     let horizon = horizon_blend(d);
     let sun_dot = dot(d, key_dir);
@@ -46,8 +57,13 @@ fn sample_daylight_dome(
     let glow2 = glow * glow;
     let glow4 = glow2 * glow2;
     let aureole = (glow4 * glow4) * 0.30;
-    let above = (sky + aureole) * (horizon * observer_visibility(d, observer, shadow));
-    let ground = 0.04 * (1.0 - horizon);
+    let vis = observer_visibility(d, observer, shadow);
+    let above = (sky + aureole) * (horizon * vis);
+    var ground: f32 = 0.04 * (1.0 - horizon);
+    if (tray > 0.0) {
+        // The lit tray replaces the ground term (same observer treatment as the sky).
+        ground = ((1.0 - horizon) * vis) * tray;
+    }
     return (above + ground) * (spec_power * exposure);
 }
 
@@ -78,6 +94,8 @@ fn aset_radiance(
     key_dir: vec3<f32>,
     observer: vec3<f32>,
     shadow: vec2<f32>,
+    tray: f32,
+    d65: f32,
 ) -> f32 {
     let horizon = horizon_blend(d);
     let s45 = smoothstep_f32(ASET_EDGE_45_LO, ASET_EDGE_45_HI, d.y);
@@ -88,7 +106,14 @@ fn aset_radiance(
     let r = (red * aset_band(spec_power, ASET_RED_NM)) * ASET_RED_GAIN;
     let g = (green * aset_band(spec_power, ASET_GREEN_NM)) * ASET_GREEN_GAIN;
     let b = (blue * aset_band(spec_power, ASET_BLUE_NM)) * ASET_BLUE_GAIN;
-    return ((r + g) + b) * exposure;
+    let banded = ((r + g) + b) * exposure;
+    if (tray > 0.0) {
+        // A neutral D65 tray (`d65` = `d65_relative_spectral_power(lambda)`, supplied by the
+        // caller so this prelude unit stays self-contained); ASET ignores the observer.
+        let tray_ground = (1.0 - horizon) * tray;
+        return fma(tray_ground * d65, exposure, banded);
+    }
+    return banded;
 }
 
 // Daylight sky plus a physically bright direct sun (model id 5):
@@ -114,6 +139,7 @@ fn daylight_sun_radiance(
     key_dir: vec3<f32>,
     observer: vec3<f32>,
     shadow: vec2<f32>,
+    tray: f32,
 ) -> f32 {
     let horizon = horizon_blend(d);
     let sun_dot = dot(d, key_dir);
@@ -122,8 +148,13 @@ fn daylight_sun_radiance(
     let glow2 = glow * glow;
     let glow4 = glow2 * glow2;
     let aureole = (glow4 * glow4) * 0.30;
-    let above = (sky + aureole) * (horizon * observer_visibility(d, observer, shadow));
-    let ground = 0.04 * (1.0 - horizon);
+    let vis = observer_visibility(d, observer, shadow);
+    let above = (sky + aureole) * (horizon * vis);
+    var ground: f32 = 0.04 * (1.0 - horizon);
+    if (tray > 0.0) {
+        // The lit tray replaces the ground term; the sun disc below is unchanged.
+        ground = ((1.0 - horizon) * vis) * tray;
+    }
     var sun: f32 = 0.0;
     if (sun_dot >= SUN_DISC_COS) {
         sun = daylight_sun_factor(key_dir);

@@ -51,6 +51,7 @@ mod furnace;
 #[cfg(test)]
 mod furnace_measurement;
 mod image_comparison;
+mod image_comparison_concave;
 mod spectral_debug;
 
 pub use determinism::{DeterminismResult, run_determinism};
@@ -72,6 +73,7 @@ pub use image_comparison::{
     run_image_comparison_zoned, run_specialisation_image_comparison,
 };
 
+pub use image_comparison_concave::run_image_comparison_concave;
 pub use spectral_debug::{SpectralDebugResult, run_spectral_debug};
 
 // `spectral_transport.wgsl` alone isn't valid WGSL: it assumes

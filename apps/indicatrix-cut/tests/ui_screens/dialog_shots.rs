@@ -15,7 +15,7 @@ use indicatrix_cut::{
     TemplateGalleryModel, ViewportModel, WorkerItem,
 };
 use slint::{ComponentHandle, Model};
-use slint_harness::screenshot::Shot;
+use uiprobe::screenshot::Shot;
 
 /// The label of the zone list's check box, the first thing of the zone list the dialog shows.
 const ZONE_CHECKBOX: &str = "Zone Geometry Relative to Stone Size";
@@ -76,7 +76,7 @@ fn scroll_to_label(sc: &Sc<'_, '_>, component: &str, label: &str) -> Result<Elem
 }
 
 /// Opens the Gem Material Editor over the library's Live Render view with `material` chosen.
-fn open_material_editor(sc: &mut Sc<'_, '_>, material: &str) -> Result<(), String> {
+fn open_material_editor(sc: &Sc<'_, '_>, material: &str) -> Result<(), String> {
     sc.select_design(STUDIO)?;
     let name = sc.choose_material(material)?;
     sc.show_live_view();
@@ -216,17 +216,17 @@ pub fn material_zones(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
             .find_first()
             .map(|element| Rect::of(&element))
     };
-    let top = match labelled(ZONES_HEADING) {
-        Some(heading) => heading.y - ZONES_MARGIN,
-        None => {
-            let check = view
-                .try_find(ZONE_CHECKBOX)
-                .map(|element| Rect::of(&element))
-                .ok_or_else(|| format!("the zone list has no {ZONE_CHECKBOX:?} check box"))?;
-            check.y - ZONES_ABOVE_CHECKBOX
-        }
-    }
-    .max(card.y);
+    let top = labelled(ZONES_HEADING)
+        .map_or_else(
+            || {
+                view.try_find(ZONE_CHECKBOX)
+                    .map(|element| Rect::of(&element))
+                    .ok_or_else(|| format!("the zone list has no {ZONE_CHECKBOX:?} check box"))
+                    .map(|check| check.y - ZONES_ABOVE_CHECKBOX)
+            },
+            |heading| Ok::<f32, String>(heading.y - ZONES_MARGIN),
+        )?
+        .max(card.y);
     let bottom = labelled(BODY_COLOR_HEADING)
         .map(|heading| heading.y)
         .or_else(|| labelled(FIRST_SWATCH).map(|swatch| swatch.y - SWATCH_HEADING_ROOM))

@@ -93,7 +93,10 @@ fn resolve_remote_capability(
             // without the zoning capability would render only the base zone and
             // `render_accumulation` sums both halves into one buffer, so a zoned stone keeps
             // the WHOLE render local; `RemoteOnly` fails with the same sentence.
-            if let Err(refusal) = zoned_scene_refusal(scene.material.zoning.is_some(), cap.zoning) {
+            if let Err(refusal) = zoned_scene_refusal(
+                !scene.engine.is_ray() && scene.material.zoning.is_some(),
+                cap.zoning,
+            ) {
                 if matches!(compute_target, ComputeTarget::RemoteOnly) {
                     return Err(format!(
                         "{} Remote Only cannot render this scene; choose Local Only or \
@@ -171,10 +174,14 @@ fn resolve_remote_rate(
     // `RemoteOnly` bypasses `REMOTE_MIN_SPP`: that threshold only avoids the overhead
     // of remote when local could handle a tiny remainder alone, which is irrelevant
     // once the user explicitly chose `RemoteOnly`.
-    let worth_attempting =
-        remaining >= REMOTE_MIN_SPP || matches!(compute_target, ComputeTarget::RemoteOnly);
+    let worth_attempting = scene_state.engine.is_ray()
+        || remaining >= REMOTE_MIN_SPP
+        || matches!(compute_target, ComputeTarget::RemoteOnly);
     if !worth_attempting || remaining == 0 {
         return Ok(None);
+    }
+    if scene_state.engine.is_ray() {
+        return Ok(Some(DEFAULT_REMOTE_RATE_GUESS));
     }
     if let Some(seeded) = carry.remote_rate {
         return Ok(Some(seeded));
@@ -554,7 +561,8 @@ pub(super) fn render_on_ctx(
     // seed already carried from a prior call skips the timing probe entirely and
     // starts the concurrent phase from it directly -- `hybrid_batch`'s own per-batch
     // EMA keeps adapting it exactly as if it had just been measured.
-    let mut gpu_frac: Option<f64> = if local_compute == LocalComputeTarget::CpuGpu
+    let mut gpu_frac: Option<f64> = if !ctx.scene.engine.is_ray()
+        && local_compute == LocalComputeTarget::CpuGpu
         && samples_per_pixel - samples_done >= HYBRID_MIN_SPP
     {
         carry

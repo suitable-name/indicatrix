@@ -52,6 +52,9 @@ export component StoneTab inherits VerticalLayout {
         : " Saved in the design.";
 
     spacing: 14px;
+    // The ScrollView stretches this layout to at least the visible height. Without `start`, a
+    // short tab (a library design) spreads that extra height over every row.
+    alignment: start;
 
     if !root.design_shown && !root.library_shown: Text {
         text: "Open or create a design to set its material, size and effects.";

@@ -63,7 +63,10 @@ so instead of showing depths that are not real; fix the design first.
 text:", names what an `.asc` file cannot hold for this design: tier notes,
 cheater offsets, depth and width targets, tier relations, concave tiers, and
 always the preform, the material and the girdle size. These are not lost by
-opening the dialog. Tiers you keep by name keep them (see Apply below).
+opening the dialog. Tiers you keep by name keep them (see Apply below). Tier
+frosting (Chapter 4) is not named in that line, because it is not a field the line
+could list: an `.asc` file has no frosting, but Apply keeps the frosting of every
+tier that stays, and a deleted tier takes its frosting with it.
 
 **The live check.** A moment after you stop typing, one sentence under the
 box says whether the text can be used. A problem is shown in red with its line
@@ -81,8 +84,8 @@ the number of tiers has not changed, by position. A tier that stays keeps its
 note, cheater offset, depth target, relation and meet rule. The exceptions are
 stated in the summary before you apply:
 
-- A tier whose line you delete takes its note, offset, target and relation
-  with it, and a relation that read a deleted tier is dropped.
+- A tier whose line you delete takes its note, offset, target, relation and
+  frosting with it, and a relation that read a deleted tier is dropped.
 - If you change a tier's depth in the text, its depth target is dropped, and a
   changed mast or a changed `G` instruction pins the tier to what you typed,
   the same way opening that `.asc` would.
@@ -133,13 +136,17 @@ export is marked **experimental**: it follows the published Gem Cut Studio
 1.1 file description and reads back correctly in this app, but it has not yet
 been checked in Gem Cut Studio itself, and chiral designs (crown and pavilion
 twisted against each other) are untested. Open the file in Gem Cut Studio and
-compare it with the faceting diagram before cutting from it.
+compare it with the faceting diagram before cutting from it. Frosted tiers and
+facets (Chapter 4, "Frosting a Tier") are written the way Gem Cut Studio states
+them, and a frosted tier or facet stated in a `.gcs` file comes back when the
+file is opened or imported; `.asc` has no notation for frosting.
 
 ## Opening `.gem` and `.gcs` Files in the Editor
 
 **Open** also accepts a GemCAD `.gem` file or a Gem Cut Studio `.gcs`
 file. The design is converted to `.asc` cutting instructions exactly as Import
-converts it (Chapter 1) and opens like a plain `.asc` with no `.isdd` design file. The
+converts it (Chapter 1) and opens like a plain `.asc` with no `.isdd` design file
+(frosting stated in a `.gcs` is applied to the opened design). The
 window title names the file you opened, but the design is recorded under
 `<name>.asc`: **Save** asks where to write a new `<name>.isdd` and never
 overwrites the `.gem` or `.gcs`. Anything the
@@ -164,7 +171,7 @@ chosen material/specific-gravity settings.
 
 The **`.isdd` design file** keeps all of that, and it is **one
 self-contained file**: every tier in full (angle, indices, meet
-constraint, name, notes, cheater offset, target), the rough, the material
+constraint, name, notes, cheater offset, target, relation and frosting), the rough, the material
 (including a custom material's own numbers), the schedule's header, gear,
 symmetry and refractive index, the girdle size, and a short history of
 your edits. Nothing else has to sit beside it, and nothing else is written
@@ -315,6 +322,11 @@ again from them:
   byte-for-byte what an older build wrote, and a file without the table opens with all
   effects off. An older build ignores the table. The `.asc` format does not
   carry it: a re-imported `.asc` starts with the defaults.
+- **Tier frosting** (optional keys of a `[[tiers]]` entry): `frosted = true` for a tier
+  frosted as a whole, or `frosted_facets` with the index-wheel positions of single
+  frosted facets (Chapter 4, "Frosting a Tier"). Neither is written for a polished
+  tier and neither changes the file's version, so an older build keeps and rewrites
+  them without understanding them.
 - **Attached files** (the `[[attachments]]` array): the design's PDF, the
   original `.gem` and `.asc`, the diagram image and any other file, stored
   byte for byte (up to 64 MiB in total, so a design file stays one self-contained
@@ -390,6 +402,8 @@ strip already shows (Chapter 5) followed by "Save anyway? The written file
 will note this in its own header." (or "Export anyway?" from the export
 path).
 
+- The dialog carries a **Don't Ask Again** tick for the save question; ticking it
+  and accepting writes such files without asking from then on.
 - Clicking **Cancel** cancels the save/export entirely — nothing is written,
   and there is no toast, since this was your own deliberate cancel.
 - Clicking **Save Anyway** (or **Export Anyway**) writes the file anyway, with a leading header line

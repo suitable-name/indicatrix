@@ -3,8 +3,14 @@
 //! The optical figures are the ones the Optimize tab and the sweep score with: one table-up
 //! measurement (about 2 ms) under the lighting preset at the canonical light pose, and with
 //! `--tilt` the mean over four axes and 181 tilt angles (about a second and a half). The
-//! proportions and the yield come from the solid. Concave tools are not part of the figures, as
-//! in Optimize: the stone is scored on its flat facets.
+//! proportions and the yield come from the solid.
+//!
+//! A design with concave tiers is measured as the stone with its tools, the stone the Compare
+//! window draws and Optimize scores (`Design::tools_for_scoring`, `StoneGeometry`): the optics
+//! see the grooves and dimples, and the volume (so Volume over width cubed and the yield) is
+//! the carved volume. The widths, heights and the table stay the flat stone's, as in the cut
+//! sheet. A design without concave tiers has no tools and its figures are exactly the flat
+//! stone's.
 
 use super::{deliver, key_values, list_block, open};
 use crate::{
@@ -19,15 +25,16 @@ use crate::{
     stone::{Analysis, analyze},
 };
 use indicatrix::{
-    color::metrics::{GemOpticalMetrics, evaluate_gem_optical_metrics},
+    color::metrics::{GemOpticalMetrics, evaluate_gem_optical_metrics_geom},
     geometry::{
+        StoneGeometry,
         meet_solver::SolvedTier,
         stone_metrics::{StoneProportions, measure_solid},
     },
     optics::LightingPreset,
 };
 use indicatrix_cut_core::{
-    Design, ObjectiveComponents, ObjectiveFidelity, evaluate_objective_under,
+    Design, ObjectiveComponents, ObjectiveFidelity, evaluate_objective_geom_under,
     optimize::{CANONICAL_LIGHT_PITCH, CANONICAL_LIGHT_YAW},
     volumetric_yield,
 };
@@ -181,13 +188,20 @@ fn measure(
     tilt: bool,
 ) -> Result<Measured, CliError> {
     let planes_gpu = design_to_gpu_planes_from_solved(design, solved);
+    let planes = design.planes_from_solved(solved);
+    // The concave tools of the design (none for a flat design), placed on the flat stone: the
+    // stone the optics and the volume are read off.
+    let tools = design.tools_for_scoring(&planes);
+    let stone = StoneGeometry {
+        planes: &planes_gpu,
+        tools: &tools,
+    };
     // Sized by the design's girdle diameter, like the render and `optimize`.
     let gem = &scoring.sized_gem(design, &planes_gpu);
     let environment = lighting.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
-    let table_up = evaluate_gem_optical_metrics(&planes_gpu, gem, 0.0, TABLE_UP_PITCH, environment);
+    let table_up = evaluate_gem_optical_metrics_geom(stone, gem, 0.0, TABLE_UP_PITCH, environment);
     let tilt =
-        tilt.then(|| evaluate_objective_under(&planes_gpu, gem, ObjectiveFidelity::Full, lighting));
-    let planes = design.planes_from_solved(solved);
+        tilt.then(|| evaluate_objective_geom_under(stone, gem, ObjectiveFidelity::Full, lighting));
     let solid = measure_solid(&planes)
         .ok_or_else(|| CliError::design("the stone cannot be measured: it has no usable volume"))?;
     let mesh = analysis
@@ -195,16 +209,20 @@ fn measure(
         .as_ref()
         .ok_or_else(|| CliError::design("the stone has no solid to measure"))?;
     let width = solid.width_axis;
+    // The carved volume (the flat one without tools, or when the tools leave no closed stone),
+    // the measure the cut sheet and the yield report read.
+    let volume =
+        Design::carved_metrics(Some(solid), &planes, &tools).map_or(solid.volume, |m| m.volume);
     let (vol_w3, depth_pct) = if width > 1e-9 {
         (
-            Some(solid.volume / (width * width * width)),
+            Some(volume / (width * width * width)),
             Some(100.0 * solid.total_height / width),
         )
     } else {
         (None, None)
     };
     let yield_pct = measure_solid(&design.preform.planes())
-        .and_then(|rough| volumetric_yield(solid.volume, rough.volume))
+        .and_then(|rough| volumetric_yield(volume, rough.volume))
         .map(|fraction| fraction * 100.0);
     Ok(Measured {
         table_up,
@@ -473,6 +491,9 @@ fn csv_report(built: &Built) -> String {
     text.push_str(&csv_line(&row));
     text
 }
+
+#[cfg(test)]
+mod tests_concave;
 
 /// Runs `metrics`.
 ///

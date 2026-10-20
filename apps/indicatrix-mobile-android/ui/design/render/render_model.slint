@@ -2,6 +2,8 @@
 // export sheet (`export_sheet.slint`). Rust -> Slint is properties, Slint -> Rust is
 // callbacks. A global is visible to Rust only if `app.slint`'s `export { ... }` names it.
 export global RenderModel {
+    in property <int> engine: 0;
+    callback engine-selected(int);
     // ---- the picture ---------------------------------------------------------------
     // The latest tone-mapped frame, and whether one has landed yet.
     in property <image> frame;
@@ -25,6 +27,11 @@ export global RenderModel {
     // A solve is current: there is something to render and export.
     in property <bool> can-render: false;
 
+    in property <int> backend: 0;
+    in property <string> backend-report;
+    callback backend-selected(int);
+
+    callback restart-requested();
     callback pause-toggled();
     callback quality-cycled();
     callback denoise-toggled();
@@ -50,21 +57,14 @@ export global RenderModel {
     // A finished picture is waiting to be shared or saved; `export-result` names it.
     in property <bool> export-done: false;
     in property <string> export-result: "";
+    // A line shown whatever else is: where a server job can be followed.
+    in-out property <string> export-note: "";
 
     callback export-options-changed();
     callback export-render();
+    callback export-submit-job();
     callback export-cancel();
     callback export-share();
     callback export-save();
     callback export-closed();
-
-    // One step of "Back": closes the export sheet. Returns false when it is not open, so
-    // the caller goes on to the next step.
-    public function handle-back() -> bool {
-        if (export-open) {
-            export-closed();
-            return true;
-        }
-        return false;
-    }
 }

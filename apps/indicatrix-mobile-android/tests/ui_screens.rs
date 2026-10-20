@@ -57,7 +57,43 @@ const RENDER_WAIT: &str = "40";
 const TABLET: &str = "1280x800";
 
 /// Every shot, in the order it is taken.
-const SHOTS: [Shot; 13] = [
+const SHOTS: [Shot; 15] = [
+    Shot {
+        name: "phone_design_ray",
+        args: &[
+            "--size",
+            PHONE,
+            "--page",
+            "design",
+            "--template",
+            "1",
+            "--view",
+            "render",
+            "--engine",
+            "ray",
+            "--sheet",
+            "peek",
+            "--wait",
+            "8",
+        ],
+    },
+    Shot {
+        name: "tablet_design_ray",
+        args: &[
+            "--size",
+            TABLET,
+            "--page",
+            "design",
+            "--template",
+            "1",
+            "--view",
+            "render",
+            "--engine",
+            "ray",
+            "--wait",
+            "8",
+        ],
+    },
     Shot {
         name: "phone_library",
         args: &["--size", PHONE, "--page", "library", "--wait", LIBRARY_WAIT],

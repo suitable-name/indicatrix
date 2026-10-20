@@ -31,6 +31,20 @@ pub fn brilliant_at_172() -> Design {
     design
 }
 
+/// The concave-facet fixture of the cut core: a 16-tooth brilliant with a groove and a dimple.
+pub fn concave() -> Design {
+    Design::concave_fixture()
+}
+
+/// [`concave`] without its concave tiers: the flat shell a scoring path that ignored the tools
+/// would have measured. Same flat tiers, same preform, same material.
+pub fn concave_shell() -> Design {
+    let mut flat = concave();
+    flat.concave_tiers.clear();
+    flat.concave_tier_ids.clear();
+    flat
+}
+
 /// The name, angle and index positions of every tier: what must survive a file round trip.
 pub fn shape(design: &Design) -> Vec<(String, f64, Vec<f64>)> {
     design

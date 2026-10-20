@@ -11,7 +11,10 @@
 
 use crate::bridge::render_thread::hash_planes;
 use indicatrix::{
-    geometry::{girdle::girdle_facet_finishes, plane::GpuFacetPlane},
+    geometry::{
+        girdle::{facet_finishes_with_frosted, girdle_facet_finishes},
+        plane::GpuFacetPlane,
+    },
     optics::raytracer::FacetFinish,
 };
 
@@ -23,6 +26,10 @@ use indicatrix::{
 pub struct GirdleFinishCache {
     key: Option<u64>,
     finishes: Vec<FacetFinish>,
+    /// The key of `authored`: the planes' hash, the girdle flag and the frosted plane list.
+    authored_key: Option<(u64, bool, Vec<u32>)>,
+    /// The finishes for a design with authored frosting (see [`Self::ensure_with_frosted`]).
+    authored: Vec<FacetFinish>,
 }
 
 impl GirdleFinishCache {
@@ -32,7 +39,28 @@ impl GirdleFinishCache {
         Self {
             key: None,
             finishes: Vec::new(),
+            authored_key: None,
+            authored: Vec::new(),
         }
+    }
+
+    /// [`Self::ensure`] for a design with authored frosting: the frosted planes
+    /// (`frosted`, indices into `planes`) are `Frosted` too, and the girdle band is
+    /// `Frosted` as well when `girdle_frosted` is on. Recomputed only when the planes, the
+    /// flag or the list change. A caller with no authored frosting keeps using
+    /// [`Self::ensure`] (or `&[]`), which is what keeps such a design's frames as they were.
+    pub fn ensure_with_frosted(
+        &mut self,
+        planes: &[GpuFacetPlane],
+        girdle_frosted: bool,
+        frosted: &[u32],
+    ) -> &[FacetFinish] {
+        let key = (hash_planes(planes), girdle_frosted, frosted.to_vec());
+        if self.authored_key.as_ref() != Some(&key) {
+            self.authored = facet_finishes_with_frosted(planes, girdle_frosted, frosted);
+            self.authored_key = Some(key);
+        }
+        &self.authored
     }
 
     /// Returns the per-facet finishes for `planes` (girdle band `Frosted`, everything

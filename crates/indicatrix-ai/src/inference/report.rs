@@ -11,14 +11,15 @@
 )]
 
 use super::error::InferenceError;
-use crate::env::common::to_gpu_planes;
+use crate::env::common::{evaluate_design, preform_volume};
+use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix::{
-    geometry::{meet_solver::MeetConstraint, stone_metrics::measure_solid},
-    optics::materials::GemMaterial,
+    color::metrics::FaceUpTone,
+    optics::{materials::GemMaterial, raytracer::LightingPreset},
 };
 use indicatrix_cut_core::{
     AngleChange, Design, MastChange, ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights,
-    evaluate_objective, volumetric_yield,
+    ShapeTarget,
 };
 
 /// What one design measures like.
@@ -32,6 +33,64 @@ pub(crate) struct DesignReport {
     /// `100 -` the volumetric yield percentage; `0.0` when the yield cannot be measured (the
     /// cut-core optimizer's convention).
     pub(crate) yield_loss_pct: f32,
+    pub(crate) tone: FaceUpTone,
+}
+
+/// Read-only, geometry-aware score for a materialized design; it does not create or recapture an environment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoreReadout {
+    /// Exact weighted objective score.
+    pub score: f32,
+    /// Shared core optical components.
+    pub components: ObjectiveComponents,
+    /// Measured yield percent, absent when preform or finished volume is unavailable.
+    pub yield_pct: Option<f32>,
+    /// Measured lighter-tone loss.
+    pub tone_lighter_loss_pct: Option<f32>,
+    /// Measured deeper-tone loss.
+    pub tone_deeper_loss_pct: Option<f32>,
+    /// Measured face-up color under the configured lighting and fidelity.
+    pub tone: FaceUpTone,
+    /// Distance from configured shape target, times 100; absent without a target.
+    pub shape_distance_pct: Option<f32>,
+    /// Exact solved mast per authored tier.
+    pub masts: Vec<f64>,
+}
+
+/// Score a finished design with the same shared carved-geometry, lighting and objective path used by environments.
+pub fn score_design_at_fidelity(
+    design: &Design,
+    gem: &GemMaterial,
+    weights: &ObjectiveWeights,
+    fidelity: ObjectiveFidelity,
+    lighting: LightingPreset,
+    shape_target: Option<ShapeTarget>,
+) -> Result<ScoreReadout, InferenceError> {
+    let evaluated = evaluate_design(
+        design,
+        gem,
+        weights,
+        fidelity,
+        preform_volume(design),
+        lighting,
+        shape_target,
+    )
+    .map_err(|error| InferenceError::Unscorable(format!("{error:?}")))?;
+    Ok(ScoreReadout {
+        score: evaluated.score,
+        components: evaluated.components,
+        yield_pct: evaluated.yield_pct,
+        tone_lighter_loss_pct: evaluated.tone_lighter_loss_pct,
+        tone_deeper_loss_pct: evaluated.tone_deeper_loss_pct,
+        tone: evaluated.tone,
+        shape_distance_pct: shape_target.and_then(|_| {
+            evaluated
+                .shape_distance_pct
+                .is_finite()
+                .then_some(evaluated.shape_distance_pct)
+        }),
+        masts: evaluated.masts,
+    })
 }
 
 /// Solves `design` and measures it in `gem` at `fidelity`.
@@ -39,46 +98,48 @@ pub(crate) struct DesignReport {
 /// # Errors
 ///
 /// [`InferenceError::Unscorable`] when the design does not solve or a figure is not finite.
+#[cfg(test)]
 pub(crate) fn report_design(
     design: &Design,
     gem: &GemMaterial,
     weights: &ObjectiveWeights,
     fidelity: ObjectiveFidelity,
 ) -> Result<DesignReport, InferenceError> {
-    let solved = design
-        .solve()
-        .map_err(|error| InferenceError::Unscorable(error.to_string()))?;
-    let planes = design.planes_from_solved(&solved);
-    let components = evaluate_objective(&to_gpu_planes(&planes), gem, fidelity);
+    report_design_with_settings(
+        design,
+        gem,
+        weights,
+        fidelity,
+        LightingPreset::IsoHemisphere,
+        None,
+    )
+}
 
-    let finished = measure_solid(&planes);
-    let preform = measure_solid(&design.preform.planes());
-    let yield_fraction = match (&finished, &preform) {
-        (Some(finished), Some(preform)) => volumetric_yield(finished.volume, preform.volume),
-        _ => None,
-    };
-    let yield_loss_pct =
-        yield_fraction.map_or(0.0, |fraction| 100.0_f64.mul_add(-fraction, 100.0) as f32);
-
-    let score = weights.score_with_yield(&components, yield_loss_pct);
-    let finite = [
-        score,
-        yield_loss_pct,
-        components.windowing_pct,
-        components.extinction_pct,
-        components.tilt_brilliance_pct,
-    ]
-    .iter()
-    .all(|value| value.is_finite());
-    if !finite {
-        return Err(InferenceError::Unscorable(
-            "a measured figure is not a finite number".to_owned(),
-        ));
-    }
+pub(crate) fn report_design_with_settings(
+    design: &Design,
+    gem: &GemMaterial,
+    weights: &ObjectiveWeights,
+    fidelity: ObjectiveFidelity,
+    lighting: LightingPreset,
+    shape_target: Option<ShapeTarget>,
+) -> Result<DesignReport, InferenceError> {
+    let evaluated = evaluate_design(
+        design,
+        gem,
+        weights,
+        fidelity,
+        preform_volume(design),
+        lighting,
+        shape_target,
+    )
+    .map_err(|error| InferenceError::Unscorable(format!("{error:?}")))?;
     Ok(DesignReport {
-        components,
-        score,
-        yield_loss_pct,
+        components: evaluated.components,
+        score: evaluated.score,
+        yield_loss_pct: evaluated
+            .yield_pct
+            .map_or(0.0, |yield_pct| 100.0 - yield_pct),
+        tone: evaluated.tone,
     })
 }
 

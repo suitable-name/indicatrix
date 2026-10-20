@@ -1,5 +1,5 @@
 //! The unsaved-changes guard: replacing a design that has unsaved changes (a new design,
-//! Open, a file from another app) first asks what to do with them.
+//! Open, a file from another app, Close Design) first asks what to do with them.
 //!
 //! The shell's dialog has two buttons, so the three answers (Save, Discard, Cancel) are two
 //! questions in a row, and every way out of the first one except "Save" leads to the
@@ -42,6 +42,8 @@ pub enum Pending {
     Incoming(Vec<PickedFile>),
     /// Open a library entry (its id).
     Library(i64),
+    /// Close the design and return to the empty "Start a Design" state.
+    Close,
 }
 
 thread_local! {
@@ -128,7 +130,18 @@ fn run(window: &AppWindow, state: &Shared, pending: Pending) {
         Pending::Open => open::pick_and_open(window, state),
         Pending::Incoming(received) => open::open_files(window, state, received),
         Pending::Library(id) => library::load_and_open(window, state, id),
+        Pending::Close => closed(window, state),
     }
+}
+
+/// Finishes a close: the core drops the design (and cancels its jobs), then every surface
+/// is pushed again, so the Design page offers "Start a Design" and Cut shows its own
+/// no-design state.
+fn closed(window: &AppWindow, state: &Shared) {
+    document::close_design(&mut state.borrow_mut());
+    close_gallery(window);
+    crate::design::after_edit(window, state);
+    toast(window, "Design closed");
 }
 
 /// Finishes a creation: close the gallery and refresh, or say why it failed.

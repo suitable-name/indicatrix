@@ -37,6 +37,10 @@ enum Action {
 
 /// The exact `f64` position of the chip whose `f32` is `position` (the chips carry an
 /// `f32`, which is not the tier's own `f64` for a fractional position like 13.71).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the chip's f32 is this same narrowing of the tier's f64, compared bit for bit"
+)]
 fn exact_position(session: &EditorSession, tier: usize, position: f32) -> f64 {
     session
         .design

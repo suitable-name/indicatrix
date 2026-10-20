@@ -64,7 +64,7 @@ component ChoicePill inherits Rectangle {
     }
 }
 
-// The renderer switch (Solid / Path Traced), mounted in the first row or, in a narrow pane, in
+// The renderer switch (Solid / Path Traced / Ray Traced), mounted in the first row or, in a narrow pane, in
 // a row of its own.
 component RendererPills inherits HorizontalLayout {
     spacing: 6px;
@@ -86,6 +86,15 @@ component RendererPills inherits HorizontalLayout {
         clicked => {
             CompareModel.renderer_index = 1;
             CompareModel.renderer_changed(1);
+        }
+    }
+    ChoicePill {
+        label: "Ray Traced";
+        hint: "Deterministic ray tracing with approximate color and frost, one index per color chain and a bounce limit. No polarization, doubling, haze, zoning or edge rounding. Metrics use a separate analytic tracer.";
+        active: CompareModel.renderer_index == 2;
+        clicked => {
+            CompareModel.renderer_index = 2;
+            CompareModel.renderer_changed(2);
         }
     }
 }
@@ -151,8 +160,8 @@ export component CompareView inherits Rectangle {
     // this on.
     in property <bool> show_metrics: false;
 
-    // The renderer switch moves to its own row below this width (the switches take ~380px).
-    property <bool> two_rows: root.width < 440px;
+    // The renderer switch moves to its own row below this width (the switches take ~480px).
+    property <bool> two_rows: root.width < 540px;
     // Side by side: the gap between the two slots and the caption row under them.
     property <length> gap: 8px;
     property <length> caption_height: 20px;
@@ -272,6 +281,13 @@ export component CompareView inherits Rectangle {
                 vertical-alignment: center;
                 overflow: elide;
             }
+        }
+
+        if CompareModel.renderer_index == 2: Text {
+            text: "Ray-Traced: approximate color and frost; one index per color chain. No polarization, doubling, haze, zoning or edge rounding; bounce-limited. Metrics use their own analytic tracer.";
+            color: Theme.text-secondary;
+            font-size: 10px;
+            wrap: word-wrap;
         }
 
         // A narrow pane (the Retarget dialog at the minimum window) puts the renderer switch on a

@@ -91,29 +91,6 @@ export global LibraryModel {
     in-out property <bool> filter-open: false;
     in-out property <bool> sort-open: false;
 
-    // One step of Back inside the Library: the tag sheet, the filter sheet, the sort
-    // menu, then selection mode. Returns false when there is nothing to close. Call it
-    // only while the Library is the shown destination.
-    public function handle-back() -> bool {
-        if (tag-sheet-open) {
-            close-tag-sheet();
-            return true;
-        }
-        if (filter-open) {
-            filter-open = false;
-            return true;
-        }
-        if (sort-open) {
-            sort-open = false;
-            return true;
-        }
-        if (selecting) {
-            clear-selection();
-            return true;
-        }
-        return false;
-    }
-
     // The page became visible (the first visit opens the library).
     callback page-shown();
     callback import-designs();

@@ -21,7 +21,11 @@ path = "src/bin/preview.rs"
 required-features = ["desktop-preview"]
 
 [features]
-default = []
+# Enables Optimize and Retarget in release builds (debug builds always have them). On by
+# default since 2026-10-19: the shared preservation regressions pass (owner's run 5).
+validated-design-search = []
+default = ["device-gpu", "validated-design-search"]
+device-gpu = ["indicatrix-mobile-core/device-gpu"]
 # The same UI in a desktop window (winit + femtovg) at a phone or tablet size, so the
 # UI can be exercised without a device. Never enabled for an Android build.
 desktop-preview = [
@@ -33,6 +37,7 @@ desktop-preview = [
 ]
 
 [dependencies]
+zeroize = "1.9.1"
 indicatrix-mobile-core = { workspace = true }
 indicatrix = { workspace = true, features = ["hdr", "serde"] }
 indicatrix-cut-core = { workspace = true }

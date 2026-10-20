@@ -95,6 +95,7 @@ pub(super) fn render_frame_rgba(
     report_progress: impl FnMut(ExportProgress),
 ) -> FrameOutcome {
     let params = ExportParams {
+        engine: scene.engine,
         width,
         height,
         samples_per_pixel: samples_per_pixel.max(1),

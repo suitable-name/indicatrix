@@ -14,6 +14,8 @@ pub use super::fit::StonePose;
 pub enum PlanInputError {
     /// The design cap is outside `1..=99`.
     DesignsOutOfRange(u8),
+    /// The stone cap is outside `0..=99` (`0` is no limit).
+    StonesOutOfRange(u8),
     /// A setting is not finite, is negative where it may not be, or is not positive where it
     /// must be.
     Setting {
@@ -36,6 +38,9 @@ impl fmt::Display for PlanInputError {
         match self {
             Self::DesignsOutOfRange(count) => {
                 write!(f, "the design count {count} is outside 1 to 99")
+            }
+            Self::StonesOutOfRange(count) => {
+                write!(f, "the stone cap {count} is outside 0 to 99")
             }
             Self::Setting { field, value } => {
                 write!(f, "the setting {field} = {value} is not usable")
@@ -97,10 +102,15 @@ impl RoughBlock {
 /// The planner's inputs other than the rough and the candidate designs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlanSettings {
-    /// The MAXIMUM number of different designs a layout may use (`1..=99`). The number of
-    /// stones is not capped: a layout holds as many as the rough, the losses and
-    /// [`Self::min_width_mm`] allow.
+    /// The MAXIMUM number of different designs a layout may use (`1..=99`). It does not limit
+    /// the number of stones: that is [`Self::max_stones`].
     pub max_designs: u8,
+    /// The MAXIMUM number of stones a layout may hold in all, whatever their designs
+    /// (`1..=99`), or `0` for no limit (the default): a layout then holds as many stones as
+    /// the rough, the losses and [`Self::min_width_mm`] allow. A limit is part of the search:
+    /// the planner looks for the heaviest layouts of at most that many stones, it does not cut
+    /// stones off a larger layout. Both caps apply together.
+    pub max_stones: u8,
     /// Saw kerf lost at every cut, in mm.
     pub kerf_mm: f64,
     /// Preforming and polishing allowance per side of every piece, in mm.
@@ -120,9 +130,30 @@ impl PlanSettings {
         usize::from(self.max_designs.clamp(1, 99))
     }
 
+    /// The stone cap, or `None` when there is none (`max_stones == 0`): `Some(n)` with `n`
+    /// clamped to at most 99 otherwise.
+    #[must_use]
+    pub fn stone_cap(&self) -> Option<usize> {
+        if self.max_stones == 0 {
+            None
+        } else {
+            Some(usize::from(self.max_stones.min(99)))
+        }
+    }
+
+    /// Both caps as the [`LayoutCaps`] every ranked list filters by: the design cap, and the
+    /// stone cap (`usize::MAX`, which admits every count, when there is none).
+    #[must_use]
+    pub fn caps(&self) -> LayoutCaps {
+        LayoutCaps {
+            max_designs: self.max_designs_usize(),
+            max_stones: self.stone_cap().unwrap_or(usize::MAX),
+        }
+    }
+
     /// Checks that the settings describe a cut the planner can reason about: a design cap in
-    /// `1..=99`; finite, non-negative kerf, allowance, skin and specific gravity; a finite,
-    /// positive minimum width.
+    /// `1..=99`; a stone cap in `0..=99`; finite, non-negative kerf, allowance, skin and
+    /// specific gravity; a finite, positive minimum width.
     ///
     /// A skin or allowance that leaves nothing of a small rough is NOT an error here: that is
     /// a legitimate input with an empty answer.
@@ -133,6 +164,9 @@ impl PlanSettings {
     pub fn validate(&self) -> Result<(), PlanInputError> {
         if !(1..=99).contains(&self.max_designs) {
             return Err(PlanInputError::DesignsOutOfRange(self.max_designs));
+        }
+        if self.max_stones > 99 {
+            return Err(PlanInputError::StonesOutOfRange(self.max_stones));
         }
         let non_negative = [
             ("kerf_mm", self.kerf_mm),
@@ -161,17 +195,58 @@ impl PlanSettings {
 }
 
 impl Default for PlanSettings {
-    /// One design, kerf 0.30 mm, allowance 0.20 mm per side, no skin, minimum
+    /// One design, no stone cap, kerf 0.30 mm, allowance 0.20 mm per side, no skin, minimum
     /// width 1.00 mm, quartz-like specific gravity 2.65.
     fn default() -> Self {
         Self {
             max_designs: 1,
+            max_stones: 0,
             kerf_mm: 0.30,
             allowance_mm: 0.20,
             skin_mm: 0.0,
             min_width_mm: 1.0,
             specific_gravity: 2.65,
         }
+    }
+}
+
+/// The two limits every ranked list of layouts keeps: how many different designs and how
+/// many stones in all a layout may hold ([`PlanSettings::caps`]).
+///
+/// [`LayoutCaps::admits`] is the ONE test of both, applied before a ranking sorts,
+/// deduplicates and applies its per-set limit, so every slot goes to a qualifying layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutCaps {
+    /// The most different designs a layout may use (at least one is always allowed).
+    pub max_designs: usize,
+    /// The most stones a layout may hold in all (at least one is always allowed);
+    /// `usize::MAX` for no limit.
+    pub max_stones: usize,
+}
+
+impl LayoutCaps {
+    /// No limit on either count: only layouts without a stone are not admitted.
+    pub const NONE: Self = Self {
+        max_designs: usize::MAX,
+        max_stones: usize::MAX,
+    };
+
+    /// The design cap `max_designs` alone: any number of stones is admitted.
+    #[must_use]
+    pub const fn designs_only(max_designs: usize) -> Self {
+        Self {
+            max_designs,
+            max_stones: usize::MAX,
+        }
+    }
+
+    /// Whether `layout` holds a stone, at most [`Self::max_designs`] different designs and at
+    /// most [`Self::max_stones`] stones. A cap of `0` counts as `1`.
+    #[must_use]
+    pub fn admits(&self, layout: &RoughLayout) -> bool {
+        !layout.stones.is_empty()
+            && layout.design_count() <= self.max_designs.max(1)
+            && layout.stone_count() <= self.max_stones.max(1)
     }
 }
 
@@ -455,7 +530,11 @@ pub enum PlanProgress {
         /// Planes in all.
         total: usize,
     },
-    /// Running the DP of one cut order (`order` counts from 0).
+    /// Running the DP of one cut order (`order` counts from 0). The block DP reports one
+    /// event per plane of its first stage, the shaped DP two per plane. A stone cap
+    /// (`PlanSettings::max_stones`) that the free optimum exceeds runs a second pass, the count
+    /// DP, which reports the order's events again (twice as many in all); a cap that does not
+    /// bind adds none.
     Dp {
         /// Which order, from 0.
         order: usize,

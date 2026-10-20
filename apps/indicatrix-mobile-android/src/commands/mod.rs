@@ -21,6 +21,7 @@ pub fn wire(window: &AppWindow, state: &Rc<RefCell<AppState>>) {
     shell::wire(window, state);
     files::wire(window, state);
     prefs::wire(window, state);
+    crate::remote::wire(window, state);
     crate::design::wire(window, state);
     crate::cut::wire(window, state);
 }

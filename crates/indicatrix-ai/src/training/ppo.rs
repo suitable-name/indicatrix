@@ -157,7 +157,7 @@ impl PpoConfig {
     }
 }
 
-/// Training metrics emitted after each PPO batch update.
+/// Mean PPO losses and cumulative host phase timings for one training call.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrainingMetrics {
     /// Mean policy clipping loss.
@@ -176,6 +176,14 @@ pub struct TrainingMetrics {
     /// Mean pre-clip global gradient L2 norm over the optimizer updates of the call.
     #[serde(default)]
     pub grad_norm: f32,
+    /// Cumulative host elapsed milliseconds spent packing PPO mini-batches during this call.
+    /// This is not device-kernel time; asynchronous device work may spill into later phases.
+    #[serde(default)]
+    pub packing_ms: f32,
+    /// Cumulative host elapsed milliseconds in PPO update bodies after packing, including device
+    /// synchronization at existing statistics/gradient-guard readbacks. Not GPU utilization.
+    #[serde(default)]
+    pub update_ms: f32,
 }
 
 #[cfg(test)]
@@ -287,6 +295,7 @@ mod tests {
         let parsed: TrainingMetrics = serde_json::from_value(old_metrics).unwrap();
         assert_eq!(parsed.policy_loss, 0.1);
         assert_eq!(parsed.grad_norm, 0.4);
+        assert_eq!((parsed.packing_ms, parsed.update_ms), (0.0, 0.0));
         let bare = serde_json::json!({
             "policy_loss": 0.1,
             "value_loss": 0.2,
@@ -298,6 +307,7 @@ mod tests {
         let parsed: TrainingMetrics = serde_json::from_value(bare).unwrap();
         assert!(parsed.early_stopped);
         assert_eq!(parsed.grad_norm, 0.0);
+        assert_eq!((parsed.packing_ms, parsed.update_ms), (0.0, 0.0));
     }
 
     #[test]

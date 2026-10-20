@@ -1,6 +1,7 @@
-//! Pure key and format helpers for the page's browser storage layers: no `web-sys`, no
-//! `serde`, so they compile and test on a native host (the page's `storage` module calls
-//! them from the wasm-only side).
+//! Pure key and format helpers for the page's browser storage layers.
+//!
+//! No `web-sys`, no `serde`, so they compile and test on a native host (the page's
+//! `storage` module calls them from the wasm-only side).
 //!
 //! Every key is `indicatrix.<name>.v<version>`. The version is part of the key, so a
 //! changed format starts from an empty slot instead of misreading an old entry.

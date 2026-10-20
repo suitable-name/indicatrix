@@ -4,7 +4,7 @@
 //! capture, facet finish lookup, interior-segment absorption, and the per-sample ray
 //! context builders).
 
-use super::PathTermination;
+use super::{PathTermination, path_events::PathEvents};
 
 use super::super::{
     NUM_CHANNELS,
@@ -110,6 +110,13 @@ fn point_in_material(geom: StoneGeometry<'_>, p: Vec3) -> bool {
 /// point just before the next hit is in material exactly when `inside_gem`. A point
 /// within a few `1e-4` of another surface can classify either way, so the check fires
 /// only when two probe points straddling the `1e-4` hit offset agree with each other.
+///
+/// `inside_gem` is the intersection's own state by the time this runs (the bounce loop
+/// adopts the side `intersect_stone_soa_side` reports), so the check compares that state
+/// with a classification that shares no code with the intersection. The toggle alone is
+/// not enough on a concave stone: a `1e-4` restart can step over a second surface (the
+/// rim where a tool meets a facet), and the toggle then names the wrong medium for the
+/// whole next stretch.
 #[cfg(debug_assertions)]
 fn debug_assert_inside_gem_matches_geometry(
     geom: StoneGeometry<'_>,
@@ -315,6 +322,52 @@ pub(super) fn trace_spectral_ray_inner_geom(
     enable_nee: bool,
     termination_out: Option<&mut (u32, PathTermination)>,
 ) -> Vec3 {
+    trace_spectral_ray_inner_geom_events(
+        initial_ray,
+        planes,
+        tools,
+        plane_soa,
+        facet_finishes,
+        material,
+        fluorescence,
+        max_bounces,
+        environment,
+        rng_seed,
+        hero_rand,
+        primary_hit_out,
+        enable_internal_mode_coupling,
+        enable_exit_splitting,
+        enable_nee,
+        (termination_out, None),
+    )
+}
+
+/// [`trace_spectral_ray_inner_geom`] with an optional [`PathEvents`] recorder beside the
+/// termination slot (`outputs.1`). With `None` for the recorder it is the function above, bit
+/// for bit; the recorder is only ever written by the bounce loop's hooks, never read.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "see trace_spectral_ray_inner_geom's own reason, plus the attribution recorder"
+)]
+pub(super) fn trace_spectral_ray_inner_geom_events(
+    initial_ray: Ray,
+    planes: &[GpuFacetPlane],
+    tools: &[ToolPrimitive],
+    plane_soa: &crate::simd::PlanesSoA32,
+    facet_finishes: &[FacetFinish],
+    material: &GemMaterial,
+    fluorescence: &Fluorescence,
+    max_bounces: u32,
+    environment: EnvironmentSource<'_>,
+    rng_seed: u32,
+    hero_rand: f32,
+    primary_hit_out: Option<&mut Option<HitRecord>>,
+    enable_internal_mode_coupling: bool,
+    enable_exit_splitting: bool,
+    enable_nee: bool,
+    outputs: (Option<&mut (u32, PathTermination)>, Option<&mut PathEvents>),
+) -> Vec3 {
+    let (termination_out, events) = outputs;
     let scene = TraceScene {
         planes,
         tools,
@@ -337,7 +390,7 @@ pub(super) fn trace_spectral_ray_inner_geom(
         rng_seed,
         hero_rand,
         switches,
-        (primary_hit_out, termination_out),
+        (primary_hit_out, termination_out, events),
     )
 }
 

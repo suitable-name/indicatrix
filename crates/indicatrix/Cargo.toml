@@ -72,6 +72,12 @@ wgpu = { workspace = true, optional = true, features = ["wgsl", "webgpu"] }
 # own; it only needs an executor to poll the future it returns, which `apps/indicatrix-web`
 # supplies via `slint::spawn_local` (backed by `wasm-bindgen-futures` on this target).
 futures-channel = { version = "0.3.34", default-features = false, features = ["std"] }
+# The event wavefront's chunk clock and readback deadline on wasm32
+# (`renderer::gpu::event_wavefront::clock`): `web_time::Instant` is `performance.now()`,
+# and the `map_read` deadline races a `setTimeout` reached through `js_sys`.
+web-time = "1.1.0"
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
 
 [dev-dependencies]
 # Used only by examples/meet_solver_validation.rs, which validates
@@ -126,6 +132,10 @@ required-features = ["gpu"]
 [[example]]
 name = "gpu_golden_capture"
 required-features = ["gpu"]
+
+[[example]]
+name = "whitted_gallery"
+required-features = ["hdr"]
 
 [[bench]]
 name = "tilt_sweep"

@@ -37,6 +37,7 @@ export global CompareModel {
     // the "after" side).
     in-out property <int> mode_index: 0;
     // 0 = solid (instant, default), 1 = traced (CPU path tracer, modest quality).
+    // 0 Solid, 1 Path Traced, 2 Ray Traced.
     in-out property <int> renderer_index: 0;
     // Split slider only: where the divider sits, 0 (all "after") .. 1 (all
     // "before"). Written by the divider's own drag; Rust only re-clamps it on open.

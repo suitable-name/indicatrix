@@ -7,6 +7,9 @@ use super::super::{
 use crate::gui::library::local::helpers::test_support::{
     VALID_ASC, open_temp_db, temp_db_path_for_test, temp_dir_for_test,
 };
+use indicatrix_cut_core::{ConstraintTier, Design, PreformSpec, ScheduleMeta};
+use indicatrix_formats::gcs::{GcsTierFrosting, to_gcs_string_with_frosting};
+use indicatrix_vault::model::{entry::FullDiagramRecord, frosting::StoredTierFrosting};
 
 // --- .gem / .gcs import ---
 
@@ -136,6 +139,136 @@ fn import_path_imports_a_gcs_and_lists_its_converter_notes() {
         full.attached_files.iter().any(|f| f.name == "octabar.gcs"),
         "the original .gcs must be attached"
     );
+    drop(conn);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// The standard round brilliant as `.gcs` text, with `frosting` stated (tier positions and
+/// facet slots, as `Design::gcs_frosting_spec` gives them).
+fn round_brilliant_gcs(frosting: &[(usize, GcsTierFrosting)]) -> String {
+    let design = Design::new(
+        PreformSpec::block(2.0, 1.0, 2.0),
+        ScheduleMeta::standard_round_brilliant(),
+        ConstraintTier::standard_round_brilliant(),
+    );
+    let schedule = design.to_asc_schedule().expect("the design exports");
+    to_gcs_string_with_frosting(&schedule, frosting).expect("the schedule writes as .gcs")
+}
+
+/// The frosting the library stored for the one design `import_path` saved from `dir`.
+fn imported_frosting(
+    db: &std::sync::Arc<std::sync::Mutex<indicatrix_vault::db::sqlite::Database>>,
+    dir: &std::path::Path,
+) -> (Vec<StoredTierFrosting>, FullDiagramRecord) {
+    let outcome = import_path(db, dir, false, |_, _| {});
+    assert_eq!(
+        outcome.imported_ids.len(),
+        1,
+        "summary: {}",
+        outcome.summary
+    );
+    let conn = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let full = conn
+        .get_diagram_full(outcome.imported_ids[0])
+        .expect("query must succeed")
+        .expect("row must exist");
+    let stored = conn
+        .diagram_frosting(outcome.imported_ids[0])
+        .expect("the frosting reads");
+    assert_eq!(full.frosting, stored, "the record carries the stored rows");
+    drop(conn);
+    (stored, full)
+}
+
+/// A `.gcs` that frosts a whole tier and two facets of another keeps both through the
+/// library import (the generated `.asc` cannot): the row stores them, the stone the library
+/// draws names the frosted planes, a polished `.gcs` stores and draws none, and re-importing
+/// the same name as a polished file clears them again.
+#[test]
+fn import_path_stores_the_frosting_a_gcs_states_and_a_reimport_replaces_it() {
+    let stated = vec![
+        (1, GcsTierFrosting::Whole),
+        (3, GcsTierFrosting::Facets(vec![1, 3])),
+    ];
+    let dir = temp_dir_for_test("gcs_frosting");
+    std::fs::write(dir.join("rb.gcs"), round_brilliant_gcs(&stated)).expect("write rb.gcs");
+    let db_path = temp_db_path_for_test("gcs_frosting");
+    let db = open_temp_db(&db_path);
+
+    let (stored, full) = imported_frosting(&db, &dir);
+    assert_eq!(
+        stored,
+        vec![
+            StoredTierFrosting::whole(1),
+            StoredTierFrosting {
+                tier: 3,
+                facets: vec![1, 3]
+            },
+        ]
+    );
+    let (planes, frosted) = crate::gui::editor::resolve_catalogue_planes_with_frosting(&full);
+    // Two facets of tier 3 and every facet of tier 1: more than the two single facets.
+    assert!(frosted.len() > 2, "frosted planes: {frosted:?}");
+    assert!(
+        frosted
+            .iter()
+            .all(|&index| (index as usize) < planes.planes.len()
+                && (index as usize) >= planes.preform_plane_count),
+        "frosted planes are facet planes of the stone: {frosted:?}"
+    );
+
+    // The same file name again, now polished: the row is replaced and so is its frosting.
+    std::fs::write(dir.join("rb.gcs"), round_brilliant_gcs(&[])).expect("rewrite rb.gcs");
+    let (stored, full) = imported_frosting(&db, &dir);
+    assert!(
+        stored.is_empty(),
+        "a polished re-import clears the frosting"
+    );
+    let (_, frosted) = crate::gui::editor::resolve_catalogue_planes_with_frosting(&full);
+    assert_eq!(frosted, [] as [u32; 0]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// A polished `.gcs`, an `.asc` and a `.gem` store no frosting at all: no row in the side
+/// table, and the design rows are what they were.
+#[test]
+fn import_path_stores_no_frosting_for_a_design_without_any() {
+    let dir = temp_dir_for_test("no_frosting");
+    std::fs::write(dir.join("plain.gcs"), round_brilliant_gcs(&[])).expect("write plain.gcs");
+    std::fs::write(dir.join("plain.asc"), VALID_ASC).expect("write plain.asc");
+    std::fs::write(
+        dir.join("plain.gem"),
+        encode_gem(SYNTHETIC_GEM_TIERS, 96, "Plain Gem"),
+    )
+    .expect("write plain.gem");
+    let db_path = temp_db_path_for_test("no_frosting");
+    let db = open_temp_db(&db_path);
+
+    let outcome = import_path(&db, &dir, false, |_, _| {});
+    assert_eq!(
+        outcome.imported_ids.len(),
+        3,
+        "summary: {}",
+        outcome.summary
+    );
+    let conn = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for &id in &outcome.imported_ids {
+        assert_eq!(
+            conn.diagram_frosting(id).expect("reads"),
+            [] as [indicatrix_vault::model::frosting::StoredTierFrosting; 0]
+        );
+        assert_eq!(
+            conn.get_diagram_full(id)
+                .expect("reads")
+                .expect("a row")
+                .frosting,
+            [] as [indicatrix_vault::model::frosting::StoredTierFrosting; 0]
+        );
+    }
     drop(conn);
 
     let _ = std::fs::remove_dir_all(&dir);

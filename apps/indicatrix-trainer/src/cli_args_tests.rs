@@ -25,6 +25,7 @@ fn defaults_and_help() {
     assert_eq!(args.iterations, 100);
     assert_eq!(args.mode, TrainingMode::Retarget);
     assert_eq!(args.algo, Algorithm::Imitation);
+    assert_eq!(args.save_every, 10);
 }
 
 #[test]
@@ -39,6 +40,7 @@ fn the_help_documents_every_flag_and_not_the_removed_one() {
         "--batch-size",
         "--mini-batch",
         "--epochs",
+        "--updates-per-round",
         "--validation-designs",
         "--validation-every",
         "--label-every",
@@ -61,10 +63,15 @@ fn the_help_documents_every_flag_and_not_the_removed_one() {
         "--target-material",
         "--eval-test",
         "--eval-fidelity",
+        "--train-fidelity",
+        "--validation-fidelity",
+        "--objective-sweep",
+        "--classical-baseline",
         "--fixture",
         "--resume",
         "--save-stats",
         "--save-weights",
+        "--save-every",
     ] {
         assert!(
             HELP.contains(&format!("\n    {flag} ")),
@@ -164,6 +171,15 @@ fn enums_match_exactly() {
     assert_eq!(args.mode, TrainingMode::Optimizer);
     assert_eq!(args.device, DeviceChoice::Cpu);
     assert_eq!(args.tier, ModelTier::Small);
+}
+
+#[test]
+fn cuda_and_wgpu_device_options_map_to_explicit_backends() {
+    let cuda = run_args(&["--device", "cuda"]);
+    assert_eq!(cuda.device, DeviceChoice::Cuda);
+    assert_eq!(build_config(&cuda).device, DeviceChoice::Cuda);
+    assert_eq!(run_args(&["--device", "wgpu"]).device, DeviceChoice::Gpu);
+    assert_eq!(run_args(&["--device", "gpu"]).device, DeviceChoice::Gpu);
 }
 
 #[test]
@@ -390,6 +406,8 @@ fn the_algorithm_flags_are_range_checked() {
 
 #[test]
 fn the_edges_of_the_algorithm_ranges_are_valid() {
+    assert_eq!(run_args(&["--save-every", "0"]).save_every, 0);
+    assert_eq!(run_args(&["--save-every", "25"]).save_every, 25);
     assert_eq!(run_args(&["--label-every", "1"]).label_every, Some(1));
     assert_eq!(run_args(&["--label-every", "64"]).label_every, Some(64));
     assert_eq!(run_args(&["--label-capacity", "1"]).label_capacity, Some(1));
@@ -528,6 +546,8 @@ fn the_mini_batch_must_fit_the_batch_size() {
 fn the_imitation_schedule_is_bounded_by_the_aggregate_capacity() {
     // 300 rounds x 2 epochs x ceil(50000 / 256 = 195.3) = 196 mini-batches.
     let config = build_config(&run_args(&[
+        "--updates-per-round",
+        "0",
         "--iterations",
         "300",
         "--epochs",
@@ -543,15 +563,20 @@ fn the_imitation_schedule_is_bounded_by_the_aggregate_capacity() {
             total_updates: 300 * 2 * 196
         }
     );
-    // The defaults: 100 rounds, 2 epochs, 256 per mini-batch, 50000 labelled states.
+    // The epoch mode with the other defaults: 100 rounds, 2 epochs, 256 per mini-batch, 50000
+    // labelled states.
     assert_eq!(
-        build_config(&run_args(&[])).imitation.lr_schedule,
+        build_config(&run_args(&["--updates-per-round", "0"]))
+            .imitation
+            .lr_schedule,
         LrSchedule::Linear {
             total_updates: 100 * 2 * 196
         }
     );
     // A smaller aggregate, a smaller mini-batch and more epochs move the bound accordingly.
     let small = build_config(&run_args(&[
+        "--updates-per-round",
+        "0",
         "--iterations",
         "10",
         "--epochs",
@@ -573,6 +598,74 @@ fn the_imitation_schedule_is_bounded_by_the_aggregate_capacity() {
         imitation_schedule_for(7, 1, 256, 2),
         LrSchedule::Linear { total_updates: 14 },
         "one labelled state still fills one mini-batch"
+    );
+}
+
+#[test]
+fn updates_per_round_defaults_parses_and_is_range_checked() {
+    assert!(run_args(&[]).updates_per_round.is_none());
+    assert_eq!(
+        build_config(&run_args(&[])).imitation.updates_per_round,
+        64,
+        "the default is 64"
+    );
+    assert!(HELP.contains("(default: 64)"));
+    assert_eq!(
+        run_args(&["--updates-per-round", "0"]).updates_per_round,
+        Some(0)
+    );
+    for value in ["0", "1", "100000"] {
+        assert!(parse(&["--updates-per-round", value]).is_ok(), "{value}");
+    }
+    for value in ["100001", "-1", "x"] {
+        let message = parse(&["--updates-per-round", value]).unwrap_err();
+        assert!(message.contains("--updates-per-round"), "{message}");
+    }
+    assert!(parse(&["--updates-per-round"]).is_err());
+    let config = build_config(&run_args(&["--updates-per-round", "10"]));
+    assert_eq!(config.imitation.updates_per_round, 10);
+    let notes = run_args(&["--algo", "ppo", "--updates-per-round", "10"]).ignored_flag_notes();
+    assert_eq!(notes.len(), 1);
+}
+
+#[test]
+fn the_bounded_schedule_decays_over_iterations_times_updates() {
+    let config = build_config(&run_args(&[
+        "--iterations",
+        "300",
+        "--updates-per-round",
+        "64",
+    ]));
+    assert_eq!(
+        config.imitation.lr_schedule,
+        LrSchedule::Linear {
+            total_updates: 300 * 64
+        }
+    );
+    // The default is the bounded mode: 100 rounds x 64 updates.
+    assert_eq!(
+        build_config(&run_args(&[])).imitation.lr_schedule,
+        LrSchedule::Linear {
+            total_updates: 6400
+        }
+    );
+    // Mini-batch size, epochs and label capacity do not enter the bounded total.
+    let other = build_config(&run_args(&[
+        "--iterations",
+        "300",
+        "--updates-per-round",
+        "64",
+        "--mini-batch",
+        "32",
+        "--epochs",
+        "9",
+        "--label-capacity",
+        "100",
+    ]));
+    assert_eq!(other.imitation.lr_schedule, config.imitation.lr_schedule);
+    assert_eq!(
+        bounded_schedule_for(0, 5),
+        LrSchedule::Linear { total_updates: 1 }
     );
 }
 
@@ -652,4 +745,7 @@ fn flags_of_the_other_algorithm_are_reported_as_ignored() {
     .ignored_flag_notes();
     assert_eq!(notes.len(), 3);
     assert!(notes.iter().all(|n| n.contains("--algo imitation only")));
+    let notes = run_args(&["--algo", "ppo", "--label-every", "2"]).ignored_flag_notes();
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].contains("PPO does not use these labels in its loss"));
 }

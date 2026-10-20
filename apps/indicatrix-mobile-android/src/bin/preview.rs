@@ -12,7 +12,7 @@
 //! destination; `--template N` starts on that template card; `--tab
 //! tiers|stone|light|checks` and `--sheet peek|half|full` choose the Design page's tab
 //! and sheet height; `--view solid|diagram|render` the viewport mode (a render
-//! screenshot waits longer so the picture can converge); `--screenshot FILE.png` saves
+//! screenshot waits longer so the picture can converge); `--engine path|ray` chooses its renderer; `--screenshot FILE.png` saves
 //! the window shortly after start and quits, `--wait SECONDS` after that many seconds
 //! instead. Press Escape for Back.
 
@@ -26,7 +26,7 @@ use indicatrix_mobile_core::{layout::Destination, platform::AppDirs};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_SIZE: (f32, f32) = (390.0, 800.0);
-const USAGE: &str = "usage: indicatrix-mobile-preview [--size WxH|phone|phone-land|tablet|tablet-land] [--data DIR] [--page library|design|cut|more] [--template N] [--tab tiers|stone|light|checks] [--sheet peek|half|full] [--view solid|diagram|render] [--wait SECONDS] [--screenshot FILE.png]";
+const USAGE: &str = "usage: indicatrix-mobile-preview [--size WxH|phone|phone-land|tablet|tablet-land] [--data DIR] [--page library|design|cut|more] [--template N] [--tab tiers|stone|light|checks] [--sheet peek|half|full] [--view solid|diagram|render] [--engine path|ray] [--wait SECONDS] [--screenshot FILE.png]";
 
 /// What the command line asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +39,7 @@ struct PreviewArgs {
     tab: Option<i32>,
     sheet: Option<i32>,
     view: Option<i32>,
+    engine: Option<u8>,
     wait: Option<Duration>,
 }
 
@@ -114,6 +115,7 @@ fn parse_args(
         tab: None,
         sheet: None,
         view: None,
+        engine: None,
         wait: None,
     };
     let mut args = args.into_iter();
@@ -145,6 +147,14 @@ fn parse_args(
             "--sheet" => {
                 let value = args.next().ok_or("--sheet needs peek, half or full")?;
                 parsed.sheet = Some(parse_sheet(&value)?);
+            }
+            "--engine" => {
+                let value = args.next().ok_or("--engine needs path or ray")?;
+                parsed.engine = Some(match value.as_str() {
+                    "path" => 0,
+                    "ray" => 1,
+                    _ => return Err("--engine needs path or ray".to_owned()),
+                });
             }
             "--view" => {
                 let value = args.next().ok_or("--view needs solid, diagram or render")?;
@@ -195,6 +205,7 @@ fn main() -> ExitCode {
         tab: args.tab,
         sheet: args.sheet,
         view: args.view,
+        engine: args.engine,
         screenshot_delay: args.wait,
     };
     let platform: Arc<dyn indicatrix_mobile_core::platform::Platform> =

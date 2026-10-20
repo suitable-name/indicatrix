@@ -7,6 +7,14 @@ handoff. For everything else see [the README](../README.md); for the
 
 ## One Remote Endpoint
 
+Protocol 28 appended `SceneState::engine` (`EngineSpec`); protocol 29, the current version,
+changed the backdrop to a lit tray. The live viewport, exports,
+tilt videos, persistent previews and frozen jobs send their selected renderer. In a
+Ray-Traced request, sample indices are fixed AA tap indices and a range must fit the
+selected tap count. The worker uses the shared CPU chain or the small GPU kernel,
+with CPU fallback, and display-only images bypass denoising. A missing engine in
+scene JSON defaults to Path-Traced; an older wire peer is refused by the handshake.
+
 The viewer talks to exactly **one** remote, `AppSettings::remote`: a coordinator
 (`indicatrix-worker serve`, which spreads work over the workers that `join` it and
 renders itself only with `--render` — with `--render` and no joined workers it
@@ -64,8 +72,10 @@ other remote failure below.
 
 While the camera or light is moving, rendering is ordinary local CPU progressive
 accumulation — nothing remote-specific happens. A repeating 100ms timer polls
-the current camera/light pose; once it has been unchanged for a 600ms debounce
-window *and* a remote is configured, the app hands off:
+the current camera/light pose; once it has been unchanged for a 250ms debounce
+window (counted from the last change, or from the mouse-button release at the
+end of a drag, since a held button blocks the settle outright) *and* a remote is
+configured, the app hands off (`poll::POSE_SETTLE_DEBOUNCE`):
 
 1. **The drag-time local preview is discarded, never summed into the settled
    image.** A new image *epoch* starts: one shared sample cursor over
@@ -95,7 +105,8 @@ window *and* a remote is configured, the app hands off:
    viewport is visible again.
    Any other release -- a scene or settings change while settled, a
    Live Compute change -- re-dispatches a fresh epoch on its own once the
-   scene has been stable for the settle debounce, without waiting for a drag
+   scene has been stable for 600ms (`poll::SETTLE_DEBOUNCE`, the edit-burst
+   debounce, distinct from the 250ms pose settle above), without waiting for a drag
    (never for a scene whose remote lane already gave up). Each epoch is
    stamped with the scene generation it was dispatched for; the render loop
    releases an epoch whose scene no longer matches the one it traces, so a

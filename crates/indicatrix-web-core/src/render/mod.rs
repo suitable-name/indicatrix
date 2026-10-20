@@ -28,6 +28,8 @@
 //! the sample range alone, so grouping changes no bit.
 
 mod accumulator;
+#[cfg(test)]
+mod engine_tests;
 mod planner;
 #[cfg(test)]
 mod tests;
@@ -64,9 +66,33 @@ pub fn handle_trace_chunk(
     sample_offset: u32,
     spp: u32,
 ) -> Vec<Vec3> {
+    if scene.engine().is_ray() {
+        // `OwnedScene::set_engine` refuses a scene that cannot prepare, so a failure here
+        // means a caller skipped it; an empty chunk is the release-build failure mode.
+        let prep = scene.whitted_prep();
+        debug_assert!(
+            prep.is_ok(),
+            "Ray-Traced trace on a scene whose set_engine was skipped or refused"
+        );
+        return prep.map_or_else(
+            |_| Vec::new(),
+            |prep| {
+                indicatrix::renderer::whitted::whitted_pixels_interleaved_geom(
+                    &scene.frame_scene(),
+                    scene.tools(),
+                    plane_soa,
+                    prep,
+                    first_pixel,
+                    stride,
+                    sample_offset,
+                    spp,
+                )
+            },
+        );
+    }
     trace_pixels_interleaved_geom(
         &scene.frame_scene(),
-        &[],
+        scene.tools(),
         scene.fluorescence(),
         plane_soa,
         first_pixel,

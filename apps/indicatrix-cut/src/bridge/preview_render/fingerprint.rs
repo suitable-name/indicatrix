@@ -2,10 +2,15 @@
 //! curves), naming what it was computed with.
 
 use super::{
-    BATCH_TILT_LIGHTING_PRESET, PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW, PREVIEW_LIGHTING_PRESET,
+    BATCH_TILT_LIGHTING_PRESET, PREVIEW_EXPOSURE, PREVIEW_HEAD_SHADOW_DEG, PREVIEW_LIGHT_PITCH,
+    PREVIEW_LIGHT_YAW, PREVIEW_LIGHTING_PRESET, PREVIEW_SURFACE_GLARE,
 };
-use indicatrix_vault::model::preview::{PreviewMaterialSource, PreviewMaterialState};
-use std::fmt::Write as _;
+use indicatrix::optics::materials::GemMaterial;
+use indicatrix_vault::model::{
+    frosting::StoredTierFrosting,
+    preview::{PreviewMaterialSource, PreviewMaterialState},
+};
+use std::{collections::BTreeMap, fmt::Write as _, sync::LazyLock};
 
 /// Which cached catalogue artefact a [`cache_fingerprint`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +35,24 @@ pub enum CacheKind {
     /// The tilt-performance curves (`Database::save_tilt_curves`): a fixed sweep with
     /// no image size or sample budget of its own.
     TiltCurves,
+    /// Persistent deterministic thumbnails.
+    RayPreview {
+        /// Square render dimension.
+        size: u32,
+        /// Fixed anti-aliasing tap count.
+        taps: u8,
+        /// Whether three dispersion chains are traced.
+        fire: bool,
+    },
+    /// Temporary deterministic drafts never satisfy a persistent preview request.
+    RayDraft {
+        /// Square render dimension.
+        size: u32,
+        /// Fixed anti-aliasing tap count.
+        taps: u8,
+        /// Whether three dispersion chains are traced.
+        fire: bool,
+    },
 }
 
 /// What a fingerprint says about the material a design was rendered or swept in: the
@@ -48,6 +71,10 @@ pub struct FingerprintMaterial<'a> {
     /// Whether the name and size came from the design's own file rather than from the
     /// refractive-index pick.
     pub from_design_file: bool,
+    /// [`frosting_hash`] of the design's stored frosting; `0` for a polished design, which
+    /// keeps the text it had before frosting was tracked. Not part of the persisted
+    /// material state: a caller adds it with [`Self::with_frosting`].
+    pub frosting: u64,
 }
 
 impl<'a> FingerprintMaterial<'a> {
@@ -61,18 +88,29 @@ impl<'a> FingerprintMaterial<'a> {
             name,
             girdle_mm: 0.0,
             from_design_file: false,
+            frosting: 0,
         }
     }
 
     /// The material of a persisted `diagram_previews` row (`Database::
-    /// get_preview_material_state`, or the state a scan is handed).
+    /// get_preview_material_state`, or the state a scan is handed). Polished: add the
+    /// design's frosting with [`Self::with_frosting`].
     #[must_use]
     pub fn from_state(state: &'a PreviewMaterialState) -> Self {
         Self {
             name: state.name.as_deref(),
             girdle_mm: state.girdle_mm.unwrap_or(0.0),
             from_design_file: state.source == PreviewMaterialSource::DesignFile,
+            frosting: 0,
         }
+    }
+
+    /// `self` for a design whose stored frosting hashes to `frosting` ([`frosting_hash`];
+    /// `0` for none), so a frosted design never matches an unfrosted cached picture.
+    #[must_use]
+    pub const fn with_frosting(mut self, frosting: u64) -> Self {
+        self.frosting = frosting;
+        self
     }
 
     /// The material part of a fingerprint: `material=<name>` (`none` before one is
@@ -87,8 +125,28 @@ impl<'a> FingerprintMaterial<'a> {
         if self.from_design_file {
             part.push_str(";source=design");
         }
+        if self.frosting != 0 {
+            let _ = write!(part, ";frosting={:016x}", self.frosting);
+        }
         part
     }
+}
+
+/// A hash of a design's stored frosting (`Database::diagram_frosting`): the tiers and facet
+/// slots it states. `0` for no frosting (so a polished design's fingerprint is unchanged),
+/// never `0` for any frosting. The rows are hashed as given; the vault stores them
+/// normalised (one row per tier, ascending), so the writer and the staleness scan, which
+/// both read them from the vault, agree.
+#[must_use]
+pub fn frosting_hash(rows: &[StoredTierFrosting]) -> u64 {
+    if rows.is_empty() {
+        return 0;
+    }
+    let mut text = String::new();
+    for row in rows {
+        let _ = write!(text, "{}:{:?};", row.tier, row.facets);
+    }
+    fnv1a(text.as_bytes()).max(1)
 }
 
 /// The fingerprint stored beside a cached catalogue artefact: a stable string naming
@@ -113,8 +171,112 @@ impl<'a> FingerprintMaterial<'a> {
 /// girdle diameter gets `;size=<mm>` and/or `;source=design` appended after the name
 /// (so the `size=` of the stone size follows the material, never the image size of a
 /// preview).
+///
+/// A PREVIEW fingerprint also names the scene settings that are not the lighting preset
+/// (the exposure, the head shadow, the backdrop and the surface glare, `PreviewScene`). Both a preview and a tilt
+/// fingerprint name, for a built-in material, a hash of its band data
+/// (`material_bands_hash`; both are computed through the material's absorption) and, for a
+/// frosted design, a hash of its frosting ([`FingerprintMaterial::frosting`]): changed scene
+/// settings, changed built-in color data or changed frosting make the stored previews and
+/// curves stale on their own, without a version bump. The tilt fingerprint does not name
+/// the preview scene (the tilt sweep is scored under its own preset).
 #[must_use]
 pub fn cache_fingerprint(kind: CacheKind, material: FingerprintMaterial<'_>) -> String {
+    let bands = material.name.and_then(built_in_bands_hash);
+    fingerprint_with(kind, material, PreviewScene::current(), bands)
+}
+
+/// The preview scene settings a preview fingerprint names besides the lighting preset and
+/// the light pose: what the renderer takes from `PREVIEW_EXPOSURE`,
+/// `PREVIEW_HEAD_SHADOW_DEG`, the thumbnail tray's name (with the tray model's version) and
+/// `PREVIEW_SURFACE_GLARE`. A struct
+/// (rather than the constants read inline) so a test can change one and see the fingerprint
+/// move.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PreviewScene {
+    /// Exposure the preview is rendered with.
+    exposure: f32,
+    /// Radius of the observer head shadow in degrees.
+    head_shadow_deg: f32,
+    /// Name of the backdrop choice (its albedo, not a radiance: the radiance follows the
+    /// preview rig and pose, which the fingerprint names on their own).
+    backdrop: &'static str,
+    /// Version of the tray model (`TRAY_MODEL_VERSION`): a change of how the backdrop is lit
+    /// makes every stored preview stale once.
+    tray_model: u32,
+    /// Surface glare the preview is rendered with.
+    surface_glare: f32,
+}
+
+impl PreviewScene {
+    /// The scene every catalogue preview is rendered in now (the tray is the user's
+    /// Thumbnail Backdrop).
+    fn current() -> Self {
+        Self {
+            exposure: PREVIEW_EXPOSURE,
+            head_shadow_deg: PREVIEW_HEAD_SHADOW_DEG,
+            backdrop: super::thumbnail_backdrop_name(),
+            tray_model: indicatrix::optics::raytracer::TRAY_MODEL_VERSION,
+            surface_glare: PREVIEW_SURFACE_GLARE,
+        }
+    }
+}
+
+/// 64-bit FNV-1a: stable across runs, platforms and releases of the standard library
+/// (unlike `DefaultHasher`), which a stored comparison needs.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// A hash of everything that decides the color a material absorbs: its band data (every
+/// ray set, band shapes included), its unit and its colour zones. The name, the
+/// refractive index and the stone-size scale are NOT part of it (the size is in the
+/// fingerprint already), so it moves exactly when the color data does.
+///
+/// Hashes the `Debug` text of the data: every `f32` prints its shortest round-trip form,
+/// so the text is deterministic and covers every field, including ones added later.
+#[must_use]
+fn material_bands_hash(material: &GemMaterial) -> u64 {
+    let text = format!(
+        "{:?}|{:?}|{:?}",
+        material.absorption, material.absorption_unit, material.zoning
+    );
+    fnv1a(text.as_bytes())
+}
+
+/// [`material_bands_hash`] of the built-in material called `name` (case-insensitive, an
+/// exact name, not `GemMaterial::by_name`'s containment fallback), `None` for a name that
+/// is not a built-in (a custom material).
+///
+/// Looked up by name because the staleness scans rebuild the fingerprint from the
+/// persisted row, which holds only the name: the hash is of the built-in's data as this
+/// build knows it, which is what moves when a release changes the table. A design file's
+/// body-color override and an edited custom material are not seen here.
+fn built_in_bands_hash(name: &str) -> Option<u64> {
+    static TABLE: LazyLock<BTreeMap<String, u64>> = LazyLock::new(|| {
+        GemMaterial::built_in()
+            .iter()
+            .map(|material| {
+                (
+                    material.name.to_ascii_lowercase(),
+                    material_bands_hash(material),
+                )
+            })
+            .collect()
+    });
+    TABLE.get(&name.to_ascii_lowercase()).copied()
+}
+
+/// [`cache_fingerprint`] with the scene settings and the built-in band hash given, so a
+/// test can vary them.
+fn fingerprint_with(
+    kind: CacheKind,
+    material: FingerprintMaterial<'_>,
+    scene: PreviewScene,
+    bands: Option<u64>,
+) -> String {
     let tracer = indicatrix::BUILD_ID;
     let material = material.fingerprint_part();
     let light = format!("{PREVIEW_LIGHT_YAW}/{PREVIEW_LIGHT_PITCH}");
@@ -123,229 +285,53 @@ pub fn cache_fingerprint(kind: CacheKind, material: FingerprintMaterial<'_>) -> 
             size,
             spp,
             max_bounces,
-        } => format!(
-            "preview;tracer={tracer};size={size};spp={spp};bounces={max_bounces};\
-             lighting={};light={light};{material}",
-            PREVIEW_LIGHTING_PRESET.label()
-        ),
+        } => {
+            let PreviewScene {
+                exposure,
+                head_shadow_deg,
+                backdrop,
+                tray_model,
+                surface_glare,
+            } = scene;
+            let bands = bands.map_or_else(String::new, |hash| format!("bands={hash:016x};"));
+            format!(
+                "preview;tracer={tracer};size={size};spp={spp};bounces={max_bounces};\
+                 lighting={};light={light};exposure={exposure};shadow={head_shadow_deg};\
+                 backdrop={backdrop};tray={tray_model};glare={surface_glare};{bands}{material}",
+                PREVIEW_LIGHTING_PRESET.label()
+            )
+        }
+        CacheKind::RayPreview { size, taps, fire } | CacheKind::RayDraft { size, taps, fire } => {
+            let prefix = if matches!(kind, CacheKind::RayPreview { .. }) {
+                "ray-preview"
+            } else {
+                "ray-draft"
+            };
+            let version = indicatrix::renderer::whitted::WHITTED_VERSION;
+            let PreviewScene {
+                exposure,
+                head_shadow_deg,
+                backdrop,
+                tray_model,
+                surface_glare,
+            } = scene;
+            let bands = bands.map_or_else(String::new, |hash| format!("bands={hash:016x};"));
+            format!(
+                "{prefix};v={version};size={size};taps={taps};fire={fire};lighting={};light={light};exposure={exposure};shadow={head_shadow_deg};backdrop={backdrop};tray={tray_model};glare={surface_glare};{bands}{material}",
+                PREVIEW_LIGHTING_PRESET.label()
+            )
+        }
         CacheKind::SolidDraft { size } => format!("solid-draft;size={size}"),
-        CacheKind::TiltCurves => format!(
-            "tilt;tracer={tracer};lighting={};light={light};{material}",
-            BATCH_TILT_LIGHTING_PRESET.label()
-        ),
+        CacheKind::TiltCurves => {
+            let bands = bands.map_or_else(String::new, |hash| format!("bands={hash:016x};"));
+            format!(
+                "tilt;tracer={tracer};lighting={};light={light};{bands}{material}",
+                BATCH_TILT_LIGHTING_PRESET.label()
+            )
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use indicatrix::optics::raytracer::LightingPreset;
-
-    const PREVIEW: CacheKind = CacheKind::Preview {
-        size: 160,
-        spp: 256,
-        max_bounces: 12,
-    };
-
-    /// The material of a refractive-index pick, unsized.
-    fn picked(name: &str) -> FingerprintMaterial<'_> {
-        FingerprintMaterial::picked(Some(name))
-    }
-
-    /// The material of a design whose own file decided it.
-    fn from_file(name: &str, girdle_mm: f64) -> FingerprintMaterial<'_> {
-        FingerprintMaterial {
-            name: Some(name),
-            girdle_mm,
-            from_design_file: true,
-        }
-    }
-
-    #[test]
-    fn cache_fingerprint_is_stable_and_names_the_tracer_build() {
-        let fingerprint = cache_fingerprint(PREVIEW, picked("Diamond"));
-        assert_eq!(fingerprint, cache_fingerprint(PREVIEW, picked("Diamond")));
-        assert!(fingerprint.contains(indicatrix::BUILD_ID), "{fingerprint}");
-        assert!(
-            cache_fingerprint(CacheKind::TiltCurves, picked("Diamond"))
-                .contains(indicatrix::BUILD_ID)
-        );
-    }
-
-    #[test]
-    fn cache_fingerprint_changes_with_every_parameter_it_tracks() {
-        let base = cache_fingerprint(PREVIEW, picked("Diamond"));
-        let other_size = CacheKind::Preview {
-            size: 128,
-            spp: 256,
-            max_bounces: 12,
-        };
-        let other_spp = CacheKind::Preview {
-            size: 160,
-            spp: 64,
-            max_bounces: 12,
-        };
-        let other_bounces = CacheKind::Preview {
-            size: 160,
-            spp: 256,
-            max_bounces: 8,
-        };
-        for changed in [
-            cache_fingerprint(other_size, picked("Diamond")),
-            cache_fingerprint(other_spp, picked("Diamond")),
-            cache_fingerprint(other_bounces, picked("Diamond")),
-            cache_fingerprint(PREVIEW, picked("Sapphire")),
-            cache_fingerprint(PREVIEW, FingerprintMaterial::picked(None)),
-            cache_fingerprint(CacheKind::TiltCurves, picked("Diamond")),
-            cache_fingerprint(PREVIEW, from_file("Diamond", 0.0)),
-            cache_fingerprint(PREVIEW, from_file("Diamond", 9.0)),
-        ] {
-            assert_ne!(changed, base);
-        }
-        assert!(base.contains(PREVIEW_LIGHTING_PRESET.label()), "{base}");
-    }
-
-    /// A design the refractive index decided and that has no stone size keeps the text its
-    /// fingerprint had before the size and the source were tracked, byte for byte, so
-    /// only designs whose file names a material or a size are rendered again.
-    #[test]
-    fn an_unsized_refractive_index_pick_keeps_the_old_fingerprint_exactly() {
-        let light = format!("{PREVIEW_LIGHT_YAW}/{PREVIEW_LIGHT_PITCH}");
-        assert_eq!(
-            cache_fingerprint(PREVIEW, picked("Quartz")),
-            format!(
-                "preview;tracer={};size=160;spp=256;bounces=12;lighting={};light={light};\
-                 material=Quartz",
-                indicatrix::BUILD_ID,
-                PREVIEW_LIGHTING_PRESET.label()
-            )
-        );
-        assert_eq!(
-            cache_fingerprint(CacheKind::TiltCurves, picked("Quartz")),
-            format!(
-                "tilt;tracer={};lighting={};light={light};material=Quartz",
-                indicatrix::BUILD_ID,
-                BATCH_TILT_LIGHTING_PRESET.label()
-            )
-        );
-        assert!(
-            cache_fingerprint(PREVIEW, FingerprintMaterial::picked(None))
-                .ends_with(";material=none"),
-            "no material picked yet"
-        );
-        // A row from before the size and source columns reads as exactly that.
-        let legacy = PreviewMaterialState {
-            name: Some("Quartz".to_string()),
-            girdle_mm: None,
-            source: PreviewMaterialSource::RefractiveIndex,
-        };
-        assert_eq!(
-            cache_fingerprint(PREVIEW, FingerprintMaterial::from_state(&legacy)),
-            cache_fingerprint(PREVIEW, picked("Quartz"))
-        );
-        // The solid stand-in names no material at all.
-        assert_eq!(
-            cache_fingerprint(CacheKind::SolidDraft { size: 160 }, picked("Quartz")),
-            "solid-draft;size=160"
-        );
-    }
-
-    /// A design whose file names a material or a girdle diameter appends them after the
-    /// material: the size with two decimals, and the source.
-    #[test]
-    fn a_design_files_size_and_source_are_appended_to_the_material() {
-        assert!(
-            cache_fingerprint(PREVIEW, from_file("Sapphire", 9.0))
-                .ends_with(";material=Sapphire;size=9.00;source=design")
-        );
-        assert!(
-            cache_fingerprint(CacheKind::TiltCurves, from_file("Sapphire", 10.874))
-                .ends_with(";material=Sapphire;size=10.87;source=design")
-        );
-        // A file that names a material but no size.
-        assert!(
-            cache_fingerprint(PREVIEW, from_file("Sapphire", 0.0))
-                .ends_with(";material=Sapphire;source=design")
-        );
-        // A size without the source cannot happen, but is still told apart.
-        let sized = FingerprintMaterial {
-            name: Some("Sapphire"),
-            girdle_mm: 9.0,
-            from_design_file: false,
-        };
-        assert!(cache_fingerprint(PREVIEW, sized).ends_with(";material=Sapphire;size=9.00"));
-        // Different sizes differ, a difference below the printed precision does not.
-        assert_ne!(
-            cache_fingerprint(PREVIEW, from_file("Sapphire", 9.0)),
-            cache_fingerprint(PREVIEW, from_file("Sapphire", 9.5))
-        );
-        assert_eq!(
-            cache_fingerprint(PREVIEW, from_file("Sapphire", 9.0)),
-            cache_fingerprint(PREVIEW, from_file("Sapphire", 9.001))
-        );
-        // Not a size: negative, not finite.
-        for unset in [-1.0, f64::NAN, f64::INFINITY] {
-            assert_eq!(
-                cache_fingerprint(PREVIEW, from_file("Sapphire", unset)),
-                cache_fingerprint(PREVIEW, from_file("Sapphire", 0.0)),
-                "{unset}"
-            );
-        }
-    }
-
-    /// The material a scan builds from a persisted row is the one the writer built from
-    /// the resolved design.
-    #[test]
-    fn the_material_of_a_persisted_state_is_the_one_the_writer_used() {
-        let state = PreviewMaterialState {
-            name: Some("Sapphire".to_string()),
-            girdle_mm: Some(9.0),
-            source: PreviewMaterialSource::DesignFile,
-        };
-        assert_eq!(
-            FingerprintMaterial::from_state(&state),
-            from_file("Sapphire", 9.0)
-        );
-        assert_eq!(
-            FingerprintMaterial::from_state(&PreviewMaterialState::default()),
-            FingerprintMaterial::picked(None)
-        );
-    }
-
-    /// The tilt fingerprint names the scoring lighting preset by its stable label, so
-    /// curves stored under another preset (the ring lights before 2026-10-07) are stale.
-    #[test]
-    fn the_tilt_fingerprint_names_the_scoring_lighting_preset() {
-        let fingerprint = cache_fingerprint(CacheKind::TiltCurves, picked("Diamond"));
-        assert_eq!(
-            fingerprint,
-            format!(
-                "tilt;tracer={};lighting={};light={PREVIEW_LIGHT_YAW}/{PREVIEW_LIGHT_PITCH};\
-                 material=Diamond",
-                indicatrix::BUILD_ID,
-                BATCH_TILT_LIGHTING_PRESET.label()
-            )
-        );
-        assert_ne!(
-            BATCH_TILT_LIGHTING_PRESET.label(),
-            LightingPreset::RingLights.label()
-        );
-        let old_ring_lights = fingerprint.replace(
-            BATCH_TILT_LIGHTING_PRESET.label(),
-            LightingPreset::RingLights.label(),
-        );
-        assert_ne!(fingerprint, old_ring_lights);
-    }
-
-    /// The tilt sweep has no image size or sample budget, so changing the preview
-    /// settings must not look like a reason to recompute every design's curves. (The
-    /// `size=` of a design file's stone size is not one of them: it comes after the
-    /// material, and an unsized material has none.)
-    #[test]
-    fn the_tilt_fingerprint_names_no_preview_setting() {
-        let fingerprint = cache_fingerprint(CacheKind::TiltCurves, picked("Diamond"));
-        for setting in ["size=", "spp=", "bounces="] {
-            assert!(!fingerprint.contains(setting), "{fingerprint}");
-        }
-    }
-}
+#[path = "fingerprint_tests.rs"]
+mod tests;

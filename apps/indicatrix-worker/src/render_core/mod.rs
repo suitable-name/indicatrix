@@ -63,10 +63,13 @@ use std::{
 
 use indicatrix::{
     geometry::StoneGeometry,
-    renderer::gpu_backend::{GpuAccumulate, GpuBackend, GpuSceneRef, scene_routes_to_gpu},
+    renderer::gpu_backend::{
+        GpuAccumulate, GpuBackend, GpuSceneRef, scene_routes_to_gpu_with_tools,
+    },
 };
 
 pub(crate) mod hybrid;
+pub(crate) mod whitted;
 
 /// The stone `scene` describes: its planes with its concave tools subtracted.
 ///
@@ -79,28 +82,34 @@ pub(crate) fn stone_geometry(scene: &SceneState) -> StoneGeometry<'_> {
     }
 }
 
-/// Whether `scene` may be offered to the GPU at all (`scene_routes_to_gpu`): the material
-/// must be GPU-supported, the stone convex, the material not fluorescent and the lighting
-/// not a UV lamp.
+/// Whether `scene` may be offered to the GPU at all (`scene_routes_to_gpu_with_tools`): the
+/// material must be GPU-supported, the stone have at most `GPU_MAX_TOOL_PRIMITIVES` concave
+/// tools, the material not be fluorescent and the lighting not a UV lamp.
 ///
-/// The WGSL kernels know nothing about tools or fluorescence (`docs/gpu.md`), so such a
-/// scene is traced entirely on the CPU -- by the plain CPU path, never by a hybrid split,
-/// which would otherwise hand part of the samples to a GPU that cannot trace them. An
+/// The GPU kernels trace concave stones (every call below passes `scene.tools` through
+/// `GpuBackend::try_accumulate_geom_cancellable` / `GpuBatchItem::tools`), but not
+/// fluorescence (`docs/gpu.md`), so a fluorescent scene, or a stone with more tools than the
+/// kernels trace, is traced entirely on the CPU -- by the plain CPU path, never by a hybrid
+/// split, which would otherwise hand part of the samples to a GPU that cannot trace them. An
 /// HDR panorama has no lamp, so the preset only counts for the analytic rig.
 ///
 /// A zoned material routes like the desktop does, through
-/// `GemMaterial::gpu_supported` (inside `scene_routes_to_gpu`). The GPU zone kernels render the
+/// `GemMaterial::gpu_supported` (inside `scene_routes_to_gpu_with_tools`). The GPU zone kernels render the
 /// zones they support; a mesh-shell zone, a scattering zoned stone or an oversized band set
 /// is declined there and so traced entirely on the CPU, never silently as its base zone.
 #[must_use]
 pub(crate) fn scene_uses_gpu(scene: &SceneState) -> bool {
+    // Ray uses its independent small kernel, never spectral hybrid calibration.
+    if scene.engine.is_ray() {
+        return false;
+    }
     let lighting = match scene.environment {
         indicatrix_net::scene::SceneEnvironment::Studio => scene.lighting_preset,
         indicatrix_net::scene::SceneEnvironment::Hdr(_) => {
             indicatrix::optics::raytracer::LightingPreset::default()
         }
     };
-    scene_routes_to_gpu(
+    scene_routes_to_gpu_with_tools(
         &scene.material,
         stone_geometry(scene),
         &scene.fluorescence,
@@ -108,16 +117,25 @@ pub(crate) fn scene_uses_gpu(scene: &SceneState) -> bool {
     )
 }
 
-/// Resolves the per-facet finish `scene.girdle_frosted` implies.
+/// Resolves the per-facet finish `scene.girdle_frosted` and `scene.frosted_planes` imply.
 ///
 /// `indicatrix_net::SceneState` carries no `Vec<FacetFinish>` of its own -- the
-/// wire-format encoding is the single `girdle_frosted` bool, and the worker re-derives
-/// the same `Vec<FacetFinish>` the viewer would via `indicatrix::geometry::girdle_facet_finishes`,
-/// a pure, deterministic function of `scene.planes` alone. `false` returns an empty
-/// slice, equivalent to every facet using `FacetFinish::default() == Polished`.
+/// wire-format encoding is the `girdle_frosted` bool plus the design's frosted plane
+/// indices, and the worker re-derives the same `Vec<FacetFinish>` the viewer would via
+/// `indicatrix::geometry::facet_finishes_with_frosted` /
+/// `indicatrix::geometry::girdle_facet_finishes`, pure, deterministic functions of the scene.
+/// Neither set returns an empty slice, equivalent to every facet using
+/// `FacetFinish::default() == Polished`; a scene without `frosted_planes` takes exactly the
+/// path it always did.
 #[must_use]
 pub(crate) fn resolve_facet_finishes(scene: &SceneState) -> Vec<FacetFinish> {
-    if scene.girdle_frosted {
+    if !scene.frosted_planes.is_empty() {
+        indicatrix::geometry::facet_finishes_with_frosted(
+            &scene.planes,
+            scene.girdle_frosted,
+            &scene.frosted_planes,
+        )
+    } else if scene.girdle_frosted {
         indicatrix::geometry::girdle_facet_finishes(&scene.planes)
     } else {
         Vec::new()
@@ -366,6 +384,17 @@ pub fn trace_samples_with_gpu_into(
     cancel: &AtomicBool,
     buffer: &mut [Vec3],
 ) -> bool {
+    if scene.engine.is_ray() {
+        return whitted::trace(
+            scene,
+            first_sample,
+            samples,
+            threads,
+            gpu.adapter_label().is_some(),
+            cancel,
+            buffer,
+        );
+    }
     let width = scene.width;
     let height = scene.height;
     if samples == 0 || width == 0 || height == 0 {
@@ -382,9 +411,9 @@ pub fn trace_samples_with_gpu_into(
     // resolve_facet_finishes). The CPU fallback below resolves identical finishes from
     // the same field, so a GPU decline mid-trace can't silently switch polish state.
     let facet_finishes = resolve_facet_finishes(scene);
-    // A concave scene never reaches the GPU: skip straight to the CPU tracer below,
-    // which reads `scene.tools`. (An unsupported material declines on its own inside
-    // `try_accumulate_cancellable`; tools are the case it cannot see.)
+    // A scene the GPU cannot trace (fluorescence, a UV lamp, more tools than the kernels
+    // trace) skips straight to the CPU tracer below. A concave scene within the limit goes
+    // to the GPU WITH its tools (`scene.tools`, facet ids `planes.len() + k`).
     let gpu_scene = GpuSceneRef {
         camera: &camera,
         width,
@@ -396,7 +425,14 @@ pub fn trace_samples_with_gpu_into(
         environment,
     };
     let outcome = if scene_uses_gpu(scene) {
-        gpu.try_accumulate_cancellable(&gpu_scene, first_sample, samples, buffer, cancel)
+        gpu.try_accumulate_geom_cancellable(
+            &gpu_scene,
+            &scene.tools,
+            first_sample,
+            samples,
+            buffer,
+            cancel,
+        )
     } else {
         GpuAccumulate::Declined
     };
@@ -448,6 +484,17 @@ fn trace_into(
     buffer: &mut [Vec3],
     cancel: &AtomicBool,
 ) -> bool {
+    if scene.engine.is_ray() {
+        return whitted::trace(
+            scene,
+            range.first_sample,
+            range.samples,
+            threads,
+            false,
+            cancel,
+            buffer,
+        );
+    }
     // Destructured immediately so every use below reads exactly as it did before this
     // was bundled into one `SampleRange` (keeping `trace_into`'s own argument count at
     // clippy's default limit -- the `cancel` flag for the cancellable permit wait would
@@ -618,8 +665,9 @@ mod tests {
         optics::{materials::GemMaterial, raytracer::LightingPreset},
     };
 
-    fn tiny_scene() -> SceneState {
+    pub(super) fn tiny_scene() -> SceneState {
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 8,
             height: 8,
             yaw: 0.4,
@@ -639,6 +687,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 
@@ -704,3 +753,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod whitted_tests;

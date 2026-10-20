@@ -20,7 +20,7 @@ use crate::{
     settings::WorkerSettings,
 };
 use indicatrix::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::ToolPrimitive},
     optics::{materials::GemMaterial, raytracer::DEFAULT_MAX_BOUNCES},
     renderer::gpu_backend::GpuBackend,
 };
@@ -40,6 +40,7 @@ use std::{
 use tracing::warn;
 
 mod accumulator;
+mod ray;
 
 pub(super) use accumulator::{DesignAccum, RecordRevision};
 use accumulator::{FinishedViews, record_item_result};
@@ -127,6 +128,8 @@ pub(super) struct BatchContext<'a> {
     pub(super) custom_materials: &'a [GemMaterial],
     pub(super) preview_size: u32,
     pub(super) preview_spp: u32,
+    pub(super) engine: indicatrix::renderer::engine::EngineSpec,
+    pub(super) ray_draft: bool,
     /// Draw the fast solid stand-in pictures instead of the traced ones: no material is
     /// chosen, no GPU or remote lane is used, and the pictures are stored under a
     /// fingerprint that still counts the design as missing its traced preview.
@@ -142,7 +145,7 @@ pub(super) struct BatchContext<'a> {
     /// cleanly-reported `DeviceLost`, which a raw panic never reaches.
     pub(super) gpu_retired: &'a AtomicBool,
     /// The designs whose geometry came from the angle table rather than a design
-    /// file -- see `gui::batch::record_planes_for_batch`. Read once at the end for
+    /// file -- see `gui::batch::record_planes_with_frosting_for_batch`. Read once at the end for
     /// the batch's summary line.
     pub(super) angle_table_entries: &'a Mutex<BTreeSet<i64>>,
 }
@@ -163,6 +166,13 @@ pub(super) struct PreviewItem {
 pub(super) struct ResolvedDesign {
     pub(super) title: String,
     pub(super) planes: Vec<GpuFacetPlane>,
+    /// The concave tools cut into `planes` (`CataloguePlanes::render_tools`); empty for a
+    /// planar design, which renders exactly as it always did.
+    pub(super) tools: Vec<ToolPrimitive>,
+    /// The planes the design frosts (ascending indices into `planes`), traced frosted by a
+    /// traced preview, locally and remotely; empty for a polished design and for the solid
+    /// stand-in, which is flat shaded.
+    pub(super) frosted: Vec<u32>,
     pub(super) material: GemMaterial,
     /// The record version `planes` and `material` were resolved from; hand it to
     /// [`finish_item_at_revision`] with the rendered bytes so a result from a superseded
@@ -170,17 +180,23 @@ pub(super) struct ResolvedDesign {
     pub(super) revision: RecordRevision,
 }
 
-/// `full`'s facet planes for a preview render, with the material and stone size its
-/// design file records -- the design file first, the angle table only as the fallback
-/// (`gui::batch::record_planes_for_batch`, shared with the tilt batch and the library
-/// detail view). Both the local and the remote lane get their planes here, through
-/// [`resolve_design`]; a remote render ships these planes in its scene, so the worker
-/// never resolves a record itself.
-pub(super) fn record_planes(
+/// `full`'s facet planes for a preview render, and the planes its design frosts.
+///
+/// The planes come with the material and stone size the design file records -- the design file
+/// first, the angle table only as the fallback
+/// (`gui::batch::record_planes_with_frosting_for_batch`, shared with the tilt batch and the
+/// library detail view). Both the local and the remote lane get their planes here, through
+/// [`resolve_design`]; a remote render ships these planes in its scene, so the worker never
+/// resolves a record itself.
+///
+/// The second value is the design's frosted planes: the ascending indices into the returned
+/// planes the design frosts, the form `PreviewJob::frosted` takes. Empty for a polished
+/// design and on the angle-table path.
+pub(super) fn record_planes_with_frosting(
     ctx: &BatchContext<'_>,
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
-) -> Option<CataloguePlanes> {
-    super::super::record_planes_for_batch(full, ctx.angle_table_entries)
+) -> Option<(CataloguePlanes, Vec<u32>)> {
+    super::super::record_planes_with_frosting_for_batch(full, ctx.angle_table_entries)
 }
 
 /// Resolves `entry_id`'s geometry and preview material, or `None` if either step comes
@@ -207,12 +223,15 @@ pub(super) fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<Re
     let Ok(updated_at) = updated_at else {
         return None;
     };
-    let resolved = record_planes(ctx, &full)?;
+    let (resolved, frosted) = record_planes_with_frosting(ctx, &full)?;
 
     if ctx.solid {
         return Some(ResolvedDesign {
             title: full.title,
             planes: resolved.planes,
+            tools: resolved.render_tools,
+            // The solid picture is flat shaded: no finish shows.
+            frosted: Vec::new(),
             // Never shown: the solid picture is flat-shaded. The traced preview picks
             // the design's real material when it is rendered.
             material: GemMaterial::by_name("Diamond")?,
@@ -240,9 +259,15 @@ pub(super) fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<Re
         }
     };
 
+    if ctx.engine.is_ray() && ray::refuses_fluorescence(ctx, &resolved, &chosen.material) {
+        warn!("Ray-Traced thumbnail unavailable: fluorescent material needs Path-Traced.");
+        return None;
+    }
     Some(ResolvedDesign {
         title: full.title,
         planes: resolved.planes,
+        tools: resolved.render_tools,
+        frosted,
         material: chosen.material,
         revision: RecordRevision::Stamp(updated_at),
     })
@@ -304,14 +329,22 @@ fn render_item_local(
 ) -> Option<Vec<u8>> {
     if ctx.solid {
         return catch_local_render(view, ctx.gpu_retired, || {
-            preview_render::render_view_solid(&resolved.planes, ctx.preview_size, view)
+            preview_render::render_view_solid_with_tools(
+                &resolved.planes,
+                &resolved.tools,
+                ctx.preview_size,
+                view,
+            )
         });
     }
     if ctx.gpu_retired.load(Ordering::Relaxed) {
         return None;
     }
     let job = PreviewJob {
+        engine: ctx.engine,
         planes: &resolved.planes,
+        tools: &resolved.tools,
+        frosted: &resolved.frosted,
         material: &resolved.material,
         size: ctx.preview_size,
         spp: ctx.preview_spp,
@@ -467,24 +500,19 @@ pub(super) struct LaneShared<'a> {
 /// The fingerprint a finished design's pair is stored under: the batch's picture kind
 /// (traced at the batch's size and sample count, or the solid stand-in) and the design's
 /// persisted `material` -- its name, stone size and provenance
-/// (`bridge::preview_render::cache_fingerprint`). The staleness scan rebuilds the same
-/// text from the same persisted row.
+/// (`bridge::preview_render::cache_fingerprint`), plus the `frosting` hash of its stored
+/// frosting (`gui::batch::frosting_scan::stored_frosting_hash`; `0` for a polished design).
+/// The staleness scan rebuilds the same text from the same persisted rows.
 pub(super) fn preview_fingerprint(
     ctx: &BatchContext<'_>,
     material: &PreviewMaterialState,
+    frosting: u64,
 ) -> String {
-    let kind = if ctx.solid {
-        CacheKind::SolidDraft {
-            size: ctx.preview_size,
-        }
-    } else {
-        CacheKind::Preview {
-            size: ctx.preview_size,
-            spp: ctx.preview_spp,
-            max_bounces: PREVIEW_MAX_BOUNCES,
-        }
-    };
-    preview_render::cache_fingerprint(kind, FingerprintMaterial::from_state(material))
+    let kind = ray::cache_kind(ctx);
+    preview_render::cache_fingerprint(
+        kind,
+        FingerprintMaterial::from_state(material).with_frosting(frosting),
+    )
 }
 
 /// Stores a finished design's pair, unless the design changed while it was rendered.
@@ -523,7 +551,10 @@ fn save_finished_design(shared: &LaneShared<'_>, entry_id: i64, done: &FinishedV
     let material = guard
         .get_preview_material_state(entry_id)
         .unwrap_or_default();
-    let fingerprint = preview_fingerprint(shared.ctx, &material);
+    // The frosting the design is stored with: the CAS on `updated_at` below refuses a result
+    // rendered before a re-import or save moved it.
+    let frosting = crate::gui::batch::frosting_scan::stored_frosting_hash(&guard, entry_id);
+    let fingerprint = preview_fingerprint(shared.ctx, &material, frosting);
     let stored = guard.save_preview_images(
         entry_id,
         done.front.as_deref(),

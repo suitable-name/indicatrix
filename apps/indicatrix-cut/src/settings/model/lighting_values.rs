@@ -63,7 +63,7 @@ pub struct LightingValues {
     /// Scale of the white mirror image of the light on the table, `0.0..=1.0`.
     #[serde(default = "full_glare")]
     pub surface_glare: f32,
-    /// What the camera sees behind the stone.
+    /// The lit tray the stone lies on (resolved at this lighting's own rig and pose).
     #[serde(default)]
     pub backdrop: Backdrop,
     /// Head-shadow radius in degrees, `0.0..=30.0` (`0.0` is off).

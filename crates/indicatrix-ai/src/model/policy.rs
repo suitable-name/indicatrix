@@ -15,7 +15,7 @@
 //!   trainer use `std = exp(log_std)`; the clamp in [`GaussianPolicy`] is a harmless safety net.
 
 use super::rng::Prng;
-use crate::env::{ContinuousTierAction, MEAN_BOUND, N_COMPONENTS, SLOPE_EPS};
+use crate::env::{ContinuousTierAction, MEAN_BOUND, N_COMPONENTS, SLOPE_NORM_FLOOR};
 
 /// Lower bound of the policy's `log_std` (std 0.05 in pre-squash units).
 pub const LOG_STD_MIN: f32 = -3.0;
@@ -69,10 +69,10 @@ pub const fn block_slot(block_type: f32) -> usize {
 ///
 /// Per tier `k`, the objective's slope is `g_k = sum_c fractions[c] * sensitivities[k][c]`
 /// (accumulated for `c = 0..N_COMPONENTS` in order with `mul_add`, starting at `0.0`); with
-/// `g_max = max_k |g_k|` (starting at `0.0`, so over every tier given) the mean is
-/// `mean_k = -MEAN_BOUND * g_k / (g_max + SLOPE_EPS)`: the descent direction, the steepest tier at
-/// `-+MEAN_BOUND`, every other tier proportional. The result is scale-free in the sensitivities, and
-/// all-zero sensitivities give an all-zero mean (the `SLOPE_EPS` keeps the division finite).
+/// `g_max = max_k |g_k|` over mobile tiers, the mean is
+/// `mean_k = -MEAN_BOUND * (g_k / max(g_max, SLOPE_NORM_FLOOR))`. This preserves exact scale-free
+/// direction above the documented score-points-per-degree floor and smoothly reduces the action
+/// magnitude below it, bounding the composition Jacobian near flat scores. All-zero slopes yield zero.
 ///
 /// The Burn twin and the finite-difference oracle (`direction_from_slopes`) use the same operation
 /// order; a test compares them.
@@ -80,6 +80,18 @@ pub const fn block_slot(block_type: f32) -> usize {
 pub fn compose_mean(
     sensitivities: &[[f32; N_COMPONENTS]],
     fractions: &[f32; N_COMPONENTS],
+) -> Vec<f32> {
+    compose_mean_masked(sensitivities, fractions, &vec![true; sensitivities.len()])
+}
+
+/// Compose sensitivity rows while excluding coordinates the environment cannot move.
+/// Immobile tiers remain part of attention, but cannot set the normalization scale or receive an
+/// action. A short mask treats missing entries as immobile.
+#[must_use]
+pub fn compose_mean_masked(
+    sensitivities: &[[f32; N_COMPONENTS]],
+    fractions: &[f32; N_COMPONENTS],
+    mobile: &[bool],
 ) -> Vec<f32> {
     let slopes: Vec<f32> = sensitivities
         .iter()
@@ -90,10 +102,24 @@ pub fn compose_mean(
                 .fold(0.0f32, |acc, (&frac, &sens)| frac.mul_add(sens, acc))
         })
         .collect();
-    let g_max = slopes.iter().fold(0.0f32, |acc, g| acc.max(g.abs()));
+    let g_max = slopes.iter().enumerate().fold(0.0f32, |acc, (i, g)| {
+        if mobile.get(i).copied().unwrap_or(false) {
+            acc.max(g.abs())
+        } else {
+            acc
+        }
+    });
     slopes
         .iter()
-        .map(|&g| -MEAN_BOUND * g / (g_max + SLOPE_EPS))
+        .enumerate()
+        .map(|(i, &g)| {
+            let is_mobile = mobile.get(i).copied().unwrap_or(false);
+            if is_mobile {
+                (g / g_max.max(SLOPE_NORM_FLOOR)) * -MEAN_BOUND
+            } else {
+                0.0
+            }
+        })
         .collect()
 }
 
@@ -244,6 +270,16 @@ impl GaussianPolicy {
 mod tests {
     use super::*;
 
+    fn row4(a: f32, b: f32, c: f32, d: f32) -> [f32; N_COMPONENTS] {
+        let mut row = [0.0; N_COMPONENTS];
+        row[..4].copy_from_slice(&[a, b, c, d]);
+        row
+    }
+
+    fn weights4(a: f32, b: f32, c: f32, d: f32) -> [f32; N_COMPONENTS] {
+        row4(a, b, c, d)
+    }
+
     fn policy() -> GaussianPolicy {
         GaussianPolicy {
             mean: vec![0.1, -0.2, 0.3, 0.0],
@@ -360,8 +396,9 @@ mod tests {
             })
             .collect();
         let g_max = g.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+        let denom = g_max.max(f64::from(SLOPE_NORM_FLOOR));
         g.iter()
-            .map(|v| -f64::from(MEAN_BOUND) * v / (g_max + f64::from(SLOPE_EPS)))
+            .map(|v| -f64::from(MEAN_BOUND) * (v / denom))
             .collect()
     }
 
@@ -369,11 +406,11 @@ mod tests {
     fn compose_mean_puts_the_steepest_tier_at_the_bound_and_scales_the_rest() {
         // Windowing only: g = [1, 2, -4], g_max = 4.
         let sens = [
-            [1.0, 0.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0, 0.0],
-            [-4.0, 0.0, 0.0, 0.0],
+            row4(1.0, 0.0, 0.0, 0.0),
+            row4(2.0, 0.0, 0.0, 0.0),
+            row4(-4.0, 0.0, 0.0, 0.0),
         ];
-        let mean = compose_mean(&sens, &[1.0, 0.0, 0.0, 0.0]);
+        let mean = compose_mean(&sens, &weights4(1.0, 0.0, 0.0, 0.0));
         let want = [-MEAN_BOUND / 4.0, -MEAN_BOUND / 2.0, MEAN_BOUND];
         for (k, (got, want)) in mean.iter().zip(want).enumerate() {
             assert!((got - want).abs() < 1e-5, "tier {k}: {got} vs {want}");
@@ -383,27 +420,27 @@ mod tests {
 
     #[test]
     fn compose_mean_follows_the_objective_weights_without_new_weights() {
-        let sens = [[1.0, 0.0, 0.0, -1.0], [-0.5, 0.0, 0.0, 1.0]];
+        let sens = [row4(1.0, 0.0, 0.0, -1.0), row4(-0.5, 0.0, 0.0, 1.0)];
         // Windowing only: g = [1, -0.5].
-        let windowing = compose_mean(&sens, &[1.0, 0.0, 0.0, 0.0]);
+        let windowing = compose_mean(&sens, &weights4(1.0, 0.0, 0.0, 0.0));
         assert!((windowing[0] + MEAN_BOUND).abs() < 1e-5);
         assert!((windowing[1] - MEAN_BOUND / 2.0).abs() < 1e-5);
         // Yield only: g = [-1, 1], the direction flips with the weights alone.
-        let yield_only = compose_mean(&sens, &[0.0, 0.0, 0.0, 1.0]);
+        let yield_only = compose_mean(&sens, &weights4(0.0, 0.0, 0.0, 1.0));
         assert!((yield_only[0] - MEAN_BOUND).abs() < 1e-5);
         assert!((yield_only[1] + MEAN_BOUND).abs() < 1e-5);
         // A mix: g = 0.4 * 1 + 0.1 * -1 = 0.3 and 0.4 * -0.5 + 0.1 * 1 = -0.1.
-        let mixed = compose_mean(&sens, &[0.4, 0.3, 0.2, 0.1]);
+        let mixed = compose_mean(&sens, &weights4(0.4, 0.3, 0.2, 0.1));
         assert!((mixed[0] + MEAN_BOUND).abs() < 1e-5);
         assert!((mixed[1] - MEAN_BOUND / 3.0).abs() < 1e-5);
     }
 
     #[test]
     fn compose_mean_equal_tiers_sit_at_the_bound_with_balanced_fractions() {
-        let balanced = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0];
-        let sens = [[0.9, 0.6, 0.3, 0.5]; 2];
+        let balanced = weights4(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0);
+        let sens = [row4(0.9, 0.6, 0.3, 0.5); 2];
         let mean = compose_mean(&sens, &balanced);
-        // g = 0.6 on both tiers, so g_max = |g| and the mean is -MEAN_BOUND (up to the epsilon).
+        // g = 0.6 on both tiers, so g_max exceeds the floor and the mean is -MEAN_BOUND.
         for m in mean {
             assert!((m + MEAN_BOUND).abs() < 1e-5, "{m}");
         }
@@ -411,13 +448,27 @@ mod tests {
 
     #[test]
     fn compose_mean_of_nothing_or_of_zeros_is_zero_and_never_nan() {
-        assert!(compose_mean(&[], &[0.25; 4]).is_empty());
-        let zeros = compose_mean(&[[0.0; N_COMPONENTS]; 3], &[0.25; 4]);
+        assert!(compose_mean(&[], &[0.25; N_COMPONENTS]).is_empty());
+        let zeros = compose_mean(&[[0.0; N_COMPONENTS]; 3], &[0.25; N_COMPONENTS]);
         assert_eq!(zeros.len(), 3);
         assert!(zeros.iter().all(|&m| m == 0.0 && !m.is_nan()));
         // Weights of zero silence the objective the same way.
-        let silent = compose_mean(&[[1.0, 2.0, 3.0, 4.0]], &[0.0; 4]);
+        let silent = compose_mean(&[row4(1.0, 2.0, 3.0, 4.0)], &[0.0; N_COMPONENTS]);
         assert!(silent.iter().all(|&m| m == 0.0));
+    }
+
+    #[test]
+    fn immobile_coordinates_neither_set_scale_nor_receive_a_mean() {
+        let mut mobile = [0.0; N_COMPONENTS];
+        mobile[0] = 2.0;
+        let mut pinned = [0.0; N_COMPONENTS];
+        pinned[0] = 200.0;
+        let got = compose_mean_masked(&[mobile, pinned], &[1.0; N_COMPONENTS], &[true, false]);
+        assert!((got[0] + MEAN_BOUND).abs() < 1e-5, "{}", got[0]);
+        assert_eq!(got[1], 0.0);
+
+        let all_pinned = compose_mean_masked(&[pinned], &[1.0; N_COMPONENTS], &[false]);
+        assert_eq!(all_pinned, [0.0]);
     }
 
     #[test]
@@ -425,15 +476,15 @@ mod tests {
         let sens: Vec<[f32; N_COMPONENTS]> = (0..9)
             .map(|k| {
                 let x = k as f32;
-                [
+                row4(
                     (x * 0.7 + 0.1).sin(),
                     (x * 1.3 + 0.2).cos() * 0.5,
                     (x * 0.4 - 0.3).sin() * 2.0,
                     (x * 0.9 + 0.5).cos(),
-                ]
+                )
             })
             .collect();
-        let frac = [0.4, 0.3, 0.2, 0.1];
+        let frac = weights4(0.4, 0.3, 0.2, 0.1);
         let mean = compose_mean(&sens, &frac);
         let reference = compose_f64(&sens, &frac);
         for (k, (got, want)) in mean.iter().zip(&reference).enumerate() {
@@ -451,5 +502,34 @@ mod tests {
         for (a, b) in mean.iter().zip(compose_mean(&doubled, &frac)) {
             assert!((a - b).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn slope_floor_scales_near_zero_predictions_and_bounds_the_mean() {
+        let mut row = [0.0; N_COMPONENTS];
+        row[0] = SLOPE_NORM_FLOOR * 0.25;
+        let mean = compose_mean(&[row], &[1.0; N_COMPONENTS]);
+        assert!((mean[0] + MEAN_BOUND * 0.25).abs() < 1e-6, "{}", mean[0]);
+        let h = SLOPE_NORM_FLOOR * 0.001;
+        let mut upper = row;
+        let mut lower = row;
+        upper[0] += h;
+        lower[0] -= h;
+        let upper_mean = compose_mean(&[upper], &[1.0; N_COMPONENTS])[0];
+        let lower_mean = compose_mean(&[lower], &[1.0; N_COMPONENTS])[0];
+        let derivative = (upper_mean - lower_mean) / (2.0 * h);
+        let expected_derivative = -MEAN_BOUND / SLOPE_NORM_FLOOR;
+        assert!(
+            (derivative - expected_derivative).abs() < 1e-3,
+            "{derivative} vs {expected_derivative}"
+        );
+
+        row[0] = SLOPE_NORM_FLOOR;
+        let at_floor = compose_mean(&[row], &[1.0; N_COMPONENTS]);
+        assert!((at_floor[0] + MEAN_BOUND).abs() < 1e-6);
+
+        row[0] = 2.0 * SLOPE_NORM_FLOOR;
+        let above_floor = compose_mean(&[row], &[1.0; N_COMPONENTS]);
+        assert!((above_floor[0] + MEAN_BOUND).abs() < 1e-6);
     }
 }

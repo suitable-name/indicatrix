@@ -58,6 +58,7 @@ fn bounce_hit_blank() -> BounceHit {
     h.hit.t = 0.0;
     h.hit.normal = vec3<f32>(0.0, 0.0, 0.0);
     h.hit.facet_idx = 0u;
+    h.hit.side = HIT_SIDE_NONE;
     h.hit_point = vec3<f32>(0.0, 0.0, 0.0);
     h.shading_normal = vec3<f32>(0.0, 0.0, 0.0);
     h.wave_dir_at_bounce = vec3<f32>(0.0, 0.0, 0.0);

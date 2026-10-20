@@ -52,9 +52,17 @@ pub mod z_stats;
 // binding) from `transport_check`/`transport_functions.wgsl`.
 pub mod shading_normal_check;
 
+// Concave-stone (tool) self-tests: the megakernel's tool carve against the CPU reference,
+// per tool primitive, plus a CPU-vs-GPU frame comparison.
+pub mod tool_check;
+
 // Not a self-test: renders an arbitrary scene with the megakernel every
 // module above verifies, via the dispatch routine `estimator_check` uses.
+pub mod event_wavefront;
 pub mod frame;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod test_support;
+pub mod whitted;
 // The zoned stones the GPU checks render.
 pub mod zoned_cases;
 // `shader_validation_tests` used to live here, but that put it behind this module's
@@ -82,6 +90,7 @@ mod merge_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pin_tests;
 
+pub(in crate::renderer::gpu) use context::instance_descriptor;
 pub use context::{
     GpuAcquireError, GpuContext, MEGAKERNEL_STORAGE_BUFFERS, WAVEFRONT_BOUNCE_TOTAL_BUFFERS,
     WAVEFRONT_STORAGE_BUFFERS,

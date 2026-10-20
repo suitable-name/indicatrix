@@ -16,7 +16,9 @@ use indicatrix_ai::model::{ModelTier, TrainingMode};
 
 use super::{
     Flow, TrainerCommand, Worker,
-    runner::{CPU_LABEL, DeviceChoice, GPU_LABEL, Hyperparams, RunConfig, TrainingRunner},
+    runner::{
+        Algorithm, CUDA_LABEL, DeviceChoice, GPU_LABEL, Hyperparams, RunConfig, TrainingRunner,
+    },
 };
 use crate::{
     dataset::{
@@ -31,6 +33,27 @@ const SKIPPED_LOGGED: usize = 5;
 const PENDING_CAP: usize = 64;
 /// The reason given to a file command that arrives before any data set loaded.
 const NO_DATASET: &str = "no data set is loaded";
+
+/// The status line written when a data set is announced. `sizes` is workers, rollout steps,
+/// mini-batch size and epochs. An imitation run with `updates_per_round > 0` trains that many
+/// mini-batches per round and names no epochs (they only apply when it is 0).
+pub(super) fn algorithm_status(
+    algo: Algorithm,
+    sizes: [usize; 4],
+    updates_per_round: usize,
+    device: &str,
+) -> String {
+    let [workers, rollout, mini_batch, epochs] = sizes;
+    let training = if algo == Algorithm::Imitation && updates_per_round > 0 {
+        format!("{updates_per_round} updates per round")
+    } else {
+        format!("{epochs} epochs")
+    };
+    format!(
+        "Algorithm {algo} | pool: {workers} parallel envs | rollout {rollout} | \
+         mini-batch {mini_batch} | {training} | {device}"
+    )
+}
 
 /// A design library read and split, ready to build a run on.
 pub(super) struct Loaded {
@@ -220,6 +243,7 @@ impl Worker<'_> {
                 rollout_size,
                 mini_batch,
                 ppo_epochs,
+                updates_per_round,
                 learning_rate,
                 clip_epsilon,
                 gae_lambda,
@@ -235,9 +259,9 @@ impl Worker<'_> {
                 };
                 // Only a changed worker count rebuilds the environments.
                 if workers == self.runner.hyperparams().workers {
-                    self.set_hyperparams(&hp);
+                    self.set_hyperparams(&hp, updates_per_round);
                 } else {
-                    self.busy(REBUILD, |w| w.set_hyperparams(&hp));
+                    self.busy(REBUILD, |w| w.set_hyperparams(&hp, updates_per_round));
                 }
             }
             TrainerCommand::LoadDatabase(path) => {
@@ -288,18 +312,13 @@ impl Worker<'_> {
             }
         }
         let hp = self.runner.hyperparams();
-        self.log(
-            "DB",
-            format!(
-                "Algorithm {} | pool: {} parallel envs | rollout {} | mini-batch {} | {} epochs | {}",
-                self.runner.config().algo,
-                hp.workers,
-                hp.rollout_size,
-                hp.mini_batch,
-                hp.ppo_epochs,
-                self.runner.device_label()
-            ),
+        let status = algorithm_status(
+            self.runner.config().algo,
+            [hp.workers, hp.rollout_size, hp.mini_batch, hp.ppo_epochs],
+            self.runner.config().imitation.updates_per_round,
+            self.runner.device_label(),
         );
+        self.log("DB", status);
         self.flush_warnings();
         match first {
             Some(index) => self.select_db_design(index),
@@ -376,9 +395,11 @@ impl Worker<'_> {
     }
 
     fn save_weights(&mut self, path: &Path) {
+        // An imitation update may still be training; the checkpoint includes it.
         let outcome = self
             .runner
-            .save_checkpoint(path)
+            .sync_update()
+            .and_then(|()| self.runner.save_checkpoint(path))
             .map(|()| absolute_text(path))
             .map_err(|e| e.to_string());
         match &outcome {
@@ -492,10 +513,15 @@ impl Worker<'_> {
         self.send_snapshot();
     }
 
-    fn set_hyperparams(&mut self, hp: &Hyperparams) {
-        let result = self.runner.set_hyperparams(hp);
+    fn set_hyperparams(&mut self, hp: &Hyperparams, updates_per_round: usize) {
+        let result = self
+            .runner
+            .set_hyperparams_with_updates(hp, Some(updates_per_round));
         match &result {
-            Ok(()) => self.log("CONFIG", format!("Hyperparameters applied: {hp:?}")),
+            Ok(()) => self.log(
+                "CONFIG",
+                format!("Hyperparameters applied: {hp:?}, updates per round {updates_per_round}"),
+            ),
             Err(e) => self.log("WARN", format!("Hyperparameters refused: {e}")),
         }
         let _ = self.events.send(WorkerEvent::hyperparams_outcome(&result));
@@ -548,7 +574,10 @@ impl Worker<'_> {
     }
 
     fn toggle_device(&mut self) {
-        let target = if self.runner.device_label() == GPU_LABEL {
+        // The existing GUI switch is deliberately CPU/WGPU only. CUDA is classified as a GPU,
+        // so toggling from CUDA selects CPU; the CLI exposes CUDA as an independent opt-in.
+        let current = self.runner.device_label();
+        let target = if current == GPU_LABEL || current == CUDA_LABEL {
             DeviceChoice::Cpu
         } else {
             DeviceChoice::Gpu
@@ -564,11 +593,7 @@ impl Worker<'_> {
                     .send(WorkerEvent::DeviceChanged(Ok(label.to_owned())));
             }
             Err(e) => {
-                let current = if self.runner.device_label() == CPU_LABEL {
-                    CPU_LABEL
-                } else {
-                    GPU_LABEL
-                };
+                let current = self.runner.device_label();
                 self.log(
                     "ERROR",
                     format!("Backend switch failed, staying on {current}: {e}"),

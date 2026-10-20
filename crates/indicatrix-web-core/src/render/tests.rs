@@ -575,3 +575,65 @@ fn gpu_rate_ema_and_gpu_pass_sizing() {
     let new_planner = ChunkPlanner::with_rates_from(&planner, 2, pixels, 1024);
     assert_eq!(new_planner.gpu_rate(), planner.gpu_rate());
 }
+
+#[test]
+fn returned_gpu_pass_is_not_retraced_by_a_partition_that_already_took_later_passes() {
+    use super::planner::PassOwner;
+    let mut planner = ChunkPlanner::new(2, WIDTH * HEIGHT, 64);
+
+    // The GPU takes pass 0; partition 0 skips it and takes pass 1.
+    let (pass_id, ..) = planner.next_gpu_pass().expect("GPU pass");
+    assert_eq!(pass_id, 0);
+    let first = planner.next_chunk(0, 0).expect("partition 0 chunk");
+    assert_eq!(first.pass_index, 1);
+
+    // The GPU fails: pass 0 goes back. Partition 0 must get pass 0, then pass 2, never 1.
+    planner.return_gpu_pass(pass_id);
+    assert_eq!(planner.pass_owner(0), Some(PassOwner::Cpu));
+    let second = planner.next_chunk(0, 0).expect("pass 0 again");
+    assert_eq!(second.pass_index, 0);
+    let third = planner.next_chunk(0, 1).expect("next new pass");
+    assert_eq!(third.pass_index, 2);
+
+    // Partition 1 never took pass 1, so it still gets 0 then 1.
+    assert_eq!(planner.next_chunk(1, 0).map(|c| c.pass_index), Some(0));
+    assert_eq!(planner.next_chunk(1, 0).map(|c| c.pass_index), Some(1));
+}
+
+#[test]
+fn a_pass_already_served_to_a_partition_is_not_given_to_the_gpu() {
+    let mut planner = ChunkPlanner::new(2, WIDTH * HEIGHT, 64);
+    let (id, ..) = planner.next_gpu_pass().expect("GPU pass 0");
+    planner.return_gpu_pass(id);
+    // Partition 1 takes pass 0 (rewound), partition 0 takes pass 0 and 1.
+    assert_eq!(planner.next_chunk(1, 0).map(|c| c.pass_index), Some(0));
+    // Pass 0 is served to a partition: the GPU must plan a new pass instead.
+    let (next_id, ..) = planner.next_gpu_pass().expect("GPU pass");
+    assert_ne!(next_id, 0);
+}
+
+#[test]
+fn invalid_full_pass_sums_are_rejected_and_do_not_touch_the_accumulator() {
+    let pixel_count = (WIDTH * HEIGHT) as usize;
+    let mut acc = Accumulator::new(42, WIDTH, HEIGHT, 2);
+    for bad in [f32::NAN, f32::INFINITY, -1.0] {
+        let mut sums = vec![[1.0_f32; 3]; pixel_count];
+        sums[3][1] = bad;
+        assert_eq!(
+            acc.add_full_pass(42, 0, 0, 1, &sums),
+            ChunkOutcome::Rejected(ChunkRejection::InvalidSums)
+        );
+        assert_eq!(
+            acc.add_full_pass_owned(42, 0, 0, 1, sums),
+            ChunkOutcome::Rejected(ChunkRejection::InvalidSums)
+        );
+    }
+    assert_eq!(acc.sample_count(), 0);
+    assert_eq!(acc.pending_passes(), 0);
+    // A dark (all zero) pass is valid.
+    let dark = vec![[0.0_f32; 3]; pixel_count];
+    assert_eq!(
+        acc.add_full_pass_owned(42, 0, 0, 1, dark),
+        ChunkOutcome::Committed { passes: 1 }
+    );
+}

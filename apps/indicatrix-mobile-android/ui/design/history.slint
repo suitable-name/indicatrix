@@ -1,0 +1,57 @@
+import { Shell } from "../models.slint";
+import { Theme } from "../theme.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { PrimaryButton } from "../shell/buttons.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+
+export global HistoryModel {
+    in-out property <bool> open: false;
+    in property <[string]> entries;
+    in property <int> current: 0;
+    in property <int> selected: -1;
+    in property <bool> busy: false;
+    in property <string> comparison;
+    callback show();
+    callback preview(int);
+    callback jump();
+    callback close();
+}
+
+export component HistoryScreen inherits Rectangle {
+    background: Theme.surface;
+    TouchArea { }
+    VerticalLayout {
+        TopBar {
+            title: "Session History";
+            show-back: true;
+            back-clicked => { Shell.request-back(); }
+        }
+        PageScroll {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: Theme.space-md;
+                spacing: Theme.space-sm;
+                Text {
+                    text: "Preview a step, then move to it. Later steps remain available until you make a new edit.";
+                    wrap: word-wrap;
+                    color: Theme.on-surface-variant;
+                }
+                for entry[index] in HistoryModel.entries: ListRow {
+                    title: (index == HistoryModel.current ? "Current · " : "") + entry;
+                    clicked => { HistoryModel.preview(index); }
+                }
+                Text {
+                    text: HistoryModel.busy ? "Preparing comparison…" : HistoryModel.comparison;
+                    wrap: word-wrap;
+                    color: Theme.on-surface;
+                }
+                PrimaryButton {
+                    text: "Move To Selected Step";
+                    enabled: !HistoryModel.busy && HistoryModel.selected >= 0 && HistoryModel.selected != HistoryModel.current;
+                    clicked => { HistoryModel.jump(); }
+                }
+            }
+        }
+    }
+}

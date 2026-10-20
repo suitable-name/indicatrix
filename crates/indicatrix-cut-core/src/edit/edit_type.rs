@@ -6,13 +6,16 @@
 use super::schedule_state::ScheduleState;
 use crate::{
     design::{
-        ConcaveTier, ConstraintTier, Design, StoneRenderEffects, TierId, TierRelation, TierTarget,
-        compute_tier_labels, is_legacy_123_abc,
+        ConcaveTier, ConstraintTier, Design, StoneRenderEffects, TierFrosting, TierId,
+        TierRelation, TierTarget, compute_tier_labels, is_legacy_123_abc,
     },
     material::MaterialSelection,
     preform::PreformSpec,
 };
 use indicatrix::geometry::meet_solver::MeetConstraint;
+
+mod frosting_label;
+mod retarget_labels;
 
 /// One reversible change to a [`crate::design::Design`].
 ///
@@ -154,6 +157,15 @@ pub enum Edit {
     SetTierRelation {
         index: usize,
         relation: Option<TierRelation>,
+    },
+    /// Sets (or, when `frosting` is `None`, clears) how the tier currently at `index` is
+    /// frosted -- see [`crate::design::Design::tier_frosting`] and [`TierFrosting`]. Keyed by
+    /// [`TierId`] under the hood, like `SetTierTarget`; the frosting is normalised first
+    /// (facet positions ascending, a frosting of no facet is a clear). Changes no geometry.
+    /// Inverse: the same variant holding the previous frosting.
+    SetTierFrosting {
+        index: usize,
+        frosting: Option<TierFrosting>,
     },
     /// Never constructed by a caller directly -- an internal bookkeeping step
     /// [`Design::apply_edit`]'s own [`Edit::RemoveTier`] inverse uses to restore
@@ -332,6 +344,9 @@ impl Edit {
             }
             Self::SetTierRelation { index, relation } => {
                 describe_tier_relation(*index, relation.as_ref(), design)
+            }
+            Self::SetTierFrosting { index, frosting } => {
+                frosting_label::describe_frosting(&tier_label_at(design, *index), frosting.as_ref())
             }
             // Internal bookkeeping only -- see this variant's own doc comment.
             // `describe_batch` filters it out of a `RemoveTier` undo's own
@@ -530,7 +545,10 @@ fn describe_batch(edits: &[Edit], design: &Design) -> String {
     {
         return format!("Retarget for {}", material_display_name(material));
     }
-    if let Some(label) = describe_anchored_retarget(edits) {
+    if let Some(label) = retarget_labels::describe_anchored_retarget(edits) {
+        return label;
+    }
+    if let Some(label) = retarget_labels::describe_modified_tiers_retarget(edits, design) {
         return label;
     }
     if let Some(label) = describe_relation_batch(edits, design) {
@@ -554,33 +572,6 @@ fn describe_batch(edits: &[Edit], design: &Design) -> String {
         [only] => only.describe(design),
         many => format!("{} combined edits", many.len()),
     }
-}
-
-/// [`describe_batch`]'s label for a retarget that also re-anchors masts: angle changes
-/// plus the [`Edit::SetConstraint`]s that keep each facet's girdle edge in place, and the
-/// material change when there is one. `None` for a batch with no constraint change
-/// (those keep their older labels) or with any other kind of edit in it.
-fn describe_anchored_retarget(edits: &[Edit]) -> Option<String> {
-    let mut has_angles = false;
-    let mut has_constraint = false;
-    let mut material: Option<&MaterialSelection> = None;
-    for edit in edits {
-        match edit {
-            Edit::RetargetAngles { .. } => has_angles = true,
-            Edit::SetConstraint { .. } => has_constraint = true,
-            Edit::SetMaterial {
-                material: selection,
-            } => material = Some(selection),
-            _ => return None,
-        }
-    }
-    if !(has_angles && has_constraint) {
-        return None;
-    }
-    Some(material.map_or_else(
-        || "Retarget angles".to_string(),
-        |selection| format!("Retarget for {}", material_display_name(selection)),
-    ))
 }
 
 /// [`describe_batch`]'s label for the batches an editor session builds when tier

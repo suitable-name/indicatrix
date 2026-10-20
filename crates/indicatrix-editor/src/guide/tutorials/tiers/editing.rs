@@ -342,10 +342,7 @@ fn multi_select() -> Guide {
             "Offset them together",
             "Offset adds the same number of degrees to every ticked tier.",
         )
-        .actions([
-            "Click one of the ticked rows so the cursor is on it.",
-            "In the bar above the table, type 1 in the deg box and click Offset.",
-        ])
+        .actions(["In the bar above the table, type 1 in the deg box and click Offset."])
         .check("Crown Main reads 35.50 and Pavilion Main has moved by one degree as well.")
         .why("It is one Undo step. A tier stops at 0 rather than crossing to the other side.")
         .goal(

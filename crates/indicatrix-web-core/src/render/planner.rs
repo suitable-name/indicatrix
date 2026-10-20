@@ -1,6 +1,8 @@
 //! [`ChunkPlanner`]: which sample range each render Worker traces next, sized from
 //! measured chunk times.
 
+use std::collections::BTreeSet;
+
 use super::partition_len;
 
 /// The chunk duration the planner aims for, in milliseconds.
@@ -99,6 +101,8 @@ pub struct ChunkPlanner {
     pass_owners: Vec<PassOwner>,
     /// Per partition: the next pass index it will be given.
     next_pass: Vec<u32>,
+    /// Per partition: the passes it was already handed (a rewound partition skips them).
+    served: Vec<BTreeSet<u32>>,
     /// Per partition: measured milliseconds per pixel-sample.
     rates: Vec<Option<f64>>,
     /// Measured GPU rate in samples per millisecond (across all pixels).
@@ -118,6 +122,7 @@ impl ChunkPlanner {
             passes: Vec::new(),
             pass_owners: Vec::new(),
             next_pass: vec![0; partitions as usize],
+            served: vec![BTreeSet::new(); partitions as usize],
             rates: vec![None; partitions as usize],
             gpu_rate: None,
         }
@@ -192,7 +197,9 @@ impl ChunkPlanner {
                 return None;
             }
             if (pass_index as usize) < self.passes.len() {
-                if self.pass_owners[pass_index as usize] == PassOwner::Gpu {
+                if self.pass_owners[pass_index as usize] == PassOwner::Gpu
+                    || self.served[slot].contains(&pass_index)
+                {
                     pass_index += 1;
                     continue;
                 }
@@ -210,6 +217,7 @@ impl ChunkPlanner {
         }
         let (sample_offset, spp) = self.passes[pass_index as usize];
         self.next_pass[slot] = pass_index + 1;
+        self.served[slot].insert(pass_index);
         Some(ChunkAssignment {
             pass_index,
             first_pixel: partition,
@@ -225,7 +233,13 @@ impl ChunkPlanner {
     pub fn next_gpu_pass(&mut self) -> Option<(u64, u32, u32)> {
         for i in 0..self.passes.len() {
             if self.pass_owners[i] == PassOwner::Cpu {
-                let unassigned = self.next_pass.iter().all(|&next| (next as usize) <= i);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a plan holds a few dozen passes, far below u32::MAX"
+                )]
+                let pass_u32 = i as u32;
+                // Unassigned: no partition was ever handed this pass.
+                let unassigned = self.served.iter().all(|s| !s.contains(&pass_u32));
                 if unassigned {
                     self.pass_owners[i] = PassOwner::Gpu;
                     let (offset, spp) = self.passes[i];
@@ -246,7 +260,7 @@ impl ChunkPlanner {
         let pass_index = self.passes.len() as u32;
         self.passes.push((offset, spp));
         self.pass_owners.push(PassOwner::Gpu);
-        Some((pass_index as u64, offset, spp))
+        Some((u64::from(pass_index), offset, spp))
     }
 
     /// Turns an unfinished GPU pass back into a CPU pass, so its partitions get scheduled.
@@ -323,10 +337,14 @@ impl ChunkPlanner {
     /// handed the same pass again by its next [`Self::next_chunk`]. Does nothing unless
     /// `assignment` is the partition's most recent one.
     pub fn unassign(&mut self, assignment: &ChunkAssignment) {
-        if let Some(next) = self.next_pass.get_mut(assignment.first_pixel as usize)
+        let slot = assignment.first_pixel as usize;
+        if let Some(next) = self.next_pass.get_mut(slot)
             && *next == assignment.pass_index + 1
         {
             *next = assignment.pass_index;
+            if let Some(served) = self.served.get_mut(slot) {
+                served.remove(&assignment.pass_index);
+            }
         }
     }
 

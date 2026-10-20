@@ -7,6 +7,27 @@ use crate::optics::{
 };
 use glam::Vec3;
 
+/// Spessartine's absorption (Mn2+ lines and bands plus a UV charge-transfer edge), fitted to a
+/// measured spectrum; see the comment at the entry below. A separate function so the entry stays
+/// within clippy's function-length limit.
+fn spessartine_absorption() -> AbsorptionTensor {
+    AbsorptionTensor::isotropic(vec![
+        // UV / O->Mn charge-transfer edge (stand-in, centre on the bound)
+        AbsorptionBand::energy(320.0, 7_023.0, 27.4),
+        // Mn2+ 6A1 -> 4E,4A1 (4G) group
+        AbsorptionBand::energy(411.0, 556.0, 14.2),
+        AbsorptionBand::energy(421.0, 419.0, 6.62),
+        AbsorptionBand::energy(429.0, 659.0, 8.24),
+        // Mn2+ 4T2 (G)
+        AbsorptionBand::energy(462.0, 1_551.0, 2.23),
+        AbsorptionBand::energy(485.0, 811.0, 1.59),
+        // Mn2+ 4T1 (G) + Fe2+ 505/520
+        AbsorptionBand::energy(523.0, 1_971.0, 1.57),
+        // weak 550-620 nm tail (sets T(600) = 0.86; without it L*80 C*78)
+        AbsorptionBand::energy(590.0, 3_000.0, 0.132),
+    ])
+}
+
 impl GemMaterial {
     /// Three of the five garnet-group species (the other two, Grossular and
     /// Andradite, are [`Self::built_in_materials_garnets_grossular_and_andradite`] --
@@ -97,14 +118,20 @@ impl GemMaterial {
                     c: 0.0,
                 },
                 birefringence_delta: 0.0,
-                // Chromophore: Mn2+ 410/430/460nm triplet, blocking violet-blue and
-                // leaving spessartine's vivid orange transmitted. Widths (20nm each)
-                // and peaks (1.0/1.2/1.0) TUNED; band CENTRES cited.
-                absorption: AbsorptionTensor::isotropic(vec![
-                    AbsorptionBand::new(410.0, 20.0, 1.0),
-                    AbsorptionBand::new(430.0, 20.0, 1.2),
-                    AbsorptionBand::new(460.0, 20.0, 1.0),
-                ]),
+                // Chromophore: Mn2+ spin-forbidden lines at 411/421/429 nm (the
+                // near-UV cut-off), the 462 and 485 nm Mn2+ bands and the weak 523 nm
+                // Mn2+/Fe2+ band, plus a UV charge-transfer edge (stand-in band at
+                // 320 nm). FITTED 2026-10-19 by a bounded
+                // least-squares energy-Gaussian fit (log residual, 380-780 nm) to the
+                // Caltech Mineral Spectroscopy Server spectrum of spessartine GRR 43
+                // (Rutherford Mine, Amelia, Virginia; 2.165 mm; baseline 0.030
+                // removed),
+                // `data/reference_spectra/caltech_spessartine_grr43_2p165mm.csv`,
+                // scaled to the 8.8 mm face-up path of a 7 mm stone at the sample's
+                // own (near end-member, Fe-poor "Mandarin") composition. Swatch
+                // (7 mm, D65): L*77 C*72 h=66; p = 1.5: h 63, p = 2: h 61. The
+                // Fe-richer GRR 72 from the same mine gives L*51 h 62.
+                absorption: spessartine_absorption(),
                 c_axis: Vec3::Y,
                 biaxial_delta_beta_alpha: None,
                 scattering_sigma_s: 0.0,

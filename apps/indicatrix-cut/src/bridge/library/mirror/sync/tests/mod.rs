@@ -2,6 +2,7 @@
 //! scripted, in-memory [`LibraryTransport`](crate::bridge::library::mirror::options::LibraryTransport).
 
 mod fixtures;
+mod frosting;
 mod revision;
 
 use super::pass::run_mirror_sync;

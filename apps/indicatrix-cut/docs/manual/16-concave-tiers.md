@@ -30,6 +30,12 @@ Groove   -42.00 deg ...  indices [0, 2, 4, 6, 8, 10, 12, 14]
 CYL                  0.00°   X = 0.000, Y = 0.150, Z = 0.030   D/W = 0.250, reciprocating
 ```
 
+The **stone width** in these ratios is the finished stone's width W, the same W as the
+sheet's L/W, C/W and P/W (Chapter 11, Size Data): the girdle width of the flat design before
+any tool has cut. It is one number for the whole design, whatever stage the stone is at when
+a concave tier is cut, so a `D/W` of 0.250 on a stone cut to a width of 10 mm is a 2.5 mm
+tool. The width in millimetres is the design's Stone Width (Chapter 2).
+
 The two lines are one tier: they share one shaded band in every table. Concave
 tiers are cut after the flat faceting of their section — at the end of the pavilion
 and girdle section, and at the end of the crown, directly above the table.
@@ -106,10 +112,9 @@ removed. The tool's facets have their own ids, so hover and picking name them.
 
 Rendering a stone with tools:
 
-- The **path tracer runs on the CPU**, whatever the local compute setting: the GPU
-  kernels do not know about tools, so a concave stone is never offered to the GPU
-  (the GPU status pill stays quiet, since nothing is wrong). A render of a concave
-  design is slower than the same design without its tools.
+- The **path tracer follows the local compute setting**: the GPU kernels trace the
+  tools along with the planes, up to the 128 tool placements a design can hold.
+  A render of a concave design is slower than the same design without its tools.
 - A **remote worker** receives the tools with the scene and traces the same stone,
   so local, remote and combined renders agree.
 - The **optical metrics** (brilliance, windowing, extinction, scintillation, fire),
@@ -141,7 +146,6 @@ footnotes) and needs no question: nothing is lost.
 
 ## Limitations
 
-- **The GPU does not trace tools.** A concave stone renders on the CPU; see above.
 - **The Rough Planner fits the carved outline.** It measures a design with concave
   tiers from its carved stone (Chapter 15): the volume, carat and yield, the width,
   length and height, and the outline it places in the rough all come from the
@@ -158,12 +162,19 @@ footnotes) and needs no question: nothing is lost.
 - **The Compare window** (Chapter 14) draws, traces and measures a concave stone
   with its tools. Tracing is on the CPU, so a slow concave side may be traced at a
   lower sample count; the status line says so.
-- **One tool, one cut.** A tier's tool is placed once per index and each cut is
-  taken from the flat stone's measured width; concave edits never move the stone's
-  width, length or height, which come from the flat tiers.
-- **Library previews** of a design that has no real design file are rebuilt from the
-  stored angle table, which has no place for a tool: its concave rows are left out of
-  that placeholder stone.
+- **One tool, one cut.** A tier's tool is placed once per index, and every placement is
+  sized and positioned from the finished flat stone's width W (see "How a Concave Tier Is
+  Written"); concave edits never move the stone's width, length or height, which come from
+  the flat tiers. If a tool removes a vertex that sets the width (the manufacturability
+  check says so), the carved stone is narrower than W, and W stays the flat stone's, as a
+  printed diagram's W would.
+- **Previews and scoring use the stone with its tools.** The solid view, the Cut slider,
+  the History pictures, the library's previews and tilt curves, the optimizer, Retarget and
+  the angle sweep all draw or measure the stone with its tools. A library design with no
+  real design file (only an angle table) takes its tools from the table's concave rows,
+  which hold each tool at the cutting sheet's rounded precision (angles to two decimals,
+  ratios to three), so such a preview can differ from the design file's own by that
+  rounding.
 
 ## Next Steps
 

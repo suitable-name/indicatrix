@@ -95,6 +95,10 @@ pub mod manufacturability;
 /// [`material::MaterialSelection`] and the built-in refractive-index/specific-
 /// gravity lookup tables a design resolves its optics against.
 pub mod material;
+/// Shared hard preservation gate for planar optimization and material Retarget.
+///
+/// See the module's own documentation for the preservation contract.
+pub mod meet_preservation;
 /// The `.isdd` design file's conversions, plus the catalogue `.asc` text a save stores
 /// next to it.
 ///
@@ -152,8 +156,8 @@ pub use cutting_sheet::{
 };
 pub use design::{
     ConstraintTier, Design, DesignSolveError, DesignTierCodes, FreshDesignSpec, MissingAnchor,
-    ScheduleMeta, SolveMismatch, StoneRenderEffects, TargetResolveError, TierId, TierLabelInfo,
-    TierTarget, compute_tier_labels, convert_legacy_facet_name, is_legacy_123_abc,
+    ScheduleMeta, SolveMismatch, StoneRenderEffects, TargetResolveError, TierFrosting, TierId,
+    TierLabelInfo, TierTarget, compute_tier_labels, convert_legacy_facet_name, is_legacy_123_abc,
     name_indicates_pavilion,
 };
 pub use edit::{
@@ -178,10 +182,11 @@ pub use optimize::{
     ObjectiveFidelity, ObjectivePreset, ObjectiveWeights, OptimizeCandidate, OptimizeConfig,
     OptimizeOptions, OptimizeOutcome, OptimizeResult, SearchHooks, ShapeTarget, ToneGoal,
     apply_optimize_candidate, apply_optimize_outcome, apply_optimize_result, evaluate_objective,
+    evaluate_objective_geom_under, evaluate_objective_geom_under_threaded,
     evaluate_objective_threaded, evaluate_objective_under, evaluate_objective_under_threaded,
-    evaluate_objective_with_tone, evaluate_objective_with_tone_under,
-    evaluate_objective_with_tone_under_threaded, free_tier_indices, free_tier_indices_with,
-    optimize_design, optimize_design_with,
+    evaluate_objective_with_tone, evaluate_objective_with_tone_geom_under_threaded,
+    evaluate_objective_with_tone_under, evaluate_objective_with_tone_under_threaded,
+    free_tier_indices, free_tier_indices_with, optimize_design, optimize_design_with,
 };
 pub use orbit::{OrbitUnit, expected_orbit, mirror_indices, orbit_units, rotate_indices};
 pub use preform::{PlaneSet, PreformShape, PreformSpec};

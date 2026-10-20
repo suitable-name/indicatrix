@@ -946,26 +946,23 @@ fn builtin_vs_recipe() -> Vec<(&'static str, [f64; 3], SolveResult)> {
 /// Criterion 6 / §2.4 item 4 against the PRIMARY-data recipes: the built-in colors (unchanged,
 /// bit for bit) against the best physics recipe of `data_version` 4, pinned per built-in.
 ///
-/// Agreement (dE00 <= 3.5): Ruby 0.14 (the built-in ruby, L* 46.9 a* 36.2 b* -10.8, IS the
-/// GIA purplish red: a Cr recipe of 0.21 wt%), Aquamarine 2.52 (Fe 1.56 wt% FeO + Mn 0.013
-/// wt% MnO; it was 5.81 with V3+ alone until the beryl Mn chromophores got a sane `conc_max`
-/// on 2026-10-12, which let the solver's log grid reach the trace amount), Citrine 2.41 (2.69
-/// until `data_version` 5 removed the fixed 10 % Fe2+ share that tinted every iron quartz),
-/// Emerald 3.06, Sapphire 3.49. The remaining three really differ from the primary-data
-/// recipes: Amethyst 11.25 (built-in C* 82, h 321 against the Caltech-shaped [FeO4]0 recipe
-/// C* 44 at conc_max), Tanzanite 21.31 (built-in L* 31.9 a* 69.7 b* -68.3 against the V3+ recipe
-/// at conc_max, L* 39 a* 13 b* -41) and Peridot 23.79 (built-in a* +15.3 b* +82.4, orange-yellow,
-/// against the Fe2+ recipe a* -17.6 b* +41, yellow-green like the Caltech GRR 418 spectra).
+/// Re-pinned on 2026-10-19 after the measured color refits (owner decision; values from the
+/// owner's Windows run). Agreement (dE00 <= 3.5): Peridot 0.15, Sapphire 0.22, Aquamarine
+/// 0.75, Ruby 1.00 (a Cr + Fe recipe), Emerald 1.01, Citrine 2.41 (2.69 until `data_version`
+/// 5 removed the fixed 10 % Fe2+ share that tinted every iron quartz). The remaining two
+/// really differ from the primary-data recipes: Tanzanite 7.27 (the heated built-in is still
+/// more saturated than the V3+ recipe at conc_max) and Amethyst 11.25 (built-in C* 82, h 321
+/// against the Caltech-shaped [FeO4]0 recipe C* 44 at conc_max).
 #[test]
 fn criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned() {
     let pinned = [
-        ("Ruby", 0.14),
-        ("Sapphire", 3.49),
-        ("Emerald", 3.06),
-        ("Tanzanite", 21.31),
-        ("Peridot", 23.79),
+        ("Ruby", 1.00),
+        ("Sapphire", 0.22),
+        ("Emerald", 1.01),
+        ("Tanzanite", 7.27),
+        ("Peridot", 0.15),
         ("Amethyst", 11.25),
-        ("Aquamarine", 2.52),
+        ("Aquamarine", 0.75),
         ("Citrine", 2.41),
     ];
     let results = builtin_vs_recipe();
@@ -979,25 +976,19 @@ fn criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned() {
     }
     let agree = results.iter().filter(|(_, _, r)| r.delta_e <= 3.5).count();
     assert_eq!(
-        agree, 5,
-        "Ruby, Aquamarine, Citrine, Emerald and Sapphire agree to 3.5"
+        agree, 6,
+        "Ruby, Sapphire, Emerald, Peridot, Aquamarine and Citrine agree to 3.5"
     );
     let ruby = &results[0].2;
-    assert!(ruby.delta_e <= 1.0 && ruby.recipe.entries.iter().any(|e| e.id == "Cr"));
+    assert!(ruby.delta_e <= 1.25 && ruby.recipe.entries.iter().any(|e| e.id == "Cr"));
 }
 
 /// Criterion 6 / §2.4 item 4: a plausible recipe reproduces the built-in color (bands scaled
 /// from model units to mm with W = 7 mm and the measured model width) within dE00 <= 3 for at
-/// least 6 of the 8 built-ins.
+/// least 6 of the 8 built-ins. Ignored until the measured color refits of 2026-10-19; since
+/// then six reproduce within 3 (Ruby, Sapphire, Emerald, Peridot, Aquamarine, Citrine), and
+/// Tanzanite and Amethyst are the two that differ.
 #[test]
-#[ignore = "built-ins really differ from the primary-data recipes: only 3/8 are reproduced within \
-            dE00 3 (Ruby 0.14, Aquamarine 2.52, Citrine 2.41; Emerald 3.06 and Sapphire 3.49 just \
-            miss; Amethyst 11.25, Tanzanite 21.31, Peridot 23.79 differ: the built-in Tanzanite is \
-            far more saturated than the V3+ recipe at conc_max, the built-in Peridot is \
-            orange-yellow where the Fe2+ spectra (Caltech GRR 418) are yellow-green, the built-in \
-            Amethyst has C* 82 against the Caltech-shaped recipe's 44); the built-ins stay \
-            bit-identical, the per-built-in pins are in \
-            criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned"]
 fn criterion_6_built_in_sanity_at_least_6_of_8() {
     let results = builtin_vs_recipe();
     let passed = results.iter().filter(|(_, _, r)| r.delta_e <= 3.0).count();

@@ -7,18 +7,22 @@ use std::{
 };
 
 use glam::Vec3;
+use indicatrix::geometry::tool::ToolPrimitive;
 
 use super::{
     cancel_url::CancelUrl,
+    gpu_slot::{GpuSlot, VerdictKey},
     handle::WorkerHandle,
     now_ms,
     picture_worker::PictureWorker,
     render_callbacks::{Callbacks, Deferred, finish},
+    render_spawn::{spawn_picture_worker, spawn_render_worker, start_watchdog},
+    slot_u32,
     watchdog::Watchdog,
 };
 use crate::{
     hdr::{HdrAdmission, admit_hdr},
-    protocol::{FromWorker, PictureKind, ToWorker},
+    protocol::{PictureKind, ToWorker},
     render::{Accumulator, ChunkAssignment, ChunkPlanner, DEFAULT_LIVE_SPP},
     scene::SceneSpec,
 };
@@ -80,17 +84,32 @@ impl Slot {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "four independent pool flags (GPU enabled, GPU admitted, running, scene failed), \
+              each read and written on its own; a state enum would only hide that"
+)]
 pub(super) struct Inner {
-    self_weak: Weak<RefCell<Self>>,
-    callbacks: Rc<Callbacks>,
+    pub(super) self_weak: Weak<RefCell<Self>>,
+    pub(super) callbacks: Rc<Callbacks>,
     default_workers: u32,
     pub(super) slots: Vec<Slot>,
+    pub(super) gpu: Option<GpuSlot>,
+    pub(super) gpu_enabled: bool,
+    pub(super) gpu_admitted: bool,
+    pub(super) hdr_texels: Option<u64>,
     /// The Worker that makes pictures, spawned on the first request.
     pub(super) picture_worker: Option<PictureWorker>,
-    retired: Vec<WorkerHandle>,
-    next_spawn_id: u64,
+    /// The GPU eligibility verdict of the current scene (see `gpu_verdict`).
+    pub(super) verdict_cache: Option<(VerdictKey, Option<&'static str>)>,
+    pub(super) retired: Vec<WorkerHandle>,
+    pub(super) next_spawn_id: u64,
     pub(super) scene_id: u64,
     pub(super) spec: Option<SceneSpec>,
+    pub(super) engine: indicatrix::renderer::engine::EngineSpec,
+    /// The concave tools of the current scene (empty for a planar stone), cut out of
+    /// `spec`'s planes on every Worker that traces or denoises it.
+    pub(super) tools: Vec<ToolPrimitive>,
     pub(super) hdr: Option<(u64, Rc<Vec<u8>>)>,
     pub(super) accumulator: Rc<RefCell<Accumulator>>,
     pub(super) planner: ChunkPlanner,
@@ -110,8 +129,8 @@ pub(super) struct Inner {
 /// Worker never stops tracing for one.
 #[derive(Clone)]
 pub struct RenderPool {
-    inner: Rc<RefCell<Inner>>,
-    callbacks: Rc<Callbacks>,
+    pub(super) inner: Rc<RefCell<Inner>>,
+    pub(super) callbacks: Rc<Callbacks>,
 }
 
 impl RenderPool {
@@ -124,11 +143,18 @@ impl RenderPool {
                 callbacks: Rc::clone(&callbacks),
                 default_workers: workers,
                 slots: Vec::new(),
+                gpu: None,
+                gpu_enabled: false,
+                gpu_admitted: false,
+                hdr_texels: None,
+                verdict_cache: None,
                 picture_worker: None,
                 retired: Vec::new(),
                 next_spawn_id: 0,
                 scene_id: 0,
                 spec: None,
+                engine: indicatrix::renderer::engine::EngineSpec::default(),
+                tools: Vec::new(),
                 hdr: None,
                 accumulator: Rc::new(RefCell::new(Accumulator::new(0, 0, 0, workers))),
                 planner: ChunkPlanner::new(workers, 0, DEFAULT_LIVE_SPP),
@@ -159,10 +185,40 @@ impl RenderPool {
     /// in flight for the old scene are told to stop (a Worker looks between row groups);
     /// whatever arrives for it is dropped. Keeps running if it was running.
     pub fn set_scene(&self, spec: SceneSpec) {
+        self.set_scene_with_tools(spec, Vec::new());
+    }
+
+    /// [`Self::set_scene`] for a concave stone: `spec`'s planes minus `tools` (the resolved
+    /// cutting tools in cutting order, e.g. `Design::tools_for_scoring`). Every Worker that
+    /// traces or denoises the scene -- the render Workers, the GPU Worker (when
+    /// [`Self::gpu_ineligibility_reason`] allows it) and the picture Worker -- gets the same
+    /// tools, so no engine traces a flatter stone than another. With no tools this is exactly
+    /// [`Self::set_scene`], and the Workers are sent the same `SetScene` message as before.
+    pub fn set_scene_with_tools(&self, spec: SceneSpec, tools: Vec<ToolPrimitive>) {
+        self.set_scene_with_engine(
+            spec,
+            tools,
+            indicatrix::renderer::engine::EngineSpec::default(),
+        );
+    }
+
+    /// Replaces geometry and engine atomically, so samples from different tracers never mix.
+    pub fn set_scene_with_engine(
+        &self,
+        spec: SceneSpec,
+        tools: Vec<ToolPrimitive>,
+        engine: indicatrix::renderer::engine::EngineSpec,
+    ) {
         let deferred = {
             let mut inner = self.inner.borrow_mut();
             inner.retired.clear();
             inner.spec = Some(spec);
+            inner.tools = tools;
+            if inner.engine.engine != engine.engine {
+                inner.gpu_admitted = false;
+            }
+            inner.engine = engine;
+            inner.target_spp = engine.target_samples(inner.target_spp);
             inner.restart_scene()
         };
         self.finish(deferred);
@@ -198,6 +254,8 @@ impl RenderPool {
                 .map_err(|e| e.to_string())?;
             let bytes = Rc::clone(bytes);
             inner.hdr = Some((id, Rc::clone(&bytes)));
+            let texels = u64::from(admission.width) * u64::from(admission.height);
+            inner.hdr_texels = Some(texels);
             let resized = inner.slots.len() != admission.workers as usize;
             inner.resize(admission.workers)?;
             let mut deferred = Deferred::default();
@@ -207,6 +265,15 @@ impl RenderPool {
                     bytes: bytes.as_ref().clone(),
                 };
                 if let Err(error) = slot.handle.post(&message) {
+                    deferred.errors.push(error);
+                }
+            }
+            if let Some(gpu) = inner.gpu.as_ref().filter(|g| g.state == SlotState::Ready) {
+                let message = ToWorker::HdrMap {
+                    id,
+                    bytes: bytes.as_ref().clone(),
+                };
+                if let Err(error) = gpu.handle.post(&message) {
                     deferred.errors.push(error);
                 }
             }
@@ -232,11 +299,17 @@ impl RenderPool {
             let mut inner = self.inner.borrow_mut();
             inner.retired.clear();
             inner.hdr = None;
+            inner.hdr_texels = None;
             let mut deferred = Deferred::default();
             for slot in inner.slots.iter().filter(|s| s.state == SlotState::Ready) {
                 if let Err(error) = slot.handle.post(&ToWorker::ClearHdr) {
                     deferred.errors.push(error);
                 }
+            }
+            if let Some(gpu) = inner.gpu.as_ref().filter(|g| g.state == SlotState::Ready)
+                && let Err(error) = gpu.handle.post(&ToWorker::ClearHdr)
+            {
+                deferred.errors.push(error);
             }
             let target = inner.default_workers;
             let resized = inner.slots.len() != target as usize;
@@ -255,6 +328,7 @@ impl RenderPool {
     pub fn start(&self, target_spp: u32) {
         let deferred = {
             let mut inner = self.inner.borrow_mut();
+            let target_spp = inner.engine.target_samples(target_spp);
             inner.target_spp = target_spp;
             inner.planner.set_target_spp(target_spp);
             inner.running = true;
@@ -292,7 +366,7 @@ impl RenderPool {
     /// The render-Worker count (the partition count of new scenes).
     #[must_use]
     pub fn worker_count(&self) -> u32 {
-        self.inner.borrow().slots.len() as u32
+        slot_u32(self.inner.borrow().slots.len())
     }
 
     /// The current scene's accumulator (replaced, not reset, by [`Self::set_scene`]).
@@ -318,11 +392,25 @@ impl RenderPool {
     /// post fails.
     pub fn request_picture(&self, kind: PictureKind) -> Result<u64, String> {
         let mut inner = self.inner.borrow_mut();
+        let kind = match kind {
+            PictureKind::DenoisedLive if !inner.engine.denoises() => {
+                return Err("Ray-Traced is final without denoising.".to_owned());
+            }
+            PictureKind::Png {
+                color_space,
+                denoise,
+            } => PictureKind::Png {
+                color_space,
+                denoise: denoise && inner.engine.denoises(),
+            },
+            live @ PictureKind::DenoisedLive => live,
+        };
         inner.retired.clear();
         let scene_id = inner.scene_id;
         let Some(spec) = inner.spec.clone() else {
             return Err("there is no scene to make a picture of".to_string());
         };
+        let tools = inner.tools.clone();
         let (sample_count, sums) = {
             let accumulator = inner.accumulator.borrow();
             if accumulator.sample_count() == 0 {
@@ -336,7 +424,7 @@ impl RenderPool {
             .picture_worker
             .as_mut()
             .ok_or("the picture worker is not running")?;
-        worker.request(scene_id, &spec, sample_count, sums, kind)?;
+        worker.request(scene_id, &spec, &tools, sample_count, sums, kind)?;
         Ok(scene_id)
     }
 
@@ -344,12 +432,14 @@ impl RenderPool {
     /// finish a pass until [`Self::restart_workers`].
     #[must_use]
     pub fn failed_worker_count(&self) -> u32 {
-        self.inner
-            .borrow()
-            .slots
-            .iter()
-            .filter(|s| s.state == SlotState::Failed)
-            .count() as u32
+        slot_u32(
+            self.inner
+                .borrow()
+                .slots
+                .iter()
+                .filter(|s| s.state == SlotState::Failed)
+                .count(),
+        )
     }
 
     /// Terminates every render Worker and starts the same number afresh (the full
@@ -364,7 +454,7 @@ impl RenderPool {
         let deferred = {
             let mut inner = self.inner.borrow_mut();
             inner.retired.clear();
-            let count = match inner.slots.len() as u32 {
+            let count = match slot_u32(inner.slots.len()) {
                 0 => inner.default_workers,
                 n => n,
             };
@@ -382,23 +472,9 @@ impl RenderPool {
     }
 
     /// Runs the deferred callbacks with no borrow of the pool held.
-    fn finish(&self, deferred: Deferred) {
+    pub(super) fn finish(&self, deferred: Deferred) {
         finish(&self.callbacks, deferred);
     }
-}
-
-/// The silence watchdog: every few seconds, Workers that went quiet while holding a
-/// chunk are replaced.
-fn start_watchdog(weak: &Weak<RefCell<Inner>>, callbacks: &Rc<Callbacks>) -> Option<Watchdog> {
-    let weak = weak.clone();
-    let callbacks = Rc::clone(callbacks);
-    Watchdog::start(move || {
-        let Some(inner) = weak.upgrade() else {
-            return;
-        };
-        let deferred = inner.borrow_mut().check_silence(now_ms());
-        finish(&callbacks, deferred);
-    })
 }
 
 impl Inner {
@@ -412,7 +488,7 @@ impl Inner {
             }
         }
         while self.slots.len() < count as usize {
-            let index = self.slots.len() as u32;
+            let index = slot_u32(self.slots.len());
             let spawn_id = self.next_spawn_id;
             self.next_spawn_id += 1;
             let handle = spawn_render_worker(&self.self_weak, &self.callbacks, index, spawn_id)?;
@@ -430,7 +506,8 @@ impl Inner {
         }
         let spawn_id = self.next_spawn_id;
         self.next_spawn_id += 1;
-        let handle = spawn_render_worker(&self.self_weak, &self.callbacks, index as u32, spawn_id)?;
+        let handle =
+            spawn_render_worker(&self.self_weak, &self.callbacks, slot_u32(index), spawn_id)?;
         let slot = &mut self.slots[index];
         let old = std::mem::replace(&mut slot.handle, handle);
         old.terminate();
@@ -453,9 +530,16 @@ impl Inner {
                 drop(chunk.cancel.take());
             }
         }
+        if let Some(gpu) = &mut self.gpu {
+            // The Worker may still be tracing the old scene's pass: it stays counted as owed
+            // until the Worker answers, and that answer is discarded as stale. The planner
+            // is replaced below, so nothing is handed back.
+            let _ = gpu.ledger.abandon_live();
+            gpu.resent_scene = None;
+        }
         self.scene_id += 1;
         self.scene_failed = false;
-        let partitions = self.slots.len().max(1) as u32;
+        let partitions = slot_u32(self.slots.len().max(1));
         let (width, height) = self
             .spec
             .as_ref()
@@ -474,16 +558,17 @@ impl Inner {
         );
         let mut deferred = Deferred::default();
         if let Some(spec) = &self.spec {
-            let message = ToWorker::SetScene {
-                scene_id: self.scene_id,
-                spec: spec.clone(),
-            };
+            let message = ToWorker::scene(self.scene_id, spec.clone(), &self.tools);
             for slot in self.slots.iter().filter(|s| s.state == SlotState::Ready) {
                 if let Err(error) = slot.handle.post(&message) {
                     deferred.errors.push(error);
                 }
+                if let Err(error) = self.post_engine_to(&slot.handle) {
+                    deferred.errors.push(error);
+                }
             }
         }
+        self.send_scene_to_gpu(&mut deferred, false);
         deferred.absorb(self.schedule());
         deferred
     }
@@ -522,7 +607,7 @@ impl Inner {
             if slot.state != SlotState::Ready || slot.busy {
                 continue;
             }
-            let Some(assignment) = self.planner.next_chunk(index as u32, completed) else {
+            let Some(assignment) = self.planner.next_chunk(slot_u32(index), completed) else {
                 continue;
             };
             let cancel = CancelUrl::create();
@@ -558,6 +643,7 @@ impl Inner {
                 }
             }
         }
+        self.schedule_gpu(&mut deferred);
         deferred
     }
 
@@ -585,70 +671,4 @@ impl Inner {
             self.retired.push(worker.into_handle());
         }
     }
-}
-
-fn spawn_render_worker(
-    weak: &Weak<RefCell<Inner>>,
-    callbacks: &Rc<Callbacks>,
-    index: u32,
-    spawn_id: u64,
-) -> Result<WorkerHandle, String> {
-    let on_message = {
-        let weak = weak.clone();
-        let callbacks = Rc::clone(callbacks);
-        move |message: FromWorker| {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            let deferred = inner
-                .borrow_mut()
-                .on_message(index as usize, spawn_id, message);
-            finish(&callbacks, deferred);
-        }
-    };
-    let on_error = {
-        let weak = weak.clone();
-        let callbacks = Rc::clone(callbacks);
-        move |message: String| {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            let deferred = inner
-                .borrow_mut()
-                .on_crash(index as usize, spawn_id, &message);
-            finish(&callbacks, deferred);
-        }
-    };
-    WorkerHandle::spawn(on_message, on_error)
-}
-
-fn spawn_picture_worker(
-    weak: &Weak<RefCell<Inner>>,
-    callbacks: &Rc<Callbacks>,
-    spawn_id: u64,
-    worker_index: u32,
-) -> Result<PictureWorker, String> {
-    let on_message = {
-        let weak = weak.clone();
-        let callbacks = Rc::clone(callbacks);
-        move |message: FromWorker| {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            let deferred = inner.borrow_mut().on_picture_message(spawn_id, message);
-            finish(&callbacks, deferred);
-        }
-    };
-    let on_error = {
-        let weak = weak.clone();
-        let callbacks = Rc::clone(callbacks);
-        move |message: String| {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            let deferred = inner.borrow_mut().on_picture_crash(spawn_id, &message);
-            finish(&callbacks, deferred);
-        }
-    };
-    PictureWorker::spawn(spawn_id, worker_index, on_message, on_error)
 }

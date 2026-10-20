@@ -4,7 +4,7 @@ use super::*;
 use crate::retarget::{
     CrownShift,
     anchors::anchored_candidate,
-    apply_with_anchors, build_plan,
+    build_plan,
     validity::{KNIFE_EDGE_PERCENT, MIN_GIRDLE_FRACTION, ValidityStatus},
 };
 use indicatrix::geometry::stone_metrics::{SolidStatus, build_solid_mesh};
@@ -14,7 +14,11 @@ use indicatrix_cut_core::{
         girdle_band::{corner_resolution, girdle_walls, wall_thinnest_within},
         hinge::FacetSide,
     },
+    meet_preservation::PreservationPolicy,
 };
+
+/// The travel a retarget's facet turn implies, which the Retarget policy grants.
+mod turn;
 
 fn selection(name: &str) -> MaterialSelection {
     MaterialSelection {
@@ -208,18 +212,25 @@ fn diamond_to_sapphire_keeps_the_girdle_and_closes() {
         result.validity.reasons
     );
 
-    // The retargeted stone closes and has a girdle of the thickness the stone had: every
-    // facet turns about its girdle edge. (Whether the corners keep their thickness is the
-    // gate's separate question, `assert_corners_kept`.)
+    // The retargeted stone closes and its girdle figure drifts by exactly what the girdle
+    // OUTLINE contract implies (owner decision 2026-10-19: pin the drift, not a ceiling). Every
+    // facet turns about its outline corners, which are held, and the figure is read at the
+    // ridge points 0.064 R inside them along a break's axis, so it moves by that times the
+    // breaks' tangent change: 0.064 R x (tan 44.3 - tan 41 + tan 52.5 - tan 42.5) = 0.0316 R
+    // = 1.58 points of this 2 R wide stone (replica: 5.961 % to 7.539 %). Whether the corners
+    // keep their thickness is the gate's separate question, `assert_corners_kept`.
     let figures = result.validity.figures;
     let was = figures.girdle_was.expect("the design has a girdle");
     let now = figures
         .girdle_now
         .expect("the retargeted stone closes and has a girdle");
-    assert!((was - now).abs() < 1e-3, "girdle {was} % became {now} %");
+    assert!(
+        ((now - was).abs() - 1.58).abs() < 0.15,
+        "girdle {was} % became {now} %: the outline contract moves it by 1.58 points"
+    );
     assert!(result.metrics.retargeted_in_target.is_some());
     let mut applied = design.clone();
-    let edit = apply_with_anchors(&design, &plan.proposal(), &result.anchors);
+    let edit = result.validated_edit(&design).expect("preserved retarget");
     History::new()
         .apply(&mut applied, edit)
         .expect("the batch applies");
@@ -234,6 +245,23 @@ fn diamond_to_sapphire_keeps_the_girdle_and_closes() {
         .expect("the table is listed");
     assert!(!table.moves);
     assert!(table.new_angle.abs() < 1e-12 && table.new_angle.is_sign_positive());
+}
+
+/// The original meet network still holds for `applied` after it is saved and reopened.
+fn assert_meets_survive_saving(result: &RetargetCheck, applied: &Design) {
+    let baseline = result.baseline.as_ref().expect("original meet network");
+    let text = indicatrix_cut_core::native::design_to_string(
+        applied,
+        None,
+        &indicatrix_cut_core::native::DesignExtras::default(),
+    )
+    .unwrap();
+    let reopened = indicatrix_cut_core::native::design_from_str(&text)
+        .unwrap()
+        .design;
+    baseline
+        .validate(&reopened, PreservationPolicy::RETARGET)
+        .expect("the original meets survive saving and reopening");
 }
 
 #[test]
@@ -303,14 +331,28 @@ fn the_owners_sapphire_case_keeps_the_table_on_the_crown_side() {
         assert_eq!(hinged.tiers[flat], design.tiers[flat], "tier {flat}");
     }
 
-    // The full Shift path: the plan's angles plus the checked masts, as the one edit that
+    // The full Shift path: the checked coupled angles and masts, as the one edit that
     // Apply commits. Whatever the checked masts say about the table, its ANGLE is the
     // one it had, bit for bit, so it is still a level plane.
     let mut applied = design.clone();
-    let edit = apply_with_anchors(&design, &plan.proposal(), &result.anchors);
+    let edit = result.validated_edit(&design).expect("preserved retarget");
     History::new()
         .apply(&mut applied, edit)
         .expect("the batch applies");
+    assert_eq!(
+        Some(&applied),
+        result.candidate.as_ref(),
+        "Apply uses the exact checked state"
+    );
+    assert!(
+        applied
+            .tiers
+            .iter()
+            .zip(&design.tiers)
+            .any(|(a, b)| (a.angle_deg - b.angle_deg).abs() > 1e-3),
+        "retarget must make useful motion"
+    );
+    assert_meets_survive_saving(&result, &applied);
     for flat in [table.tier_index, culet] {
         assert_eq!(
             applied.tiers[flat].angle_deg.to_bits(),
@@ -390,7 +432,7 @@ fn follow_pavilion_moves_the_table_height_with_the_crown() {
 
     // The table's ANGLE is the one it had, bit for bit.
     let mut applied = design.clone();
-    let edit = apply_with_anchors(&design, &plan.proposal(), &result.anchors);
+    let edit = result.validated_edit(&design).expect("preserved retarget");
     History::new()
         .apply(&mut applied, edit)
         .expect("the batch applies");
@@ -426,17 +468,17 @@ fn the_owners_emerald_case_keeps_a_live_girdle_and_closes() {
         "the pinned facets must be re-anchored"
     );
 
-    // The girdle is live in the retargeted stone and its overall figure is exactly what it
-    // was: every facet turns about the wall vertices that figure is read from. That figure
-    // cannot see the band run out between the walls, and the Shift result does exactly
-    // that, so the gate must refuse it for the corners.
+    // The girdle is live in the retargeted stone and its overall figure stays within one
+    // percentage point. The girdle OUTLINE is the contract (owner decision, 2026-10-19):
+    // every facet turns about its outline corners and the gate holds the outline, so the
+    // Shift no longer thins the corners and the gate does not refuse it for them. The figure
+    // is read at the ridge points, which are not outline corners, so it may move a little.
     let figures = result.validity.figures;
     let was = figures.girdle_was.expect("the design has a girdle");
     let now = figures.girdle_now.expect("the girdle stays alive");
-    assert!((was - now).abs() < 1e-3, "girdle {was} % became {now} %");
-    assert_eq!(result.validity.status, ValidityStatus::Invalid);
+    assert!((now - was).abs() <= 1.0, "girdle {was} % became {now} %");
     assert!(
-        result
+        !result
             .validity
             .reasons
             .iter()
@@ -648,8 +690,8 @@ fn the_hinge_keeps_the_girdle_where_the_plain_shift_destroys_it() {
 fn applying_the_checked_anchors_is_one_undo_step() {
     let mut design = brilliant();
     let original = design.clone();
-    let (plan, result) = check(&design, "Sapphire", CrownShift::default());
-    let edit = apply_with_anchors(&design, &plan.proposal(), &result.anchors);
+    let (_, result) = check(&design, "Sapphire", CrownShift::default());
+    let edit = result.validated_edit(&design).expect("preserved retarget");
     let mut history = History::new();
     history.apply(&mut design, edit).expect("applies");
     assert!(history.undo(&mut design).unwrap());
@@ -685,7 +727,7 @@ fn without_a_current_material_the_first_column_is_missing() {
 }
 
 #[test]
-fn a_design_that_does_not_solve_is_unchecked_and_keeps_the_plain_edit() {
+fn a_design_that_does_not_solve_is_unchecked_and_cannot_be_applied() {
     // A pavilion tier with no anchor at all: the design has no scale reference.
     let mut design = brilliant();
     for tier in &mut design.tiers {
@@ -694,7 +736,8 @@ fn a_design_that_does_not_solve_is_unchecked_and_keeps_the_plain_edit() {
     let (_, result) = check(&design, "Sapphire", CrownShift::default());
     assert_eq!(result.validity.status, ValidityStatus::Unchecked);
     assert_eq!(result.anchors, Vec::new());
-    assert!(result.allows_apply());
+    assert!(!result.allows_apply());
+    assert!(result.validated_edit(&design).is_err());
 }
 
 #[test]

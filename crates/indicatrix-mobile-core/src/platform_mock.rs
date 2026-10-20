@@ -39,6 +39,10 @@ pub fn unique_temp_dir(tag: &str) -> PathBuf {
     ))
 }
 
+/// What the credential-vault calls report while the mock has no vault (the trait's own
+/// default message).
+const NO_VAULT: &str = "This platform has no encrypted credential vault.";
+
 #[derive(Default)]
 struct Recorded {
     pick_responses: VecDeque<Result<Vec<PickedFile>, PlatformError>>,
@@ -51,7 +55,14 @@ struct Recorded {
     keep_screen_on: Vec<bool>,
     urls: Vec<String>,
     thermal_headroom: Option<f32>,
+    metered: Option<bool>,
     incoming: Option<Arc<dyn Fn(Vec<PickedFile>) + Send + Sync>>,
+    /// The in-memory credential vault: the bundle [`Platform::store_remote_credentials`] kept.
+    credentials: Option<String>,
+    /// Whether the credential vault calls fail as on a platform without a vault.
+    vault_missing: bool,
+    /// Whether [`Platform::forget_remote_credentials`] fails and leaves the bundle in place.
+    forget_fails: bool,
 }
 
 /// A [`Platform`] that answers from scripted responses and records every call. See the
@@ -93,6 +104,30 @@ impl MockPlatform {
     /// Sets what [`Platform::thermal_headroom`] reports (`None` is the default).
     pub fn set_thermal_headroom(&self, headroom: Option<f32>) {
         self.lock().thermal_headroom = headroom;
+    }
+
+    /// Sets what [`Platform::network_metered`] reports (`None`, unknown, is the default).
+    pub fn set_network_metered(&self, metered: Option<bool>) {
+        self.lock().metered = metered;
+    }
+
+    /// Whether the in-memory credential vault exists (it does by default). Without it
+    /// [`Platform::store_remote_credentials`], [`Platform::load_remote_credentials`] and
+    /// [`Platform::forget_remote_credentials`] fail like the trait's defaults do.
+    pub fn set_vault_available(&self, available: bool) {
+        self.lock().vault_missing = !available;
+    }
+
+    /// Makes [`Platform::forget_remote_credentials`] fail (true) or succeed (false). A
+    /// failing call leaves the stored bundle where it is.
+    pub fn set_forget_failure(&self, fails: bool) {
+        self.lock().forget_fails = fails;
+    }
+
+    /// The bundle currently in the in-memory credential vault, if any.
+    #[must_use]
+    pub fn stored_credentials(&self) -> Option<String> {
+        self.lock().credentials.clone()
     }
 
     /// Hands `files` to the handler registered with [`Platform::set_incoming_handler`],
@@ -224,6 +259,41 @@ impl Platform for MockPlatform {
         self.lock().thermal_headroom
     }
 
+    fn network_metered(&self) -> Option<bool> {
+        self.lock().metered
+    }
+
+    fn store_remote_credentials(&self, bundle: &str) -> Result<(), PlatformError> {
+        let mut state = self.lock();
+        if state.vault_missing {
+            return Err(PlatformError::new(NO_VAULT));
+        }
+        state.credentials = Some(bundle.to_owned());
+        drop(state);
+        Ok(())
+    }
+
+    fn load_remote_credentials(&self) -> Result<Option<String>, PlatformError> {
+        let state = self.lock();
+        if state.vault_missing {
+            return Err(PlatformError::new(NO_VAULT));
+        }
+        Ok(state.credentials.clone())
+    }
+
+    fn forget_remote_credentials(&self) -> Result<(), PlatformError> {
+        let mut state = self.lock();
+        if state.vault_missing {
+            return Err(PlatformError::new(NO_VAULT));
+        }
+        if state.forget_fails {
+            return Err(PlatformError::new("The credentials could not be erased."));
+        }
+        state.credentials = None;
+        drop(state);
+        Ok(())
+    }
+
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
         self.lock().urls.push(url.to_owned());
         Ok(())
@@ -337,6 +407,30 @@ mod tests {
         assert_eq!(mock.thermal_headroom(), None);
         mock.set_thermal_headroom(Some(0.75));
         assert_eq!(mock.thermal_headroom(), Some(0.75));
+    }
+
+    #[test]
+    fn the_credential_vault_stores_loads_and_forgets() {
+        let mock = MockPlatform::default();
+        assert_eq!(mock.load_remote_credentials(), Ok(None));
+        mock.store_remote_credentials("bundle").expect("store");
+        assert_eq!(
+            mock.load_remote_credentials(),
+            Ok(Some("bundle".to_owned()))
+        );
+
+        mock.set_forget_failure(true);
+        assert!(mock.forget_remote_credentials().is_err());
+        assert_eq!(mock.stored_credentials().as_deref(), Some("bundle"));
+
+        mock.set_forget_failure(false);
+        mock.forget_remote_credentials().expect("forget");
+        assert_eq!(mock.load_remote_credentials(), Ok(None));
+
+        mock.set_vault_available(false);
+        assert!(mock.store_remote_credentials("x").is_err());
+        assert!(mock.load_remote_credentials().is_err());
+        assert!(mock.forget_remote_credentials().is_err());
     }
 
     #[test]

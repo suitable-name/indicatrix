@@ -24,6 +24,15 @@ const DISTANCE_SAMPLE_STREAM: u32 = 0xa24baed4u;
 const PHASE_DIR_U_STREAM: u32 = 0x9fb21c65u;
 const PHASE_DIR_V_STREAM: u32 = 0x1ce4e5b9u;
 
+// optics::raytracer::scattering::hg_nee::SHADOW_PROBE_OFFSET -- how far along the sampled
+// direction the Henyey-Greenstein NEE shadow probe starts from the scattering point. The
+// probe's origin lies that far INSIDE the material, so every in-material length it reports
+// is that much short of the path a phase-sampled continuation from the scattering point
+// itself travels; the NEE twins add it back (`nee_contribution_hg_scatter` and
+// `hg_walk_exits` in `transport_bounce/06_nee_sampling.wgsl`, `tf_nee_contribution_hg_scatter`
+// in `transport_functions/08_nee_and_intersect.wgsl`).
+const HG_SHADOW_PROBE_OFFSET: f32 = 1e-4;
+
 // optics::raytracer::henyey_greenstein_phase
 fn henyey_greenstein_phase(cos_theta: f32, g: f32) -> f32 {
     let g2 = g * g;

@@ -5,7 +5,7 @@
 //! which wraps the network in a schema-versioned header.
 
 use super::{GemstoneSetAttentionNetwork, checkpoint::TrainingMode};
-use crate::env::N_COMPONENTS;
+use crate::env::{MOBILITY_INDEX, N_COMPONENTS, WEIGHT_FRACTION_INDEX};
 use std::{
     fmt,
     io::{Read, Write},
@@ -120,8 +120,16 @@ impl GemstoneSetAttentionNetwork {
     /// # Errors
     /// [`WeightError::DimensionMismatch`] or [`WeightError::Invalid`] naming the first offending layer.
     pub fn validate(&self) -> Result<(), WeightError> {
-        if self.d_model == 0 || self.num_heads == 0 || self.d_tier == 0 || self.d_global == 0 {
-            return Err(WeightError::Invalid("zero-sized dimension".to_owned()));
+        if self.d_model == 0
+            || self.num_heads == 0
+            || self.d_tier <= MOBILITY_INDEX
+            || self.d_global < WEIGHT_FRACTION_INDEX + N_COMPONENTS
+        {
+            return Err(WeightError::Invalid(format!(
+                "dimensions must be nonzero, d_tier must include mobility index {MOBILITY_INDEX}, \
+                 and d_global must include {N_COMPONENTS} objective weight fractions starting at \
+                 index {WEIGHT_FRACTION_INDEX}"
+            )));
         }
         if !self.d_model.is_multiple_of(self.num_heads) {
             return Err(WeightError::Invalid(format!(
@@ -271,7 +279,7 @@ mod tests {
         );
         assert!(err.to_string().contains("sens_head.weights"), "{err}");
 
-        // A consistent layer of the wrong width: three components instead of four.
+        // A consistent layer of the wrong width: six components instead of seven.
         let mut net = ModelTier::Small.init_network(1);
         net.sens_head = Linear::init_xavier(net.d_model, N_COMPONENTS - 1, 4);
         let err = net.validate().unwrap_err();

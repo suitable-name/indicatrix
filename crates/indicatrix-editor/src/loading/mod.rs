@@ -22,7 +22,7 @@ pub mod tier_form;
 pub use concave_form::{ConcaveTierFormFields, concave_tier_form_fields, parse_concave_tier_form};
 pub use design::{LoadedDesign, default_preform_for_schedule, design_from_asc_text};
 pub use material::{
-    RI_PRESERVE_TOLERANCE, material_selection_for_accepted_suggestion,
+    RI_PRESERVE_TOLERANCE, apply_library_material, material_selection_for_accepted_suggestion,
     ri_override_for_material_pick, ri_override_to_preserve,
 };
 pub use naming::{

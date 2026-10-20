@@ -368,6 +368,14 @@ const CASES: &[Case] = &[
         probe: |ui| i64::from(ui.global::<SolidPreviewModel>().get_view_mode()),
         expect: |_, after| after == 3,
     },
+    Case {
+        chord: "5",
+        effect: "switches the Solid view to mode 4 (Ray-Traced)",
+        record: None,
+        setup: |ctx| view_mode_to(ctx, 0),
+        probe: |ui| i64::from(ui.global::<SolidPreviewModel>().get_view_mode()),
+        expect: |_, after| after == 4,
+    },
 ];
 
 /// Brings the window to the neutral baseline every chord starts from: no overlay, the 3D Gem tab

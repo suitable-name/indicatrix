@@ -7,6 +7,41 @@ use crate::optics::{
 };
 use glam::Vec3;
 
+/// Peridot's trichroic absorption (alpha/beta/gamma -> `o_ray`/`beta_ray`/`e_ray`): the
+/// energy-Gaussian fits to Caltech GRR 418 described at the entry below. A separate function so
+/// the entry stays within clippy's function-length limit.
+fn peridot_absorption() -> AbsorptionTensor {
+    AbsorptionTensor::biaxial(
+        // alpha (o_ray)
+        vec![
+            AbsorptionBand::energy(345.0, 10_096.0, 5.38),
+            AbsorptionBand::energy(455.0, 1_410.0, 0.53),
+            AbsorptionBand::energy(490.0, 2_160.0, 0.44),
+            AbsorptionBand::energy(637.0, 1_724.0, 0.80),
+            AbsorptionBand::energy(840.0, 3_276.0, 4.76),
+            AbsorptionBand::energy(1000.0, 2_534.0, 35.2),
+        ],
+        // beta (beta_ray)
+        vec![
+            AbsorptionBand::energy(341.0, 12_000.0, 6.78),
+            AbsorptionBand::energy(465.0, 2_526.0, 1.07),
+            AbsorptionBand::energy(500.0, 3_000.0, 0.47),
+            AbsorptionBand::energy(635.0, 2_500.0, 1.33),
+            AbsorptionBand::energy(840.0, 4_000.0, 4.25),
+            AbsorptionBand::energy(1000.0, 2_401.0, 35.2),
+        ],
+        // gamma (e_ray)
+        vec![
+            AbsorptionBand::energy(376.0, 3_317.0, 4.77),
+            AbsorptionBand::energy(440.0, 2_933.0, 2.24),
+            AbsorptionBand::energy(500.0, 3_000.0, 0.79),
+            AbsorptionBand::energy(627.0, 2_500.0, 0.77),
+            AbsorptionBand::energy(840.0, 4_000.0, 2.34),
+            AbsorptionBand::energy(1000.0, 3_663.0, 12.7),
+        ],
+    )
+}
+
 impl GemMaterial {
     /// Third quarter: Peridot (the one biaxial addition in this quarter), YAG, GGG
     /// and Benitoite.
@@ -26,14 +61,24 @@ impl GemMaterial {
                     c: 0.0,
                 },
                 birefringence_delta: 0.036,
-                // Chromophore: the classic Fe2+ 450/475/495nm triplet, blocking
-                // violet-blue and leaving peridot's yellow-green transmitted. Widths
-                // (25nm each) and peaks (1.0/1.3/1.0) TUNED; band CENTRES cited.
-                absorption: AbsorptionTensor::isotropic(vec![
-                    AbsorptionBand::new(450.0, 25.0, 1.0),
-                    AbsorptionBand::new(475.0, 25.0, 1.3),
-                    AbsorptionBand::new(495.0, 25.0, 1.0),
-                ]),
+                // Chromophore: Fe2+ in olivine. Biaxial (trichroic) energy-Gaussian
+                // sets, one per principal ray (alpha/beta/gamma -> o_ray/beta_ray/
+                // e_ray, as Tanzanite). Each set is a bounded least-squares fit
+                // (log residual, 380-780 nm) to the Caltech Mineral Spectroscopy
+                // Server San Carlos olivine spectra GRR 418 alpha/beta/gamma (G. R.
+                // Rossman; CSVs `crates/indicatrix/data/reference_spectra/
+                // caltech_olivine_grr418_{alpha,beta,gamma}.csv`, URLs in their
+                // headers), scaled to 0.88 cm = the 8.8 mm face-up path of a 7 mm
+                // stone (fitted 2026-10-19; GIA Sardinia peridot
+                // characterisation [S4]: 473/490 nm Fe2+ bands, total absorption
+                // below ~440 nm, broad ~1050 nm band with an 830 nm shoulder). The
+                // 345/341/376 nm bands stand in for the UV edge; the 840/1000 nm
+                // bands for the Fe2+ NIR pair (fitted amplitudes sat on the fit
+                // bound, only their 650-780 nm tails matter inside the 380-780 nm
+                // sampling). Swatch (7 mm, D65): L*76 C*63 h=111 yellow-green; the
+                // previous blue-only 450/475/495 nm triplet let red pass and
+                // drifted to amber (h=81). Fitted, not hand-tuned.
+                absorption: peridot_absorption(),
                 c_axis: Vec3::Y,
                 // Same fractional-position method as Alexandrite/Topaz/Tanzanite/
                 // Chrysoberyl above: real olivine/peridot principal indices are

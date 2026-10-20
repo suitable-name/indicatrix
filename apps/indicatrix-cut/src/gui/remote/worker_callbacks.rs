@@ -160,11 +160,17 @@ fn setup_denoise_toggle_callback(
             ctx.redisplay_requested = true;
             drop(ctx);
             settings_store_denoise.update(|s| s.settings.denoise_enabled = enabled);
-            // `RemoteOnly` suspends the render thread's loop entirely, so
-            // `redisplay_requested` above has no frame-loop iteration to be read back
-            // on -- force the orchestrator's own display path instead. A no-op in
-            // every other live-compute-target (`request_redisplay`'s own doc comment).
             if let Some(ui) = ui_weak_denoise.upgrade() {
+                // Both switches (this dialog's and the Render & Output tab's) show
+                // `denoise_enabled` and only ask for the flip through this callback,
+                // so the property must follow the choice or neither switch moves.
+                ui.global::<RemoteWorkerModel>()
+                    .set_denoise_enabled(enabled);
+                // `RemoteOnly` suspends the render thread's loop entirely, so
+                // `redisplay_requested` above has no frame-loop iteration to be read
+                // back on -- force the orchestrator's own display path instead. A no-op
+                // in every other live-compute-target (`request_redisplay`'s own doc
+                // comment).
                 orchestrator_denoise.request_redisplay(&ui, &render_ctx_denoise);
             }
         });

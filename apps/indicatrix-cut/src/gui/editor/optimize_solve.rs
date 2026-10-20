@@ -332,6 +332,7 @@ fn prepare_run_inputs(
     options: &mut OptimizeOptions,
     only: Option<&BTreeSet<usize>>,
 ) -> Result<GemMaterial, DesignSolveError> {
+    options.only_tiers = only.cloned();
     let wants_size = design
         .girdle_diameter_mm
         .is_some_and(|mm| mm > 0.0 && mm.is_finite());
@@ -392,6 +393,7 @@ mod tests {
             tilt_brilliance_pct: 80.0,
         };
         OptimizeOutcome {
+            provenance: None,
             before: components,
             before_score: 10.0,
             before_yield_loss_pct: 0.0,

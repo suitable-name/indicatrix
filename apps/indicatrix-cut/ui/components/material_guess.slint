@@ -36,7 +36,8 @@ export component MaterialGuessBadge inherits HorizontalLayout {
         // A guess is never stated as a fact: the tooltip says so and lists the other close matches.
         Tooltip { text: @markdown("A guess from the refractive index alone: the design does not say which material it is. \{EditorModel.material_guess_other_candidates_text}"); }
     }
-    Button {
+    // Not offered for a material the load already applied: it is the design's material.
+    if !EditorModel.material_guess_applied: Button {
         text: "Set Material";
         accessible-description: "Use the guessed material for this design. You can undo it.";
         // A design-material edit: locked with Design Settings while the

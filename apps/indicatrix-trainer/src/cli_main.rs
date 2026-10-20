@@ -18,9 +18,12 @@ mod runner;
 mod stats;
 
 use std::{
+    collections::BTreeMap,
     error::Error,
     path::Path,
     process::ExitCode,
+    sync::mpsc,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -29,11 +32,10 @@ use cli_console::Console;
 use cli_report::{print_banner, print_progress, print_summary};
 use dataset::{DEFAULT_SPLIT_SEED, DatasetSplit, load_db_designs};
 use indicatrix_update::{NO_UPDATE_CHECK_ENV, cli_notice, take_update_check};
-use runner::{
-    EvalFidelity, EvalPasses, SKIPPED_PREFIX, TrainingRunner, checkpoint_file_name,
-    evaluation_threads,
+use runner::{EvalFidelity, EvalPasses, SKIPPED_PREFIX, TrainingRunner, evaluation_threads};
+use stats::{
+    EvaluationSnapshot, IterationMetricPoint, describe_drops, rfc3339_utc_now, save_evaluations,
 };
-use stats::{IterationMetricPoint, describe_drops, rfc3339_utc_now};
 
 /// Skip warnings printed in full before the console switches to one summary line per
 /// [`SKIP_SUMMARY_EVERY`] further skips (a library holds hundreds of dead stones).
@@ -71,7 +73,10 @@ fn main() -> ExitCode {
 
 /// Evaluates the held-out test split and prints the before/after figures. The oracle pass costs
 /// a probe per free tier and step, so it runs at fast fidelity only.
-fn evaluate_test_split(runner: &TrainingRunner, args: &CliArgs) -> Result<(), Box<dyn Error>> {
+fn evaluate_test_split(
+    runner: &TrainingRunner,
+    args: &CliArgs,
+) -> Result<runner::EvalReport, Box<dyn Error>> {
     let entries = &runner.split().test;
     let fast = args.eval_fidelity == EvalFidelity::Fast;
     println!(
@@ -100,7 +105,7 @@ fn evaluate_test_split(runner: &TrainingRunner, args: &CliArgs) -> Result<(), Bo
     if report.designs == 0 {
         println!(
             "  no design could be evaluated ({})",
-            report.first_failure.unwrap_or_default()
+            report.first_failure.as_deref().unwrap_or_default()
         );
     } else {
         println!(
@@ -127,7 +132,7 @@ fn evaluate_test_split(runner: &TrainingRunner, args: &CliArgs) -> Result<(), Bo
             println!("  {} designs could not be evaluated", report.failed);
         }
     }
-    Ok(())
+    Ok(report)
 }
 
 /// Caps the console noise of skipped designs: the first [`SKIP_LINES_FULL`] skips are shown in
@@ -196,9 +201,12 @@ fn load_split(args: &CliArgs) -> Result<DatasetSplit, Box<dyn Error>> {
 
 /// Runs the validation pass and returns its report line; `None` when nothing could be
 /// validated (the split is empty or no design evaluated).
-fn run_validation(runner: &mut TrainingRunner) -> Result<Option<String>, Box<dyn Error>> {
+fn run_validation(
+    runner: &mut TrainingRunner,
+    args: &CliArgs,
+) -> Result<Option<(String, runner::EvalReport)>, Box<dyn Error>> {
     let designs = runner.config().validation_designs;
-    let Some(v) = runner.validate(designs)?.filter(|v| v.designs > 0) else {
+    let Some(v) = runner.validate(designs)?.filter(|v| !v.cases.is_empty()) else {
         return Ok(None);
     };
     let gap = runner.generalization_gap().map_or_else(
@@ -210,11 +218,22 @@ fn run_validation(runner: &mut TrainingRunner) -> Result<Option<String>, Box<dyn
     } else {
         String::new()
     };
-    Ok(Some(format!(
-        "validation on {} unseen designs: score {:.2}, {}, {:.2} evals/step, generalization gap \
+    let cohort_kind = if args.fixture {
+        "smoke fixture"
+    } else {
+        "fixed held-out cohort"
+    };
+    let score = if v.designs > 0 {
+        format!("{:.2}", v.mean_final_score)
+    } else {
+        "n/a".to_owned()
+    };
+    let line = format!(
+        "validation {cohort_kind}: {} attempted ({} evaluated, {} failed), score {score}, {}, {:.2} evals/step, generalization gap \
          {gap}, brilliance {:.1}%, windowing {:.1}%{failed}",
+        v.cases.len(),
         v.designs,
-        v.mean_final_score,
+        v.failed,
         describe_drops(
             v.mean_improvement,
             v.mean_improvement_oracle,
@@ -223,7 +242,57 @@ fn run_validation(runner: &mut TrainingRunner) -> Result<Option<String>, Box<dyn
         v.mean_evaluations_per_step,
         v.final_optics.brilliance,
         v.final_optics.windowing
-    )))
+    );
+    Ok(Some((line, v)))
+}
+
+fn with_heartbeat<T>(phase: &'static str, work: impl FnOnce() -> T) -> T {
+    let (stop, stopped) = mpsc::channel();
+    let heartbeat = thread::spawn(move || {
+        while stopped.recv_timeout(Duration::from_secs(10)) == Err(mpsc::RecvTimeoutError::Timeout)
+        {
+            eprintln!("{phase} still running");
+        }
+    });
+    let result = work();
+    let _ = stop.send(());
+    let _ = heartbeat.join();
+    result
+}
+
+fn validate_with_heartbeat(
+    runner: &mut TrainingRunner,
+    args: &CliArgs,
+) -> Result<Option<(String, runner::EvalReport)>, Box<dyn Error>> {
+    with_heartbeat("validation", || run_validation(runner, args))
+}
+
+/// The saved record of one evaluation pass.
+fn evaluation_snapshot(
+    iteration: usize,
+    kind: &str,
+    report: &runner::EvalReport,
+) -> EvaluationSnapshot {
+    EvaluationSnapshot {
+        iteration,
+        kind: kind.to_owned(),
+        fidelity: if report.full_fidelity { "full" } else { "fast" }.to_owned(),
+        cases: report.cases.clone(),
+    }
+}
+
+/// The log line of a new largest score drop at iteration `iter`.
+fn best_record(iter: usize, best: &runner::EpisodeSummary) -> (String, String, String) {
+    (
+        rfc3339_utc_now(),
+        "BEST".to_owned(),
+        format!(
+            "iteration {iter}: score drop {:.2} (from {:.2} to {:.2})",
+            best.improvement(),
+            best.base_score,
+            best.final_score
+        ),
+    )
 }
 
 fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
@@ -233,7 +302,9 @@ fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
     let split = load_split(args)?;
     let (train, val, test) = (split.train.len(), split.val.len(), split.test.len());
     let max_tiers = split.max_tiers;
-    let mut runner = TrainingRunner::new(build_config(args), split)?;
+    let mut runner = with_heartbeat("trainer initialization", || {
+        TrainingRunner::new(build_config(args), split)
+    })?;
     let mut skips = SkipLog::default();
     for line in warning_lines(&mut runner, &mut skips) {
         eprintln!("warning: {line}");
@@ -241,7 +312,7 @@ fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
     if let Some(path) = &args.resume {
         runner.load_checkpoint(Path::new(path))?;
         println!(
-            "Resumed from {path} at iteration {}",
+            "Warm-started weights from {path} at iteration {} (optimizer, replay, and RNG state start fresh)",
             runner.stats().iteration
         );
     }
@@ -255,17 +326,15 @@ fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
     let mut steps_per_sec = 0.0f32;
     let mut history: Vec<IterationMetricPoint> = Vec::new();
     let mut logs: Vec<(String, String, String)> = Vec::new();
-    let mut note = |level: &str, message: String| {
-        logs.push((rfc3339_utc_now(), level.to_owned(), message));
-    };
+    let mut evaluations: Vec<EvaluationSnapshot> = Vec::new();
+    let mut best_validation_score: Option<f32> = None;
 
     for iter in 1..=args.iterations {
-        let report = runner
-            .iterate(&mut || true)?
+        let report = with_heartbeat("rollout / update", || runner.iterate(&mut || true))?
             .ok_or("the rollout ended early")?;
         for line in warning_lines(&mut runner, &mut skips) {
             console.warning(&format!("warning: {line}"));
-            note("WARN", line);
+            logs.push((rfc3339_utc_now(), "WARN".to_owned(), line));
         }
 
         window_steps += report.steps;
@@ -279,25 +348,44 @@ fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
         // The record that matters is the largest score drop, not the lowest final score (which
         // mostly names the design that started lowest).
         if let Some(best) = &report.new_best_improvement {
-            note(
-                "BEST",
-                format!(
-                    "iteration {iter}: score drop {:.2} (from {:.2} to {:.2})",
-                    best.improvement(),
-                    best.base_score,
-                    best.final_score
-                ),
-            );
-        }
-        if (iter.is_multiple_of(runner.config().validation_every) || iter == args.iterations)
-            && let Some(line) = run_validation(&mut runner)?
-        {
-            console.message(&format!("  {line}"));
-            note("VAL", line);
+            logs.push(best_record(iter, best));
         }
         let point = runner.metric_point(steps_per_sec);
         print_progress(&mut console, &runner, &point, iter, args.iterations);
         history.push(point);
+
+        if iter.is_multiple_of(runner.config().validation_every) || iter == args.iterations {
+            save_progress(&mut runner, args, &mut history, &logs, &evaluations, iter)?;
+            console.message(&format!(
+                "iteration {iter}/{}: validation in progress",
+                args.iterations
+            ));
+            if let Some((line, report)) = validate_with_heartbeat(&mut runner, args)? {
+                console.message(&format!("  {line}"));
+                print_eval_groups(&report);
+                logs.push((rfc3339_utc_now(), "VAL".to_owned(), line));
+                evaluations.push(evaluation_snapshot(
+                    runner.stats().iteration,
+                    "validation",
+                    &report,
+                ));
+                save_eval_artifact(args, &evaluations)?;
+                if let Some(last) = history.last_mut() {
+                    *last = runner.metric_point(steps_per_sec);
+                }
+                save_telemetry(&runner, args, &history, &logs, &evaluations)?;
+                if args.save_every > 0 && iter.is_multiple_of(args.save_every) {
+                    save_progress(&mut runner, args, &mut history, &logs, &evaluations, iter)?;
+                }
+                save_best_validation(&runner, args, iter, &mut best_validation_score)?;
+            }
+        }
+        if args.save_every > 0
+            && iter.is_multiple_of(args.save_every)
+            && !iter.is_multiple_of(runner.config().validation_every)
+        {
+            save_progress(&mut runner, args, &mut history, &logs, &evaluations, iter)?;
+        }
     }
     console.finish();
 
@@ -308,32 +396,289 @@ fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
         skips.total,
         &history,
     );
-    finish_run(&runner, args, &history, &logs)
+    finish_run(&mut runner, args, &mut history, &logs, &mut evaluations)
 }
 
-/// Evaluates the test split, then writes the telemetry and the checkpoint.
+/// Writes the final telemetry and checkpoint before evaluating the test split.
 fn finish_run(
-    runner: &TrainingRunner,
+    runner: &mut TrainingRunner,
     args: &CliArgs,
-    history: &[IterationMetricPoint],
+    history: &mut [IterationMetricPoint],
     logs: &[(String, String, String)],
+    evaluations: &mut Vec<EvaluationSnapshot>,
 ) -> Result<(), Box<dyn Error>> {
-    if args.eval_test {
-        evaluate_test_split(runner, args)?;
+    runner.sync_update()?;
+    if let Some(last) = history.last_mut() {
+        *last = runner.metric_point(last.steps_per_sec);
     }
-
     runner
         .export_stats(history, logs)
         .save_to_file(&args.stats_path)?;
+    save_eval_artifact(args, evaluations)?;
     println!("\nTelemetry written to {}", args.stats_path);
     let weights_path = args
         .weights_path
         .clone()
-        .unwrap_or_else(|| checkpoint_file_name(args.mode, args.tier, runner.stats().iteration));
+        .unwrap_or_else(|| training_checkpoint_name(args, runner.stats().iteration));
     runner.save_checkpoint(Path::new(&weights_path))?;
     println!("Checkpoint written to {weights_path}");
     println!("Import the telemetry in the GUI with 'Import Run'.");
+    if args.eval_test {
+        let report = evaluate_test_split(runner, args)?;
+        print_eval_groups(&report);
+        evaluations.push(evaluation_snapshot(
+            runner.stats().iteration,
+            "test",
+            &report,
+        ));
+        save_eval_artifact(args, evaluations)?;
+    }
     Ok(())
+}
+
+fn save_progress(
+    runner: &mut TrainingRunner,
+    args: &CliArgs,
+    history: &mut [IterationMetricPoint],
+    logs: &[(String, String, String)],
+    evaluations: &[EvaluationSnapshot],
+    iter: usize,
+) -> Result<(), Box<dyn Error>> {
+    runner.sync_update()?;
+    if let Some(last) = history.last_mut() {
+        *last = runner.metric_point(last.steps_per_sec);
+    }
+    save_telemetry(runner, args, history, logs, evaluations)?;
+    let path = periodic_checkpoint_path(args, iter);
+    runner.save_checkpoint(Path::new(&path))?;
+    println!(
+        "\nSaved progress at iteration {iter}: {} and {path}",
+        args.stats_path
+    );
+    Ok(())
+}
+
+fn save_telemetry(
+    runner: &TrainingRunner,
+    args: &CliArgs,
+    history: &[IterationMetricPoint],
+    logs: &[(String, String, String)],
+    evaluations: &[EvaluationSnapshot],
+) -> Result<(), Box<dyn Error>> {
+    runner
+        .export_stats(history, logs)
+        .save_to_file(&args.stats_path)?;
+    save_eval_artifact(args, evaluations)?;
+    Ok(())
+}
+
+fn save_best_validation(
+    runner: &TrainingRunner,
+    args: &CliArgs,
+    iter: usize,
+    best_score: &mut Option<f32>,
+) -> Result<(), Box<dyn Error>> {
+    let Some(validation) = runner.stats().last_validation.as_ref() else {
+        return Ok(());
+    };
+    if args.fixture
+        || !validation.mean_final_score.is_finite()
+        || validation.designs == 0
+        || validation.failed > 0
+        || best_score.is_some_and(|score| validation.mean_final_score >= score)
+    {
+        return Ok(());
+    }
+    *best_score = Some(validation.mean_final_score);
+    let path = validation_checkpoint_path(args);
+    runner.save_checkpoint(Path::new(&path))?;
+    println!("Validation checkpoint at iteration {iter}: {path}");
+    Ok(())
+}
+
+fn training_checkpoint_stem(args: &CliArgs) -> String {
+    let algorithm = match args.algo {
+        runner::Algorithm::Imitation => "imitation",
+        runner::Algorithm::Ppo => "ppo",
+    };
+    format!(
+        "indicatrix-{}-{algorithm}-{}",
+        args.mode,
+        args.tier.code_str().to_ascii_lowercase()
+    )
+}
+
+fn evaluation_artifact_path(args: &CliArgs) -> std::path::PathBuf {
+    let path = Path::new(&args.stats_path);
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("training_stats");
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{name}-evaluations.json"))
+}
+
+fn save_eval_artifact(args: &CliArgs, evaluations: &[EvaluationSnapshot]) -> std::io::Result<()> {
+    save_evaluations(&evaluation_artifact_path(args), evaluations)
+}
+
+/// Prints how much of the preset and spectrum space an evaluation covered.
+fn print_coverage(report: &runner::EvalReport, group_count: usize) {
+    println!(
+        "  evaluation coverage: {} objective/material groups, {} cases, {} failed",
+        group_count,
+        report.cases.len(),
+        report.failed
+    );
+    let objectives: std::collections::BTreeSet<_> = report
+        .cases
+        .iter()
+        .map(|case| case.objective.as_str())
+        .collect();
+    let materials: std::collections::BTreeSet<_> = report
+        .cases
+        .iter()
+        .map(|case| {
+            case.target_material
+                .split(" [")
+                .next()
+                .unwrap_or(&case.target_material)
+        })
+        .collect();
+    let missing_objectives: Vec<_> = indicatrix_cut_core::ObjectivePreset::ALL
+        .into_iter()
+        .map(|preset| format!("{preset:?}"))
+        .filter(|name| !objectives.contains(name.as_str()))
+        .collect();
+    let missing_materials: Vec<_> = dataset::MINERAL_SPECTRUM
+        .iter()
+        .map(|entry| entry.name)
+        .filter(|name| !materials.contains(name))
+        .collect();
+    println!(
+        "    preset coverage {}/7; missing: {}",
+        7 - missing_objectives.len(),
+        if missing_objectives.is_empty() {
+            "none".to_owned()
+        } else {
+            missing_objectives.join(", ")
+        }
+    );
+    println!(
+        "    spectrum coverage {}/{}; missing: {}",
+        dataset::MINERAL_SPECTRUM.len() - missing_materials.len(),
+        dataset::MINERAL_SPECTRUM.len(),
+        if missing_materials.is_empty() {
+            "none".to_owned()
+        } else {
+            missing_materials.join(", ")
+        }
+    );
+}
+
+fn print_eval_groups(report: &runner::EvalReport) {
+    let mut groups = BTreeMap::<(String, String), (usize, usize, f32, usize, f32, f32)>::new();
+    let mut classical = BTreeMap::<(String, String), (usize, f32, usize, f32, usize)>::new();
+    for case in &report.cases {
+        let key = (case.objective.clone(), case.target_material.clone());
+        let group = groups.entry(key.clone()).or_default();
+        group.0 += 1;
+        if let Some(drop) = case.score_drop {
+            group.1 += 1;
+            group.2 += drop;
+        }
+        group.3 += case.evaluations;
+        group.4 += case.model_seconds.unwrap_or(0.0);
+        group.5 += case.classical_seconds.unwrap_or(0.0);
+        if let (Some(before), Some(after)) = (case.classical_base_score, case.classical_final_score)
+        {
+            let comparison = classical.entry(key).or_default();
+            comparison.0 += 1;
+            comparison.1 += before - after;
+            comparison.2 += case.classical_evaluations;
+            comparison.3 += case.classical_seconds.unwrap_or(0.0);
+        } else if case.classical_failure.is_some() {
+            classical.entry(key).or_default().4 += 1;
+        }
+    }
+    print_coverage(report, groups.len());
+    for ((objective, material), (total, scored, drops, evaluations, elapsed, classical_secs)) in
+        groups
+    {
+        let mean = if scored == 0 {
+            0.0
+        } else {
+            drops / scored as f32
+        };
+        let throughput = if elapsed > 0.0 {
+            evaluations as f32 / elapsed
+        } else {
+            0.0
+        };
+        let classical = if classical_secs > 0.0 {
+            format!(", classical {classical_secs:.1}s")
+        } else {
+            String::new()
+        };
+        println!(
+            "    {objective} / {material}: {scored}/{total} scored, mean drop {mean:.2}, {throughput:.1} model eval/s{classical}"
+        );
+    }
+    for ((objective, material), (count, drops, evaluations, seconds, failures)) in classical {
+        if count > 0 {
+            println!(
+                "    classical {objective} / {material}: {count} cases, mean drop {:.2}, {} candidate evals, {:.1}s{}",
+                drops / count as f32,
+                evaluations,
+                seconds,
+                if failures > 0 {
+                    format!(", {failures} failed")
+                } else {
+                    String::new()
+                }
+            );
+        }
+    }
+}
+
+fn training_checkpoint_name(args: &CliArgs, iteration: usize) -> String {
+    format!("{}-iter{iteration}.json", training_checkpoint_stem(args))
+}
+
+fn periodic_checkpoint_path(args: &CliArgs, iteration: usize) -> String {
+    if let Some(path) = &args.weights_path {
+        let path = Path::new(path);
+        let stem = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("weights");
+        let name = format!("{stem}-iter{iteration}.json");
+        return path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(name)
+            .to_string_lossy()
+            .into_owned();
+    }
+    training_checkpoint_name(args, iteration)
+}
+
+fn validation_checkpoint_path(args: &CliArgs) -> String {
+    if let Some(path) = &args.weights_path {
+        let path = Path::new(path);
+        let stem = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("weights");
+        return path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{stem}-best-validation.json"))
+            .to_string_lossy()
+            .into_owned();
+    }
+    format!("{}-best-validation.json", training_checkpoint_stem(args))
 }
 
 #[cfg(test)]

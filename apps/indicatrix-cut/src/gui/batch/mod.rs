@@ -4,7 +4,7 @@
 //! the several remote dispatchers each batch runs at once ([`remote_dispatch`], sized by
 //! the setting [`remote_lanes_setting`] edits), the decoded preview-thumbnail cache the
 //! design list reads from ([`preview_cache`]), and the one geometry step both engines
-//! take for a record ([`record_planes_for_batch`]) and the one material rule they draw
+//! take for a record ([`record_planes_with_frosting_for_batch`]) and the one material rule they draw
 //! and score it with ([`catalogue_material`]).
 //!
 //! Was 4 flat top-level `gui` files (`preview_batch.rs`, `tilt_batch.rs`,
@@ -15,6 +15,7 @@
 
 pub mod batch_queue;
 pub mod catalogue_material;
+pub mod frosting_scan;
 pub mod material_choice;
 pub mod preview;
 pub mod preview_cache;
@@ -47,22 +48,32 @@ use std::{
 ///
 /// The engines hand the result to [`catalogue_material::catalogue_material`], which
 /// decides the material and size the design is traced in.
+///
+/// The second value is the frosted planes of the stone: the ascending indices into the
+/// returned planes that the design frosts
+/// (`gui::editor::resolve_catalogue_planes_with_frosting`), the form
+/// `bridge::preview_render::PreviewJob::frosted` takes so a traced preview renders the
+/// frosted planes frosted, locally and on a remote worker. Empty for a polished design and
+/// on the angle-table path.
+///
+/// Both batch engines resolve a record through this one function, so neither can drop the
+/// frosted list and render a frosted design polished.
 #[must_use]
-pub fn record_planes_for_batch(
+pub fn record_planes_with_frosting_for_batch(
     full: &FullDiagramRecord,
     angle_table_entries: &Mutex<BTreeSet<i64>>,
-) -> Option<CataloguePlanes> {
-    let resolved = crate::gui::editor::resolve_catalogue_planes(full);
+) -> Option<(CataloguePlanes, Vec<u32>)> {
+    let (resolved, frosted) = crate::gui::editor::resolve_catalogue_planes_with_frosting(full);
     if resolved.source == CataloguePlanesSource::AngleTable {
         angle_table_entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(full.entry_id);
     }
-    (!resolved.planes.is_empty()).then_some(resolved)
+    (!resolved.planes.is_empty()).then_some((resolved, frosted))
 }
 
-/// How many designs [`record_planes_for_batch`] recorded in `angle_table_entries`.
+/// How many designs [`record_planes_with_frosting_for_batch`] recorded in `angle_table_entries`.
 #[must_use]
 pub fn angle_table_count(angle_table_entries: &Mutex<BTreeSet<i64>>) -> usize {
     angle_table_entries

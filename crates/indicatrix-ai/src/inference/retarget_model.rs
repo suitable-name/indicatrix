@@ -4,26 +4,27 @@
 //! [`RetargetEnv`]: starting from the design it is given, in the target material, it adjusts
 //! the movable tiers to lower the optical score there. Each step proposes a direction (the
 //! network predicts the per-tier sensitivities of the score components and composes the
-//! direction from the objective's weight fractions) and the environment's line search picks how
-//! far to go along it. The caller chooses the starting design. `EditorRetargetAdapter` in the
-//! `bridge` module starts from the editor's critical-angle shift baseline and merges the result
-//! into a `RetargetPlan`.
+//! direction from the objective's weight coefficients) and the environment's line search picks
+//! how far to go along it. The caller chooses the starting design. The compatibility editor
+//! adapter also starts from that original design and returns a plan only if it reconstructs the
+//! exact certified geometry.
 //!
-//! An objective with a face-up tone term (the presets Lighten Dark Rough and Intensify Pale
-//! Rough) is not supported and is refused with [`InferenceError::UnsupportedObjective`].
+//! Both tone goals and optional shape/yield terms use the shared environment scorer. Use
+//! [`RlRetargetModel::retarget_certified`] when the exact materialized angles and masts are needed.
 
+#[cfg(test)]
+use super::report::report_design;
 use super::{
     config::InferenceConfig,
     error::InferenceError,
-    policy::{
-        check_network, ensure_supported_objective, network_from_file, network_of, run_policy,
-    },
-    report::{angle_changes, report_design},
+    policy::{check_network, network_from_file, network_of, run_policy},
+    report::{angle_changes, report_design_with_settings},
 };
 use crate::{
     env::{RetargetEnv, RetargetEnvConfig},
     model::{Checkpoint, GemstoneSetAttentionNetwork, TrainingMode},
 };
+use indicatrix_cut_core::meet_preservation::PreservationFacts;
 use indicatrix_cut_core::{Design, ObjectiveWeights, ResolvedMaterial};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -50,6 +51,28 @@ pub struct RlRetargetProposal {
     /// signed degrees (crown positive, pavilion negative). Tiers the policy left alone and
     /// tiers that follow a relation are not listed; empty when nothing improved.
     pub proposed_angles_deg: Vec<(usize, f64)>,
+    /// Full solved signed angle vector for the selected certified design.
+    #[serde(default)]
+    pub solved_angles_deg: Vec<f64>,
+    /// Full solved mast vector paired by tier index. For exact application prefer the
+    /// certified result's materialized Design, which also retains authoring constraints/tools.
+    #[serde(default)]
+    pub solved_masts: Vec<f64>,
+}
+
+/// Complete retarget output with the exact certified materialized design and solved mast vector.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CertifiedRetargetResult {
+    /// User-facing summary of scores, steps, and changed independent angles.
+    pub proposal: RlRetargetProposal,
+    /// Exact design returned by the episode and certified against its original baseline.
+    pub design: Design,
+    /// Exact solved signed angle per authored tier.
+    pub angles_deg: Vec<f64>,
+    /// Exact solved mast per authored tier.
+    pub masts: Vec<f64>,
+    /// Core preservation facts measured against the immutable episode baseline.
+    pub preservation: PreservationFacts,
 }
 
 impl RlRetargetProposal {
@@ -89,9 +112,8 @@ impl RlRetargetModel {
     ///
     /// # Errors
     ///
-    /// [`InferenceError::Weights`] when the checkpoint was trained for optimizing (an
-    /// optimizer model has only ever seen one material), or its network does not fit the
-    /// current observation layout.
+    /// [`InferenceError::Weights`] when the checkpoint task/schema/layout does not match or its
+    /// network does not fit the current observation layout.
     pub fn from_checkpoint(
         checkpoint: Checkpoint,
         config: InferenceConfig,
@@ -126,14 +148,13 @@ impl RlRetargetModel {
     /// The run ends after [`InferenceConfig::steps`] steps, when the environment ends the
     /// episode, or after [`InferenceConfig::stall_steps`] consecutive steps without an accepted
     /// candidate. The proposal is adopted only when it measures strictly better than `design`
-    /// in the target material at the report fidelity; otherwise it lists no angle and both
-    /// scores are the starting score.
+    /// in the target material at report fidelity. `proposed_angles_deg` lists independent angle
+    /// changes; solved angle/mast vectors retain the complete certified geometry.
     ///
     /// # Errors
     ///
-    /// [`InferenceError::UnsupportedObjective`] when `weights` weigh the face-up tone (checked
-    /// first, before any environment work), [`InferenceError::Env`] when the configuration is
-    /// out of range or the design does not solve into a closed, scorable stone with a movable
+    /// [`InferenceError::Env`] when the configuration is out of range or the design does not
+    /// solve into a closed, scorable stone with a movable
     /// tier in the target material, [`InferenceError::Model`] when the network rejects an
     /// observation, [`InferenceError::Unscorable`] when the report cannot be measured.
     pub fn retarget(
@@ -142,7 +163,17 @@ impl RlRetargetModel {
         target_material: &ResolvedMaterial,
         weights: ObjectiveWeights,
     ) -> Result<RlRetargetProposal, InferenceError> {
-        ensure_supported_objective(&weights)?;
+        self.retarget_certified(design, target_material, weights)
+            .map(|result| result.proposal)
+    }
+
+    /// Run a retarget and return its exact certified materialized geometry.
+    pub fn retarget_certified(
+        &self,
+        design: &Design,
+        target_material: &ResolvedMaterial,
+        weights: ObjectiveWeights,
+    ) -> Result<CertifiedRetargetResult, InferenceError> {
         let config = &self.config;
         let mut env = RetargetEnv::new(
             design.clone(),
@@ -151,6 +182,10 @@ impl RlRetargetModel {
                 max_step_deg: config.max_step_deg,
                 weights,
                 fidelity: config.rollout_fidelity,
+                lighting: config.lighting,
+                shape_target: config.shape_target,
+                only_tiers: config.only_tiers.clone(),
+                angle_bounds: config.angle_bounds.clone(),
                 ..RetargetEnvConfig::new_with_target(target_material.clone())
             },
         )?;
@@ -167,27 +202,65 @@ impl RlRetargetModel {
 
         let gem = &target_material.gem;
         let end = env.current_design();
-        let before = report_design(design, gem, &weights, config.report_fidelity)?;
+        let before = report_design_with_settings(
+            design,
+            gem,
+            &weights,
+            config.report_fidelity,
+            config.lighting,
+            config.shape_target,
+        )?;
         let changes = angle_changes(design, end);
         let mut target_score = before.score;
         let mut proposed_angles_deg = Vec::new();
-        if !changes.is_empty() {
-            let after = report_design(end, gem, &weights, config.report_fidelity)?;
+        let mut chosen_design = design.clone();
+        if end != design {
+            let after = report_design_with_settings(
+                end,
+                gem,
+                &weights,
+                config.report_fidelity,
+                config.lighting,
+                config.shape_target,
+            )?;
             if after.score < before.score {
                 target_score = after.score;
+                chosen_design = end.clone();
                 proposed_angles_deg = changes
                     .iter()
                     .map(|change| (change.index, change.to_deg))
                     .collect();
             }
         }
-        Ok(RlRetargetProposal {
+        let solved = chosen_design
+            .solve()
+            .map_err(|error| InferenceError::Unscorable(error.to_string()))?;
+        let solved_angles_deg: Vec<f64> = chosen_design
+            .tiers
+            .iter()
+            .map(|tier| tier.angle_deg)
+            .collect();
+        let solved_masts: Vec<f64> = solved.iter().map(|tier| tier.mast).collect();
+        let proposal = RlRetargetProposal {
             target_material_name: gem.name.clone(),
             base_score: before.score,
             target_score,
             steps_taken: run.steps,
             evaluations: run.evaluations,
             proposed_angles_deg,
+            solved_angles_deg: solved_angles_deg.clone(),
+            solved_masts: solved_masts.clone(),
+        };
+        let materialized = chosen_design;
+        let preservation = env
+            .certify_design(&materialized)
+            .map_err(InferenceError::Preservation)?;
+        Ok(CertifiedRetargetResult {
+            proposal,
+            angles_deg: solved_angles_deg,
+            masts: solved_masts,
+            design: materialized,
+            preservation,
         })
     }
 }
@@ -245,7 +318,25 @@ mod tests {
                 "a tier never crosses the girdle"
             );
         }
-        if proposal.proposed_angles_deg.is_empty() {
+        let original_masts: Vec<f64> = design
+            .solve()
+            .expect("fixture solves")
+            .iter()
+            .map(|tier| tier.mast)
+            .collect();
+        let has_materialized_motion = proposal
+            .solved_angles_deg
+            .iter()
+            .zip(&design.tiers)
+            .any(|(after, before)| after.to_bits() != before.angle_deg.to_bits())
+            || proposal
+                .solved_masts
+                .iter()
+                .zip(&original_masts)
+                .any(|(after, before)| after.to_bits() != before.to_bits());
+        assert_eq!(proposal.solved_angles_deg.len(), design.tiers.len());
+        assert_eq!(proposal.solved_masts.len(), design.tiers.len());
+        if !has_materialized_motion {
             assert_eq!(proposal.target_score, proposal.base_score);
         } else {
             assert!(proposal.target_score < proposal.base_score);
@@ -253,7 +344,7 @@ mod tests {
     }
 
     /// A network that gives every tier the same sensitivity, whatever it is shown: the
-    /// sensitivity head ignores its input (all weights zero) and its bias is `[bias, 0, 0, 0]`,
+    /// sensitivity head ignores its input (all weights zero) and its bias starts `[bias, 0, ...]`,
     /// so every tier has the windowing sensitivity `bias` and none to the other components.
     /// The composed mean is then `-MEAN_BOUND` on every tier for `bias > 0` and `+MEAN_BOUND`
     /// for `bias < 0` (the objective's windowing fraction is positive for the default
@@ -262,10 +353,8 @@ mod tests {
     fn constant_network(bias: f32) -> GemstoneSetAttentionNetwork {
         let mut network = ModelTier::Small.init_network(21);
         network.sens_head.weights.fill(0.0);
-        network
-            .sens_head
-            .biases
-            .copy_from_slice(&[bias, 0.0, 0.0, 0.0]);
+        network.sens_head.biases.fill(0.0);
+        network.sens_head.biases[0] = bias;
         network
     }
 
@@ -302,7 +391,17 @@ mod tests {
         let design = Design::concave_fixture();
         let space = MoveSpace::measure(&design, true).expect("the fixture has movable tiers");
         let action = ContinuousTierAction::new(vec![TURN_AWAY_DEG; design.tiers.len()]);
-        apply_action(&space, &design, &action, TURN_AWAY_DEG).expect("the turn is safe")
+        match apply_action(&space, &design, &action, TURN_AWAY_DEG) {
+            Ok(turned) => turned,
+            // The turn goes through the meet-preserving projection like every candidate; name
+            // the exact refusal so a gate change is visible from the failure alone.
+            Err(rejection) => panic!(
+                "the uniform {TURN_AWAY_DEG} degree turn of the fixture's free tiers under \
+                 PreservationPolicy::OPTIMIZE is refused ({rejection:?}): {}",
+                crate::env::moves::preservation_refusal(&space, &design, &action, TURN_AWAY_DEG)
+                    .unwrap_or_else(|| "refused before the meet-preserving projection".to_owned())
+            ),
+        }
     }
 
     #[test]
@@ -427,29 +526,21 @@ mod tests {
     }
 
     #[test]
-    fn a_tone_weight_is_refused_before_any_environment_work() {
-        // Zero steps make the environment refuse to start (`InferenceError::Env`), so the
-        // tone error can only come first.
+    fn tone_objectives_reach_the_scoring_environment() {
+        // One step: the environment refuses a zero step count (see the optimizer's
+        // `a_zero_step_run_is_an_error_not_an_empty_result`), and one is enough to score.
         let model = RlRetargetModel::new(
             ModelTier::Small.init_network(21),
             InferenceConfig::retarget()
-                .with_steps(0)
+                .with_steps(1)
                 .with_report_fidelity(ObjectiveFidelity::Fast),
         )
         .expect("the network fits");
         let design = Design::concave_fixture();
         for preset in [ObjectivePreset::LightenDark, ObjectivePreset::IntensifyPale] {
             let result = model.retarget(&design, &sapphire(), preset.weights());
-            assert!(
-                matches!(result, Err(InferenceError::UnsupportedObjective(_))),
-                "{preset:?}: {result:?}"
-            );
+            assert!(result.is_ok(), "{preset:?}: {result:?}");
         }
-        // The premise: without the tone term the same model fails in the environment.
-        assert!(matches!(
-            model.retarget(&design, &sapphire(), ObjectivePreset::Balanced.weights()),
-            Err(InferenceError::Env(_))
-        ));
     }
 
     #[test]
@@ -468,6 +559,8 @@ mod tests {
             ObjectivePreset::LowWindowing,
             ObjectivePreset::LowExtinction,
             ObjectivePreset::KeepWeight,
+            ObjectivePreset::LightenDark,
+            ObjectivePreset::IntensifyPale,
         ] {
             let proposal = single_step
                 .retarget(&design, &sapphire(), preset.weights())
@@ -486,6 +579,8 @@ mod tests {
             steps_taken: 3,
             evaluations: 7,
             proposed_angles_deg: vec![(2, -41.5), (5, 33.0)],
+            solved_angles_deg: vec![-41.5, 33.0],
+            solved_masts: vec![1.0, 1.0],
         };
         assert_eq!(proposal.angle_of(5), Some(33.0));
         assert_eq!(proposal.angle_of(3), None);

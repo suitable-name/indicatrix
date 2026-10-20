@@ -35,6 +35,7 @@ fn sample_light_tent(
     shadow: vec2<f32>,
     tent: vec4<f32>,
     tent_flat: f32,
+    tray: f32,
 ) -> f32 {
     // `tent` = (walls, cards, spark, ground) = `TentParams`: exact identities at the light
     // tent's own values (x * 1.0, and the ground literal 0.02), see the CPU twin.
@@ -52,8 +53,13 @@ fn sample_light_tent(
     walls = walls * fma(card * tent.y, -0.9, 1.0);
     let key = smoothstep_f32(TENT_KEY_OUTER_COS, TENT_KEY_INNER_COS, dot(d, key_dir)) * (1.4 * spot_mult);
     let spark = smoothstep_f32(SPARK_OUTER_COS, SPARK_INNER_COS, dot(d, fill_dir)) * (5.0 * spot_mult) * tent.z;
-    let above = ((walls + key) + spark) * (horizon * observer_visibility(d, observer, shadow));
-    let ground = tent.w * (1.0 - horizon);
+    let vis = observer_visibility(d, observer, shadow);
+    let above = ((walls + key) + spark) * (horizon * vis);
+    var ground: f32 = tent.w * (1.0 - horizon);
+    if (tray > 0.0) {
+        // The lit tray replaces the tent's own ground term.
+        ground = ((1.0 - horizon) * vis) * tray;
+    }
     return (above + ground) * (spec_power * exposure);
 }
 
@@ -66,6 +72,7 @@ fn sample_studio_rig(
     fill_dir: vec3<f32>,
     sin_lp: f32,
     light_yaw: f32,
+    tray: f32,
 ) -> f32 {
     let bg_val = max(fma(0.012, fma(d.y, 0.5, 0.5), 0.015), 0.005) * exposure;
     var radiance = bg_val * spec_power;
@@ -92,6 +99,13 @@ fn sample_studio_rig(
         }
     }
 
+    if (tray > 0.0) {
+        // The lit tray replaces everything below the horizon:
+        // `fma(h, rig, ((g * tray) * exposure) * S)`.
+        let horizon = horizon_blend(d);
+        radiance = fma(horizon, radiance, (((1.0 - horizon) * tray) * exposure) * spec_power);
+    }
+
     return radiance;
 }
 
@@ -109,25 +123,30 @@ fn studio_dispatch(
     shadow: vec2<f32>,
     tent: vec4<f32>,
     tent_flat: f32,
+    tray: f32,
 ) -> f32 {
     switch (model) {
         case 1u: {
-            return sample_iso_hemisphere(d, spec_power, exposure, observer, shadow);
+            return sample_iso_hemisphere(d, spec_power, exposure, observer, shadow, tray);
         }
         case 2u: {
-            return sample_light_tent(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw, observer, shadow, tent, tent_flat);
+            return sample_light_tent(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw, observer, shadow, tent, tent_flat, tray);
         }
         case 3u: {
-            return sample_daylight_dome(d, spec_power, exposure, key_dir, observer, shadow);
+            return sample_daylight_dome(d, spec_power, exposure, key_dir, observer, shadow, tray);
         }
         case 4u: {
-            return aset_radiance(d, spec_power, exposure, key_dir, observer, shadow);
+            var d65: f32 = 0.0;
+            if (tray > 0.0) {
+                d65 = d65_relative_spectral_power(spec_power);
+            }
+            return aset_radiance(d, spec_power, exposure, key_dir, observer, shadow, tray, d65);
         }
         case 5u: {
-            return daylight_sun_radiance(d, spec_power, exposure, key_dir, observer, shadow);
+            return daylight_sun_radiance(d, spec_power, exposure, key_dir, observer, shadow, tray);
         }
         default: {
-            return sample_studio_rig(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
+            return sample_studio_rig(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw, tray);
         }
     }
 }
@@ -175,6 +194,7 @@ fn sample_studio_environment_with_rig(
         vec2<f32>(params.head_shadow_outer_cos, params.head_shadow_inner_cos),
         vec4<f32>(params.tent_walls, params.tent_cards, params.tent_spark, params.tent_ground),
         params.tent_flat,
+        params.backdrop,
     );
 }
 

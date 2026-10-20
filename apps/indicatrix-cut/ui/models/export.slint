@@ -5,6 +5,10 @@ import { RemoteWorkerModel } from "remote_worker.slint";
 // (`bridge::export_thread`). `ExportDialog` reads this directly; `GemViewportView`
 // only needs `is_open` to decide whether to instantiate the dialog at all.
 export global ExportModel {
+    // Renderer: 0 Path-Traced, 1 Ray-Traced. AA applies only to Ray-Traced.
+    in-out property <int> engine_index: 0;
+    in-out property <int> ray_taps: 16;
+    in-out property <bool> ray_fire: true;
     in-out property <bool> is_open: false;
 
     in-out property <int> selected_size_preset: 0; // 0: 1080p, 1: 4K, 2: Custom
@@ -80,9 +84,12 @@ export global ExportModel {
     callback change_directory();
     in-out property <string> filename_template: "";
     callback filename_template_changed(string);
-    // Live "resolves to" preview of the filename template plus unrecognized `{name}`
-    // placeholders, both against a fixed example, not the live selected design.
-    pure callback preview_filename_template(string) -> string;
+    // Live "resolves to" preview of the filename template, for THIS export: the template,
+    // then the export's width, height, samples, max bounces, color space index and material
+    // (the dialog passes them, so the preview follows every change); the design names and
+    // the camera come from the live view, as the export's own naming takes them.
+    pure callback preview_filename_template(string, int, int, int, int, int, string) -> string;
+    // Unrecognized `{name}` placeholders in the template (checked against an example).
     pure callback filename_template_unknown_placeholders(string) -> string;
 
     in property <bool> is_exporting: false;

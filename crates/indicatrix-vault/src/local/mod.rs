@@ -7,9 +7,12 @@
 
 use crate::model::{
     angle::AngleSetting, detail::FacetingDiagramDetail, entry::FacetingDiagramEntry,
-    file::AttachedFile,
+    file::AttachedFile, frosting::StoredTierFrosting,
 };
-use indicatrix_formats::asc::{self, AscSchedule, AscTier};
+use indicatrix_formats::{
+    asc::{self, AscSchedule, AscTier},
+    gcs::GcsTierFrosting,
+};
 
 mod design_file;
 mod native_design;
@@ -52,9 +55,10 @@ pub struct ImportedAsc {
     /// one.
     pub derived_from_entry_id: Option<i64>,
     /// Row state that lives outside the entry and detail rows (tags, the ignored mark,
-    /// the Rough Planner exclusion). Empty for everything but a design (`.isdd`)
-    /// file whose `[meta]` table names some; written with [`apply_imported_extras`]
-    /// once the row exists.
+    /// the Rough Planner exclusion, the frosting). Empty for a plain `.asc`; a design
+    /// (`.isdd`) file fills it from its `[meta]` table and its tiers, and a `.gcs`
+    /// import fills the frosting ([`ImportedAsc::with_frosting`]). Written with
+    /// [`apply_imported_extras`] once the row exists.
     pub extras: ImportedExtras,
 }
 
@@ -68,6 +72,22 @@ pub struct ImportedExtras {
     pub ignored: bool,
     /// The design is excluded from the Rough Planner's candidate set.
     pub planner_excluded: bool,
+    /// The frosted tiers and facets the source file states, by tier position and facet slot
+    /// (`.asc` has no notation for it): a `.gcs` file's, or a design file's own. Unlike the
+    /// marks above, [`apply_imported_extras`] REPLACES the row's frosting with it, so a
+    /// re-import that no longer states frosting clears the old one.
+    pub frosting: Vec<StoredTierFrosting>,
+}
+
+impl ImportedAsc {
+    /// This import with the frosting a converted `.gcs` file stated (`frosting` as
+    /// `ConvertedDesign::frosting` / [`DesignFileText::frosting`] carry it) recorded in
+    /// [`Self::extras`], so [`apply_imported_extras`] stores it with the row.
+    #[must_use]
+    pub fn with_frosting(mut self, frosting: &[(usize, GcsTierFrosting)]) -> Self {
+        self.extras.frosting = StoredTierFrosting::from_gcs(frosting);
+        self
+    }
 }
 
 /// The footnote-line prefix a `.asc`'s recorded source-catalogue-row marker starts with.

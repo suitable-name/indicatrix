@@ -14,7 +14,7 @@
 
 use indicatrix_formats::{
     asc::{AscSchedule, decode_asc_bytes, to_asc_string},
-    gcs::{gcs_to_asc_schedule, parse_gcs_bytes},
+    gcs::{GcsTierFrosting, gcs_frosting, gcs_to_asc_schedule, parse_gcs_bytes},
     gem::{gem_to_asc_schedule, parse_gem},
 };
 use std::path::Path;
@@ -90,6 +90,12 @@ pub struct DesignFileText {
     /// unknown `.gcs` elements). Always empty for a `.asc`, whose own parse
     /// diagnostics appear when it is parsed.
     pub warnings: Vec<String>,
+    /// What a `.gcs` file states as frosted, by tier position and facet slot of the
+    /// converted schedule (`.asc` has no notation for it, so it cannot ride in
+    /// `asc_text`). Empty for everything else, and for a `.gcs` that frosts nothing.
+    /// Apply it with `Design::apply_imported_frosting` after the design is built from
+    /// `asc_text`.
+    pub frosting: Vec<(usize, GcsTierFrosting)>,
 }
 
 /// `file_name`'s stem plus `.asc` (`round.gem` -> `round.asc`).
@@ -124,19 +130,24 @@ pub fn design_file_to_asc_text(
     kind: DesignFileKind,
     bytes: &[u8],
 ) -> Result<DesignFileText, String> {
+    let mut frosting = Vec::new();
     let mut schedule = match kind {
         DesignFileKind::Asc => {
             return Ok(DesignFileText {
                 asc_file_name: file_name.to_string(),
                 asc_text: decode_asc_bytes(bytes).into_owned(),
                 warnings: Vec::new(),
+                frosting: Vec::new(),
             });
         }
         DesignFileKind::Gem => parse_gem(bytes)
             .map(|design| gem_to_asc_schedule(&design))
             .map_err(|e| format!("not a readable .gem file: {e}"))?,
         DesignFileKind::Gcs => parse_gcs_bytes(bytes)
-            .map(|design| gcs_to_asc_schedule(&design))
+            .map(|design| {
+                frosting = gcs_frosting(&design);
+                gcs_to_asc_schedule(&design)
+            })
             .map_err(|e| format!("not a readable .gcs file: {e}"))?,
     };
     if schedule.tiers.is_empty() {
@@ -153,6 +164,7 @@ pub fn design_file_to_asc_text(
         asc_file_name: converted_asc_file_name(file_name),
         asc_text,
         warnings,
+        frosting,
     })
 }
 

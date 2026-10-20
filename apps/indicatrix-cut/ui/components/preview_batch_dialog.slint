@@ -6,6 +6,8 @@ import { HelpButton } from "help_button.slint";
 import { TipButton } from "compact_controls.slint";
 import { TipBox } from "tip_box.slint";
 import { SegmentPill } from "pill_button.slint";
+import { SettingsModel } from "../models/settings.slint";
+import { SliderRow } from "parameters_panel/parts.slint";
 
 // Batch design-preview generation (Task: rendered design previews, batch generation
 // with two-level progress). One component, two states:
@@ -55,6 +57,8 @@ export component PreviewBatchDialog inherits Rectangle {
 
     callback generate_confirmed();
     generate_confirmed => { BatchModel.preview_generate_confirmed(); }
+    callback generate_ray_confirmed();
+    generate_ray_confirmed => { BatchModel.preview_generate_ray_confirmed(); }
     callback generate_solid_confirmed();
     generate_solid_confirmed => { BatchModel.preview_generate_solid_confirmed(); }
     callback dismiss_offer();
@@ -66,9 +70,22 @@ export component PreviewBatchDialog inherits Rectangle {
 
     // The regenerate confirm step offers "missing or outdated only" or "all"; the first has
     // nothing to start while its scan is still counting (-1) or found nothing (0).
-    property <bool> can_start: !(root.offer_regenerate
-        && (root.running
-            || (BatchModel.preview_offer_missing_only && BatchModel.preview_offer_missing_count <= 0)));
+    //
+    // Changing a picture-quality slider below re-counts the designs for the new values
+    // (`gui::batch::preview::offer_quality`): `counting` is true from the change until the new
+    // list lands, and Generate stays off meanwhile so it can never start the old list. A startup
+    // offer whose re-count finds nothing (`nothing_to_offer`) keeps only Not Now.
+    property <bool> counting: BatchModel.preview_offer_counting;
+    property <bool> nothing_to_offer: root.confirming
+        && !root.offer_regenerate
+        && !root.from_import
+        && !root.counting
+        && root.offer_count <= 0;
+    property <bool> can_start: !root.counting
+        && !root.nothing_to_offer
+        && !(root.offer_regenerate
+            && (root.running
+                || (BatchModel.preview_offer_missing_only && BatchModel.preview_offer_missing_count <= 0)));
 
     property <float> design_fraction: root.design_total > 0
         ? (root.design_index * 1.0) / root.design_total
@@ -148,9 +165,18 @@ export component PreviewBatchDialog inherits Rectangle {
                 // under-measures and `clip: true` then cuts the buttons off. Stating the
                 // height and scrolling the body between a fixed title and fixed buttons
                 // makes them structurally impossible to clip.
+                // The confirm step holds the fixed "Picture Quality" block (heading,
+                // renderer and backdrop pills, two sliders, a two-line note) between the scrolling body
+                // and the buttons. Its height follows what the offer shows: the plain
+                // offer, plus the scope pills and warning of a regenerate offer, plus the
+                // note, checkbox and quick buttons of an import offer. A flat 680px left the
+                // plain offer's two short paragraphs stretched apart; a body that needs
+                // more than its share still scrolls, so the buttons can never be clipped.
                 height: root.confirming
-                    ? Math.min(root.height - 96px, 410px)
-                    : Math.min(root.height - 96px, 340px);
+                    ? Math.min(
+                        root.height - 96px,
+                        520px + (root.offer_regenerate ? 110px : 0px) + (root.from_import ? 150px : 0px))
+                    : Math.min(root.height - 96px, root.done ? 240px : 340px);
                 background: Theme.surface-dialog;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
@@ -195,13 +221,20 @@ export component PreviewBatchDialog inherits Rectangle {
                         ScrollView {
                             vertical-stretch: 1;
                             VerticalLayout {
+                                // Top-aligned: the body's spare height stays below the text
+                                // instead of being spread between the paragraphs.
+                                alignment: start;
                                 spacing: 10px;
                                 Text {
                                     text: root.offer_regenerate
                                         ? "Which designs should get fresh front and top views? Previews a chosen design already has are replaced."
-                                        : (root.offer_count == 1
-                                            ? "1 design has no rendered preview yet. Generate a front and top view for it now?"
-                                            : root.offer_count + " designs have no rendered preview yet. Generate front and top views for them now?");
+                                        : (root.counting
+                                            ? "Counting..."
+                                            : (root.nothing_to_offer
+                                                ? "All designs already have pictures at these settings."
+                                                : (root.offer_count == 1
+                                                    ? "1 design has no rendered preview yet. Generate a front and top view for it now?"
+                                                    : root.offer_count + " designs have no rendered preview yet. Generate front and top views for them now?")));
                                     font-size: 12px;
                                     color: Theme.text-secondary;
                                     wrap: word-wrap;
@@ -238,6 +271,71 @@ export component PreviewBatchDialog inherits Rectangle {
                             }
                         }
 
+                        // The two settings that decide how the pictures look, shown for every trigger in
+                        // both interfaces: the same sliders, ranges, steps and callbacks as the Render &
+                        // Output tab's "Library Thumbnails" group, so a change persists exactly as there. A
+                        // change re-counts the offer (`gui::batch::preview::offer_quality`). Fixed, outside
+                        // the scroll body, so it is always reachable. The note has a stated height for the
+                        // same wrapped-Text reason as the card's.
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Picture Quality";
+                                font-size: 12px;
+                                font-weight: 700;
+                                color: Theme.text-primary;
+                                accessible-role: AccessibleRole.text;
+                            }
+                            Text { text: "Thumbnail Renderer"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                for label[index] in ["Path-Traced", "Ray-Traced"]: SegmentPill {
+                                    text: label;
+                                    hint: "Changing the thumbnail renderer marks existing pictures outdated once; regenerate them to use this choice. Ray-Traced uses eight fixed taps with Fire.";
+                                    selected: SettingsModel.thumbnail_renderer_index == index;
+                                    picked => { SettingsModel.thumbnail_renderer_selected(index); }
+                                }
+                            }
+                            Text { text: "Thumbnail Backdrop"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                // Backdrop indices: White 2, Grey 1, Black 3.
+                                for choice[index] in [{ label: "White", value: 2 }, { label: "Grey", value: 1 }, { label: "Black", value: 3 }]: SegmentPill {
+                                    text: choice.label;
+                                    hint: "The tray the catalogue pictures are drawn on. Grey sets colorless stones apart from their background; changing it marks existing pictures outdated once.";
+                                    selected: SettingsModel.thumbnail_backdrop_index == choice.value;
+                                    picked => { SettingsModel.thumbnail_backdrop_selected(choice.value); }
+                                }
+                            }
+                            SliderRow {
+                                text: "Preview Image Size";
+                                hint: "Preview Image Size: the width of the small pictures the catalogue draws for each design, in pixels. Larger pictures are sharper and take longer to draw.";
+                                value_text: Math.round(SettingsModel.preview_size_val) + "px";
+                                minimum: SettingsModel.preview_size_min;
+                                maximum: SettingsModel.preview_size_max;
+                                step: 16;
+                                value <=> SettingsModel.preview_size_val;
+                                edited(val) => { SettingsModel.preview_size_changed(Math.round(val)); }
+                            }
+                            if SettingsModel.thumbnail_renderer_index == 0: SliderRow {
+                                text: "Preview Samples";
+                                hint: "Preview Samples: how many light paths are traced for each pixel of a catalogue picture. More samples mean less grain and a slower batch.";
+                                value_text: Math.round(SettingsModel.preview_spp_val) + "";
+                                minimum: SettingsModel.preview_samples_min;
+                                maximum: SettingsModel.preview_samples_max;
+                                step: 32;
+                                value <=> SettingsModel.preview_spp_val;
+                                edited(val) => { SettingsModel.preview_spp_changed(Math.round(val)); }
+                            }
+                            Text {
+                                height: 30px;
+                                text: "You can change these later in the Advanced interface, under Render & Output > Library Thumbnails.";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
+                        }
+
                         if root.from_import: Text {
                             text: "Quick draws a fast solid picture of each design in moments; the fully rendered ones can follow later, in one batch or one by one from a design's menu.";
                             font-size: 11px;
@@ -252,6 +350,22 @@ export component PreviewBatchDialog inherits Rectangle {
                             }
                         }
 
+                        if root.from_import: HorizontalLayout {
+                            spacing: 8px;
+                            alignment: end;
+                            if root.from_import: TipButton {
+                                text: "Quick (Solid)";
+                                hint: "Draw a fast solid picture of each design in moments. Fully rendered ones can follow later.";
+                                clicked => { root.generate_solid_confirmed(); }
+                            }
+                            TipButton {
+                                text: "Quick (Ray-Traced)";
+                                hint: "Draw deterministic draft pictures locally; these do not replace the persistent thumbnail renderer choice.";
+                                enabled: root.can_start;
+                                clicked => { root.generate_ray_confirmed(); }
+                            }
+                        }
+
                         HorizontalLayout {
                             spacing: 8px;
                             alignment: end;
@@ -263,14 +377,9 @@ export component PreviewBatchDialog inherits Rectangle {
                                     : "Do not make previews now.";
                                 clicked => { root.dismiss_offer(); }
                             }
-                            if root.from_import: TipButton {
-                                text: "Quick (Solid)";
-                                hint: "Draw a fast solid picture of each design in moments. Fully rendered ones can follow later.";
-                                clicked => { root.generate_solid_confirmed(); }
-                            }
                             tip-button-from-import-2 := TipButton {
                                 text: root.from_import ? "Full Render" : "Generate";
-                                hint: "Render a front and a top picture of each design. This takes longer but looks best. Enter does the same.";
+                                hint: SettingsModel.thumbnail_renderer_index == 1 ? "Save deterministic Ray Traced front and top thumbnails using approximate RGB base glass. Enter does the same." : "Render a front and a top picture of each design. This takes longer but looks best. Enter does the same.";
                                 primary: true;
                                 enabled: root.can_start;
                                 clicked => { root.generate_confirmed(); }
@@ -282,6 +391,7 @@ export component PreviewBatchDialog inherits Rectangle {
                         spacing: 12px;
 
                         Text {
+                            vertical-stretch: 0;
                             text: root.done ? "Preview generation finished" : "Generating previews...";
                             font-size: 14px;
                             font-weight: 700;
@@ -290,6 +400,7 @@ export component PreviewBatchDialog inherits Rectangle {
                         }
 
                         if !root.done: VerticalLayout {
+                            vertical-stretch: 0;
                             spacing: 10px;
 
                             // Local runs `local_lane_total` lanes concurrently (Task:
@@ -398,13 +509,19 @@ export component PreviewBatchDialog inherits Rectangle {
                         }
 
                         if root.done: Text {
+                            vertical-stretch: 0;
                             text: root.summary;
                             font-size: 12px;
                             color: Theme.text-secondary;
                             wrap: word-wrap;
                         }
 
+                        // The card's height is fixed (see its comment); the spare height goes
+                        // here, so the rows keep their own height and the buttons sit at the bottom.
+                        Rectangle { vertical-stretch: 1; }
+
                         HorizontalLayout {
+                            vertical-stretch: 0;
                             spacing: 8px;
                             alignment: end;
 

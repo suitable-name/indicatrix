@@ -22,7 +22,13 @@ fn random_bytes() -> [u8; 16] {
         .is_some_and(|crypto| crypto.get_random_values_with_u8_array(&mut bytes).is_ok());
     if !filled {
         for byte in &mut bytes {
-            *byte = (js_sys::Math::random() * 256.0) as u8;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "random() is in [0, 1), so the product is in [0, 256) and its floor fits a u8"
+            )]
+            let value = (js_sys::Math::random() * 256.0) as u8;
+            *byte = value;
         }
     }
     bytes

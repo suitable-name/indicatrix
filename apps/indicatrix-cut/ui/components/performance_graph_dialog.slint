@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, CheckBox, Button } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { TiltModel, TiltVideoExportModel } from "../models/tilt.slint";
 import { ViewportModel } from "../models/viewport.slint";
@@ -310,15 +310,12 @@ export component PerformanceGraphDialog inherits Rectangle {
                         color: Theme.text-disabled;
                         wrap: word-wrap;
                     }
-                    // The sweep and the hover-preview thumbnail both trace an
-                    // all-polished stone against the bare resolved material (see
-                    // `gui::tilt_hover_preview::render_hover_preview`'s own doc
-                    // comment) -- none of the live viewport's display overrides
-                    // apply here, so this curve/preview can look and measure
-                    // differently from the Live Render tab's image of the SAME
-                    // design. Stated here rather than left to read as a bug.
+                    // The sweep and the hover-preview thumbnail both trace the
+                    // finished stone with the scene's captured material (override
+                    // stack applied), tools, facet finishes, fluorescence and
+                    // lighting (`SceneSnapshot::capture_finished`).
                     Text {
-                        text: "Excludes display overrides: inclusions, c-axis orientation, edge rounding, physical size and frosted girdle are not applied -- this shows " + root.material_name + " as an all-polished stone.";
+                        text: "Finished stone with the current material, finish, lighting and head shadow: " + root.material_name + ".";
                         font-size: 11px;
                         font-italic: true;
                         color: Theme.text-disabled;
@@ -413,6 +410,12 @@ export component PerformanceGraphDialog inherits Rectangle {
                 recompute => { root.rerender_curve_with_current_material(); }
             }
 
+            HorizontalLayout {
+                CheckBox { text: "Optical Diagnostics at Hovered Pose"; checked <=> TiltModel.hover_diagnostics; toggled => { TiltModel.request_tilt_hover_preview(TiltModel.hover_axis,TiltModel.hover_tilt); } }
+                Button { text: TiltModel.hover_inspect ? "Close Inspection" : "Inspect This Angle"; clicked => { TiltModel.hover_inspect=!TiltModel.hover_inspect; TiltModel.request_tilt_hover_preview(TiltModel.hover_axis,TiltModel.hover_tilt); } }
+            }
+            Text { text: TiltModel.hover_status; color:Theme.text-secondary; wrap:word-wrap; }
+            if TiltModel.hover_inspect && TiltModel.hover_ready: Image { source:TiltModel.hover_preview_image; height:360px; image-fit:contain; }
             // 2.5. Stale-cached-curve prompt. Only appears once this design has a
             // cached preview material on file AND it differs from the material
             // currently loaded. Placed right under the badges rather than competing

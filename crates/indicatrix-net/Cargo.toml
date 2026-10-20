@@ -50,8 +50,6 @@ rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
-# `handshake::verify_compatible` logs (not refuses) an unknown `source_hash` on either
-# side of a pairing -- see that function's doc comment.
 tracing = { workspace = true }
 # `enroll`/`token` modules (token-based worker enrollment, shared by
 # `apps/indicatrix-worker`'s `cert claim` and `apps/indicatrix-cut`'s own token-redeem UI --
@@ -84,6 +82,10 @@ render = ["dep:indicatrix"]
 # The integration test round-trips a real `SceneState` directly -- it needs `indicatrix`,
 # so (like `indicatrix`'s own `gpu`-only examples) it is skipped entirely by a default
 # `cargo test`, not just skipped at runtime, and only built under `--features render`.
+[dev-dependencies]
+# `tests/scene_roundtrip.rs` checks that a scene.json without `engine` loads as Path-Traced.
+serde_json = { workspace = true }
+
 [[test]]
 name = "scene_roundtrip"
 required-features = ["render"]

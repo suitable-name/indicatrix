@@ -286,7 +286,7 @@ fn rough_planner() -> Guide {
         )
         .actions([
             "Choose Block, Cylinder, Pebble or Mesh (OBJ), then type its size in millimetres (Rough X, Y and Z for a block).",
-            "The live readout under the material shows the model's volume and weight in carats. Type your scale's weight over the Carat field to see a weight check, and Fit to weight scales the model to it.",
+            "The live readout under the material shows the model's volume and weight in carats. Type your scale's weight over the Carat field to see a weight check, and Fit to Weight scales the model to it.",
             "Take flat cuts off the shape with +Edge, +Corner and +Face, or by clicking an edge, a corner or a face in the 3D view.",
         ])
         .why("Quartz is the default material. Only materials with a known specific gravity are listed, because the specific gravity turns volume into carats.")
@@ -295,11 +295,11 @@ fn rough_planner() -> Guide {
     .step(
         GuideStep::new(
             "Plan",
-            "The PLAN section says how many different designs a layout may mix and which designs to use.",
+            "The PLAN section says how many different designs and how many stones a layout may hold, and which designs to use.",
         )
         .actions([
-            "Set Designs (up to) to 1 to get the best layouts of a single design for this rough.",
-            "Leave Candidate designs on Current filter, which uses the designs the library shows now. Narrow the library with a short search first so the first run is quick.",
+            "Set Designs (Up To) to 1 to get the best layouts of a single design for this rough. Leave Stones (Up To) at 0 to let the planner fit as many stones as yield the most weight, or set the most stones you want to cut.",
+            "Leave Candidate Designs on Current Filter, which uses the designs the library shows now. Narrow the library with a short search first so the first run is quick.",
             "Click Plan, or press Ctrl+Enter.",
         ])
         .check("The stage line and a percentage show the progress, then up to ten result cards appear on the right.")

@@ -97,6 +97,7 @@ struct Request {
     lighting_preset: LightingPreset,
     /// The loaded HDR panorama, which replaces the preset's rig as the lighting.
     env_map: Option<Arc<EnvironmentMap>>,
+    head_shadow_deg: f32,
 }
 
 impl Request {
@@ -105,7 +106,11 @@ impl Request {
     fn environment(&self) -> EnvironmentSource<'_> {
         let [_, _, light_yaw, light_pitch] = self.pose;
         self.env_map.as_deref().map_or_else(
-            || self.lighting_preset.studio(1.0, light_yaw, light_pitch),
+            || {
+                self.lighting_preset
+                    .studio(1.0, light_yaw, light_pitch)
+                    .with_head_shadow(self.head_shadow_deg)
+            },
             EnvironmentSource::HdrMap,
         )
     }
@@ -118,6 +123,14 @@ fn same_env_map(a: Option<&Arc<EnvironmentMap>>, b: Option<&Arc<EnvironmentMap>>
         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
         _ => false,
     }
+}
+
+/// The shared facet planes and concave tools of one stone, as the render loop holds them:
+/// a queued request clones the `Arc`s instead of copying the data.
+#[derive(Clone, Copy)]
+pub(super) struct SharedGeometry<'a> {
+    pub(super) planes: &'a Arc<Vec<GpuFacetPlane>>,
+    pub(super) tools: &'a Arc<Vec<ToolPrimitive>>,
 }
 
 /// A request waiting out its debounce.
@@ -216,6 +229,9 @@ impl Shared {
 
 /// The worker thread's body: evaluate what is due, publish, repeat until closed.
 fn run(shared: &Shared) {
+    // Kept across requests: the cache key covers the stone, material, lighting preset, light
+    // pose, HDR map and the effective head-shadow cone, so an orbit stop reuses the 19-point
+    // angular profile and only a change of those inputs recomputes it.
     let mut cache: Option<MetricsCache> = None;
     while let Some(request) = shared.next_due() {
         let [yaw, pitch, ..] = request.pose;
@@ -249,6 +265,7 @@ struct Submitted {
     pose: [f32; 4],
     lighting_preset: LightingPreset,
     env_map: Option<Arc<EnvironmentMap>>,
+    head_shadow_deg: f32,
 }
 
 /// The render thread's handle on the metrics worker.
@@ -289,21 +306,23 @@ impl MetricsWorker {
         clippy::float_cmp,
         reason = "pose is an exact change detector: any bit difference must resubmit"
     )]
-    pub(super) fn request(
+    pub(super) fn request_with_head_shadow(
         &mut self,
-        planes: &Arc<Vec<GpuFacetPlane>>,
-        tools: &Arc<Vec<ToolPrimitive>>,
+        geometry: SharedGeometry<'_>,
         material: &GemMaterial,
         pose: [f32; 4],
         lighting_preset: LightingPreset,
         env_map: Option<&Arc<EnvironmentMap>>,
+        head_shadow_deg: f32,
     ) {
+        let SharedGeometry { planes, tools } = geometry;
         let planes_hash = hash_geometry(StoneGeometry { planes, tools });
         if self.submitted.as_ref().is_some_and(|last| {
             last.planes_hash == planes_hash
                 && last.pose == pose
                 && last.material == *material
                 && last.lighting_preset == lighting_preset
+                && last.head_shadow_deg.to_bits() == head_shadow_deg.to_bits()
                 && same_env_map(last.env_map.as_ref(), env_map)
         }) {
             return;
@@ -314,10 +333,12 @@ impl MetricsWorker {
             pose,
             lighting_preset,
             env_map: env_map.cloned(),
+            head_shadow_deg,
         });
         last.planes_hash = planes_hash;
         last.pose = pose;
         last.lighting_preset = lighting_preset;
+        last.head_shadow_deg = head_shadow_deg;
         last.env_map = env_map.cloned();
         if last.material != *material {
             last.material.clone_from(material);
@@ -329,9 +350,29 @@ impl MetricsWorker {
             pose,
             lighting_preset,
             env_map: env_map.cloned(),
+            head_shadow_deg,
         });
     }
 
+    #[cfg(test)]
+    fn request(
+        &mut self,
+        planes: &Arc<Vec<GpuFacetPlane>>,
+        tools: &Arc<Vec<ToolPrimitive>>,
+        material: &GemMaterial,
+        pose: [f32; 4],
+        preset: LightingPreset,
+        hdr: Option<&Arc<EnvironmentMap>>,
+    ) {
+        self.request_with_head_shadow(
+            SharedGeometry { planes, tools },
+            material,
+            pose,
+            preset,
+            hdr,
+            indicatrix::optics::raytracer::DEFAULT_HEAD_SHADOW_DEG,
+        );
+    }
     /// The newest published values and their version (`0` while still the defaults).
     ///
     /// Possibly for inputs older than the last [`Self::request`]: the loop keeps showing
@@ -389,6 +430,7 @@ mod tests {
                 pose: [0.0; 4],
                 lighting_preset: LightingPreset::RingLights,
                 env_map: None,
+                head_shadow_deg: indicatrix::optics::raytracer::DEFAULT_HEAD_SHADOW_DEG,
             },
             first_queued,
             last_changed,

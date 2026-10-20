@@ -4,6 +4,7 @@
 //! Split out of `gui::mod` purely to keep that module (already sizeable) from growing
 //! further -- same reasoning as `gui::detail`/`gui::search`/`gui::remote`.
 
+use crate::gui::view_modes::{EditViewMode, LiveViewMode};
 use crate::{
     MainWindow, SettingsModel, SolidPreviewModel, ViewportModel,
     bridge::render_thread::{RenderContext, load_env_map},
@@ -23,7 +24,7 @@ use std::{
 /// Converts a Slint `view-mode` model value (a small enum index stored as `i32`) to the
 /// `u8` the preview state takes; an out-of-range value falls back to 0 (the live view).
 pub fn view_mode_index(raw: i32) -> u8 {
-    u8::try_from(raw).unwrap_or(0)
+    u8::try_from(EditViewMode::from_raw(raw).raw()).unwrap_or_default()
 }
 
 /// Converts a logical-times-scale viewport extent to whole device pixels. `as` saturates
@@ -82,7 +83,7 @@ pub const fn device_pixels(extent: f32) -> u32 {
 /// position by the same factor to reach the physical pixel it names in the pick
 /// buffer; it lives in `solid_preview::diagram_wiring` for the diagram and in
 /// `gui::editor::callbacks::tier_actions` for the solid view.
-pub(in crate::gui) fn resubmit_at_current_pose(
+pub fn resubmit_at_current_pose(
     ui: &MainWindow,
     ctx: &RenderContext,
     preview_state: &SolidPreviewState,
@@ -91,7 +92,9 @@ pub(in crate::gui) fn resubmit_at_current_pose(
         return;
     }
     let on_live_tab = ui.get_render_view_tab() == 0;
-    if on_live_tab && ui.global::<ViewportModel>().get_live_view_mode() != 0 {
+    if on_live_tab
+        && LiveViewMode::from_raw(ui.global::<ViewportModel>().get_live_view_mode()).is_traced()
+    {
         return;
     }
     let view_mode = if on_live_tab {
@@ -148,6 +151,7 @@ pub(super) fn active_stone(ctx: &RenderContext) -> StoneGeometryBuf {
         planes: ctx.active_planes.as_ref().clone(),
         tools: ctx.active_tools.as_ref().clone(),
         placements: ctx.active_placements.clone(),
+        frosted: ctx.active_frosted.as_ref().clone(),
     }
 }
 
@@ -168,7 +172,7 @@ pub(super) fn active_stone(ctx: &RenderContext) -> StoneGeometryBuf {
 /// function's output size instead keeps every pixel of the request inside the
 /// same rectangle the traced image actually occupies on screen.
 ///
-/// Used only for `view_mode` `1` (Path-traced) and `2` (Both) -- Solid (`0`) and
+/// Used for traced modes: Path-Traced (`1`), Both (`2`) and Ray-Traced (`4`) -- Solid (`0`) and
 /// Diagram (`3`) never show `render_image` at all, so the viewport's own raw
 /// size is already correct for them, returned unchanged (also returned unchanged
 /// if either dimension is `0`, i.e. nothing to divide by, or nothing requested
@@ -190,7 +194,7 @@ pub(in crate::gui) fn contained_request_size(
     viewport_size: (u32, u32),
     render_size: (u32, u32),
 ) -> (u32, u32) {
-    if !matches!(view_mode, 1 | 2) {
+    if !EditViewMode::from_raw(i32::from(view_mode)).is_traced() {
         return viewport_size;
     }
     let (viewport_width, viewport_height) = viewport_size;
@@ -220,7 +224,7 @@ pub(in crate::gui) fn contained_request_size(
 // `indicatrix_solid::preview::camera` (shared with the web app's Solid view);
 // re-exported here at their old paths. This module's tests below stay as their
 // pins.
-pub(in crate::gui) use indicatrix_solid::preview::camera::{
+pub use indicatrix_solid::preview::camera::{
     fit_distance_for_radius, orbit_distance_bounds, wrap_pitch,
 };
 
@@ -495,6 +499,14 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
     });
 
     setup_reset_lighting_tab_callback(ui, render_ctx, settings_store);
+
+    super::camera_handles::register_camera(
+        ui,
+        render_ctx,
+        settings_store,
+        preview_state,
+        mesh_bounding_radius,
+    );
 }
 
 /// `ViewportModel.reset_lighting_tab`: the Lighting & Environment tab's "Reset this tab". Puts
@@ -701,6 +713,10 @@ mod tests {
         let (width, height) = contained_request_size(2, (900, 700), (1920, 1080));
         assert_eq!(width, 900);
         assert_eq!(height, 506);
+        assert_eq!(
+            contained_request_size(4, (900, 700), (1920, 1080)),
+            (width, height)
+        );
     }
 
     #[test]

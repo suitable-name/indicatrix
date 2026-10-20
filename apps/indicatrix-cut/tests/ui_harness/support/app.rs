@@ -1,6 +1,6 @@
 //! Launching the real app on Slint's testing backend and tearing it down.
 //!
-//! The backend itself (mock time, [`pump`], [`wait_until`], [`settle`]) is `slint-harness`'s
+//! The backend itself (mock time, [`pump`], [`wait_until`], [`settle`]) is `uiprobe`'s
 //! `backend` module, re-exported here. Timers and animations advance only through [`pump`],
 //! while work done by the app's own threads (library load, solves, searches) runs in real time
 //! and hands its results back through the event queue, which [`pump`] drains.
@@ -15,10 +15,10 @@ use super::{
 };
 use indicatrix_cut::{MainWindow, gui::MainWindowHandle, harness_support};
 use slint::ComponentHandle;
-use slint_harness::{backend::wait_until_labeled, timing};
 use std::time::Duration;
+use uiprobe::{backend::wait_until_labeled, timing};
 
-pub use slint_harness::backend::{drain_events, pump, settle, wait_until};
+pub use uiprobe::backend::{drain_events, pump, settle, wait_until};
 
 /// Window size used by default (a common laptop screen).
 pub const DEFAULT_SIZE: (u32, u32) = (1366, 768);

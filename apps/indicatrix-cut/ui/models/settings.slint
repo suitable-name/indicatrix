@@ -4,6 +4,17 @@
 // split, ray bounces, exposure/light, inclusion scattering, crystal-axis override,
 // girdle finish, edge rounding, physical size, and the HDR environment map.
 export global SettingsModel {
+    // Stable library thumbnail choice: 0 Path-Traced, 1 Ray-Traced.
+    in-out property <int> thumbnail_renderer_index: 0;
+    callback thumbnail_renderer_selected(int);
+    // The tray catalogue thumbnails render on, as a backdrop index (1 Grey, 2 White,
+    // 3 Black); Grey by default (`AppSettings::thumbnail_backdrop`).
+    in-out property <int> thumbnail_backdrop_index: 1;
+    callback thumbnail_backdrop_selected(int);
+    in property <int> ray_taps: 8;
+    in property <bool> ray_fire: true;
+    callback ray_taps_selected(int);
+    callback ray_fire_selected(bool);
     // Carries the "Target Samples" slider's EXPONENT (3..=10 => 8..1024 samples), not
     // the sample count -- noise falls as 1/sqrt(N), so a linear control would spend
     // ~97% of its travel above 32 spp where each step barely changes anything visible.
@@ -13,8 +24,8 @@ export global SettingsModel {
     // 12 Bounces default -- see the Parameters panel's pill ladder (4/8/12/24/64/128).
     in-out property <int> bounce_index: 2;
     in-out property <float> exposure_val: 1.0;
-    // Backdrop pill index: 0 = as lit, 1 = Grey (default), 2 = white.
-    in-out property <int> backdrop_index: 1;
+    // Backdrop pill index: 0 = as lit, 1 = grey, 2 = white (default), 3 = black.
+    in-out property <int> backdrop_index: 2;
     // Surface glare, percent (0-100, default 100 = unscaled): the share of the white
     // mirror image of the light kept in the path-traced view and exports. Built-in
     // lighting presets only; the Parameters panel greys it out for an HDR map.

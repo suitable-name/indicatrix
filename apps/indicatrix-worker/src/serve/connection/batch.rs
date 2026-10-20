@@ -35,7 +35,8 @@
 //!
 //! `render_core::scene_uses_gpu` decides: a GPU-eligible item goes into the batch's one
 //! `GpuBackend::try_accumulate_batch_cancellable` call (the backend keeps its queue fed
-//! across item boundaries); a concave, fluorescent or unsupported-material scene, and any
+//! across item boundaries, concave items with their tools); a fluorescent, UV-lit,
+//! over-limit-tools or unsupported-material scene, and any
 //! item the GPU declines, is traced on the CPU by the plain CPU path. The hybrid
 //! CPU+GPU split is deliberately NOT used: a preview is small, and splitting it costs more
 //! than it saves. Results leave the tracer in completion order: the GPU items in input
@@ -62,10 +63,7 @@ use crate::{
     validate,
 };
 use glam::Vec3;
-use indicatrix::{
-    optics::raytracer::{Camera, DEFAULT_FOV_DEG, FacetFinish},
-    renderer::gpu_backend::{GpuAccumulate, GpuBackend, GpuBatchItem, GpuSceneRef},
-};
+use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_net::messages::{
     BatchDone, BatchItem, BatchItemDoneHeader, BatchItemFailed, BatchItemProgress,
     BatchRenderRequest, ClientMessage, ErrorMsg, MAX_BATCH_ITEMS, MAX_BATCHES_IN_FLIGHT, NetError,
@@ -145,6 +143,7 @@ struct TraceEnv {
     /// A backend that always declines, so [`render_core::trace_samples_with_gpu_cancellable`]
     /// runs the plain CPU tracer (the GPU was already offered the item, or cannot take it).
     cpu: GpuBackend,
+    prefer_ray_gpu: bool,
     /// CPU tracer threads (`0` = all cores).
     threads: usize,
     /// Samples traced so far across the session, for the heartbeat.
@@ -238,170 +237,9 @@ fn check_item(item: &BatchItem) -> Result<(), String> {
     validate::validate_request(&item.scene, item.first_sample, item.samples)
 }
 
-/// The tracer thread's body for one batch.
-fn trace_batch(env: &TraceEnv, batch: &QueuedBatch) {
-    let request_id = batch.request.request_id;
-    let cancel: &AtomicBool = &batch.cancel;
-    let started = Instant::now();
-
-    let mut gpu_items: Vec<(usize, &BatchItem)> = Vec::new();
-    let mut cpu_items: Vec<(usize, &BatchItem)> = Vec::new();
-    for (index, item) in batch.request.items.iter().enumerate() {
-        match check_item(item) {
-            Err(reason) => env.fail(request_id, item.item_id, reason),
-            Ok(()) if render_core::scene_uses_gpu(&item.scene) => gpu_items.push((index, item)),
-            Ok(()) => cpu_items.push((index, item)),
-        }
-    }
-
-    if !cancel.load(Ordering::Relaxed) {
-        let declined = trace_on_gpu(env, request_id, &gpu_items, cancel);
-        cpu_items.extend(declined);
-        cpu_items.sort_by_key(|(index, _)| *index);
-        trace_on_cpu(env, request_id, &cpu_items, cancel);
-    }
-
-    let cancelled = cancel.load(Ordering::Relaxed);
-    let _ = env.stage.send(StageJob::End {
-        request_id,
-        cancelled,
-    });
-    tracing::info!(
-        request_id,
-        items = batch.request.items.len(),
-        gpu_items = gpu_items.len(),
-        cancelled,
-        traced_in = ?started.elapsed(),
-        "worker: traced a preview batch"
-    );
-}
-
-/// Traces `items` in ONE `GpuBackend::try_accumulate_batch_cancellable` call and hands
-/// every finished item to the encoder. Returns the items the GPU declined, for the CPU.
-///
-/// Delivery happens after the call returns, because the call holds every item's output
-/// buffer for its whole duration; the encoder overlaps the NEXT batch's tracing instead.
-fn trace_on_gpu<'a>(
-    env: &TraceEnv,
-    request_id: u32,
-    items: &[(usize, &'a BatchItem)],
-    cancel: &AtomicBool,
-) -> Vec<(usize, &'a BatchItem)> {
-    if items.is_empty() {
-        return Vec::new();
-    }
-    let cameras: Vec<Camera> = items
-        .iter()
-        .map(|(_, item)| {
-            Camera::new(
-                item.scene.yaw,
-                item.scene.pitch,
-                item.scene.distance,
-                DEFAULT_FOV_DEG,
-            )
-        })
-        .collect();
-    let finishes: Vec<Vec<FacetFinish>> = items
-        .iter()
-        .map(|(_, item)| render_core::resolve_facet_finishes(&item.scene))
-        .collect();
-    let mut outs: Vec<Vec<Vec3>> = items
-        .iter()
-        .map(|(_, item)| vec![Vec3::ZERO; item.scene.width as usize * item.scene.height as usize])
-        .collect();
-    let mut outcomes: Vec<Option<GpuAccumulate>> = vec![None; items.len()];
-
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let mut batch: Vec<GpuBatchItem<'_>> = items
-            .iter()
-            .zip(&cameras)
-            .zip(&finishes)
-            .zip(outs.iter_mut())
-            .map(|(((&(_, item), camera), finish), out)| GpuBatchItem {
-                scene: GpuSceneRef {
-                    camera,
-                    width: item.scene.width,
-                    height: item.scene.height,
-                    planes: &item.scene.planes,
-                    facet_finishes: finish,
-                    material: &item.scene.material,
-                    max_bounces: item.scene.max_bounces,
-                    environment: assets::environment_source(&item.scene, None),
-                },
-                first_sample: item.first_sample,
-                samples: item.samples,
-                out: out.as_mut_slice(),
-            })
-            .collect();
-        env.gpu
-            .try_accumulate_batch_cancellable(&mut batch, cancel, &mut |index, outcome| {
-                if let Some(slot) = outcomes.get_mut(index) {
-                    *slot = Some(outcome);
-                }
-                if outcome == GpuAccumulate::Done
-                    && let Some(&(_, item)) = items.get(index)
-                {
-                    env.traced(request_id, item);
-                }
-            });
-    }));
-    let panicked = result.is_err();
-
-    let mut declined = Vec::new();
-    for ((&(index, item), accum), outcome) in items.iter().zip(outs).zip(outcomes) {
-        match outcome {
-            Some(GpuAccumulate::Done) => env.picture(request_id, item, accum),
-            Some(GpuAccumulate::Declined) => declined.push((index, item)),
-            None if panicked => env.fail(
-                request_id,
-                item.item_id,
-                "the GPU tracer panicked while tracing this batch",
-            ),
-            // The backend never reported this item (it stopped early without a cancel):
-            // give it to the CPU rather than lose it.
-            None if !cancel.load(Ordering::Relaxed) => declined.push((index, item)),
-            Some(GpuAccumulate::Cancelled) | None => {}
-        }
-    }
-    declined
-}
-
-/// Traces `items` one by one on the CPU, handing each finished item to the encoder.
-fn trace_on_cpu(
-    env: &TraceEnv,
-    request_id: u32,
-    items: &[(usize, &BatchItem)],
-    cancel: &AtomicBool,
-) {
-    for &(_, item) in items {
-        if cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        let traced = catch_unwind(AssertUnwindSafe(|| {
-            render_core::trace_samples_with_gpu_cancellable(
-                &env.cpu,
-                &item.scene,
-                item.first_sample,
-                item.samples,
-                env.threads,
-                cancel,
-            )
-        }));
-        match traced {
-            Ok(Some(accum)) => {
-                env.traced(request_id, item);
-                env.picture(request_id, item, accum);
-            }
-            // Cancelled mid-trace: nothing was added, and nothing is owed.
-            Ok(None) => return,
-            Err(_) => env.fail(
-                request_id,
-                item.item_id,
-                "tracing panicked on a scene that passed validation",
-            ),
-        }
-    }
-}
+#[path = "batch_trace.rs"]
+mod trace_impl;
+use trace_impl::trace_batch;
 
 /// The encoder thread's body: turns each [`StageJob`] into its wire event, in order.
 fn encode_stage(stage: &mpsc::Receiver<StageJob>, out: &mpsc::Sender<Outgoing>) {
@@ -498,6 +336,7 @@ impl Pipeline {
         let env = TraceEnv {
             gpu: Arc::clone(ctx.gpu),
             cpu: GpuBackend::disabled(),
+            prefer_ray_gpu: ctx.compute_mode != crate::cli::ComputeMode::OnlyCpu,
             threads: ctx.threads,
             traced_total: Arc::clone(&traced_total),
             out: out_tx.clone(),
@@ -660,6 +499,8 @@ impl Session {
             ClientMessage::Contribution(header) => {
                 indicatrix_net::messages::discard_contribution_payload(stream, &header)
             }
+            // v25: not served while batches are in flight; a payload frame is consumed.
+            ClientMessage::Job(job) => crate::jobs::ignore_in_flight(stream, &job),
             ClientMessage::RenderRequest(request) => write_error(
                 stream,
                 error_codes::UNSUPPORTED_REQUEST,
@@ -805,150 +646,5 @@ pub(super) fn serve_batches<S: Read + Write + TimeoutRead + TimeoutWrite>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use indicatrix::{
-        geometry::cuts::StandardGemCuts,
-        optics::{materials::GemMaterial, raytracer::LightingPreset},
-    };
-    use indicatrix_net::{
-        SceneState,
-        messages::{BatchReply, ClientMessage},
-    };
-
-    fn scene() -> SceneState {
-        SceneState {
-            width: 4,
-            height: 4,
-            yaw: 0.4,
-            pitch: 0.3,
-            distance: 3.0,
-            light_yaw: 0.85,
-            light_pitch: 0.95,
-            exposure: 1.0,
-            max_bounces: 4,
-            lighting_preset: LightingPreset::Daylight,
-            material: GemMaterial::diamond(),
-            planes: StandardGemCuts::standard_round_brilliant(),
-            girdle_frosted: false,
-            backdrop: 0.0,
-            environment: indicatrix_net::scene::SceneEnvironment::Studio,
-            surface_glare: 1.0,
-            tools: Vec::new(),
-            fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
-            head_shadow_deg: 16.0,
-        }
-    }
-
-    fn item(item_id: u32) -> BatchItem {
-        BatchItem {
-            item_id,
-            scene: scene(),
-            first_sample: 0,
-            samples: 2,
-            width: 4,
-            height: 4,
-        }
-    }
-
-    fn request(request_id: u32, ids: &[u32]) -> BatchRenderRequest {
-        BatchRenderRequest {
-            request_id,
-            reply: BatchReply::FinalPng,
-            items: ids.iter().map(|&id| item(id)).collect(),
-        }
-    }
-
-    #[test]
-    fn a_well_formed_batch_is_admitted() {
-        assert!(check_admission(&request(1, &[0, 1, 2]), &[]).is_ok());
-        assert!(check_admission(&request(2, &[0]), &[1]).is_ok());
-    }
-
-    #[test]
-    fn a_third_batch_in_flight_is_refused() {
-        let err = check_admission(&request(3, &[0]), &[1, 2]).unwrap_err();
-        assert!(err.contains("in flight"), "{err}");
-    }
-
-    #[test]
-    fn a_duplicate_batch_id_empty_oversized_or_duplicate_items_are_refused() {
-        assert!(check_admission(&request(1, &[0]), &[1]).is_err());
-        assert!(check_admission(&request(1, &[]), &[]).is_err());
-        let too_many: Vec<u32> =
-            (0..=u32::try_from(MAX_BATCH_ITEMS).expect("the batch cap is small")).collect();
-        assert!(check_admission(&request(1, &too_many), &[]).is_err());
-        let at_cap: Vec<u32> =
-            (0..u32::try_from(MAX_BATCH_ITEMS).expect("the batch cap is small")).collect();
-        assert!(check_admission(&request(1, &at_cap), &[]).is_ok());
-        assert!(check_admission(&request(1, &[4, 5, 4]), &[]).is_err());
-    }
-
-    #[test]
-    fn an_item_with_a_size_mismatch_zero_samples_or_an_hdr_scene_fails_alone() {
-        assert!(check_item(&item(0)).is_ok());
-
-        let mut wrong_size = item(0);
-        wrong_size.width = 5;
-        assert!(check_item(&wrong_size).unwrap_err().contains("must equal"));
-
-        let mut no_samples = item(0);
-        no_samples.samples = 0;
-        assert!(check_item(&no_samples).is_err());
-
-        let mut hdr = item(0);
-        hdr.scene.environment =
-            indicatrix_net::scene::SceneEnvironment::Hdr(indicatrix_net::scene::HdrEnvironment {
-                content_hash: [1; 32],
-                width: 64,
-                height: 32,
-            });
-        assert!(check_item(&hdr).unwrap_err().contains("HDR"));
-    }
-
-    #[test]
-    fn a_picture_encodes_to_the_shared_preview_png() {
-        let accum = vec![Vec3::new(0.4, 0.3, 0.2) * 4.0; 16];
-        let (event, payload) = encode_picture(Picture {
-            request_id: 5,
-            item_id: 9,
-            samples: 4,
-            width: 4,
-            height: 4,
-            accum: accum.clone(),
-        });
-        let StreamEvent::BatchItemDone(header) = event else {
-            panic!("expected BatchItemDone");
-        };
-        let bytes = payload.expect("a finished picture carries its PNG");
-        assert_eq!(header.payload_len as usize, bytes.len());
-        assert_eq!(
-            (header.request_id, header.item_id, header.samples_done),
-            (5, 9, 4)
-        );
-        assert_eq!(
-            Some(bytes),
-            indicatrix::render_setup::encode_preview_png(4, 4, &accum, 4)
-        );
-    }
-
-    #[test]
-    fn a_picture_of_the_wrong_length_becomes_an_item_failure() {
-        let (event, payload) = encode_picture(Picture {
-            request_id: 5,
-            item_id: 9,
-            samples: 4,
-            width: 4,
-            height: 4,
-            accum: vec![Vec3::ZERO; 3],
-        });
-        assert!(matches!(event, StreamEvent::BatchItemFailed(f) if f.item_id == 9));
-        assert!(payload.is_none());
-    }
-
-    #[test]
-    fn the_batch_message_is_the_one_the_request_loop_dispatches() {
-        let message = ClientMessage::BatchRenderRequest(Box::new(request(1, &[0])));
-        assert!(matches!(message, ClientMessage::BatchRenderRequest(_)));
-    }
-}
+#[path = "batch_tests.rs"]
+mod tests;

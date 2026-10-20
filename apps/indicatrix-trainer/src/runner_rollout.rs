@@ -24,23 +24,26 @@
 //!
 //! Each task and each slot writes its own result and the serial parts run in slot order, so the
 //! outcome of a rollout does not depend on the thread count.
+//!
+//! The update that follows a rollout lives in `runner_update.rs`: an imitation update trains on
+//! the update thread while the next rollout runs, so [`TrainingRunner::iterate`] reports the
+//! figures of the update installed during it, which is the one of the previous iteration.
 
 use std::time::Instant;
 
 use indicatrix_ai::{
     env::{
-        ContinuousTierAction, GemstoneObservation, Step, TeacherLabel, TierSensitivity,
-        assemble_label, score_slopes,
+        ContinuousTierAction, GemstoneObservation, OracleOutcome, Step, TeacherLabel,
+        TierSensitivity, assemble_label, score_slopes,
     },
     model::{GaussianPolicy, GemstoneSetAttentionNetwork},
-    training::{
-        EpisodeEnd, ImitationMetrics, TrainBatch, TrainError, TrainingMetrics, TrajectoryStep,
-    },
+    training::{EpisodeEnd, TrainError, TrainingMetrics, TrajectoryStep},
 };
 
 use super::{
     Algorithm, EpisodeSummary, IterationReport, Optics, RolloutStats, RunConfig, RunnerError, Slot,
     TrainingRunner, build_slot,
+    envs::EnvKind,
     imitation::{LabelledSample, explore_raw},
     pool,
     teacher::wants_label,
@@ -105,7 +108,13 @@ fn probe_phase(slots: &[Slot], pending: &[PendingStep], cfg: &RunConfig) -> Vec<
         .flat_map(|(w, _)| slots[w].env.free_tiers().iter().map(move |&tier| (w, tier)))
         .collect();
     let sizes: Vec<f64> = slots.iter().map(|slot| probe_size(cfg, slot)).collect();
-    let probes = pool::run_indexed(tasks.len(), pool::pass_threads(tasks.len()), |task| {
+    // A probe costs about what one evaluation of its design costs, which grows with the tier
+    // count: the biggest designs start first.
+    let costs: Vec<u64> = tasks
+        .iter()
+        .map(|&(w, _)| slots[w].obs.tiers.len() as u64)
+        .collect();
+    let probes = pool::run_indexed_ranked(&costs, pool::pass_threads(tasks.len()), |task| {
         let (w, tier) = tasks[task];
         slots[w].env.probe_tier(tier, sizes[w])
     });
@@ -128,10 +137,49 @@ fn probe_phase(slots: &[Slot], pending: &[PendingStep], cfg: &RunConfig) -> Vec<
     sets
 }
 
+/// The step of `env` along the line search; with `parallel` the candidates are evaluated
+/// concurrently (bit-identical result, see `OptimizerEnv::step_scaled_with`).
+fn step_env(
+    env: &mut EnvKind,
+    action: &ContinuousTierAction,
+    scales: &[f64],
+    parallel: bool,
+) -> Step<GemstoneObservation> {
+    match env {
+        EnvKind::Optimizer(e) => e.step_scaled_with(action, scales, parallel),
+        EnvKind::Retarget(e) => e.step_scaled_with(action, scales, parallel),
+    }
+}
+
+/// The oracle step of `env` along `slopes`; with `parallel` the candidates are evaluated
+/// concurrently (bit-identical result, see `OptimizerEnv::oracle_outcome_with`).
+fn oracle_env(
+    env: &EnvKind,
+    slopes: &[Option<f32>],
+    scales: &[f64],
+    parallel: bool,
+) -> OracleOutcome {
+    match env {
+        EnvKind::Optimizer(e) => e.oracle_outcome_with(slopes, scales, parallel),
+        EnvKind::Retarget(e) => e.oracle_outcome_with(slopes, scales, parallel),
+    }
+}
+
+/// The cost proxy of one slot in phase 2, for the longest-first order: the evaluations of its
+/// step and its label, `free tiers x (1 + labelled)` (a labelled slot also runs the oracle line
+/// search, and its probes were paid for in phase 1), scaled by the tier count because one
+/// evaluation grows with it. Only the ranking matters, not the unit.
+fn step_cost(slot: &Slot, labelled: bool) -> u64 {
+    let free = slot.env.free_tiers().len() as u64;
+    free.max(1) * (1 + u64::from(labelled)) * slot.obs.tiers.len() as u64
+}
+
 /// Phase 2: for every slot, finishes the label of a flagged one (the oracle step along the
 /// probed score slopes, computed on the state before the step) and takes the line-search step.
-/// Slots are handed out one at a time to the pool, so the cost of a slot (a labelled many-tier
-/// slot costs several times an unlabelled one) does not unbalance the threads.
+/// Slots are handed out one at a time to the pool, the costliest first ([`step_cost`]), so the
+/// cost of a slot (a labelled many-tier slot costs several times an unlabelled one) does not
+/// unbalance the threads. Inner candidate line searches stay serial, so each slot is bounded by
+/// one pool worker and native thread count cannot multiply by the number of line-search scales.
 fn step_phase(
     slots: &mut [Slot],
     pending: &[PendingStep],
@@ -139,12 +187,18 @@ fn step_phase(
     scales: &[f64],
 ) -> Vec<SlotOutcome> {
     let threads = pool::pass_threads(slots.len());
-    pool::run_items(slots, threads, |w, slot| {
+    let costs: Vec<u64> = slots
+        .iter()
+        .zip(pending)
+        .map(|(slot, p)| step_cost(slot, p.labelled))
+        .collect();
+    pool::run_items_ranked(slots, &costs, threads, |w, slot, tail| {
         let label = sets[w].as_ref().map(|set| {
-            let oracle = slot.env.oracle_outcome(&score_slopes(&set.tiers), scales);
+            let slopes = score_slopes(&set.tiers);
+            let oracle = oracle_env(&slot.env, &slopes, scales, tail.is_active());
             assemble_label(set.tiers.clone(), set.evaluations, oracle)
         });
-        let step = slot.env.step_scaled(&pending[w].action, scales);
+        let step = step_env(&mut slot.env, &pending[w].action, scales, tail.is_active());
         SlotOutcome { step, label }
     })
 }
@@ -160,7 +214,12 @@ impl TrainingRunner {
             states.push(slot.obs.try_flatten(max_tiers)?);
             n_tiers.push(slot.obs.tiers.len());
         }
+        let forward_started = Instant::now();
         let batch = self.rollout_model.forward_host(&states, &n_tiers)?;
+        self.stats.rollout_forward_ms = forward_started
+            .elapsed()
+            .as_secs_f32()
+            .mul_add(1_000.0, self.stats.rollout_forward_ms);
         if batch.means.len() != n || batch.log_stds.len() != n || batch.values.len() != n {
             return Err(RunnerError::Train(TrainError::ShapeMismatch(format!(
                 "the batched forward returned {} means, {} log-stds and {} values for {n} slots",
@@ -278,7 +337,7 @@ impl TrainingRunner {
             end,
         );
         self.normalizer
-            .track(w, step.reward, self.trainer.config.gamma, ended);
+            .track(w, step.reward, self.cfg.ppo.gamma, ended);
         self.n_tiers.push(free.len());
         self.free_masks.push(free);
         Ok(())
@@ -335,7 +394,7 @@ impl TrainingRunner {
         rollout.episodes_improved += usize::from(summary.improvement() > 0.0);
         rollout.finished.push(summary);
         let start = if self.cfg.corpus_mode {
-            slot.pos + self.cfg.workers
+            slot.pos + self.cfg.effective_workers()
         } else {
             0
         };
@@ -361,7 +420,12 @@ impl TrainingRunner {
             chosen.push((pos, entry, respawn.seed));
         }
         let (cfg, split) = (&self.cfg, &self.split);
-        let built = pool::run_indexed(chosen.len(), pool::pass_threads(chosen.len()), |i| {
+        // The tier count of the design ranks the builds: the biggest start first.
+        let costs: Vec<u64> = chosen
+            .iter()
+            .map(|&(_, entry, _)| split.entries[entry].design.tiers.len() as u64)
+            .collect();
+        let built = pool::run_indexed_ranked(&costs, pool::pass_threads(chosen.len()), |i| {
             let (pos, entry, seed) = chosen[i];
             build_slot(cfg, split, pos, entry, seed)
         });
@@ -384,7 +448,7 @@ impl TrainingRunner {
     /// every environment step; when it returns `false` the partial rollout is discarded (the
     /// labelled states it already added to the aggregate stay: a label is exact for its state)
     /// and `None` is returned.
-    fn collect_rollout(
+    pub(super) fn collect_rollout(
         &mut self,
         keep_going: &mut dyn FnMut() -> bool,
     ) -> Result<Option<RolloutStats>, RunnerError> {
@@ -411,112 +475,50 @@ impl TrainingRunner {
         Ok(Some(rollout))
     }
 
-    /// The PPO update: GAE over the rollout buffer, then the epochs of the Burn trainer.
-    fn update_ppo(&mut self) -> Result<TrainingMetrics, RunnerError> {
-        // Only the slots that produced a step have a rollout-tail value to bootstrap from.
-        let used = self
-            .buffer
-            .worker_ids
-            .iter()
-            .copied()
-            .max()
-            .map_or(0, |last| last + 1);
-        let mut last_values = Vec::with_capacity(used);
-        for slot in &self.slots[..used] {
-            let (_, v) = self
-                .net
-                .forward(&slot.obs.tier_tokens(), &slot.obs.global_token())?;
-            last_values.push(v);
-        }
-        // The rewards enter GAE divided by the running std of the discounted return (the stored
-        // steps keep the raw reward), so the critic regresses on O(1) targets.
-        let reward_scale = self.normalizer.scale();
-        self.buffer.compute_gae_per_worker(
-            &last_values,
-            self.trainer.config.gamma,
-            self.trainer.config.gae_lambda,
-            reward_scale,
-        )?;
-        self.stats.reward_scale = reward_scale;
-        self.stats.explained_variance = self.buffer.explained_variance();
-
-        let states: Vec<Vec<f32>> = self
-            .buffer
-            .steps
-            .iter()
-            .map(|s| s.observation.clone())
-            .collect();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "actions are stored as f64 and fed to the f32 network; values are in the normal float range"
-        )]
-        let actions: Vec<Vec<f32>> = self
-            .buffer
-            .steps
-            .iter()
-            .map(|s| s.action.iter().map(|&a| a as f32).collect())
-            .collect();
-        let old_log_probs: Vec<f32> = self.buffer.steps.iter().map(|s| s.log_prob).collect();
-        let batch = TrainBatch {
-            states: &states,
-            actions: &actions,
-            old_log_probs: &old_log_probs,
-            advantages: &self.buffer.advantages,
-            returns: &self.buffer.returns,
-            n_tiers: &self.n_tiers,
-            free_tiers: &self.free_masks,
-        };
-        let metrics = self.trainer.train_rollout_epochs(&batch)?;
-        self.net = self.trainer.model.export_to_set_attention()?;
-        self.refresh_rollout_model();
-        Ok(metrics)
-    }
-
-    /// The imitation update: a few epochs over the WHOLE aggregate of labelled states. An empty
-    /// aggregate (a rollout without a usable label) leaves the model as it is.
-    fn update_imitation(&mut self) -> Result<ImitationMetrics, RunnerError> {
-        let batch = self.aggregate.batch();
-        let metrics = self
-            .trainer
-            .train_imitation_epochs(&batch, &self.cfg.imitation)?;
-        if metrics.updates > 0 {
-            self.net = self.trainer.model.export_to_set_attention()?;
-            self.refresh_rollout_model();
-        }
-        Ok(metrics)
-    }
-
-    /// One update of the configured algorithm: the PPO metrics (default in imitation mode) and
-    /// the imitation metrics (`None` in PPO mode).
-    fn update(&mut self) -> Result<(TrainingMetrics, Option<ImitationMetrics>), RunnerError> {
-        match self.cfg.algo {
-            Algorithm::Ppo => self.update_ppo().map(|metrics| (metrics, None)),
-            Algorithm::Imitation => self
-                .update_imitation()
-                .map(|metrics| (TrainingMetrics::default(), Some(metrics))),
-        }
-    }
-
-    /// One iteration: collect a rollout, update the network (PPO or imitation, as configured).
+    /// One iteration: collect a rollout, then update the network (PPO or imitation, as
+    /// configured).
     ///
-    /// Returns `None` when `keep_going` ended the rollout early (nothing was trained).
+    /// The update is not necessarily the one of this rollout. PPO updates on this rollout and
+    /// waits for it. Imitation installs the update of the previous iteration (which trained
+    /// while this rollout ran), then starts the update on this rollout's aggregate and returns
+    /// without waiting for it: [`IterationReport::update_of_iteration`] says which iteration the
+    /// reported update belongs to (`None` when none was installed, as in iteration 0). The
+    /// schedule and its determinism contract are in the module docs of `runner_update.rs`.
+    ///
+    /// Returns `None` when `keep_going` ended the rollout early (nothing was trained; an update
+    /// still training is finished and installed first, so the weights are never half applied).
     ///
     /// # Errors
     ///
     /// [`RunnerError`] from the environments, the network or the trainer (a diverged loss
-    /// included; the weights are then unchanged by that step).
+    /// included; the weights are then unchanged by that step, and the error surfaces at the
+    /// wait point after the iteration the update belongs to).
     pub fn iterate(
         &mut self,
         keep_going: &mut dyn FnMut() -> bool,
     ) -> Result<Option<IterationReport>, RunnerError> {
+        self.stats.rollout_forward_ms = 0.0;
         let started = Instant::now();
         let Some(rollout) = self.collect_rollout(keep_going)? else {
+            self.sync_update()?;
+            self.refresh_rollout_model()?;
             return Ok(None);
         };
         let rollout_secs = started.elapsed().as_secs_f32();
-        let started = Instant::now();
-        let (train, imitation) = self.update()?;
-        let update_secs = started.elapsed().as_secs_f32();
+        let iteration = self.stats.iteration;
+        let update_wait_secs = self.update_step(iteration)?;
+        let installed = self.installed_update.take();
+        let (train, imitation, update_secs, weight_export_secs, update_of_iteration) =
+            match installed {
+                Some(update) => (
+                    update.train,
+                    update.imitation,
+                    update.secs,
+                    update.export_secs,
+                    Some(update.iteration),
+                ),
+                None => (TrainingMetrics::default(), None, 0.0, 0.0, None),
+            };
 
         let steps = rollout.steps;
         let mean_step_reward = rollout.reward_sum / steps.max(1) as f32;
@@ -526,10 +528,17 @@ impl TrainingRunner {
         let evaluations_this_round = rollout.total_evaluations();
         let (new_best, new_best_improvement) = self.record_rollout(rollout, &train);
         let stats = &mut self.stats;
-        stats.last_imitation = imitation;
+        if imitation.is_some() {
+            stats.last_imitation = imitation;
+        }
         stats.labelled_samples = self.aggregate.len();
         stats.rollout_secs = rollout_secs;
         stats.update_secs = update_secs;
+        stats.weight_export_secs = weight_export_secs;
+        stats.update_wait_secs = update_wait_secs;
+        stats.update_of_iteration = update_of_iteration;
+        let packing_ms = imitation.map_or(train.packing_ms, |metrics| metrics.packing_ms);
+        let training_host_ms = imitation.map_or(train.update_ms, |metrics| metrics.update_ms);
         Ok(Some(IterationReport {
             train,
             mean_step_reward,
@@ -544,6 +553,12 @@ impl TrainingRunner {
             rollout_secs,
             label_secs,
             update_secs,
+            packing_ms,
+            training_host_ms,
+            weight_export_ms: weight_export_secs * 1_000.0,
+            rollout_forward_ms: stats.rollout_forward_ms,
+            update_wait_secs,
+            update_of_iteration,
             evaluations_this_round,
         }))
     }

@@ -33,6 +33,7 @@ pub fn release_window_state() {
     batch::preview::release_window_state();
     batch::preview_cache::release_window_state();
     render::design_lighting::release_window_state();
+    render::camera_handles::release_camera();
     render_jobs::controller::release_window_state();
     {
         super::rough_colour::material_zones::release_window_state();

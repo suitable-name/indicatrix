@@ -35,6 +35,7 @@ use std::{sync::OnceLock, time::Duration};
 
 mod build;
 mod drive;
+mod show_me_where;
 
 use crate::support::library_source;
 use drive::{RunStats, snap, wait_real};
@@ -88,7 +89,11 @@ pub fn scenarios() -> Vec<Scenario> {
         "ui-harness: tutorials: seed {}; built-in {:?}; library source {:?}",
         selection.seed, selection.tutorials, selection.source
     );
-    let mut all = Vec::new();
+    let mut all = vec![Scenario {
+        name: "tutorial:show_me_where",
+        seed: existing_install,
+        run: show_me_where::run,
+    }];
     for (slot, id) in selection.tutorials.iter().enumerate() {
         if let Some(run) = TUTORIAL_SLOTS.get(slot) {
             all.push(Scenario {

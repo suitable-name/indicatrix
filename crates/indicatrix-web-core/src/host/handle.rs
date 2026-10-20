@@ -25,16 +25,14 @@ impl WorkerHandle {
     /// Starts a Worker. `on_message` gets every decoded reply; `on_error` gets a
     /// description of an undecodable reply or of the Worker's own `error` event (a
     /// script load failure or an uncaught panic).
-    pub(super) fn spawn(
+    /// Starts a Worker from `url`.
+    pub(super) fn spawn_url(
+        url: &str,
         mut on_message: impl FnMut(FromWorker) + 'static,
         on_error: impl FnMut(String) + 'static,
     ) -> Result<Self, String> {
-        let worker = Worker::new(WORKER_LOADER_URL).map_err(|e| {
-            format!(
-                "could not start a worker from {WORKER_LOADER_URL}: {}",
-                js_error_text(&e)
-            )
-        })?;
+        let worker = Worker::new(url)
+            .map_err(|e| format!("could not start a worker from {url}: {}", js_error_text(&e)))?;
         let on_error = Rc::new(RefCell::new(on_error));
         let decode_error = Rc::clone(&on_error);
         let on_message_closure = Closure::<dyn FnMut(MessageEvent)>::new(
@@ -61,10 +59,28 @@ impl WorkerHandle {
         })
     }
 
+    /// Starts a Worker from [`WORKER_LOADER_URL`].
+    pub(super) fn spawn(
+        on_message: impl FnMut(FromWorker) + 'static,
+        on_error: impl FnMut(String) + 'static,
+    ) -> Result<Self, String> {
+        Self::spawn_url(WORKER_LOADER_URL, on_message, on_error)
+    }
+
+    /// Starts the GPU Worker from [`crate::GPU_WORKER_LOADER_URL`].
+    pub(super) fn spawn_gpu(
+        on_message: impl FnMut(FromWorker) + 'static,
+        on_error: impl FnMut(String) + 'static,
+    ) -> Result<Self, String> {
+        Self::spawn_url(crate::GPU_WORKER_LOADER_URL, on_message, on_error)
+    }
+
     /// Posts `message`, transferring its buffer.
     pub(super) fn post(&self, message: &ToWorker) -> Result<(), String> {
         let bytes = encode_to_worker(message)?;
-        let array = Uint8Array::new_with_length(bytes.len() as u32);
+        let length = u32::try_from(bytes.len())
+            .map_err(|_| "posting to a worker: the message is larger than 4 GiB".to_string())?;
+        let array = Uint8Array::new_with_length(length);
         array.copy_from(&bytes);
         let buffer = array.buffer();
         self.worker

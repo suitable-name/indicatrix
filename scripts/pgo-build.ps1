@@ -274,7 +274,7 @@ $gpuList = if ($Gpu -in @('all', 'both')) { @('gpu', 'cpu') } else { @($Gpu) }
 # variant; it is named here too so a later change to that crate's default set can never
 # silently drop it from a PGO build (the owner wants it active in every PGO variant).
 function Get-PgoFeatures([bool]$IncludeCut, [bool]$IncludeWorker, [string]$GpuName) {
-    $features = @('indicatrix/serde', 'indicatrix/hdr', 'indicatrix-net/compression')
+    $features = @('indicatrix/serde', 'indicatrix/hdr', 'indicatrix-net/compression', 'experimental')
     if ($IncludeWorker) { $features += 'indicatrix-worker/worker' }
     if ($GpuName -eq 'gpu') {
         $features += 'indicatrix/gpu'

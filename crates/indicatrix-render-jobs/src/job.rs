@@ -2,7 +2,7 @@
 //!
 //! A job is [`indicatrix_net::SceneState`] (the fully resolved scene, the same type a
 //! remote worker receives) plus the export settings and the output location. The remote
-//! worker address, its certificates and the local engine choice are machine settings,
+//! worker address, its certificates and the local CPU/GPU choice are machine settings,
 //! not render content, so they are deliberately not part of a job.
 
 use crate::codec::JobFileError;
@@ -10,8 +10,51 @@ use indicatrix_net::SceneState;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// The job file format this version writes and reads.
-pub const JOB_FORMAT_VERSION: u32 = 1;
+/// The newest job file format this version reads.
+pub const JOB_FORMAT_VERSION: u32 = 2;
+/// Path-Traced jobs retain their original format; only Ray-Traced requires the new reader.
+#[must_use]
+pub const fn format_for_engine(engine: indicatrix::renderer::engine::EngineSpec) -> u32 {
+    if engine.is_ray() { 2 } else { 1 }
+}
+/// [`RenderJobFile::scene_backdrop_model`] of a file written before the lit tray: the scene's
+/// backdrop is a card level only the camera ray saw.
+pub const BACKDROP_MODEL_LEGACY_CARD: u32 = 0;
+/// [`RenderJobFile::scene_backdrop_model`] of a file that carries the tray radiance at
+/// exposure 1 (what every writer writes).
+pub const BACKDROP_MODEL_TRAY: u32 = 1;
+/// The old Grey card level (`BACKDROP_GREY` before the tray), kept as a literal: it names
+/// what a legacy file holds, whatever the live constants become.
+const LEGACY_CARD_GREY: f32 = 0.23;
+/// The old White card level (a light box behind the stone).
+const LEGACY_CARD_WHITE: f32 = 8.0;
+
+/// Converts a legacy card level in `scene.backdrop` to the tray radiance, once.
+///
+/// The conversion runs under the scene's own lighting preset and light pose:
+/// `0.0` (As Lit) stays `0.0`, `0.23` becomes the Grey tray, `8.0` the White tray, and any
+/// other value is kept as a literal radiance.
+///
+/// Call it only on a scene read from a file whose
+/// [`RenderJobFile::scene_backdrop_model`] is [`BACKDROP_MODEL_LEGACY_CARD`].
+pub fn legacy_backdrop_to_tray(scene: &mut SceneState) {
+    use indicatrix::render_setup::Backdrop;
+    let bits = scene.backdrop.to_bits();
+    let choice = if bits == LEGACY_CARD_GREY.to_bits() {
+        Backdrop::Grey
+    } else if bits == LEGACY_CARD_WHITE.to_bits() {
+        Backdrop::White
+    } else {
+        return;
+    };
+    scene.backdrop = choice.resolve(scene.lighting_preset, scene.light_yaw, scene.light_pitch);
+}
+
+/// The optical diagnostic model version this crate accepts in a job.
+///
+/// It must equal the renderer's `OPTICAL_MODEL_VERSION`; the desktop app asserts that in a test, because this
+/// crate cannot see the renderer.
+pub const SUPPORTED_OPTICAL_MODEL_VERSION: u32 = 1;
 /// The suffix of a job file name.
 pub const JOB_FILE_SUFFIX: &str = ".job.json";
 /// The smallest picture side, in pixels.
@@ -32,6 +75,12 @@ pub const CURVE_POINTS: usize = 181;
 /// A frozen render job: everything needed to render one picture or one video.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderJobFile {
+    /// The authoritative image-forming engine; absent in legacy format-1 files.
+    #[serde(
+        default,
+        skip_serializing_if = "indicatrix::renderer::engine::EngineSpec::is_default"
+    )]
+    pub engine: indicatrix::renderer::engine::EngineSpec,
     /// The job file format, [`JOB_FORMAT_VERSION`].
     pub format: u32,
     /// A random token of 32 lowercase hexadecimal characters, made when the job is added.
@@ -45,6 +94,13 @@ pub struct RenderJobFile {
     pub design: DesignInfo,
     /// The fully resolved scene: material, planes, lighting and camera.
     pub scene: SceneState,
+    /// What `scene.backdrop` means: [`BACKDROP_MODEL_LEGACY_CARD`] (0, the default for a file
+    /// written before the lit tray: a card level of `0.0`, `0.23` or `8.0` that only the
+    /// camera ray saw) or [`BACKDROP_MODEL_TRAY`] (1, the tray radiance at exposure 1 of
+    /// the surface below the girdle plane). Writers write 1; a reader converts a 0 once with
+    /// [`RenderJobFile::upgrade_backdrop_model`] ([`crate::codec::from_text`] does).
+    #[serde(default)]
+    pub scene_backdrop_model: u32,
     /// The HDR map file, exactly when the scene is lit by one.
     #[serde(default)]
     pub hdr: Option<HdrSource>,
@@ -55,6 +111,30 @@ pub struct RenderJobFile {
     pub output: String,
     /// What the job renders.
     pub kind: JobKind,
+    /// Explicit optional analytical diagnostics, outside the remote transport scene.
+    ///
+    /// Missing means clean output. The job format stays at version 1 and the struct does not
+    /// deny unknown fields, so a reader that predates this field silently renders a job
+    /// that carries it without the diagnostics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optical_diagnostics: Option<OpticalDiagnosticOptions>,
+}
+
+/// Frozen presentation for the versioned analytical model. Missing means clean output.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OpticalDiagnosticOptions {
+    pub model_version: u32,
+    pub layers: [bool; 4],
+    pub opacity: f32,
+    pub map_mode: bool,
+    #[serde(default)]
+    pub high_contrast: bool,
+    /// The scintillation layer (a fifth channel beside `layers`). Missing in files written
+    /// before it existed, which read as off; written only when on, so a job without it is
+    /// byte for byte what it was. It does not change [`SUPPORTED_OPTICAL_MODEL_VERSION`]:
+    /// the four existing layers are unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scintillation: bool,
 }
 
 /// Informational facts about the design a job was made from.
@@ -341,6 +421,16 @@ impl RenderJobFile {
         }
     }
 
+    /// Converts a legacy backdrop card level to the tray radiance (see
+    /// [`legacy_backdrop_to_tray`]) and marks the job as [`BACKDROP_MODEL_TRAY`]. Does nothing
+    /// to a job that already carries the tray, so it is safe to call on any job.
+    pub fn upgrade_backdrop_model(&mut self) {
+        if self.scene_backdrop_model == BACKDROP_MODEL_LEGACY_CARD {
+            legacy_backdrop_to_tray(&mut self.scene);
+            self.scene_backdrop_model = BACKDROP_MODEL_TRAY;
+        }
+    }
+
     /// Resolves a path of the job: an absolute path stays, a relative one is joined to
     /// `base_dir`.
     #[must_use]
@@ -380,15 +470,53 @@ impl RenderJobFile {
             }
             JobKind::TiltVideo(video) => validate_video(video)?,
         }
+        if self.engine.is_ray() {
+            let samples = match &self.kind {
+                JobKind::Still(still) => still.samples_per_pixel,
+                JobKind::TiltVideo(video) => video.samples_per_pixel,
+            };
+            if samples != u32::from(self.engine.ray.aa_taps) {
+                return Err(invalid(
+                    "Ray-Traced samples must equal the anti-aliasing tap count.",
+                ));
+            }
+            if self.optical_diagnostics.is_some() {
+                return Err(invalid(
+                    "Optical diagnostics require Path-Traced rendering.",
+                ));
+            }
+        }
         self.validate_hdr()
     }
 
     fn validate_common(&self) -> Result<(), JobFileError> {
-        if self.format != JOB_FORMAT_VERSION {
+        if let Some(d) = self.optical_diagnostics
+            && (d.model_version != SUPPORTED_OPTICAL_MODEL_VERSION
+                || !d.opacity.is_finite()
+                || !(0.0..=1.0).contains(&d.opacity))
+        {
+            return Err(invalid(
+                "Unsupported optical diagnostic model or invalid opacity",
+            ));
+        }
+        if !(1..=JOB_FORMAT_VERSION).contains(&self.format)
+            || self.format != format_for_engine(self.engine)
+        {
             return Err(invalid(format!(
                 "This job file has format {}, but this version reads format {JOB_FORMAT_VERSION}.",
                 self.format
             )));
+        }
+        if self.scene_backdrop_model > BACKDROP_MODEL_TRAY {
+            return Err(invalid(format!(
+                "This job file has backdrop model {}, but this version reads models 0 and {BACKDROP_MODEL_TRAY}.",
+                self.scene_backdrop_model
+            )));
+        }
+        if self.engine.is_ray() && self.engine.ray != self.engine.ray.sanitized() {
+            return Err(invalid(
+                "Ray-Traced anti-aliasing must be 1, 4, 8 or 16 taps.",
+            ));
         }
         if !is_token(&self.token) {
             return Err(invalid(
@@ -522,6 +650,7 @@ pub(crate) mod test_support {
 
     pub fn scene() -> SceneState {
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 64,
             height: 48,
             yaw: 0.4,
@@ -541,6 +670,7 @@ pub(crate) mod test_support {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 22.0,
+            frosted_planes: Vec::new(),
         }
     }
 
@@ -561,7 +691,9 @@ pub(crate) mod test_support {
 
     pub fn still_job() -> RenderJobFile {
         RenderJobFile {
-            format: JOB_FORMAT_VERSION,
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
+            optical_diagnostics: None,
+            format: 1,
             token: TOKEN.to_string(),
             label: "Round · Current view · 64×48".to_string(),
             created_at: 1_791_302_580,
@@ -573,6 +705,7 @@ pub(crate) mod test_support {
                 material: "Diamond".to_string(),
             },
             scene: scene(),
+            scene_backdrop_model: BACKDROP_MODEL_TRAY,
             hdr: None,
             compute: JobCompute {
                 target: ComputeChoice::Both,
@@ -604,6 +737,7 @@ pub(crate) mod test_support {
     pub fn video_job() -> RenderJobFile {
         let (scene, source) = hdr_scene();
         RenderJobFile {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             scene,
             hdr: Some(source),
             output: "frames".to_string(),
@@ -631,252 +765,5 @@ pub(crate) mod test_support {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        test_support::{curves, hdr_scene, still_job, video_job},
-        *,
-    };
-
-    fn message(job: &RenderJobFile) -> String {
-        job.validate().unwrap_err().to_string()
-    }
-
-    fn video_mut(job: &mut RenderJobFile) -> &mut TiltVideoJob {
-        match &mut job.kind {
-            JobKind::TiltVideo(video) => video,
-            JobKind::Still(_) => unreachable!("the test job is a video"),
-        }
-    }
-
-    #[test]
-    fn valid_jobs_pass() {
-        assert_eq!(still_job().validate(), Ok(()));
-        assert_eq!(video_job().validate(), Ok(()));
-    }
-
-    #[test]
-    fn refuses_a_wrong_format() {
-        let mut job = still_job();
-        job.format = 2;
-        assert!(message(&job).contains("format 2"));
-    }
-
-    #[test]
-    fn refuses_a_bad_token() {
-        for token in [
-            "",
-            "abc",
-            "9F2C4A7D1E0B48C3A65D2F71C8E4B903",
-            "9f2c4a7d1e0b48c3a65d2f71c8e4b90g",
-        ] {
-            let mut job = still_job();
-            job.token = token.to_string();
-            assert_eq!(
-                message(&job),
-                "The job token must be 32 lowercase hexadecimal characters."
-            );
-        }
-    }
-
-    #[test]
-    fn refuses_an_empty_output() {
-        let mut job = still_job();
-        job.output = "  ".to_string();
-        assert_eq!(message(&job), "The job has no output location.");
-    }
-
-    #[test]
-    fn refuses_a_bad_size() {
-        for (width, height) in [(15, 48), (64, 15), (8193, 48), (64, 8193)] {
-            let mut job = still_job();
-            job.scene.width = width;
-            job.scene.height = height;
-            assert_eq!(
-                message(&job),
-                "The picture size must be between 16 and 8192 pixels."
-            );
-        }
-        let mut job = still_job();
-        job.scene.width = 16;
-        job.scene.height = 8192;
-        assert_eq!(job.validate(), Ok(()));
-    }
-
-    #[test]
-    fn refuses_bad_samples() {
-        for spp in [0, MAX_SPP + 1] {
-            let mut job = still_job();
-            job.kind = JobKind::Still(StillJob {
-                samples_per_pixel: spp,
-                color_space: JobColorSpace::Srgb,
-                preset_label: String::new(),
-            });
-            assert_eq!(
-                message(&job),
-                "The samples per pixel must be between 1 and 32768."
-            );
-            let mut video = video_job();
-            video_mut(&mut video).samples_per_pixel = spp;
-            assert!(message(&video).contains("samples per pixel"));
-        }
-    }
-
-    #[test]
-    fn refuses_bad_bounces() {
-        for bounces in [0, MAX_BOUNCES + 1] {
-            let mut job = still_job();
-            job.scene.max_bounces = bounces;
-            assert_eq!(message(&job), "The bounce limit must be between 1 and 128.");
-        }
-    }
-
-    #[test]
-    fn refuses_bad_video_numbers() {
-        let mut job = video_job();
-        video_mut(&mut job).fps = 0;
-        assert!(message(&job).contains("frame rate"));
-        video_mut(&mut job).fps = MAX_FPS + 1;
-        assert!(message(&job).contains("frame rate"));
-
-        let mut job = video_job();
-        video_mut(&mut job).total_frames = 0;
-        assert!(message(&job).contains("between 1 and 18001 frames"));
-        video_mut(&mut job).total_frames = MAX_FRAMES + 1;
-        assert!(message(&job).contains("between 1 and 18001 frames"));
-
-        for step in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let mut job = video_job();
-            video_mut(&mut job).step_deg = step;
-            assert_eq!(message(&job), "The tilt step must be a number above zero.");
-        }
-        let mut job = video_job();
-        video_mut(&mut job).end_deg = f64::NAN;
-        assert!(message(&job).contains("start and end angles"));
-    }
-
-    #[test]
-    fn refuses_short_curves_and_missing_curves() {
-        let mut job = video_job();
-        let mut short = curves();
-        short.windowing.truncate(CURVE_POINTS - 1);
-        video_mut(&mut job).curves = Some(short);
-        assert!(message(&job).contains("at least 181 values"));
-
-        let mut job = video_job();
-        video_mut(&mut job).curves = None;
-        assert!(message(&job).contains("needs the metric curves"));
-
-        // No overlay and no curves is fine.
-        video_mut(&mut job).overlay = OverlaySelection::default();
-        assert_eq!(job.validate(), Ok(()));
-    }
-
-    #[test]
-    fn refuses_hdr_mismatches() {
-        let mut job = video_job();
-        job.hdr = None;
-        assert!(message(&job).contains("does not name the map file"));
-
-        let mut job = still_job();
-        job.hdr = video_job().hdr;
-        assert!(message(&job).contains("not lit by an HDR map"));
-
-        let mut job = video_job();
-        if let Some(hdr) = job.hdr.as_mut() {
-            hdr.sha256_hex = "00".repeat(32);
-        }
-        assert!(message(&job).contains("does not match"));
-
-        let (scene, source) = hdr_scene();
-        let mut job = still_job();
-        job.scene = scene;
-        job.hdr = Some(source);
-        assert_eq!(job.validate(), Ok(()));
-    }
-
-    #[test]
-    fn kind_words_and_frame_counts() {
-        assert_eq!(still_job().kind_word(), "still");
-        assert_eq!(still_job().frames_total(), 1);
-        assert_eq!(video_job().kind_word(), "tilt_video");
-        assert_eq!(video_job().frames_total(), 181);
-    }
-
-    #[test]
-    fn resolves_relative_paths_against_the_base() {
-        let job = video_job();
-        let base = Path::new("base");
-        assert_eq!(job.output_path(base), base.join("frames"));
-        assert_eq!(
-            job.hdr_path(base),
-            Some(base.join("assets").join("studio.hdr"))
-        );
-        assert_eq!(still_job().hdr_path(base), None);
-        let absolute = std::env::temp_dir().join("x.png");
-        let text = absolute.to_string_lossy().into_owned();
-        assert_eq!(job.resolve(&text, base), absolute);
-    }
-
-    #[test]
-    fn cli_words_round_trip() {
-        for choice in [
-            ComputeChoice::Local,
-            ComputeChoice::Remote,
-            ComputeChoice::Both,
-        ] {
-            assert_eq!(
-                ComputeChoice::from_cli_word(choice.cli_word()),
-                Some(choice)
-            );
-        }
-        for choice in [TransferChoice::FullData, TransferChoice::FinalPicture] {
-            assert_eq!(
-                TransferChoice::from_cli_word(choice.cli_word()),
-                Some(choice)
-            );
-        }
-        for engines in [LocalEngines::Cpu, LocalEngines::CpuGpu, LocalEngines::Gpu] {
-            assert_eq!(
-                LocalEngines::from_cli_word(engines.cli_word()),
-                Some(engines)
-            );
-        }
-        assert_eq!(
-            LocalEngines::from_cli_word("CPUGPU"),
-            Some(LocalEngines::CpuGpu)
-        );
-        assert_eq!(
-            LocalEngines::from_cli_word("cpu-gpu"),
-            Some(LocalEngines::CpuGpu)
-        );
-        assert_eq!(LocalEngines::from_cli_word("tpu"), None);
-        assert_eq!(ComputeChoice::from_cli_word("all"), None);
-        assert_eq!(TransferChoice::from_cli_word("raw"), None);
-        assert_eq!(LocalEngines::default(), LocalEngines::CpuGpu);
-    }
-
-    #[test]
-    fn labels_and_overlay_count() {
-        assert_eq!(JobColorSpace::Srgb.label(), "sRGB");
-        assert_eq!(JobColorSpace::DisplayP3.label(), "Display P3");
-        assert_eq!(JobColorSpace::Rec2020.label(), "Rec.2020");
-        assert_eq!(OverlaySelection::default().count(), 0);
-        let all = OverlaySelection {
-            brilliance: true,
-            windowing: true,
-            extinction: true,
-            tilt_brilliance: true,
-            angle: true,
-        };
-        assert_eq!(all.count(), 5);
-    }
-
-    #[test]
-    fn tokens_have_the_right_shape_and_differ() {
-        let first = new_job_token();
-        let second = new_job_token();
-        assert!(is_token(&first), "{first}");
-        assert!(is_token(&second), "{second}");
-        assert_ne!(first, second);
-    }
-}
+#[path = "job_tests.rs"]
+mod tests;

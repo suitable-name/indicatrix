@@ -45,6 +45,8 @@ struct DesignEngine<'a> {
 }
 
 impl DesignEngine<'_> {
+    /// The design's free angles, for [`StartState::angles`] (test builds only).
+    #[cfg(test)]
     fn free_angles(&self, design: &Design) -> Vec<f64> {
         self.run
             .baseline
@@ -64,9 +66,11 @@ impl DesignEngine<'_> {
 
     /// A start that could not be built (a tier has no usable mast): no evaluations, an
     /// infinite score, so it never wins and never offers a pool entry.
-    fn dead(angles: &[f64]) -> StartState {
+    const fn dead() -> StartState {
         StartState {
-            angles: angles.to_vec(),
+            design: None,
+            #[cfg(test)]
+            angles: Vec::new(),
             score: f32::INFINITY,
             evaluations: 0,
             polish_evaluations: 0,
@@ -89,7 +93,7 @@ impl StartEngine for DesignEngine<'_> {
         )?;
         match evaluate_in_context(&candidate, run.ctx) {
             CandidateOutcome::Rejected => None,
-            CandidateOutcome::Accepted { score } => Some(score),
+            CandidateOutcome::Accepted { score, .. } => Some(score),
         }
     }
 
@@ -116,9 +120,15 @@ impl StartEngine for DesignEngine<'_> {
                 descent.angles,
                 run.ctx.space,
             ) else {
-                return Self::dead(descent.angles);
+                return Self::dead();
             };
-            start
+            let Some(feasible) = run.ctx.space.feasible.as_ref() else {
+                return Self::dead();
+            };
+            let Some(projected) = feasible.project(&start, run.ctx.space, self.cancel) else {
+                return Self::dead();
+            };
+            projected
         };
         let coord = run_search(
             &start,
@@ -134,6 +144,8 @@ impl StartEngine for DesignEngine<'_> {
             },
         );
         StartState {
+            design: Some(coord.design.clone()),
+            #[cfg(test)]
             angles: self.free_angles(&coord.design),
             score: coord.score,
             evaluations: coord.evaluations,
@@ -146,9 +158,7 @@ impl StartEngine for DesignEngine<'_> {
 
     fn polish(&self, state: &StartState, progress: &dyn Fn(usize, SearchStage)) -> StartState {
         let run = self.run;
-        let Some(design) =
-            apply_free_angles(run.design, &run.baseline.free, &state.angles, run.ctx.space)
-        else {
+        let Some(design) = state.design.clone() else {
             return state.clone();
         };
         let coord = CoordinateStageOutcome {
@@ -167,6 +177,8 @@ impl StartEngine for DesignEngine<'_> {
             coord,
         );
         StartState {
+            design: Some(polished.current.clone()),
+            #[cfg(test)]
             angles: self.free_angles(&polished.current),
             score: state.score - polished.improvement,
             evaluations: state.evaluations,
@@ -239,13 +251,7 @@ pub(super) fn run_multi_start(
             on_start: hooks.on_start,
         },
     );
-    let best = apply_free_angles(
-        run.design,
-        &run.baseline.free,
-        &outcome.best_angles,
-        run.ctx.space,
-    )
-    .unwrap_or_else(|| run.design.clone());
+    let best = outcome.best_design.unwrap_or_else(|| run.design.clone());
     let summary = SearchRunSummary {
         evaluations: outcome.evaluations,
         cancelled: outcome.cancelled,

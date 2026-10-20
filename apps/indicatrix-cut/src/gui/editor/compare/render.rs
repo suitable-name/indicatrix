@@ -29,10 +29,10 @@
 
 use super::{
     overlay::difference_overlay,
-    session::{CompareSide, traced_spp_for},
+    session::{CompareSide, Renderer, traced_spp_for},
 };
 use crate::{
-    bridge::preview_render::render_rgba_at_pose,
+    bridge::preview_render::{render_rgba_at_pose, render_rgba_at_pose_ray},
     gui::solid_preview::{
         mesh_cache::MeshCache,
         preview_state::CameraPose,
@@ -241,6 +241,7 @@ pub(super) fn render_traced_rgba(
     render_rgba_at_pose(
         &stone.planes,
         &stone.tools,
+        &stone.frosted,
         material,
         (pose.yaw, pose.pitch, pose.distance),
         size,
@@ -289,6 +290,7 @@ fn rgba_to_pixels(rgba: &[u8], size: (u32, u32)) -> Pixels {
 /// when the session is ready.
 #[derive(Clone)]
 pub(super) struct SideGeometry {
+    ray_fluorescent: bool,
     stone: StoneGeometryBuf,
     preform_planes: usize,
     material: Option<GemMaterial>,
@@ -300,6 +302,7 @@ impl SideGeometry {
     #[must_use]
     pub(super) fn from_side(side: &CompareSide) -> Self {
         Self {
+            ray_fluorescent: side.ray_fluorescent,
             stone: side.stone.clone(),
             preform_planes: side.preform_planes,
             material: side.material.as_ref().ok().cloned(),
@@ -317,6 +320,8 @@ pub(super) struct ViewRequest {
     pub(super) pose: CameraPose,
     /// The image-slot size in physical pixels.
     pub(super) size: (u32, u32),
+    /// Captured renderer: changing it also changes the request generation.
+    pub(super) renderer: Renderer,
 }
 
 /// What a worker reports back.
@@ -346,6 +351,8 @@ pub(super) enum FrameEvent {
         /// The samples per pixel each side was traced at (before, after): below
         /// [`TRACED_SPP`] only for a slow concave side.
         spp: [u32; 2],
+        /// A preparation refusal for either side; placeholder pixels remain honest.
+        refusal: Option<String>,
     },
     /// A worker panicked on a request; its thread keeps serving later views, but the
     /// request it was on produced no frame.
@@ -422,6 +429,7 @@ struct TracedSide {
     pixels: Pixels,
     spp: u32,
     full_estimate_secs: Option<f64>,
+    refusal: Option<String>,
 }
 
 /// One side's traced pixels at `size`, or the placeholder when there is no
@@ -435,23 +443,67 @@ fn traced_side_pixels(
     pose: CameraPose,
     frame_size: (u32, u32),
     last_full_estimate: Option<f64>,
+    renderer: Renderer,
 ) -> TracedSide {
     match &side.material {
         Some(material) if !side.stone.planes.is_empty() => {
-            let spp = traced_spp_for(TRACED_SPP, !side.stone.tools.is_empty(), last_full_estimate);
             let started = Instant::now();
-            let rgba = render_traced_rgba(&side.stone, material, pose, frame_size, spp);
+            let (spp, outcome) = if renderer == Renderer::Ray {
+                // Deliberately the fixed defaults (8 taps, Fire), not the Ray-Traced
+                // settings: both sides must be compared with identical options, and
+                // the status line ("Ray-Traced (8 taps)") and the manual say so.
+                let ray = indicatrix::renderer::engine::RayOptions::default();
+                let ray_result = if side.ray_fluorescent {
+                    Err(indicatrix::renderer::whitted::WhittedDecline::Fluorescence.to_string())
+                } else {
+                    render_rgba_at_pose_ray(
+                        &side.stone.planes,
+                        &side.stone.tools,
+                        &side.stone.frosted,
+                        material,
+                        (pose.yaw, pose.pitch, pose.distance),
+                        frame_size,
+                        ray,
+                        TRACED_MAX_BOUNCES,
+                    )
+                    .map_err(|reason| reason.to_string())
+                };
+                (u32::from(ray.aa_taps), ray_result)
+            } else {
+                let spp =
+                    traced_spp_for(TRACED_SPP, !side.stone.tools.is_empty(), last_full_estimate);
+                (
+                    spp,
+                    Ok(render_traced_rgba(
+                        &side.stone,
+                        material,
+                        pose,
+                        frame_size,
+                        spp,
+                    )),
+                )
+            };
+            let (rgba, refusal) = match outcome {
+                Ok(rgba) => (rgba, None),
+                Err(reason) => (
+                    placeholder_rgba(frame_size),
+                    Some(format!("Ray-Traced unavailable: {reason}")),
+                ),
+            };
             let secs = started.elapsed().as_secs_f64();
             TracedSide {
                 pixels: rgba_to_pixels(&rgba, frame_size),
                 spp,
-                full_estimate_secs: Some(secs * f64::from(TRACED_SPP) / f64::from(spp.max(1))),
+                full_estimate_secs: (renderer == Renderer::Traced)
+                    .then_some(secs * f64::from(TRACED_SPP) / f64::from(spp.max(1))),
+                refusal,
             }
         }
         _ => TracedSide {
             pixels: rgba_to_pixels(&placeholder_rgba(frame_size), frame_size),
             spp: TRACED_SPP,
             full_estimate_secs: None,
+            refusal: None,
         },
     }
 }
@@ -522,7 +574,13 @@ pub(super) fn spawn_traced_worker(
                 return;
             }
             let size = traced_size(request.size);
-            let before = traced_side_pixels(&before_side, request.pose, size, estimates[0]);
+            let before = traced_side_pixels(
+                &before_side,
+                request.pose,
+                size,
+                estimates[0],
+                request.renderer,
+            );
             estimates[0] = before.full_estimate_secs.or(estimates[0]);
             if !is_current(&latest, request.generation) {
                 return;
@@ -532,7 +590,13 @@ pub(super) fn spawn_traced_worker(
                 generation: request.generation,
                 event: FrameEvent::TracedProgress { side: 2 },
             });
-            let after = traced_side_pixels(&after_side, request.pose, size, estimates[1]);
+            let after = traced_side_pixels(
+                &after_side,
+                request.pose,
+                size,
+                estimates[1],
+                request.renderer,
+            );
             estimates[1] = after.full_estimate_secs.or(estimates[1]);
             if !is_current(&latest, request.generation) {
                 return;
@@ -542,6 +606,7 @@ pub(super) fn spawn_traced_worker(
                 generation: request.generation,
                 event: FrameEvent::Traced {
                     spp: [before.spp, after.spp],
+                    refusal: pair_refusal(before.refusal, after.refusal),
                     before: before.pixels,
                     after: after.pixels,
                 },
@@ -554,4 +619,59 @@ pub(super) fn spawn_traced_worker(
             report_worker_failure(post, session_id, "traced");
         },
     )
+}
+
+/// The complete preparation refusal, preserving which side failed.
+fn pair_refusal(before: Option<String>, after: Option<String>) -> Option<String> {
+    let reasons: Vec<String> = [("Before", before), ("After", after)]
+        .into_iter()
+        .filter_map(|(side, reason)| reason.map(|reason| format!("{side}: {reason}")))
+        .collect();
+    (!reasons.is_empty()).then(|| reasons.join("; "))
+}
+
+#[cfg(test)]
+mod ray_refusal_tests {
+    use super::*;
+    #[test]
+    fn fluorescent_compare_sides_keep_a_visible_refusal_instead_of_rgb_pixels() {
+        use super::super::session::SideInput;
+        use indicatrix_cut_core::{ConstraintTier, Design, PreformSpec, ScheduleMeta};
+        let design = Design::new(
+            PreformSpec::block(2.0, 1.0, 2.0),
+            ScheduleMeta::standard_round_brilliant(),
+            ConstraintTier::standard_round_brilliant(),
+        );
+        let material = GemMaterial::by_name("Diamond").unwrap();
+        let side = CompareSide::build(SideInput {
+            ray_fluorescent: true,
+            design,
+            label: "fluorescent".to_string(),
+            material: Ok(material.clone()),
+            metrics_material: material,
+        });
+        assert_ne!(
+            side.stone.planes,
+            [] as [indicatrix::geometry::GpuFacetPlane; 0]
+        );
+        let frame = traced_side_pixels(
+            &SideGeometry::from_side(&side),
+            CameraPose {
+                yaw: 0.6,
+                pitch: 0.45,
+                distance: 3.5,
+            },
+            (8, 8),
+            None,
+            Renderer::Ray,
+        );
+        assert!(
+            frame
+                .refusal
+                .as_deref()
+                .is_some_and(|reason| reason.contains("luorescen"))
+        );
+        assert_eq!(frame.pixels.as_bytes(), placeholder_rgba((8, 8)).as_slice());
+        assert!(frame.full_estimate_secs.is_none());
+    }
 }

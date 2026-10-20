@@ -33,12 +33,12 @@ use indicatrix_cut::{
     BodyColorEditorModel, HelpModel, LibraryModel, RetargetModel, RoughPlanModel, harness_support,
 };
 use slint::{ComponentHandle, Model};
-use slint_harness::{AccessibleRole, backend::wait_until_labeled, report::Report, timing};
 use std::{
     collections::{HashMap, HashSet},
     ops::ControlFlow,
     time::Duration,
 };
+use uiprobe::{AccessibleRole, backend::wait_until_labeled, report::Report, timing};
 
 /// Logical size of the main window during the overlay passes. Slint's `is_visible` is clip-aware:
 /// a control scrolled out of a `ScrollView` (an inspector tab, a long dialog) is not enumerated, so

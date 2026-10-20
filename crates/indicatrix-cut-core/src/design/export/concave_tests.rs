@@ -5,7 +5,8 @@
 use super::{
     ConcaveResolveError,
     concave_frame::{
-        CONCAVE_FRAME_VERSION, contact_point, dop_frame, support_vertex, tool_axis, tool_centre,
+        CONCAVE_FRAME_VERSION, contact_point, dop_frame, stone_width, support_vertex, tool_axis,
+        tool_centre,
     },
 };
 use crate::{
@@ -13,7 +14,10 @@ use crate::{
     preform::PreformSpec,
 };
 use glam::DVec3;
-use indicatrix::geometry::tool::{MAX_TOOL_PRIMITIVES, ToolKind, ToolPrimitive, ToolSweep};
+use indicatrix::geometry::{
+    stone_metrics::measure_solid,
+    tool::{MAX_TOOL_PRIMITIVES, ToolKind, ToolPrimitive, ToolSweep},
+};
 use indicatrix_formats::native::design::CONCAVE_FRAME_V0;
 
 fn close(a: DVec3, b: DVec3, tol: f64) -> bool {
@@ -185,6 +189,181 @@ fn tool_axis_follows_theta_and_a_plunged_cone_points_into_the_stone() {
 #[test]
 fn concave_frame_version_matches_the_formats_constant() {
     assert_eq!(CONCAVE_FRAME_VERSION, CONCAVE_FRAME_V0);
+}
+
+/// Guard against a silent frame bump: the width rule is settled (§11a Q3), so the frame
+/// string stays `v0` until a deliberate decision, a reader shim and a migration say otherwise.
+#[test]
+fn concave_frame_version_is_still_v0() {
+    assert_eq!(CONCAVE_FRAME_VERSION, "v0");
+    assert_eq!(CONCAVE_FRAME_V0, "v0");
+}
+
+/// `f32` narrowing exactly as `concave_frame::narrow`, for the expectations below.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the resolver narrows its f64 geometry to f32 once; the expectations mirror that"
+)]
+const fn narrow(x: f64) -> f32 {
+    x as f32
+}
+
+/// The width rule (§11a Q3): every ratio is taken of the finished flat stone's
+/// `width_axis`, computed in the resolver's own order so the comparison is exact.
+#[test]
+fn tools_are_scaled_by_the_finished_stones_axis_width() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture pins every mast");
+    let planes = design.planes_from_solved(&solved);
+    let metrics = measure_solid(&planes).expect("the fixture closes");
+    let w = metrics.width_axis;
+    assert_eq!(stone_width(&metrics).to_bits(), w.to_bits());
+
+    let (tools, _) = design
+        .concave_tools_from_solved(&solved)
+        .expect("the fixture resolves");
+    assert_eq!(tools.len(), 12);
+    // Groove: CYL, D/W = 0.25, reciprocating (half-stroke 2 W).
+    assert_eq!(tools[0].kind(), Some(ToolKind::Cylinder));
+    assert_eq!(
+        tools[0].profile[0].to_bits(),
+        narrow(0.5 * (w * 0.25)).to_bits()
+    );
+    assert_eq!(tools[0].profile[2].to_bits(), narrow(2.0 * w).to_bits());
+    // Dimple: SPH, D/W = 0.1, plunge.
+    assert_eq!(tools[8].kind(), Some(ToolKind::Ball));
+    assert_eq!(
+        tools[8].profile[0].to_bits(),
+        narrow(0.5 * (w * 0.1)).to_bits()
+    );
+}
+
+/// A partial stone is not re-measured: the tools at any step are a prefix of the
+/// finished stone's tools, bit for bit.
+#[test]
+fn a_partial_stones_tools_are_the_finished_stones_tools() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture pins every mast");
+    let (full, _) = design
+        .concave_tools_from_solved(&solved)
+        .expect("the fixture resolves");
+    assert_eq!(full.len(), 12);
+    assert_eq!(
+        design
+            .concave_tools_after_steps(&solved, 4)
+            .expect("resolves")
+            .0,
+        full[..8]
+    );
+    assert_eq!(
+        design
+            .concave_tools_through_tier(&solved, TierRef::Concave(1))
+            .expect("resolves")
+            .0,
+        full[..8]
+    );
+    assert_eq!(
+        design
+            .concave_tools_after_steps(&solved, 7)
+            .expect("resolves")
+            .0,
+        full
+    );
+}
+
+/// The test that tells the finished-stone rule (`v0`) from a per-step width (`v1`): with no
+/// girdle facet before the pavilion groove, the half-cut stone is the preform's width, wider
+/// than the finished stone, and the tools still follow the finished one.
+#[test]
+fn the_width_is_the_finished_stones_even_with_no_girdle_facet_before_the_tier() {
+    let mut design = Design::concave_fixture();
+    design.ensure_tier_ids();
+    // Drop the phi = 90 girdle tier: crown and pavilion now meet in a knife edge.
+    design.tiers.remove(0);
+    design.tier_ids.remove(0);
+    let solved = design.solve().expect("the remaining tiers are pinned");
+    let planes = design.planes_from_solved(&solved);
+    let w_finished = measure_solid(&planes)
+        .expect("the knife-edge stone closes")
+        .width_axis;
+
+    let k = design
+        .cutting_order()
+        .iter()
+        .position(|tier| *tier == TierRef::Concave(0))
+        .expect("the groove is in the cutting order");
+    let prefix = design
+        .try_planes_after_steps(&solved, k)
+        .expect("one solved tier per flat tier");
+    let w_prefix = measure_solid(&prefix)
+        .expect("the preform closes the half-cut stone")
+        .width_axis;
+    assert!(
+        w_prefix > 1.05 * w_finished,
+        "the half-cut stone must be wider than the finished one for this test to mean anything \
+         (prefix {w_prefix}, finished {w_finished})"
+    );
+
+    let (tools, _) = design
+        .concave_tools_from_solved(&solved)
+        .expect("the fixture resolves");
+    assert_eq!(
+        tools[0].profile[0].to_bits(),
+        narrow(0.5 * (w_finished * 0.25)).to_bits()
+    );
+    assert_ne!(
+        tools[0].profile[0].to_bits(),
+        narrow(0.5 * (w_prefix * 0.25)).to_bits(),
+        "the groove must not be sized from the half-cut stone"
+    );
+    assert_eq!(
+        design
+            .concave_tools_after_steps(&solved, k + 1)
+            .expect("resolves")
+            .0,
+        tools[..8]
+    );
+}
+
+/// The tools depend on the finished flat stone alone, not on the order the flat tiers are
+/// stored in. Not bit-exact on purpose: plane order changes the vertex walk's rounding.
+#[test]
+fn the_tools_do_not_follow_the_stored_order_of_the_flat_tiers() {
+    let a = Design::concave_fixture();
+    let mut b = a.clone();
+    b.ensure_tier_ids();
+    // Flat tiers 1 and 2 are both pavilion tiers with pinned masts.
+    b.tiers.swap(1, 2);
+    b.tier_ids.swap(1, 2);
+    let solved_a = a.solve().expect("the fixture pins every mast");
+    let solved_b = b.solve().expect("the swapped fixture pins every mast");
+    let wa = measure_solid(&a.planes_from_solved(&solved_a))
+        .expect("closes")
+        .width_axis;
+    let wb = measure_solid(&b.planes_from_solved(&solved_b))
+        .expect("closes")
+        .width_axis;
+    assert!((wa - wb).abs() <= 1e-12 * wa.abs(), "{wa} vs {wb}");
+
+    let (tools_a, _) = a.concave_tools_from_solved(&solved_a).expect("resolves");
+    let (tools_b, _) = b.concave_tools_from_solved(&solved_b).expect("resolves");
+    assert_eq!(tools_a.len(), tools_b.len());
+    for (k, (x, y)) in tools_a.iter().zip(&tools_b).take(8).enumerate() {
+        assert_eq!(x.kind, y.kind, "tool {k}");
+        assert_eq!(x.sweep_kind, y.sweep_kind, "tool {k}");
+        for (name, p, q) in [
+            ("origin", x.origin, y.origin),
+            ("axis", x.axis, y.axis),
+            ("profile", x.profile, y.profile),
+        ] {
+            for (c, (&u, &v)) in p.iter().zip(&q).enumerate() {
+                assert!(
+                    (f64::from(u) - f64::from(v)).abs() <= 1e-6,
+                    "tool {k} {name}[{c}]: {u} vs {v}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -427,4 +606,104 @@ fn the_resolver_maps_a_failed_primitive_validation_to_invalid() {
             error: crate::design::ConcaveTierError::DiameterTooLarge { .. }
         })
     ));
+}
+
+/// The scoring paths take their tools from the flat planes they already hold: the
+/// same primitives the solve-based resolver gives, nothing for a flat design, and the
+/// flat stone (no tools) when the tiers do not resolve.
+#[test]
+fn tools_for_scoring_are_the_tools_of_the_solve_and_empty_without_them() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture pins every mast");
+    let planes = design.planes_from_solved(&solved);
+    let (from_solved, placements) = design
+        .concave_tools_from_solved(&solved)
+        .expect("the fixture resolves");
+    let (from_planes, planes_placements) = design
+        .concave_tools_from_planes(&planes)
+        .expect("the fixture resolves");
+    assert_eq!(from_planes, from_solved);
+    assert_eq!(planes_placements, placements);
+    assert_eq!(design.tools_for_scoring(&planes), from_solved);
+    assert_eq!(from_solved.len(), 12);
+
+    let flat = Design::new(
+        PreformSpec::block(2.0, 1.0, 2.0),
+        ScheduleMeta::standard_round_brilliant(),
+        ConstraintTier::standard_round_brilliant(),
+    );
+    let flat_solved = flat.solve().expect("every tier is pinned");
+    let flat_planes = flat.planes_from_solved(&flat_solved);
+    assert_eq!(flat.tools_for_scoring(&flat_planes).len(), 0);
+
+    let mut invalid = design;
+    invalid.concave_tiers[1].diameter_ratio = 0.0;
+    assert!(
+        invalid.concave_tools_from_planes(&planes).is_err(),
+        "the tier does not resolve"
+    );
+    assert!(
+        invalid.tools_for_scoring(&planes).is_empty(),
+        "so the stone is scored flat"
+    );
+}
+
+/// Tiers held outside a design (a library record's angle-table rows) are placed by the
+/// very rule a design applies.
+#[test]
+fn loose_tiers_resolve_to_the_tools_a_design_holding_them_makes() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture pins every mast");
+    let planes = design.planes_from_solved(&solved);
+    let (tools, placements) = design
+        .concave_tools_from_planes(&planes)
+        .expect("the fixture resolves");
+    // The fixture stores its tiers in cutting order, so the loose order is the same.
+    let (loose, loose_placements) = super::resolve_tiers_on_planes(
+        &planes,
+        &design.concave_tiers,
+        design.meta.gear_teeth,
+        design.meta.gear_reference_angle,
+    )
+    .expect("the fixture's tiers resolve");
+    assert_eq!(loose, tools);
+    assert_eq!(loose_placements, placements);
+
+    let mut bad = design.concave_tiers.clone();
+    bad[0].diameter_ratio = 0.0;
+    assert!(matches!(
+        super::resolve_tiers_on_planes(
+            &planes,
+            &bad,
+            design.meta.gear_teeth,
+            design.meta.gear_reference_angle
+        ),
+        Err(ConcaveResolveError::Invalid { tier: 0, .. })
+    ));
+
+    let mut crowded = design.concave_tiers.clone();
+    crowded[0].indices = vec![0.0; MAX_TOOL_PRIMITIVES];
+    assert_eq!(
+        super::resolve_tiers_on_planes(
+            &planes,
+            &crowded,
+            design.meta.gear_teeth,
+            design.meta.gear_reference_angle
+        ),
+        Err(ConcaveResolveError::TooManyPlacements {
+            count: MAX_TOOL_PRIMITIVES + 4,
+            max: MAX_TOOL_PRIMITIVES,
+        })
+    );
+
+    assert_eq!(
+        super::resolve_tiers_on_planes(
+            &[],
+            &design.concave_tiers,
+            design.meta.gear_teeth,
+            design.meta.gear_reference_angle
+        ),
+        Err(ConcaveResolveError::NoFlatSolid),
+        "a stone that does not close has no width to place the tools against"
+    );
 }

@@ -7,7 +7,9 @@ use super::{
         BatchContext, DesignAccum, LaneShared, LiveProgress, Tally, build_items, run_batch_lanes,
     },
     import_choice::{remember_choice, show_saved_choice},
+    offer_quality::OfferRecount,
     scan::spawn_missing_preview_scan,
+    thumbnail_backdrop::setup_thumbnail_backdrop,
 };
 use crate::{
     BatchModel, LibraryModel, MainWindow, SettingsModel,
@@ -48,6 +50,8 @@ pub enum PreviewMode {
     Full,
     /// Fast solid stand-ins drawn on the CPU; the traced previews can follow later.
     Solid,
+    /// Quick deterministic draft, distinct from the persistent thumbnail setting.
+    Ray,
 }
 
 /// Handle returned by [`spawn_preview_batch`]. Cancelling is cooperative -- see this
@@ -78,6 +82,8 @@ pub struct PreviewBatchOutcome {
 /// purely to keep that function's own argument count under clippy's limit (it already
 /// has `ui_weak`/`db`/`render_ctx`/`entry_ids` as genuinely separate concerns).
 pub struct PreviewBatchSettings {
+    /// Frozen persistent thumbnail renderer and fixed deterministic quality.
+    pub engine: indicatrix::renderer::engine::EngineSpec,
     /// The remote endpoint's connection (`AppSettings::remote`), if one is configured.
     pub worker: Option<WorkerSettings>,
     pub live_compute_target: LiveComputeTarget,
@@ -149,6 +155,10 @@ fn push_summary(ui_weak: &Weak<MainWindow>, outcome: PreviewBatchOutcome, solid:
 }
 
 /// Starts a preview-image batch over the requested library entries on a background thread and returns a handle that can cancel it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one straight-line batch setup: freeze context, spawn worker, wire callbacks"
+)]
 pub fn spawn_preview_batch(
     ui_weak: Weak<MainWindow>,
     db: Arc<Mutex<Database>>,
@@ -184,8 +194,19 @@ pub fn spawn_preview_batch(
         // megakernel compilation are far too slow to repeat, same reasoning as
         // `export_thread::run_export`'s own single `GpuBackend::acquire` call.
         let solid = settings.mode == PreviewMode::Solid;
+        let ray_draft = settings.mode == PreviewMode::Ray;
+        let engine = if ray_draft {
+            indicatrix::renderer::engine::EngineSpec {
+                engine: indicatrix::renderer::engine::RenderEngine::RayTraced,
+                ..Default::default()
+            }
+        } else {
+            settings.engine
+        };
+        let local_only =
+            solid || ray_draft || !crate::bridge::render_thread::remote_allowed(engine);
         // The solid pictures are drawn on the CPU, so no adapter is acquired for them.
-        let gpu = if solid {
+        let gpu = if solid || engine.is_ray() {
             GpuBackend::disabled()
         } else {
             GpuBackend::acquire()
@@ -199,7 +220,7 @@ pub fn spawn_preview_batch(
         // comment's "Local + remote" section.
         // Solid pictures are cheap enough that shipping scenes to a remote would cost
         // more than drawing them, so that mode never uses it.
-        let remote_worker = if solid { None } else { settings.worker };
+        let remote_worker = if local_only { None } else { settings.worker };
         let thumbnail_cache = settings.thumbnail_cache;
         let angle_table_entries = Mutex::new(BTreeSet::new());
         let ctx = BatchContext {
@@ -207,7 +228,9 @@ pub fn spawn_preview_batch(
             material_candidates: &material_candidates,
             custom_materials: &custom_materials,
             preview_size: settings.preview_size,
-            preview_spp: settings.preview_spp,
+            preview_spp: engine.target_samples(settings.preview_spp),
+            engine,
+            ray_draft,
             solid,
             gpu_retired: &gpu_retired,
             angle_table_entries: &angle_table_entries,
@@ -220,7 +243,7 @@ pub fn spawn_preview_batch(
 
         // See `gui::batch::batch_queue::LanePlan`'s own doc comment for exactly what
         // each `LiveComputeTarget` variant runs.
-        let target = if solid {
+        let target = if local_only {
             LiveComputeTarget::LocalOnly
         } else {
             settings.live_compute_target
@@ -395,6 +418,7 @@ fn start_batch(
         Arc::clone(db),
         Arc::clone(render_ctx),
         PreviewBatchSettings {
+            engine: thumbnail_engine(&snapshot.settings),
             worker: snapshot.settings.remote_worker(),
             live_compute_target: snapshot.settings.live_compute_target,
             preview_size: snapshot.settings.preview_size,
@@ -428,6 +452,7 @@ fn confirm_offer(ui: &MainWindow, env: &ConfirmEnv, mode: PreviewMode) {
         let choice = match mode {
             PreviewMode::Full => ImportPreviewChoice::Full,
             PreviewMode::Solid => ImportPreviewChoice::Solid,
+            PreviewMode::Ray => ImportPreviewChoice::Ray,
         };
         remember_choice(ui, &env.settings_store, choice);
     }
@@ -523,6 +548,7 @@ pub fn offer_regeneration(ui: &MainWindow, ids: &[i64]) {
         db,
         settings.preview_size,
         settings.preview_spp,
+        thumbnail_engine(&settings),
         move |ui, missing| {
             if !scope_is_current(ScopeKind::Preview, generation) {
                 return;
@@ -540,12 +566,12 @@ pub fn offer_regeneration(ui: &MainWindow, ids: &[i64]) {
 }
 
 /// A length as the `int` a Slint property holds, saturating instead of wrapping.
-fn slint_len(len: usize) -> i32 {
+pub(super) fn slint_len(len: usize) -> i32 {
     i32::try_from(len).unwrap_or(i32::MAX)
 }
 
 /// A vault row id as the `int` the Slint id model holds, saturating instead of wrapping.
-fn slint_id(id: i64) -> i32 {
+pub(super) fn slint_id(id: i64) -> i32 {
     i32::try_from(id).unwrap_or(i32::MAX)
 }
 
@@ -565,6 +591,7 @@ pub(super) fn open_offer(ui: &MainWindow, ids: &[i64], from_import: bool) {
     ui.global::<BatchModel>()
         .set_preview_offer_from_import(from_import);
     ui.global::<BatchModel>().set_preview_remember_choice(false);
+    ui.global::<BatchModel>().set_preview_offer_counting(false);
     ui.global::<BatchModel>().set_preview_confirming(true);
     ui.global::<BatchModel>().set_preview_visible(true);
 }
@@ -590,6 +617,10 @@ pub(super) fn open_offer(ui: &MainWindow, ids: &[i64], from_import: bool) {
 /// batch this wires up invalidates it per saved design so the cards refresh at once.
 ///
 /// Called once, from `gui::build_main_window`, alongside every other `setup_*` call.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat list of callback registrations"
+)]
 pub fn setup_preview_batch_callbacks(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
@@ -607,15 +638,47 @@ pub fn setup_preview_batch_callbacks(
     // Preview render size/spp sliders are exposed as settings: plain settings-file writes, no `RenderContext`/live-viewport
     // involvement at all, since these only ever affect the NEXT batch dispatch's
     // `PreviewJob`, never anything already on screen.
+    //
+    // The same two callbacks serve the confirm step's "Picture Quality" sliders
+    // (`preview_batch_dialog.slint`); after storing the value they ask the open offer, if
+    // any, to count again (`offer_quality`).
+    let recount = OfferRecount::new(ui, db, settings_store);
     let settings_store_size = Arc::clone(settings_store);
+    let recount_size = Rc::clone(&recount);
     ui.global::<SettingsModel>()
         .on_preview_size_changed(move |size| {
             settings_store_size.update(|s| s.settings.preview_size = size.max(1).cast_unsigned());
+            recount_size.quality_changed();
         });
+    let renderer_store = Arc::clone(settings_store);
+    let renderer_recount = Rc::clone(&recount);
+    let renderer_ui = ui.as_weak();
+    ui.global::<SettingsModel>()
+        .set_thumbnail_renderer_index(i32::from(
+            settings_store
+                .snapshot()
+                .settings
+                .thumbnail_renderer
+                .index(),
+        ));
+    ui.global::<SettingsModel>()
+        .on_thumbnail_renderer_selected(move |index| {
+            let renderer = indicatrix::renderer::engine::RenderEngine::from_index(
+                u8::try_from(index).unwrap_or_default(),
+            );
+            renderer_store.update(|file| file.settings.thumbnail_renderer = renderer);
+            if let Some(ui) = renderer_ui.upgrade() {
+                ui.global::<SettingsModel>()
+                    .set_thumbnail_renderer_index(i32::from(renderer.index()));
+            }
+            renderer_recount.quality_changed();
+        });
+    setup_thumbnail_backdrop(ui, settings_store, &recount);
     let settings_store_spp = Arc::clone(settings_store);
     ui.global::<SettingsModel>()
         .on_preview_spp_changed(move |spp| {
             settings_store_spp.update(|s| s.settings.preview_spp = spp.max(1).cast_unsigned());
+            recount.quality_changed();
         });
     // The remote coordinator panel's "Remote lanes for batches" spin box -- the lane
     // count both batches read when they start. Registered here, beside the other
@@ -670,6 +733,13 @@ pub fn setup_preview_batch_callbacks(
                 confirm_offer(&ui, &env_full, PreviewMode::Full);
             }
         });
+    let (env_ray, ui_weak_ray) = (Rc::clone(&env), ui.as_weak());
+    ui.global::<BatchModel>()
+        .on_preview_generate_ray_confirmed(move || {
+            if let Some(ui) = ui_weak_ray.upgrade() {
+                confirm_offer(&ui, &env_ray, PreviewMode::Ray);
+            }
+        });
     let (env_solid, ui_weak_solid) = (env, ui.as_weak());
     ui.global::<BatchModel>()
         .on_preview_generate_solid_confirmed(move || {
@@ -710,8 +780,19 @@ pub fn setup_preview_batch_callbacks(
         db_scan,
         scan_settings.preview_size,
         scan_settings.preview_spp,
+        thumbnail_engine(&scan_settings),
         |ui, ids| {
             offer_batch_confirmation(ui, &ids);
         },
     );
+}
+
+/// Persistent thumbnails use eight deterministic taps with Fire; path sample settings remain independent.
+pub(super) fn thumbnail_engine(
+    settings: &crate::settings::model::AppSettings,
+) -> indicatrix::renderer::engine::EngineSpec {
+    indicatrix::renderer::engine::EngineSpec {
+        engine: settings.thumbnail_renderer,
+        ..Default::default()
+    }
 }

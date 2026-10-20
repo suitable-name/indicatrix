@@ -53,6 +53,8 @@
 
 mod context;
 mod denoise;
+mod engine;
+pub use engine::remote_allowed;
 mod display_thread;
 mod frame_helpers;
 mod gpu_backend;
@@ -62,6 +64,7 @@ mod metrics;
 mod metrics_worker;
 mod redraw_gate;
 mod scanline;
+mod whitted_scanline;
 
 pub use context::{
     ColorTarget, MaterialOverrides, MaterialSources, PlanesOwner, RenderContext,
@@ -80,53 +83,22 @@ use crate::bridge::{
 use context::{FrameInputs, resolve_material_and_quality, snapshot_frame_inputs};
 use display_thread::spawn_display_thread;
 use glam::Vec3;
-use gpu_backend::{
-    BackendFrame, FrameOutputs, HybridPacing, ViewportGpu, accumulate_frame_samples,
-};
+use gpu_backend::{BackendFrame, FrameOutputs, HybridPacing, ViewportGpu};
 use indicatrix::optics::{
     fluorescence::Fluorescence,
     materials::GemMaterial,
     raytracer::{Camera, DEFAULT_FOV_DEG, EnvironmentSource, FacetFinish},
 };
-use metrics_worker::{MetricsWorker, push_if_fresh};
+use metrics_worker::{MetricsWorker, SharedGeometry, push_if_fresh};
 use slint::Weak;
 use std::{
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-/// Minimum real-time gap between two display cycles (snapshot + hand-off to
-/// [`display_thread`]) being SENT while samples are still accumulating. See the loop
-/// body's `denoise_due` computation for the exceptions that always send regardless
-/// (first frame, `dirty`, a dimension change, denoising disabled, reaching
-/// `target_samples`). The À-Trous denoiser dominates every live frame (267ms/1072ms
-/// per call at 800x600/1920x1080), so re-running it every ~16ms iteration while still
-/// converging capped the viewport at a few FPS for no visible benefit. 120ms is fast
-/// enough to feel live while converging and cuts denoiser invocations ~7-8x.
-///
-/// The actual denoise+tonemap+push work runs on [`display_thread`], so the render
-/// thread never blocks on a cycle's cost -- there is nothing to scale a duty-cycle gap
-/// against, unlike when that cost was paid synchronously on this thread.
-const DENOISE_MIN_INTERVAL: Duration = Duration::from_millis(120);
-
-/// Timeout for the convergence wait at [`display.busy()`]. À-Trous cycles run in
-/// the 100ms-1s range, so 5s is generous for a healthy display thread.
-const DISPLAY_BUSY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Target length of one loop iteration while the picture is being shown or the camera is
-/// moving (~60 FPS).
-///
-/// # Pacing rule
-///
-/// The loop sleeps only the *remainder* of this interval, measured from the start of the
-/// iteration, and only when the iteration either handled a moving camera or had a display
-/// cycle due (`denoise_due` in the loop body). An iteration that is merely adding samples
-/// to a still picture and has nothing to show does not sleep at all: the GPU is fed the
-/// next chunk immediately instead of idling through readback, hand-off and a fixed sleep.
-/// The idle states keep their own sleeps (converged, waiting on the remote lane,
-/// suspended), so the loop never spins when there is nothing to trace.
-const FRAME_PACE: Duration = Duration::from_millis(16);
+mod pacing;
+use pacing::{DENOISE_MIN_INTERVAL, DISPLAY_BUSY_WAIT_TIMEOUT, FRAME_PACE};
 
 use frame_helpers::{
     AccumulationBuffers, FrameActivityFlags, SuspensionFlags, TraceActivitySink, pacing_sleep,
@@ -151,7 +123,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
 ) where
     // `TraceActivitySink` lets this function stay generic over `T`.
     T: TraceActivitySink + 'static,
-    F: Fn(&T, slint::SharedPixelBuffer<slint::Rgba8Pixel>) + Send + 'static + Clone,
+    F: Fn(&T, slint::SharedPixelBuffer<slint::Rgba8Pixel>, u64) + Send + 'static + Clone,
     M: Fn(&T, f32, f32, f32, f32, f32, [f32; 19], [f32; 19], [f32; 19], f32)
         + Send
         + 'static
@@ -206,6 +178,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
         // starts refused) always sends its real state once.
         let mut last_trace_refusal: Option<String> = None;
         let mut hybrid_pacing = HybridPacing::new();
+        let mut engine_cache = engine::EngineAccumulator::default();
         // Recomputed only when the active design's geometry actually changes.
         let mut girdle_cache = GirdleFinishCache::new();
         let mut stone_width_cache = StoneWidthCache::new();
@@ -224,6 +197,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
         loop {
             let iteration_start = Instant::now();
             let FrameInputs {
+                engine,
                 width,
                 height,
                 yaw,
@@ -247,6 +221,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 edge_rounding_radius,
                 stone_width_mm,
                 active_planes,
+                active_frosted,
                 active_tools,
                 custom_materials,
                 fluorescence,
@@ -447,13 +422,16 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                         &active_planes,
                         &mut stone_width_cache,
                     );
-                    metrics_worker.request(
-                        &active_planes,
-                        &active_tools,
+                    metrics_worker.request_with_head_shadow(
+                        SharedGeometry {
+                            planes: &active_planes,
+                            tools: &active_tools,
+                        },
                         &current_mat,
                         [yaw, pitch, light_yaw, light_pitch],
                         lighting_preset,
                         env_map.as_ref(),
+                        head_shadow_deg,
                     );
                     let (version, evaluated) = metrics_worker.latest();
                     pushed_metrics_version = version;
@@ -492,13 +470,16 @@ pub fn spawn_render_thread<T, F, M, S, R>(
             // so it runs on the metrics worker: this only queues a request when one of
             // those moved, and the frame shows the last published values until the
             // debounced evaluation lands.
-            metrics_worker.request(
-                &active_planes,
-                &active_tools,
+            metrics_worker.request_with_head_shadow(
+                SharedGeometry {
+                    planes: &active_planes,
+                    tools: &active_tools,
+                },
                 &current_mat,
                 [yaw, pitch, light_yaw, light_pitch],
                 lighting_preset,
                 env_map.as_ref(),
+                head_shadow_deg,
             );
             let cam_pitch_deg = pitch.to_degrees();
 
@@ -584,15 +565,18 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 || {
                     lighting_preset
                         .studio(exposure, light_yaw, light_pitch)
-                        .with_backdrop(backdrop.level())
+                        .with_backdrop(backdrop.resolve(lighting_preset, light_yaw, light_pitch))
                         .with_surface_glare(surface_glare)
                         .with_head_shadow(head_shadow_deg)
                 },
                 EnvironmentSource::HdrMap,
             );
 
-            // Frosted girdle: `&[]` at the off position means all-polished.
-            let facet_finishes: &[FacetFinish] = if girdle_frosted {
+            // Frosted girdle and authored frosting: `&[]` at the off position means
+            // all-polished, which is every design that frosts nothing.
+            let facet_finishes: &[FacetFinish] = if !active_frosted.is_empty() {
+                girdle_cache.ensure_with_frosted(&active_planes, girdle_frosted, &active_frosted)
+            } else if girdle_frosted {
                 girdle_cache.ensure(&active_planes)
             } else {
                 &[]
@@ -630,7 +614,11 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 // that `sync_path_sig` below would discard (UI-1 a).
                 let path_sig_wanted = denoise_enabled && !camera_moving;
                 gpu_backend.set_path_sig_wanted(path_sig_wanted);
-                accumulate_frame_samples(
+                if let Err(reason) = engine::accumulate_engine_samples(
+                    &mut engine_cache,
+                    engine,
+                    scene_generation,
+                    env_map.as_ref(),
                     &mut gpu_backend,
                     &backend_frame,
                     &mut FrameOutputs {
@@ -641,7 +629,10 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                     },
                     &mut hybrid_pacing,
                     local_compute_target,
-                );
+                ) {
+                    tracing::warn!(reason = reason.message(), "image engine declined the scene");
+                    continue;
+                }
                 // The signature costs a prepass per pose and material, so it is skipped
                 // (zeroed) while the denoiser is off or the camera is moving.
                 gpu_backend.sync_path_sig(&backend_frame, &mut first_hit_path_sig, path_sig_wanted);
@@ -721,6 +712,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                     let mut work = display.reclaim();
                     work.fill(
                         display.current_generation(),
+                        scene_generation,
                         denoise_enabled,
                         FirstHitSnapshot {
                             width,

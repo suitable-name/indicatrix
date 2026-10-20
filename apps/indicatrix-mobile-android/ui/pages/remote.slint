@@ -1,0 +1,107 @@
+import { CheckBox, ComboBox, LineEdit, SpinBox } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Shell } from "../models.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { PrimaryButton, TextButton } from "../shell/buttons.slint";
+
+export struct JobRow { title: string, note: string, can-save: bool, can-cancel: bool }
+export global RemoteModel {
+    in-out property <string> name;
+    in-out property <string> address;
+    in-out property <string> enrollment-address;
+    in-out property <string> token;
+    in-out property <int> transfer: 0;
+    in-out property <int> cadence: 500;
+    in-out property <bool> allow-metered: false;
+    in property <bool> busy: false;
+    // The server jobs of this phone on the endpoint, newest first (see `remote_jobs.rs`).
+    in-out property <[JobRow]> jobs;
+    in property <bool> jobs-busy: false;
+    in-out property <string> jobs-status: "Server jobs keep rendering on the endpoint after this phone disconnects. Refresh to see them.";
+    in property <bool> installing: false;
+    // True while Forget Server erases the stored pairing credentials (see `remote.rs`).
+    in property <bool> forgetting: false;
+    // In-out: the `changed address` handler below resets them from inside this global.
+    in-out property <string> status: "Enroll this phone, then test the rendering address.";
+    in-out property <string> identity;
+    property <bool> active-page: Shell.destination == 3 && Shell.more-page == 4;
+    changed active-page => { if (!active-page) { hidden(); } }
+    changed address => {
+        identity = "";
+        // Forget Server empties the address and writes its own status; only an edited,
+        // non-empty address invalidates the last test.
+        if (address != "") {
+            status = "Address changed. Test this endpoint to verify it.";
+        }
+    }
+    callback hidden();
+    callback refresh-jobs(); callback job-save(int); callback job-cancel(int); callback job-delete(int);
+    callback save(); callback enroll(); callback test(); callback cancel(); callback close();
+    // Asks the user to confirm, then deletes the pairing credentials and the server name
+    // and address (the answer is handled by `remote::handle_dialog_result`).
+    callback forget-server();
+}
+component Field inherits VerticalLayout {
+    in property <string> label;
+    // `InputType.password` masks the text and makes Android's keyboard treat the field as
+    // a password: no suggestions, no learning. Paste keeps working.
+    in property <InputType> input-type: InputType.text;
+    in-out property <string> value;
+    Text { text: root.label; color: Theme.on-surface-variant; }
+    LineEdit {
+        text <=> root.value;
+        input-type: root.input-type;
+        accessible-label: root.label;
+    }
+}
+export component RemotePage inherits Rectangle {
+    background: Theme.surface;
+    VerticalLayout {
+        TopBar { title: "Remote"; show-back: true; back-clicked => { Shell.request-back(); } }
+        PageScroll {
+            VerticalLayout {
+                padding: Theme.space-md;
+                spacing: Theme.space-md;
+                Field { label: "Endpoint Name"; value <=> RemoteModel.name; }
+                Field { label: "Rendering Address · host:port"; value <=> RemoteModel.address; }
+                ComboBox { model: ["DisplayOnly · coordinator", "FullData · coordinator or standalone worker"]; current-index <=> RemoteModel.transfer; }
+                Text { text: "Minimum Update Interval (ms)"; color: Theme.on-surface-variant; }
+                SpinBox { minimum: 100; maximum: 10000; value <=> RemoteModel.cadence; }
+                CheckBox { text: "Allow Metered Networks"; checked <=> RemoteModel.allow-metered; }
+                TextButton { text: "Save Connection Settings"; enabled: !RemoteModel.forgetting; clicked => { RemoteModel.save(); } }
+                Field { label: "Enrollment Listener Address · host:port"; value <=> RemoteModel.enrollment-address; }
+                Field { label: "One-Time Enrollment Token"; input-type: InputType.password; value <=> RemoteModel.token; }
+                PrimaryButton { text: "Enroll This Phone"; enabled: !RemoteModel.busy && !RemoteModel.forgetting && RemoteModel.token != ""; clicked => { RemoteModel.enroll(); } }
+                PrimaryButton { text: "Test Authenticated Connection"; enabled: !RemoteModel.busy && !RemoteModel.forgetting && RemoteModel.address != ""; clicked => { RemoteModel.test(); } }
+                if RemoteModel.busy && !RemoteModel.installing: TextButton { text: "Cancel Connection"; clicked => { RemoteModel.cancel(); } }
+                Text { text: RemoteModel.status; color: Theme.on-surface; wrap: word-wrap; }
+                Text { text: RemoteModel.identity == "" ? "" : "Verified server certificate SHA-256: " + RemoteModel.identity; color: Theme.on-surface-variant; wrap: word-wrap; }
+                TextButton {
+                    text: "Forget Server";
+                    enabled: !RemoteModel.busy && !RemoteModel.forgetting;
+                    accessible-label: "Forget Server. Deletes this phone's pairing credentials after you confirm.";
+                    clicked => { RemoteModel.forget-server(); }
+                }
+                Text { text: "Forget Server deletes this phone's pairing credentials, including the Android Keystore key that protects them, and clears the saved server name and address. Pairing again needs a new one-time token."; color: Theme.on-surface-variant; wrap: word-wrap; }
+                Text { text: "TLS credentials are encrypted at rest with an Android Keystore wrapping key. The TLS private key itself is exportable and is not claimed to be hardware backed."; color: Theme.on-surface-variant; wrap: word-wrap; }
+                Text { text: "Select Remote in the Render view to upload the selected Path-Traced or Ray-Traced scene. Coordinators support DisplayOnly; standalone workers require FullData. Final PNG export works in both modes (a coordinator delivers the finished picture for DisplayOnly) and is limited to 1,048,576 pixels. A Remote HDR scene uploads the lighting map once, exactly as the device uses it, to endpoints that advertise HDR support. Automatic stays on this device. Connection tests upload no design."; color: Theme.on-surface-variant; wrap: word-wrap; }
+                Text { text: "A live Remote render restarts from zero after an interruption (the app returns from the background, or the connection drops): it reconnects by itself a few times. A server job is different: send it from the export sheet and the endpoint keeps it, so it survives disconnection and can be fetched below."; color: Theme.on-surface-variant; wrap: word-wrap; }
+                Text { text: "Server Jobs"; color: Theme.on-surface; font-weight: 700; }
+                TextButton { text: "Refresh Jobs"; enabled: !RemoteModel.jobs-busy && !RemoteModel.forgetting && RemoteModel.address != ""; clicked => { RemoteModel.refresh-jobs(); } }
+                Text { text: RemoteModel.jobs-status; color: Theme.on-surface-variant; wrap: word-wrap; }
+                for job[index] in RemoteModel.jobs: VerticalLayout {
+                    spacing: Theme.space-xs;
+                    Text { text: job.title; color: Theme.on-surface; wrap: word-wrap; }
+                    if job.note != "": Text { text: job.note; color: Theme.on-surface-variant; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: Theme.space-sm;
+                        if job.can-save: TextButton { text: "Save Picture"; enabled: !RemoteModel.jobs-busy && !RemoteModel.forgetting; clicked => { RemoteModel.job-save(index); } }
+                        if job.can-cancel: TextButton { text: "Cancel Job"; enabled: !RemoteModel.jobs-busy && !RemoteModel.forgetting; clicked => { RemoteModel.job-cancel(index); } }
+                        TextButton { text: "Delete"; enabled: !RemoteModel.jobs-busy && !RemoteModel.forgetting; clicked => { RemoteModel.job-delete(index); } }
+                    }
+                }
+            }
+        }
+    }
+}

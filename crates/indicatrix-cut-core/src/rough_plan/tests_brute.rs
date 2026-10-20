@@ -3,14 +3,15 @@
 
 use super::{
     dp::run_order_dp,
+    dp_capped::run_order_dp_capped,
     piece::{ASSIGNMENTS, Norm, best_pick, stone_value},
-    tests::{Lcg, close, random_designs, settings_with},
+    tests::{Lcg, box_design, close, random_designs, settings_with},
     tree::layout_from_tree,
     *,
 };
 
 /// Every ordered composition of `total` into positive parts.
-fn compositions(total: usize) -> Vec<Vec<usize>> {
+pub(super) fn compositions(total: usize) -> Vec<Vec<usize>> {
     if total == 0 {
         return vec![Vec::new()];
     }
@@ -159,6 +160,187 @@ fn the_free_count_dp_equals_brute_force_over_all_staged_layouts() {
     assert!(
         finite > 12,
         "the cases should exercise feasible layouts ({finite})"
+    );
+}
+
+/// The best total per EXACT number of pieces: entry `c` is the best total of the layouts with
+/// `c` pieces, `-inf` where there is none.
+pub(super) type ByCount = Vec<f64>;
+
+/// `into` and `other` combined entry by entry, keeping the larger.
+pub(super) fn merge_counts(into: &mut ByCount, other: &[f64]) {
+    if into.len() < other.len() {
+        into.resize(other.len(), NEG);
+    }
+    for (slot, &value) in into.iter_mut().zip(other) {
+        if value > *slot {
+            *slot = value;
+        }
+    }
+}
+
+/// Every way to give the consecutive `parts` a piece count each, summed left to right in
+/// position order (as the DP adds a part to what lies before it): entry `c` of the result is
+/// the best total of exactly `c` pieces.
+///
+/// Reducing every part to its best total per count first is exact: a sum is monotone in each
+/// of its terms, so the best of the sums is the sum of the bests.
+pub(super) fn fold_parts(parts: &[ByCount]) -> ByCount {
+    let mut done: ByCount = vec![0.0];
+    for part in parts {
+        let mut next = vec![NEG; done.len() + part.len() - 1];
+        for (before, &sum) in done.iter().enumerate() {
+            for (own, &value) in part.iter().enumerate() {
+                let total = sum + value;
+                if total > next[before + own] {
+                    next[before + own] = total;
+                }
+            }
+        }
+        done = next;
+    }
+    done
+}
+
+/// The best total of at most `cap` pieces.
+pub(super) fn at_most(by_count: &[f64], cap: usize) -> f64 {
+    by_count
+        .iter()
+        .take(cap.saturating_add(1))
+        .copied()
+        .fold(NEG, f64::max)
+}
+
+impl Brute<'_> {
+    /// The bar `(ga, gb)` by exact piece count: every composition of the bar's length, one
+    /// piece per run.
+    fn bar_counts(&self, ga: usize, gb: usize) -> ByCount {
+        let mut best = ByCount::new();
+        for runs in compositions(self.cells[2]) {
+            let pieces: Vec<ByCount> = runs
+                .iter()
+                .map(|&g| vec![NEG, self.piece([ga, gb, g])])
+                .collect();
+            merge_counts(&mut best, &fold_parts(&pieces));
+        }
+        best
+    }
+
+    /// The slab `ga` by exact piece count: every composition into bars.
+    fn slab_counts(&self, ga: usize) -> ByCount {
+        let mut best = ByCount::new();
+        for runs in compositions(self.cells[1]) {
+            let bars: Vec<ByCount> = runs.iter().map(|&g| self.bar_counts(ga, g)).collect();
+            merge_counts(&mut best, &fold_parts(&bars));
+        }
+        best
+    }
+
+    /// The whole layout by exact piece count: every composition into slabs.
+    fn root_counts(&self) -> ByCount {
+        let mut best = ByCount::new();
+        for runs in compositions(self.cells[0]) {
+            let slabs: Vec<ByCount> = runs.iter().map(|&g| self.slab_counts(g)).collect();
+            merge_counts(&mut best, &fold_parts(&slabs));
+        }
+        best
+    }
+}
+
+#[test]
+fn the_capped_count_dp_equals_brute_force_over_all_staged_layouts() {
+    let rough_designs = random_designs(&mut Lcg(77), 6);
+    // A cube and a bar of twice its length: along a long thin rough the best layout holds
+    // several stones, so a small cap binds.
+    let bar = CandidateDesign {
+        entry_id: 2,
+        width: 1.0,
+        length: 2.0,
+        height: 1.0,
+        volume: 1.8,
+    };
+    let cases = [
+        (
+            RoughBlock {
+                x_mm: 9.0,
+                y_mm: 7.0,
+                z_mm: 8.0,
+            },
+            rough_designs,
+        ),
+        (
+            RoughBlock {
+                x_mm: 30.0,
+                y_mm: 6.0,
+                z_mm: 7.0,
+            },
+            vec![box_design(1), bar],
+        ),
+    ];
+    let settings = settings_with(4, 0.3, 0.2, 0.5);
+    let (mut checked, mut binding) = (0, 0);
+    for (rough, designs) in &cases {
+        let front = pareto_front(designs);
+        for cells in [[3, 2, 3], [2, 3, 3], [3, 3, 2], [1, 3, 3]] {
+            let grid = Grid::with_cells(rough, &settings, cells);
+            let table = build_piece_table(&grid, &front, &mut |_| true).expect("table");
+            for order in CutOrder::ALL {
+                let axes = order.axes();
+                let by_count = Brute {
+                    table: &table,
+                    order: axes,
+                    cells: axes.map(|i| cells[i]),
+                }
+                .root_counts();
+                let free = at_most(&by_count, usize::MAX);
+                for cap in 1..=6 {
+                    let what = format!("{rough:?} {cells:?} {order} cap {cap}");
+                    let dp =
+                        run_order_dp_capped(&grid, &table, axes, cap, &mut || true).expect("dp");
+                    let expected = at_most(&by_count, cap);
+                    let value = dp.value();
+                    if expected == NEG {
+                        assert!(value == NEG, "{what}: dp {value}, brute -inf");
+                        assert_eq!(dp.candidates(&grid, &table, &front, order), Vec::new());
+                        continue;
+                    }
+                    // Both sum the same pieces in the same left-to-right association and
+                    // floating-point addition is monotone, so the maxima agree bit for bit.
+                    assert_eq!(
+                        value.to_bits(),
+                        expected.to_bits(),
+                        "{what}: dp {value}, brute {expected}"
+                    );
+                    let tree = dp.reconstruct(&grid, &table);
+                    let leaves = tree.leaf_count();
+                    assert!((1..=cap).contains(&leaves), "{what}: {leaves} pieces");
+                    // Of the layouts worth the best value, the tree has the fewest pieces.
+                    let fewest = by_count
+                        .iter()
+                        .position(|v| v.to_bits() == expected.to_bits())
+                        .expect("the best value is reached by some count");
+                    assert_eq!(leaves, fewest, "{what}");
+                    let layout = layout_from_tree(rough, &settings, order, &tree, &front);
+                    assert_eq!(layout.stone_count(), leaves, "{what}");
+                    assert!(close(layout.total_volume_mm3, value, 1e-9), "{what}");
+                    assert_eq!(
+                        dp.candidates(&grid, &table, &front, order),
+                        vec![layout],
+                        "{what}"
+                    );
+                    checked += 1;
+                    binding += usize::from(expected < free);
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 30,
+        "the cases should exercise feasible layouts ({checked})"
+    );
+    assert!(
+        binding > 0,
+        "no cap bound: the cases exercise nothing capped"
     );
 }
 

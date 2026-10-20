@@ -3,9 +3,11 @@
 //! `indicatrix::geometry::stone_metrics::SolidMetrics::girdle_thickness` is the height of the
 //! highest girdle-wall vertex above the lowest one: the band's overall extent, read off two
 //! extreme vertices. It says nothing about the band at the corners between two walls, which is
-//! where a girdle runs out first. A retarget turns every wall-edge facet about exactly those two
-//! extreme vertices ([`super::hinge`]), so it can never change that figure, yet the corners can
-//! still thin to a knife edge or the crown-side and pavilion-side planes can cross there.
+//! where a girdle runs out first. A retarget turns every wall-edge facet about its girdle OUTLINE
+//! corners ([`super::hinge`]: the girdle outline is the contract, owner decision 2026-10-19), so
+//! the extent read off two extreme vertices may move a little, and a facet that is not turned about
+//! its corners (a plain angle edit, a projection repair) can still thin the corners to a knife edge
+//! or make the crown-side and pavilion-side planes cross there.
 //!
 //! [`girdle_band_in`] measures what the extent cannot see: for every live girdle wall, the
 //! smallest vertical gap between its crown-side edge and its pavilion-side edge, which is the

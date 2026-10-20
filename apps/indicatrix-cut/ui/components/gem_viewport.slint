@@ -1,3 +1,5 @@
+import { OpticalModel } from "../models/optical.slint";
+import { OpticalPanel } from "gem_viewport/optical_panel.slint";
 import { Theme } from "../theme.slint";
 import { LightingPresetItem } from "../types.slint";
 import { ExportDialog } from "export_dialog.slint";
@@ -54,8 +56,8 @@ export component GemViewportView inherits Rectangle {
     // (resizing the Live Render viewport while the Edit tab was open
     // would leave ITS next redraw sized to the Live tab's viewport, or vice
     // versa). See `SolidPreviewModel.live_viewport_width`'s own doc comment.
-    changed width => { SolidPreviewModel.live_viewport_width = self.width; }
-    changed height => { SolidPreviewModel.live_viewport_height = self.height; }
+    changed width => { OpticalModel.invalidate(); SolidPreviewModel.live_viewport_width = self.width; }
+    changed height => { OpticalModel.invalidate(); SolidPreviewModel.live_viewport_height = self.height; }
     // Also pushed once on mount, not left to the two `changed` handlers above
     // alone: those only fire on a REAL size change relative to what this
     // component's own tracker last saw, but a fresh instance (this component
@@ -92,6 +94,7 @@ export component GemViewportView inherits Rectangle {
                 root.is_right_drag = (event.button == PointerEventButton.right)
                     || event.modifiers.shift;
                 root.is_dragging = true;
+                OpticalModel.invalidate();
                 ViewportModel.camera_drag_begin();
             } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
                 if (root.is_dragging) {
@@ -117,6 +120,12 @@ export component GemViewportView inherits Rectangle {
             }
         }
         moved => {
+            let image_w = min(root.width, root.height * OpticalModel.aspect);
+            let image_h = image_w / OpticalModel.aspect;
+            OpticalModel.hover(
+                (self.mouse-x - (root.width - image_w) / 2) / image_w,
+                (self.mouse-y - (root.height - image_h) / 2) / image_h
+            );
             if (root.is_dragging) {
                 let dx = (touch_area.mouse-x - root.last_mouse_x) / 1px;
                 let dy = (touch_area.mouse-y - root.last_mouse_y) / 1px;
@@ -137,7 +146,7 @@ export component GemViewportView inherits Rectangle {
 
     // Live Rendered Image -- Path-traced mode only; Solid mode shows the flat-shaded
     // CPU raster below instead (see `ViewportModel.live_view_mode`'s own doc comment).
-    if ViewportModel.live_view_mode == 1 && ViewportModel.has_render: Image {
+    if (ViewportModel.live_view_mode == 1 || ViewportModel.live_view_mode == 2) && ViewportModel.has_render: Image {
         width: 100%;
         height: 100%;
         source: ViewportModel.render_image;
@@ -155,7 +164,7 @@ export component GemViewportView inherits Rectangle {
     // the previous design's material was) -- see `ViewportModel.trace_refusal`'s own
     // doc comment. Path-traced mode only: the Solid raster carries no material at
     // all, so there is nothing wrong with it to warn about.
-    if ViewportModel.live_view_mode == 1 && ViewportModel.trace_refusal != "": Rectangle {
+    if (ViewportModel.live_view_mode == 1 || ViewportModel.live_view_mode == 2) && ViewportModel.trace_refusal != "": Rectangle {
         x: 0;
         y: 0;
         width: 100%;
@@ -194,6 +203,16 @@ export component GemViewportView inherits Rectangle {
         }
     }
 
+    // Optical diagnostic layer: a separate transparent image over the live render.
+    if ViewportModel.live_view_mode == 1 && ViewportModel.has_render && ViewportModel.trace_refusal == "" && !ViewportModel.trace_stale && OpticalModel.enabled && OpticalModel.ready: Image {
+        width: min(root.width, root.height * OpticalModel.aspect);
+        height: self.width / OpticalModel.aspect;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        source: OpticalModel.image;
+        image-rendering: pixelated;
+        image-fit: fill;
+    }
     // Solid Rendered Image -- Solid mode only. `SolidPreviewModel.image` is the SAME
     // flat-shaded raster the Edit tab's `SolidViewportView` shows, always forced to
     // `view_mode` 0 here regardless of the Edit tab's own choice -- see
@@ -233,7 +252,7 @@ export component GemViewportView inherits Rectangle {
     }
 
     // Fallback: Path-traced mode, initial state (nothing rendered yet).
-    if ViewportModel.live_view_mode == 1 && !ViewportModel.has_render: VerticalLayout {
+    if (ViewportModel.live_view_mode == 1 || ViewportModel.live_view_mode == 2) && !ViewportModel.has_render: VerticalLayout {
         alignment: center;
         spacing: 12px;
 
@@ -303,6 +322,14 @@ export component GemViewportView inherits Rectangle {
                 picked => { ViewportModel.live_view_mode = 1; }
             }
 
+            ModePill {
+                width: 110px;
+                text: "Ray-Traced";
+                hint: "Ray-Traced is an approximation: one index per color chain and averaged color; no polarization, doubling, haze, zoning, edge rounding or diffuse frost light. Energy past the bounce limit is omitted.";
+                selected: ViewportModel.live_view_mode == 2;
+                picked => { ViewportModel.live_view_mode = 2; }
+            }
+
             // Live Render follows the Edit tab's Cut slider; exports never do.
             if root.cut_visible: LiveCutBadge { }
 
@@ -351,9 +378,13 @@ export component GemViewportView inherits Rectangle {
                 // to the second row beside the tail, so the left row keeps its 570px need and the
                 // 700px docking minimum. (The "Color data updated" badge only shows in the full row,
                 // whose 1060px figure already counts it.)
+                // The Optical Diagnostics button (Path-Traced only) adds about 170px with its
+                // label and 40px as an icon, so both thresholds include it: 1180 + 180 and
+                // 860 + 40. The wrapped left row then needs about 610px, still under the 700px
+                // docking minimum.
                 GemViewportToolbarActions {
-                    compact: root.width < 1180px + (ViewportModel.previewing ? 290px : 0px);
-                    wrap: root.width < 860px + (ViewportModel.previewing ? 230px : 0px);
+                    compact: root.width < 1360px + (ViewportModel.previewing ? 290px : 0px);
+                    wrap: root.width < 900px + (ViewportModel.previewing ? 230px : 0px);
                 }
             }
         }
@@ -511,6 +542,16 @@ export component GemViewportView inherits Rectangle {
         }
     }
 
+    if ViewportModel.live_view_mode == 2: Text {
+        x: 8px;
+        y: root.height - self.height - 8px;
+        width: root.width - 16px;
+        text: "Ray-Traced: approximate color and frost; one index per color chain. No polarization, doubling, haze, zoning or edge rounding; bounce-limited. Metrics use a separate analytic tracer.";
+        color: Theme.text-secondary;
+        font-size: 10px;
+        wrap: word-wrap;
+    }
+
     // The Rendering Settings card that used to open here is the Parameters dock now: beside this
     // viewport (`app.slint`), with Stone, Lighting & Environment and Render & Output tabs. The
     // toolbar's three buttons open it (`GemViewportToolbarActions`).
@@ -523,5 +564,21 @@ export component GemViewportView inherits Rectangle {
         width: 100%;
         height: 100%;
         z: 400;
+    }
+    // The panel's toggle is the toolbar's "Optical Diagnostics" button (`toolbar_actions.slint`).
+    if ViewportModel.live_view_mode == 1 && OpticalModel.panel_open && !TiltModel.dialog_open && !ExportModel.is_open && !ViewportModel.material_editor_open: OpticalPanel {
+        x: 10px; y: 92px; width: min(460px, root.width - 20px);
+        height: min(420px, root.height - 100px);
+    }
+    if OpticalModel.enabled && ViewportModel.live_view_mode == 1: Rectangle {
+        x: 8px; y: root.height - self.height - 8px; width: root.width - 16px;
+        // Grows with its wrapped text instead of clipping the second line in a narrow window.
+        height: max(64px, optical_strip.preferred-height);
+        background: Theme.surface-dialog;
+        optical_strip := VerticalLayout {
+            padding: 5px;
+            Text { text: OpticalModel.status + " | " + (OpticalModel.windowing ? "Cyan / Windowing; " : "") + (OpticalModel.extinction ? "magenta X Extinction; " : "") + (OpticalModel.brilliance ? "green dots Brilliance; " : "") + (OpticalModel.fire ? "gold Fire = dispersion potential (0-0.1 weighted degrees); " : "") + (OpticalModel.scintillation ? "white diamonds Scintillation = sparkle across views and neighbors" : ""); color: Theme.text-primary; wrap:word-wrap; }
+            Text { text: "Analytical light paths, ten-bounce estimate; absorption/scattering/advanced material effects are not reproduced."; color: Theme.text-primary; wrap:word-wrap; }
+        }
     }
 }

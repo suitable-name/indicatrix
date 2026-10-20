@@ -63,6 +63,7 @@ export global Shell {
     callback new-design();
     callback open-design();
     callback import-files();
+    callback request-back();
 
     // Switches destination; tapping the active More item again returns to the menu.
     public function select-destination(index: int) {
@@ -96,33 +97,6 @@ export global Shell {
         info-title = title;
         info-body = body;
         info-visible = true;
-    }
-
-    // One step of "Back": dialog, then info sheet, then a full sheet down to half, then
-    // a More sub-page up, then the Design destination. Returns false when there is
-    // nothing left to close, so the caller lets the system handle Back.
-    public function handle-back() -> bool {
-        if (dialog-visible) {
-            close-dialog(false);
-            return true;
-        }
-        if (info-visible) {
-            info-visible = false;
-            return true;
-        }
-        if (sheet-detent == 2) {
-            sheet-detent = 1;
-            return true;
-        }
-        if (destination == 3 && more-page != 0) {
-            more-page = more-page == 3 ? 2 : 0;
-            return true;
-        }
-        if (destination != 1) {
-            select-destination(1);
-            return true;
-        }
-        return false;
     }
 }
 

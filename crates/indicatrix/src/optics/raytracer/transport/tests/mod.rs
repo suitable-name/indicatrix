@@ -19,8 +19,14 @@ mod exit_splitting_tests;
 /// use for their own on/off flags).
 mod nee_tests;
 
+/// The inside/outside state of the bounce loop on a concave stone.
+mod concave_state_tests;
+
 /// The surface-glare scale on the first-surface specular reflection.
 mod surface_glare_tests;
+
+/// The attribution recorder: bit-identical radiance, and the events it records.
+mod attribution_tests;
 
 /// Plane-parallel uniaxial slab, e-mode forced. Drives
 /// `compute_bounce_refraction_geometry`/`apply_partial_fresnel_bounce` directly

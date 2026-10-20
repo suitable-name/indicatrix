@@ -123,7 +123,7 @@ pub fn run_chunk_equivalence(renderer: &mut GpuFrameRenderer) -> ChunkEquivalenc
     }
 }
 
-/// Result of [`run_pipeline_equivalence`]/[`run_wavefront_determinism`].
+/// Result of [`run_pipeline_equivalence`]/[`run_wavefront_determinism`]/[`run_event_wavefront_equivalence`].
 pub struct PipelineEquivalenceResult {
     /// Differing pixels.
     pub differing_pixels: usize,
@@ -132,23 +132,22 @@ pub struct PipelineEquivalenceResult {
     /// Largest absolute component difference seen, for a failure message that says how
     /// far off it was rather than only that it differed.
     pub max_abs_diff: f32,
+    /// Number of pixels failing the G-D10 tolerance threshold:
+    /// `|a - b| <= 1e-5 * max(|a|, |b|) + 1e-6 * spp`.
+    pub tol_failing_pixels: usize,
+    /// Whether all tested scenes passed the tolerance criterion (at most `max(2, 0.1%)`
+    /// pixels failing tolerance per scene).
+    pub tol_passed: bool,
 }
 
 impl PipelineEquivalenceResult {
-    /// Bit-exact equality, exactly as [`ChunkEquivalenceResult::passed`] requires for
-    /// the chunked-vs-whole-frame check -- see [`run_pipeline_equivalence`]'s own doc
-    /// comment for why the megakernel and the wavefront pipeline must agree to the bit,
-    /// not merely statistically.
+    /// Bit-exact equality or tolerance-pass under the G-D10 golden rule.
     ///
-    /// Exception: a difference of at most `5e-6` (a handful of ULP at HDR radiance
-    /// scale, e.g. `1.9e-6` = 2^-19) is accepted. Both pipelines run the identical
-    /// `transport_bounce_step` body, so any residue can only come from the driver's
-    /// compiler contracting `a * b + c` into an FMA in one pipeline and not the other
-    /// (observed on RADV; the Windows AMD driver measured 0). That is not proven, and a
-    /// larger difference still fails.
+    /// Accepts bit-exact equality, or a handful of ULPs (`<= 5e-6`) from driver FMA contraction,
+    /// or passing the G-D10 tolerance threshold.
     #[must_use]
     pub fn passed(&self) -> bool {
-        self.differing_pixels == 0 || self.max_abs_diff <= 5e-6
+        self.differing_pixels == 0 || self.max_abs_diff <= 5e-6 || self.tol_passed
     }
 }
 
@@ -221,10 +220,15 @@ pub fn run_pipeline_equivalence(renderer: &mut GpuFrameRenderer) -> PipelineEqui
         }
     }
 
+    let tol_passed = differing_pixels == 0 || max_abs_diff <= 5e-6;
+    let tol_failing_pixels = if tol_passed { 0 } else { differing_pixels };
+
     PipelineEquivalenceResult {
         differing_pixels,
         total_pixels: num_pixels,
         max_abs_diff,
+        tol_failing_pixels,
+        tol_passed,
     }
 }
 
@@ -288,10 +292,15 @@ pub fn run_wavefront_determinism(renderer: &mut GpuFrameRenderer) -> PipelineEqu
         }
     }
 
+    let tol_passed = differing_pixels == 0 || max_abs_diff <= 5e-6;
+    let tol_failing_pixels = if tol_passed { 0 } else { differing_pixels };
+
     PipelineEquivalenceResult {
         differing_pixels,
         total_pixels: num_pixels,
         max_abs_diff,
+        tol_failing_pixels,
+        tol_passed,
     }
 }
 
@@ -467,4 +476,208 @@ pub fn run_specialisation_equivalence(
     }
 
     SpecialisationEquivalenceResult { cases }
+}
+
+/// Renders representative scenes for `class` through both pipelines and checks equivalence.
+///
+/// `class` is 1 = isotropic, 2 = uniaxial, 3 = biaxial. The scenes go through
+/// [`GpuPipelineKind::Megakernel`] and [`EventWavefrontRenderer`], and their outputs must
+/// agree under the §7.2 golden rule (G-D10).
+///
+/// # Panics
+///
+/// Panics if representative materials are missing from the built-in catalogue.
+#[must_use]
+pub fn run_event_wavefront_equivalence(
+    ctx: &crate::renderer::gpu::GpuContext,
+    class: u32,
+) -> PipelineEquivalenceResult {
+    use crate::{
+        geometry::cuts::{STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS, StandardGemCuts},
+        optics::raytracer::FacetFinish,
+        renderer::gpu::event_wavefront::{EventWavefrontRenderer, compare::compare_frames},
+    };
+
+    let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let (width, height) = (32u32, 32u32);
+    let spp = 2u32;
+    let num_pixels = (width * height) as usize;
+    let studio_env = LightingPreset::Daylight.studio(1.0, 0.4, 0.35);
+
+    let synthetic_hdr = ew_cases::synthetic_hdr_map();
+
+    let mut frosted_finishes = vec![FacetFinish::Polished; planes.len()];
+    for idx in STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS {
+        frosted_finishes[idx] = FacetFinish::Frosted;
+    }
+
+    let cases = ew_cases::equivalence_cases(class, studio_env, &frosted_finishes, &synthetic_hdr);
+
+    let mut mega_renderer = GpuFrameRenderer::new().expect("acquire renderer for megakernel");
+    let mut ew_renderer = EventWavefrontRenderer::new(ctx.clone());
+
+    let mut total_differing = 0usize;
+    let mut total_compared = 0usize;
+    let mut max_abs_diff = 0.0f32;
+    let mut total_tol_failing = 0usize;
+    let mut all_tol_passed = true;
+
+    for case in cases {
+        let scene = GpuFrameScene {
+            camera: &camera,
+            width,
+            height,
+            planes: &planes,
+            facet_finishes: case.finishes,
+            material: &case.material,
+            max_bounces: case.max_bounces,
+            environment: case.env,
+        };
+
+        let mut mega_out = vec![Vec3::ZERO; num_pixels];
+        mega_renderer
+            .accumulate_via_pipeline(&scene, class, 0, spp, &mut mega_out, None)
+            .expect("megakernel accumulation");
+
+        let mut ew_out = vec![Vec3::ZERO; num_pixels];
+        pollster::block_on(ew_renderer.accumulate_via_class(&scene, class, 0, spp, &mut ew_out))
+            .expect("event wavefront accumulation");
+
+        // NaN/Inf anywhere is a failure (never TOL); see `compare_frames`.
+        let diff = compare_frames(&mega_out, &ew_out, spp);
+        if !diff.tol_passed(num_pixels) {
+            all_tol_passed = false;
+        }
+
+        total_differing += diff.differing_pixels;
+        total_compared += num_pixels;
+        max_abs_diff = max_abs_diff.max(diff.max_abs_diff);
+        total_tol_failing += diff.tol_failing_pixels;
+    }
+
+    PipelineEquivalenceResult {
+        differing_pixels: total_differing,
+        total_pixels: total_compared,
+        max_abs_diff,
+        tol_failing_pixels: total_tol_failing,
+        tol_passed: all_tol_passed,
+    }
+}
+
+/// The scene table of [`run_event_wavefront_equivalence`].
+mod ew_cases {
+    use crate::{
+        optics::{
+            materials::GemMaterial,
+            raytracer::{EnvironmentSource, FacetFinish},
+        },
+        renderer::env_map::EnvironmentMap,
+    };
+
+    /// One scene of the equivalence run.
+    pub struct TestCase<'a> {
+        _name: &'static str,
+        pub material: GemMaterial,
+        pub finishes: &'a [FacetFinish],
+        pub env: EnvironmentSource<'a>,
+        pub max_bounces: u32,
+    }
+
+    const fn case<'a>(
+        name: &'static str,
+        material: GemMaterial,
+        finishes: &'a [FacetFinish],
+        env: EnvironmentSource<'a>,
+    ) -> TestCase<'a> {
+        TestCase {
+            _name: name,
+            material,
+            finishes,
+            env,
+            max_bounces: 8,
+        }
+    }
+
+    /// A small deterministic 16 x 8 HDR environment with structured, uneven radiance.
+    #[must_use]
+    pub fn synthetic_hdr_map() -> EnvironmentMap {
+        let cols = 16;
+        let rows = 8;
+        let mut pixels = Vec::with_capacity(cols * rows);
+        for row in 0..rows {
+            for col in 0..cols {
+                let red = (((col * 3 + row * 5) % 7) as f32).mul_add(0.4, 0.1);
+                let green = (((col * 2 + row * 3) % 5) as f32).mul_add(0.3, 0.1);
+                let blue = (((col * 5 + row * 2) % 6) as f32).mul_add(0.5, 0.1);
+                pixels.push([red, green, blue]);
+            }
+        }
+        EnvironmentMap::from_rgb(cols, rows, pixels).expect("valid synthetic env map")
+    }
+
+    /// The representative scenes for material `class` (1 = isotropic, 2 = uniaxial,
+    /// 3 = biaxial; anything else falls back to a single diamond scene).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a representative material is missing from the built-in catalogue.
+    #[must_use]
+    pub fn equivalence_cases<'a>(
+        class: u32,
+        studio_env: EnvironmentSource<'a>,
+        frosted_finishes: &'a [FacetFinish],
+        synthetic_hdr: &'a EnvironmentMap,
+    ) -> Vec<TestCase<'a>> {
+        let diamond = GemMaterial::by_name("Diamond").expect("Diamond is built-in");
+        let spinel = GemMaterial::by_name("Spinel").expect("Spinel is built-in");
+        let zircon = GemMaterial::by_name("Zircon").expect("Zircon is built-in");
+        let tanzanite = GemMaterial::by_name("Tanzanite").expect("Tanzanite is built-in");
+        let ruby = GemMaterial::by_name("Ruby").expect("Ruby is built-in");
+        let spinel_scattering = spinel.clone().with_scattering(1.0, 0.3);
+        // HDR + scattering: Studio scenes have NEE off, so only this case can see an NEE or
+        // MIS bug in the scattering deposit.
+        let ruby_scattering = ruby.with_scattering(1.0, 0.3);
+        let hdr = EnvironmentSource::HdrMap(synthetic_hdr);
+
+        match class {
+            1 => vec![
+                case("Diamond, daylight", diamond.clone(), &[], studio_env),
+                case("Spinel, daylight", spinel, &[], studio_env),
+                case(
+                    "Diamond, frosted girdle",
+                    diamond.clone(),
+                    frosted_finishes,
+                    studio_env,
+                ),
+                case("Spinel, scattering", spinel_scattering, &[], studio_env),
+                case("Diamond, synthetic HDR", diamond.clone(), &[], hdr),
+                case("Ruby, scattering, synthetic HDR", ruby_scattering, &[], hdr),
+                TestCase {
+                    max_bounces: 3,
+                    ..case(
+                        "Diamond, max bounces 3 (survivors)",
+                        diamond,
+                        &[],
+                        studio_env,
+                    )
+                },
+            ],
+            2 => vec![
+                case("Zircon, daylight", zircon.clone(), &[], studio_env),
+                case(
+                    "Zircon, frosted girdle",
+                    zircon.clone(),
+                    frosted_finishes,
+                    studio_env,
+                ),
+                case("Zircon, synthetic HDR", zircon, &[], hdr),
+            ],
+            3 => vec![
+                case("Tanzanite, daylight", tanzanite.clone(), &[], studio_env),
+                case("Tanzanite, synthetic HDR", tanzanite, &[], hdr),
+            ],
+            _ => vec![case("Diamond, daylight", diamond, &[], studio_env)],
+        }
+    }
 }

@@ -17,12 +17,18 @@
 //! minimum width is infeasible. The objective is the total finished volume
 //! (equivalently carats: one material, one specific gravity).
 //!
-//! The number of stones is free: a layout holds as many as fit best. What is capped is the
-//! number of DIFFERENT designs ([`PlanSettings::max_designs`]): the DPs may mix any number,
-//! and the design-cap chain ([`plan_design_cap`], `shaped::plan_shaped_design_cap`) drops the
-//! least contributing design and solves again until the best layout is within the cap. Every
-//! ranked list keeps only layouts within the cap ([`rank_indices_capped`]), and the
-//! refinement never re-picks a design past it ([`refine_capped`]).
+//! Two caps limit a layout. The number of DIFFERENT designs ([`PlanSettings::max_designs`]) is
+//! always capped: the DPs may mix any number, and the design-cap chain ([`plan_design_cap`],
+//! `shaped::plan_shaped_design_cap`) drops the least contributing design and solves again
+//! until the best layout is within the cap. The number of stones in all
+//! ([`PlanSettings::max_stones`]) is free by default (`0`): a layout holds as many as fit
+//! best. A stone cap is part of the search, never a cut-down of a larger layout: the order
+//! DPs solve for the best layout of at most that many stones ([`plan_rough_for_order`]; the
+//! free optimum is used when it already fits, so a cap that does not bind changes nothing),
+//! the single-design pass only enumerates grids within it, and the chain and the alternatives
+//! work inside both caps. Every ranked list keeps only layouts within both
+//! ([`rank_indices_within`]), and the refinement never re-picks a design past the design cap
+//! ([`refine_capped`]) nor adds a stone.
 //!
 //! # Entry point and paths
 //!
@@ -85,6 +91,7 @@
 pub mod camera_spectral;
 pub mod colour_fit;
 mod dp;
+mod dp_capped;
 pub mod fit;
 pub mod locate;
 mod lp;
@@ -112,6 +119,8 @@ mod tests_input;
 mod tests_lanes;
 #[cfg(test)]
 mod tests_lp;
+#[cfg(test)]
+mod tests_stone_cap;
 mod tree;
 mod types;
 mod uniform;
@@ -126,12 +135,12 @@ pub use placement::{
 };
 pub use plan::*;
 pub use rank::{
-    best_layout, flatten_groups, merge_and_rank, merge_and_rank_capped, rank_indices,
-    rank_indices_capped,
+    best_layout, flatten_groups, merge_and_rank, merge_and_rank_capped, merge_and_rank_within,
+    rank_indices, rank_indices_capped, rank_indices_within,
 };
 pub use refine::{
-    final_ranking, final_ranking_capped, finish_plan, finish_plan_lanes, own_pool, refine,
-    refine_capped,
+    final_ranking, final_ranking_capped, final_ranking_within, finish_plan, finish_plan_lanes,
+    own_pool, refine, refine_capped,
 };
 pub use shape::{
     BoxFace, HullError, MAX_HULL_PLANES, MAX_MESH_TRIANGLES, MeshError, RoughBase, RoughCut,
@@ -141,8 +150,8 @@ pub use stone_preform::{
     StonePreform, halfspace_to_design_frame, piece_box_halfspaces, stone_preform_planes,
 };
 pub use types::{
-    Axis, BarCut, CandidateDesign, CutOrder, CutPlan, LayoutGroup, PlacedStone, PlanInputError,
-    PlanProgress, PlanSettings, RoughBlock, RoughLayout, SlabCut,
+    Axis, BarCut, CandidateDesign, CutOrder, CutPlan, LayoutCaps, LayoutGroup, PlacedStone,
+    PlanInputError, PlanProgress, PlanSettings, RoughBlock, RoughLayout, SlabCut,
 };
 pub use uniform::{uniform_layouts, uniform_layouts_lanes};
 
@@ -174,9 +183,12 @@ pub(crate) const NEG: f64 = f64::NEG_INFINITY;
 /// throughout with a [`PlanProgress`]; returning `false` cancels.
 ///
 /// The list holds distinct compositions only, and at most three layouts per design set
-/// (the `SAME_SET_CAP` of the ranking), each within the design cap: a selection with one
-/// design shows at most three, and any selection shows fewer than ten when fewer distinct
-/// compositions survive those caps.
+/// (the `SAME_SET_CAP` of the ranking), each within both caps of the settings, the design cap
+/// and the stone cap ([`PlanSettings::max_designs`], [`PlanSettings::max_stones`]): a
+/// selection with one design shows at most three, and any selection shows fewer than ten when
+/// fewer distinct compositions survive those caps. With a stone cap the searches themselves
+/// look for the best layouts of at most that many stones (see the module docs), so the list
+/// is the heaviest of that kind, not a larger layout cut down.
 ///
 /// Returns `None` when cancelled and `Some(vec![])` when nothing is feasible
 /// (invalid settings or rough, see [`PlanSettings::validate`] and [`RoughBlock::validate`];

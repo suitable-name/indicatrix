@@ -266,6 +266,12 @@ pub struct SettingsDto {
     /// `count`, so plans saved when it was the stone cap still open (their number now reads
     /// as the design cap).
     pub count: i64,
+    /// The stone cap (`1..=99`): the most stones a layout may hold in all. Absent means no
+    /// cap, which is what every plan saved before the cap existed holds; never written when
+    /// the plan has no cap (0). Read as a wide integer so a wrong value is reported instead
+    /// of failing the parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_stones: Option<i64>,
     /// The stone-count floor of plans saved before the planner placed stones freely. Read and
     /// ignored (every layout from one stone up is shown now); never written.
     #[serde(default, skip_serializing)]

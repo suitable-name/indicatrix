@@ -23,15 +23,30 @@ one place.
 | Deep Solve button is greyed out: "...has nothing to repair until you convert a tier to a meet constraint" | Every tier is still pinned exactly as imported -- there is nothing Deep Solve could move even if it found a discrepancy. | Adopt at least one tier first (Chapter 8), then try again. |
 | Optimize button is greyed out: "Every tier is currently pinned as a scale reference..." | A freshly loaded catalogue design starts with zero free tiers -- this is expected, not broken. | Adopt at least one tier's real meet constraint, or author one by hand (Chapter 8). |
 | Optimize will not move a particular tier | That tier is either pinned as an Exact Scale Value (including the girdle, which Optimize never moves), or its SOLVE strategy is still uncertain (Least-squares est. / FAILED / not solved / blocked / no anchor yet). | Adopt the tier if it is pinned and you want it free; otherwise fix the uncertain solve first -- see "Trusting the SOLVE Column" (Chapter 8). |
-| Clicking Solve shows an **Abandon** button instead of Cancel, and the wait does not stop right away | The solver has no mid-run checkpoint yet, so Abandon only discards the result on the app's side -- the background worker keeps computing to completion regardless (Chapter 5). | This is expected; the editor is usable again immediately even though the CPU work finishes unseen. |
+| Clicking Solve shows an **Abandon Solve** button instead of Cancel | A background solve (a design of more than 16 tiers, or an auto-solve) has no partial result to keep, so the button is named Abandon rather than Cancel. It stops the solver within a sweep or pipeline run, typically a few milliseconds, and discards the result (Chapter 5). | Nothing to fix; click it to stop waiting, then Solve again when you are ready. |
 | A dialog titled "This Design Is Not a Closed Solid" appears when saving or exporting | The design does not currently solve to a closed solid, and you are about to write a file anyway. | Click **Cancel** and fix the design first, or **Save Anyway** (**Export Anyway**) to write it with a `NOT A CLOSED SOLID` header stamp so the file itself carries the warning (Chapter 11). |
 | Save writes a **draft** even though every block has an anchor tier | The design has more facet planes than the solver can verify (currently more than 400 total planes) -- the masts it would otherwise produce are untrustworthy placeholders, so the app saves a draft instead, the same as a design with no anchor tiers yet (Chapter 11). | Reduce the design's total plane count (fewer indices per tier, or split the design) and save again once it solves within the limit. |
 
 ## Rendering and Remote-Worker Problems
 
+Ray-Traced is a deterministic approximation. Tint may shift with path length, frost
+uses outside-light quadrature, and paths beyond the bounce limit are discarded.
+Polarization, double refraction, haze, zoning and edge rounding are
+not shown.
+Increasing AA taps smooths boundaries; it does not restore those optical models.
+Ray-Traced needs no denoising. Metrics and tilt curves keep their existing model.
+
+Remote Ray-Traced work requires matching protocol-29 peers. Update the viewer,
+coordinator and joined workers together if the handshake refuses an old version.
+The GPU path uses Vulkan, DX12 or Metal; OpenGL is not used on the desktop (a machine with
+only OpenGL renders on the CPU; setting the environment variable `WGPU_BACKEND=gl` tries it
+anyway, at your own risk, since the OpenGL driver layer can crash on exit).
+An unavailable or declined local GPU falls back to the CPU; Remote Only retains its
+usual refusal behavior when no remote lane can finish the work.
+
 | Symptom | Cause | Fix |
 |---|---|---|
-| "Remote render failed: worker silent for &lt;N&gt;s" | The app sent work to the remote worker and got no response at all -- not even a routine status update -- for longer than the allowed wait: 8 seconds once a job is underway, or a more generous 30 seconds for a brand-new job's very first response. | With **Local + Remote** selected, the app finishes the job locally automatically and tells you it happened -- no action needed beyond checking the worker later. With **Remote Only** selected, switch to **Local + Remote** or **Local Only** and retry (Chapters 9-10). |
+| "Remote render failed: worker silent for &lt;N&gt;s" | The app sent work to the remote worker and got no response at all -- not even a routine status update -- for longer than the allowed wait: 8 seconds once a job is underway, or a more generous 30 seconds for a brand-new job's very first response (plus the time a large finished picture needs to cross a slow link, while one is in flight). | With **Local + Remote** selected, the app finishes the job locally automatically and tells you it happened -- no action needed beyond checking the worker later. With **Remote Only** selected, switch to **Local + Remote** or **Local Only** and retry (Chapters 9-10). |
 | Worker keeps going silent | The worker machine may be asleep, unreachable, or its render-serving program may have stopped. | Check that the worker machine is on and awake, still reachable on your network (same network, VPN still connected, no firewall change), and that its serving process is still running (Chapter 10). |
 | Test Connection fails with a message starting "TLS error: ..." | A problem with the mutual-TLS handshake itself -- often an expired or mismatched certificate bundle. | Re-generate or re-request the certificate bundle (Chapter 10) and re-enter it; confirm the worker's own certificates have not been reissued or revoked since you last connected. |
 | Test Connection fails with "not a valid worker hostname: ..." | The **Address (host:port)** field is not a usable hostname or IP. | Re-check the address you entered against what the worker's operator gave you. |
@@ -41,7 +56,7 @@ one place.
 | "This HDR environment can't be sent to the remote; rendering locally" | The loaded map has no source file the app could send, or the file is larger than 256 MiB. | Load the map from a smaller `.hdr` file, or render that scene locally (Chapter 10). |
 | "Security warning: &lt;address&gt; did not present the certificate authority this token was issued for..." during enrollment | The address you redeemed the token against is not the worker your token was actually issued for -- possibly a wrong address, or something intercepting the connection. | Stop. Do not retry against a different address on your own judgement -- confirm the correct address with whoever gave you the token first (Chapter 10). |
 | "This token was not accepted -- it may be mistyped, already used, or expired..." | Enrollment tokens are single-use and expire 180 seconds after being issued. | Ask whoever manages the worker for a fresh token and redeem it promptly (Chapter 10). |
-| Live viewport or export silently uses the CPU even though your build has GPU support | The current scene declined the GPU path for this frame or batch -- either this machine has no usable graphics adapter (or it stopped responding), or the scene uses an HDR environment map too large for the graphics card's buffer limits. | This is a normal, per-frame fallback, not an error -- nothing fails to render. If you expect GPU rendering and never see it, confirm your build was compiled with GPU support and that **Local Compute** is not set to plain **CPU** (Chapter 2). |
+| Live viewport or export silently uses the CPU even though your build has GPU support | The current scene declined the GPU path for this frame or batch -- either this machine has no usable graphics adapter (or it stopped responding), or the scene uses an HDR environment map too large for the graphics card's buffer limits. (Concave tools, Chapter 16, are traced on the graphics card like any other facet.) | This is a normal, per-frame fallback, not an error -- nothing fails to render. If you expect GPU rendering and never see it, confirm your build was compiled with GPU support and that **Local Compute** is not set to plain **CPU** (Chapter 2). |
 | High-resolution export fails outright partway through | You have **Compute: Remote Only** selected and a remote chunk timed out or failed, with no local fallback available to pick up the remainder. | Switch to **Local + Remote** and re-export, or fix the remote worker first (Chapter 9). |
 | "Cannot export: &lt;reason&gt;" when clicking Export Edited .asc from the editor | The design is not currently in a solvable state. | Solve the design successfully first (Chapter 5), then export. |
 | A render job is **Failed** with "The HDR map ... changed since the job was added." | The `.hdr` file the job's lighting uses was edited, replaced or moved after you added the job. | Put the original file back and press **Resume**, or add the job again from the export dialog (Chapter 23). |
@@ -85,15 +100,14 @@ a full backtrace; attach that too if it exists.
 
 ## Known Limitations
 
-- **Solid view's windowing-risk hatch does not fully resolve custom materials.**
-  Export Edited .asc, Save, and the cutting sheet all correctly resolve
-  a custom catalogue material's own RI (Chapter 6), but the Solid
-  view's own windowing-risk hatch overlay and one internal solve helper
-  do not. For a design whose Material names a custom catalogue material with no RI
-  override, this means the Solid view's hatch can briefly disagree with
-  the tier list's MARGIN badge and the Live Render view. Set an explicit
-  RI override matching the custom material's own value if you notice this
-  (Chapter 6).
+- **The live margin estimate under an angle field ignores custom materials.**
+  Export Edited .asc, Save, the cutting sheet, the Solid view's windowing-risk
+  hatch and the MARGIN badge all resolve a custom catalogue material's own RI
+  (Chapter 6), but the small estimate shown while you type an angle uses the
+  built-in materials only. For a design whose Material names a custom catalogue
+  material with no RI override, it can differ a little from the MARGIN badge until
+  you commit the angle. Set an explicit RI override matching the custom
+  material's own value if you notice this (Chapter 6).
 - **Deep Solve never modifies the design.** It is a read-only diagnostic
   that reports and suggests; nothing it finds is written back to the tier
   list unless you separately make the same change yourself (Chapter 8).
@@ -118,16 +132,14 @@ a full backtrace; attach that too if it exists.
   it without that verification would mean shipping unverified numbers
   rather than a measured material (Appendix C). Rutile is included and is
   reachable from the Stone tab's material lists like every other built-in.
-- **The GPU render path has two known gaps against the CPU path.** First,
-  the "D65 Daylight" lighting preset renders with the real measured
-  daylight spectrum on the CPU but still falls back to a simplified 6500K
-  blackbody curve when routed to the GPU. Second, the one built-in material
-  with a genuinely wavelength-dependent birefringence curve (Quartz, and by
-  extension Amethyst and Citrine, which share its optics) renders that
-  curve accurately only on the CPU; the GPU path always uses a simpler
-  constant-offset approximation for the extraordinary ray. Both are flagged
-  follow-up work rather than permanent limits, and neither affects a
-  CPU-only build at all.
+- **The two render paths agree on the daylight spectrum and on Quartz.** The
+  "D65 Daylight" lighting presets use the tabulated measured daylight
+  spectrum on the graphics card as well as on the CPU, and the one built-in
+  material with a genuinely wavelength-dependent birefringence curve
+  (Quartz, and by extension Amethyst and Citrine, which share its optics)
+  traces that curve for the extraordinary ray on both paths. A picture
+  routed to the graphics card therefore differs from the CPU one only by
+  sampling noise (Appendix C).
 - **The app talks to exactly one remote.** Spreading work over several
   machines is the coordinator's job: let them join it and point the app at
   the coordinator (Chapter 10).

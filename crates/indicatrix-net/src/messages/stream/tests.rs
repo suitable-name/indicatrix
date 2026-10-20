@@ -164,6 +164,7 @@ fn client_message_render_request_round_trips() {
     };
 
     let scene = crate::scene::SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 4,
         height: 4,
         yaw: 0.4,
@@ -183,6 +184,7 @@ fn client_message_render_request_round_trips() {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     };
     let msg = ClientMessage::RenderRequest(Box::new(super::super::render::RenderRequest {
         request_id: 8,
@@ -212,6 +214,7 @@ fn client_message_tilt_curves_request_round_trips() {
     };
 
     let scene = crate::scene::SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 4,
         height: 4,
         yaw: 0.4,
@@ -231,6 +234,7 @@ fn client_message_tilt_curves_request_round_trips() {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     };
     let msg = ClientMessage::TiltCurvesRequest(Box::new(super::super::tilt::TiltCurvesRequest {
         request_id: 11,
@@ -273,6 +277,7 @@ fn render_gated_variants_are_appended_in_order_after_cancel_and_library() {
     };
 
     let scene = crate::scene::SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 1,
         height: 1,
         yaw: 0.0,
@@ -292,6 +297,7 @@ fn render_gated_variants_are_appended_in_order_after_cancel_and_library() {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     };
 
     let render_request =
@@ -618,6 +624,7 @@ fn ping_and_final_image_request_round_trip_at_discriminants_4_and_5() {
     assert_eq!(decoded, ping);
 
     let scene = crate::scene::SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 2,
         height: 2,
         yaw: 0.0,
@@ -637,6 +644,7 @@ fn ping_and_final_image_request_round_trip_at_discriminants_4_and_5() {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     };
     let request = ClientMessage::FinalImageRequest(Box::new(FinalImageRequest {
         request_id: 9,
@@ -756,6 +764,7 @@ fn batch_render_request_is_appended_at_discriminant_8_and_round_trips() {
     };
 
     let scene = crate::scene::SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 2,
         height: 2,
         yaw: 0.0,
@@ -775,6 +784,7 @@ fn batch_render_request_is_appended_at_discriminant_8_and_round_trips() {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     };
     let request = ClientMessage::BatchRenderRequest(Box::new(BatchRenderRequest {
         request_id: 12,

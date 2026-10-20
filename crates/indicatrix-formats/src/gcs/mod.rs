@@ -73,7 +73,9 @@
 //!   (pp.36-44). They do not describe the design.
 //! - **`frosting`** (tier, p.9 and the p.58 example): `0` clear, `0.5` frosted as GCS
 //!   1.1 writes it; kept in [`GcsTier::frosting`] and, per third-party writers, per
-//!   facet in [`GcsFacet::frosting`].
+//!   facet in [`GcsFacet::frosting`]. `.asc` has no notation for it, so
+//!   [`gcs_to_asc_schedule`] drops it: [`gcs_frosting`] reads it beside the schedule (by
+//!   tier position and facet slot) and [`to_gcs_string_with_frosting`] writes it back.
 //!
 //! # Conversion and writing
 //!
@@ -88,6 +90,7 @@
 mod convert;
 mod design;
 mod error;
+mod frosting;
 mod metadata;
 mod parse;
 mod polytope;
@@ -101,7 +104,8 @@ mod tests;
 pub use convert::gcs_to_asc_schedule;
 pub use design::GcsDesign;
 pub use error::GcsParseError;
+pub use frosting::{GcsTierFrosting, gcs_frosting};
 pub use metadata::{GcsColor, GcsIndex, GcsInfo, GcsRender};
 pub use parse::{parse_gcs, parse_gcs_bytes};
 pub use tier::{GcsFacet, GcsTier, GcsVertex, normal_from_index_angle, side_rule_index_angle};
-pub use write::{GcsWriteError, to_gcs_string};
+pub use write::{GcsWriteError, to_gcs_string, to_gcs_string_with_frosting};

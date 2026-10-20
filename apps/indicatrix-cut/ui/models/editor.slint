@@ -208,6 +208,10 @@ export global EditorModel {
     in property <string> material_guess_text: "";
     in property <string> material_guess_name: "";
     in property <string> material_guess_other_candidates_text: "";
+    // True when the badge labels a material Load Selected already applied from the library
+    // entry (the design's own material, still marked inferred): the badge then offers no
+    // "Set Material" button, since there is nothing left to confirm.
+    in property <bool> material_guess_applied: false;
     // Explicit one-click confirmation of the guess (not a silent auto-fill).
     // Writes as an ordinary, undoable `Edit::SetMaterial`.
     callback set_material_from_guess(string);
@@ -380,6 +384,15 @@ export global EditorModel {
     // only the inspector's currently loaded tier. Empty string means no note set.
     in-out property <string> selected_tier_note_text: "";
     callback apply_tier_note(int, string);
+
+    // How the inspector's currently loaded tier is frosted (`Design::tier_frosting`): the whole
+    // tier (`selected_tier_frosted`, the Frosted toggle's state) or only some of its facets
+    // (`selected_tier_frosted_partly`, shown as a note; the chips mark which). Both are false for
+    // a polished tier. `set_tier_frosted` and `toggle_facet_frosted` are undoable edits.
+    in-out property <bool> selected_tier_frosted: false;
+    in property <bool> selected_tier_frosted_partly: false;
+    callback set_tier_frosted(int, bool);
+    callback toggle_facet_frosted(int, float);
 
     // Unsaved-changes tracking for Save/Discard/Cancel guards and UI badges.
     // Driven by Rust-side dirty tracking, but also recomputed reactively here:

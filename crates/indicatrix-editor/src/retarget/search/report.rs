@@ -7,8 +7,10 @@ use crate::retarget::{
     metrics::RetargetMetrics,
     validity::{InvalidReason, RetargetValidity},
 };
-use indicatrix_cut_core::{Design, ObjectiveComponents};
-use std::fmt;
+use indicatrix_cut_core::{
+    Design, ObjectiveComponents, meet_preservation::MeetPreservationBaseline,
+};
+use std::{fmt, sync::Arc};
 
 /// The optical numbers a candidate was ranked by, from the search's full tilt scan.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,11 +53,30 @@ pub enum CandidateKind {
     Optimized,
 }
 
+/// What an option is best at among the options the search offers, worked out from the
+/// optics/shape frontier (`search::selection::roles`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateRole {
+    /// The best score of the frontier.
+    BestOptics,
+    /// The least shape drift from the original (never given to the first point, which is
+    /// then still the best optics).
+    Closest,
+    /// The remaining point nearest the ideal corner: little optics given up for little drift.
+    Balanced,
+}
+
 /// One valid option the search offers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchCandidate {
+    /// Accuracy and shape facts for the exact accepted original-network correspondence.
+    pub preservation: Option<indicatrix_cut_core::meet_preservation::PreservationFacts>,
     /// Where it came from.
     pub kind: CandidateKind,
+    /// What it is best at among the offered options, `None` for an option that is neither
+    /// the best optics, the closest nor the balanced one (and for a candidate that has not
+    /// been through the frontier selection yet).
+    pub role: Option<CandidateRole>,
     /// `(tier_index, angle)` of every tier whose angle differs from the live design, leaving
     /// out the tiers that follow a relation. This is what Apply sends as the proposal.
     pub angles: Vec<(usize, f64)>,
@@ -104,6 +125,11 @@ pub struct SearchReport {
     pub free_tiers: usize,
     /// Whether the options were scored with the "keep the design's look" penalty.
     pub keep_look: bool,
+    /// The original meet network the options were validated against: the operation-start
+    /// baseline, captured once by the search. A front end that applies or previews an
+    /// option validates it against THIS network instead of capturing the design again.
+    /// `None` only for a report that carries no validated option.
+    pub baseline: Option<Arc<MeetPreservationBaseline>>,
 }
 
 fn plural(count: usize, one: &str, many: &str) -> String {

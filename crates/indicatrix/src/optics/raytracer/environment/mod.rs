@@ -33,25 +33,39 @@
 //!
 //! Split from a single `environment.rs` into this module tree by seam: [`spectral`]
 //! holds the illuminant spectral-power curves (D65 table, Planckian fit), [`rig`] holds
-//! the actual per-direction radiance evaluation (studio rig falloffs, backdrop fill, NEE
-//! sampling), and this file keeps the preset/source types, the module docs, and the
+//! the actual per-direction radiance evaluation (studio rig falloffs, the lit backdrop
+//! tray, NEE sampling), [`tray`] resolves the tray's radiance, and this file keeps the preset/source types, the module docs, and the
 //! public entry points. Every path reachable as `environment::X` before the split stays
 //! reachable at exactly that path via the re-exports below.
 
-use super::color::illuminant_white_balance;
-use crate::renderer::env_map::EnvironmentMap;
 use glam::Vec3;
 
+mod nee;
 mod rig;
+mod source;
 mod spectral;
+mod sun;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_pins;
+#[cfg(test)]
+mod tests_tray;
+mod tray;
 
-// rig.rs
-pub(super) use rig::{
-    environment_nee_pdf, environment_supports_nee, fill_backdrop, sample_environment_channel,
-    sample_environment_channels, sample_environment_for_nee,
+// source.rs
+pub(crate) use source::environment_white_balance;
+pub use source::{BACKDROP_GREY, EnvironmentSource};
+
+// tray.rs
+pub use tray::{
+    TRAY_ALBEDO_BLACK, TRAY_ALBEDO_GREY, TRAY_ALBEDO_WHITE, TRAY_MODEL_VERSION,
+    rig_irradiance_over_pi, tray_radiance,
 };
+
+// nee.rs, rig.rs
+pub(super) use nee::{environment_nee_pdf, environment_supports_nee, sample_environment_for_nee};
+pub(super) use rig::{sample_environment_channel, sample_environment_channels};
 
 /// The analytic sun's cone sampler for key direction `key_dir`, for the GPU Tier-2 twin check
 /// (`renderer::gpu::environment_check::sun_nee`): the direction drawn from `(u0, u1)` and the
@@ -59,8 +73,8 @@ pub(super) use rig::{
 #[cfg(feature = "gpu")]
 #[must_use]
 pub(crate) fn sun_nee_reference_sample(key_dir: Vec3, u0: f32, u1: f32) -> (Vec3, f32) {
-    let dir = rig::sun_cone_direction(key_dir, u0, u1);
-    (dir, rig::sun_nee_pdf(key_dir, dir))
+    let dir = sun::sun_cone_direction(key_dir, u0, u1);
+    (dir, sun::sun_nee_pdf(key_dir, dir))
 }
 
 /// The sun's wavelength-independent radiance factor (radiance 40 000 faded by the horizon
@@ -68,18 +82,21 @@ pub(crate) fn sun_nee_reference_sample(key_dir: Vec3, u0: f32, u1: f32) -> (Vec3
 #[cfg(feature = "gpu")]
 #[must_use]
 pub(crate) fn sun_nee_reference_factor(key_dir: Vec3) -> f32 {
-    rig::sun_radiance_factor(key_dir)
+    sun::sun_radiance_factor(key_dir)
 }
 
 /// The sun's NEE pdf at `dir` (`0.0` outside the disc), for the same GPU check.
 #[cfg(feature = "gpu")]
 #[must_use]
 pub(crate) fn sun_nee_reference_pdf(key_dir: Vec3, dir: Vec3) -> f32 {
-    rig::sun_nee_pdf(key_dir, dir)
+    sun::sun_nee_pdf(key_dir, dir)
 }
 pub use rig::{
     sample_studio_environment_with_rig, sample_studio_environment_with_rig_shadow,
-    sample_studio_environment_with_rig_spec_power, studio_spec_power,
+    sample_studio_environment_with_rig_shadow_tray, sample_studio_environment_with_rig_spec_power,
+    sample_studio_environment_with_rig_spec_power_shadow,
+    sample_studio_environment_with_rig_spec_power_shadow_tray,
+    sample_studio_environment_with_rig_spec_power_tray, studio_spec_power,
 };
 
 // spectral.rs
@@ -615,191 +632,6 @@ impl LightingPreset {
             surface_glare: 1.0,
             head_shadow_deg: DEFAULT_HEAD_SHADOW_DEG,
         }
-    }
-}
-
-/// Selects what `trace_spectral_ray` samples when a ray misses the gemstone.
-///
-/// Either the analytic studio rig (`Studio`, the default -- see
-/// `sample_studio_environment`) or a loaded HDR equirectangular panorama (`HdrMap`, via
-/// [`crate::renderer::env_map::EnvironmentMap`]). The analytic rig stays useful for
-/// controlled comparisons where a real photograph would introduce variables (its own
-/// exposure, white balance, capture noise) a study wants held constant.
-#[derive(Clone, Copy)]
-pub enum EnvironmentSource<'a> {
-    Studio {
-        preset: LightingPreset,
-        exposure: f32,
-        light_yaw: f32,
-        light_pitch: f32,
-        /// Radiance of the backdrop card a camera ray sees where it misses the stone,
-        /// in the preset's own spectral-power units (so it renders neutral after white
-        /// balance) and independent of `exposure`. `0.0` shows the environment itself.
-        /// The stone's optics never see the card -- only the primary ray does -- so
-        /// leakage and windows stay as dark as the real ground, behind a neutral grey
-        /// backdrop card. See [`BACKDROP_GREY`].
-        backdrop: f32,
-        /// Scale of the stone's first-surface specular (Fresnel) reflection, `1.0`
-        /// leaving it as is and `0.0` removing the mirror image of the light so only
-        /// light that entered the stone remains (the effect of cross-polarised
-        /// viewing). Everything that went into the stone is untouched. See
-        /// [`EnvironmentSource::with_surface_glare`].
-        surface_glare: f32,
-        /// Width of the observer head shadow the three lit models darken around the eye
-        /// direction, in degrees (`0.0`: off; default [`DEFAULT_HEAD_SHADOW_DEG`], which
-        /// renders bit-identically to before the field existed). `Studio` ignores it. See
-        /// [`head_shadow_cosines`] and [`EnvironmentSource::with_head_shadow`].
-        head_shadow_deg: f32,
-    },
-    HdrMap(&'a EnvironmentMap),
-}
-
-/// Backdrop radiance that tone-maps to a neutral grey backdrop card (about sRGB 160).
-pub const BACKDROP_GREY: f32 = 0.23;
-/// Backdrop radiance that tone-maps to white: a light box behind the stone.
-pub const BACKDROP_WHITE: f32 = 8.0;
-
-impl EnvironmentSource<'_> {
-    /// Puts a backdrop card of radiance `backdrop` behind the stone (see the `Studio`
-    /// variant's field); an HDR map is its own backdrop and is returned unchanged.
-    #[must_use]
-    pub const fn with_backdrop(self, backdrop: f32) -> Self {
-        match self {
-            Self::Studio {
-                preset,
-                exposure,
-                light_yaw,
-                light_pitch,
-                surface_glare,
-                head_shadow_deg,
-                ..
-            } => Self::Studio {
-                preset,
-                exposure,
-                light_yaw,
-                light_pitch,
-                backdrop,
-                surface_glare,
-                head_shadow_deg,
-            },
-            hdr @ Self::HdrMap(_) => hdr,
-        }
-    }
-
-    /// Sets the head-shadow size in degrees (see the `Studio` variant's field): `0.0`
-    /// turns it off, NaN means the default, other values are clamped to `3..=88`. An HDR
-    /// map is returned unchanged.
-    #[must_use]
-    pub const fn with_head_shadow(self, head_shadow_deg: f32) -> Self {
-        match self {
-            Self::Studio {
-                preset,
-                exposure,
-                light_yaw,
-                light_pitch,
-                backdrop,
-                surface_glare,
-                ..
-            } => Self::Studio {
-                preset,
-                exposure,
-                light_yaw,
-                light_pitch,
-                backdrop,
-                surface_glare,
-                head_shadow_deg: clamp_head_shadow_deg(head_shadow_deg),
-            },
-            hdr @ Self::HdrMap(_) => hdr,
-        }
-    }
-
-    /// The head-shadow size in force, degrees: the `Studio` field, the default for an
-    /// HDR map (which has no head shadow).
-    #[must_use]
-    pub const fn head_shadow_deg(&self) -> f32 {
-        match *self {
-            Self::Studio {
-                head_shadow_deg, ..
-            } => head_shadow_deg,
-            Self::HdrMap(_) => DEFAULT_HEAD_SHADOW_DEG,
-        }
-    }
-
-    /// Sets the surface-glare scale (see the `Studio` variant's field), clamped to
-    /// `0.0..=1.0`; a NaN is treated as `1.0`. `1.0` is the default and leaves the
-    /// render bit-identical to one without the field. An HDR map is returned unchanged
-    /// (glare is only applied for the analytic lighting presets).
-    #[must_use]
-    pub const fn with_surface_glare(self, surface_glare: f32) -> Self {
-        match self {
-            Self::Studio {
-                preset,
-                exposure,
-                light_yaw,
-                light_pitch,
-                backdrop,
-                head_shadow_deg,
-                ..
-            } => Self::Studio {
-                preset,
-                exposure,
-                light_yaw,
-                light_pitch,
-                backdrop,
-                surface_glare: clamp_surface_glare(surface_glare),
-                head_shadow_deg,
-            },
-            hdr @ Self::HdrMap(_) => hdr,
-        }
-    }
-
-    /// The analytic lighting preset, `None` for an HDR panorama.
-    #[must_use]
-    pub const fn lighting_preset(&self) -> Option<LightingPreset> {
-        match *self {
-            Self::Studio { preset, .. } => Some(preset),
-            Self::HdrMap(_) => None,
-        }
-    }
-
-    /// The surface-glare scale in force: the `Studio` field, `1.0` for an HDR map.
-    #[must_use]
-    pub const fn surface_glare(&self) -> f32 {
-        match *self {
-            Self::Studio { surface_glare, .. } => surface_glare,
-            Self::HdrMap(_) => 1.0,
-        }
-    }
-}
-
-/// Clamps a surface-glare scale to `0.0..=1.0`, mapping NaN to `1.0` (off).
-const fn clamp_surface_glare(value: f32) -> f32 {
-    if value >= 1.0 || value.is_nan() {
-        1.0
-    } else if value > 0.0 {
-        value
-    } else {
-        0.0
-    }
-}
-
-/// The von-Kries white-balance scale (Bradford LMS-space, per-cone -- see
-/// [`compute_illuminant_white_balance`]) [`trace_spectral_ray`] applies, via
-/// [`apply_von_kries_white_balance`], to its final XYZ integration for a `Studio`
-/// `environment`. Only the analytic studio rig has a single well-defined illuminant
-/// color temperature to neutralize against -- a loaded HDR panorama has no one
-/// blackbody temperature standing in for it, so this returns `Vec3::ONE` for `HdrMap`
-/// (a mathematical no-op scale), but `trace_spectral_ray`'s own `HdrMap` arm does not
-/// even call [`apply_von_kries_white_balance`] with it: the full
-/// XYZ->LMS->XYZ round trip is not quite the identity at `Vec3::ONE` in f32 (the two
-/// published Bradford matrices are not exact inverses), so skipping the call entirely
-/// for `HdrMap` is exact, matching `transport_bounce.wgsl`'s own `params.env_mode == 1u`
-/// (`Studio`-only) gate on the identical transform, instead of merely close to it.
-#[inline]
-pub(crate) fn environment_white_balance(environment: EnvironmentSource<'_>) -> Vec3 {
-    match environment {
-        EnvironmentSource::Studio { preset, .. } => illuminant_white_balance(preset),
-        EnvironmentSource::HdrMap(_) => Vec3::ONE,
     }
 }
 

@@ -101,7 +101,7 @@ pub const WEB_WORDING: &[(&str, &str)] = &[
     ),
     (
         "Switch to Live Render to see the stone rendered in Diamond.",
-        "Switch to the Render tab to see the stone rendered in Diamond.",
+        "Switch to the Render tab to see the stone rendered in Diamond. Render Settings offers Path-Traced or the faster, deterministic Ray-Traced view.",
     ),
     (
         "Save it with Save (Ctrl+S), or keep editing.",

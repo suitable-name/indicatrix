@@ -31,6 +31,10 @@ pub enum ChunkRejection {
     AlreadyCommitted,
     /// A zero-sample chunk.
     Empty,
+    /// A full pass holds a NaN, an infinite or a negative value. It is refused whole so
+    /// one bad pass can never poison the running sum; the caller hands the pass back to
+    /// the planner (`ChunkPlanner::return_gpu_pass`).
+    InvalidSums,
 }
 
 /// What [`Accumulator::add_chunk`] did with a chunk.
@@ -210,20 +214,58 @@ impl Accumulator {
         }
     }
 
+    /// `true` when `sums` is non-empty and every value is finite and non-negative: the
+    /// only full-pass buffers [`Self::add_full_pass`] merges.
+    #[must_use]
+    pub fn full_pass_sums_valid(sums: &[[f32; 3]]) -> bool {
+        !sums.is_empty()
+            && sums
+                .iter()
+                .all(|s| s.iter().all(|v| v.is_finite() && *v >= 0.0))
+    }
+
     /// Adds one complete full-frame pass (from the GPU worker or a single full trace).
+    ///
+    /// A pass with a non-finite or negative value is refused
+    /// ([`ChunkRejection::InvalidSums`]).
     pub fn add_full_pass(
+        &mut self,
+        scene_id: u64,
+        pass_id: u64,
+        sample_offset: u32,
+        spp: u32,
+        sums: &[[f32; 3]],
+    ) -> ChunkOutcome {
+        // Cheap checks first, so a refused pass does not copy its buffer.
+        if scene_id != self.scene_id {
+            return ChunkOutcome::Stale;
+        }
+        if sums.len() != self.sum.len() {
+            return ChunkOutcome::Rejected(ChunkRejection::LengthMismatch);
+        }
+        if !Self::full_pass_sums_valid(sums) {
+            return ChunkOutcome::Rejected(ChunkRejection::InvalidSums);
+        }
+        self.add_full_pass_owned(scene_id, pass_id, sample_offset, spp, sums.to_vec())
+    }
+
+    /// Like [`Self::add_full_pass`], taking the buffer by value (no copy).
+    pub fn add_full_pass_owned(
         &mut self,
         scene_id: u64,
         _pass_id: u64,
         sample_offset: u32,
         spp: u32,
-        sums: &[[f32; 3]],
+        sums: Vec<[f32; 3]>,
     ) -> ChunkOutcome {
         if scene_id != self.scene_id {
             return ChunkOutcome::Stale;
         }
         if sums.len() != self.sum.len() {
             return ChunkOutcome::Rejected(ChunkRejection::LengthMismatch);
+        }
+        if !Self::full_pass_sums_valid(&sums) {
+            return ChunkOutcome::Rejected(ChunkRejection::InvalidSums);
         }
         if spp == 0 {
             return ChunkOutcome::Rejected(ChunkRejection::Empty);
@@ -234,13 +276,8 @@ impl Accumulator {
         if self.pending.contains_key(&sample_offset) {
             return ChunkOutcome::Rejected(ChunkRejection::Duplicate);
         }
-        self.pending.insert(
-            sample_offset,
-            PendingPass::Full {
-                spp,
-                sums: sums.to_vec(),
-            },
-        );
+        self.pending
+            .insert(sample_offset, PendingPass::Full { spp, sums });
         let merged = self.merge_ready_passes();
         if merged == 0 {
             ChunkOutcome::Pending

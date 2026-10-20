@@ -27,6 +27,14 @@
 //! kernel; `--only-gpu`/`--only-cpu` have nothing to change, so
 //! [`handle_tilt_curves_request`] deliberately takes no `ComputeMode` parameter.
 //!
+//! # Frosting
+//!
+//! The sweep honours the scene's facet finishes: `girdle_frosted` and `frosted_planes` are
+//! resolved by `crate::render_core::resolve_facet_finishes`, the function a `RENDER` of the
+//! same scene uses, and handed to the sweep as a `FinishedStone`. A frosted design's curves
+//! therefore differ from its polished ones; a scene with neither field set sweeps exactly as
+//! it always did.
+//!
 //! # No pipelining
 //!
 //! Only one `TiltCurvesRequest` may be outstanding per connection (unlike
@@ -130,6 +138,11 @@ pub fn poll_for_cancel<S: Read + TimeoutRead>(
             indicatrix_net::messages::discard_contribution_payload(stream, &header)?;
             CancelPoll::Pending
         }
+        // v25: not served mid-computation; a `PutAsset`'s payload frame is consumed.
+        indicatrix_net::messages::ClientMessage::Job(job) => {
+            crate::jobs::ignore_in_flight(stream, &job)?;
+            CancelPoll::Pending
+        }
         // The zones of a request pipelined behind this computation; kept for
         // it (the tilt sweep itself ignores zones).
         #[cfg(feature = "worker")]
@@ -231,6 +244,9 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
         scene
             .lighting_preset
             .studio(scene.exposure, scene.light_yaw, scene.light_pitch);
+    // The finishes the render of this scene would use (girdle toggle plus authored frosting;
+    // empty for a polished design), so a frosted design's curves are the frosted stone's.
+    let finishes = crate::render_core::resolve_facet_finishes(scene);
 
     for (axis_index, &azimuth_deg) in indicatrix::color::metrics::PROFILE_AZIMUTHS_DEG
         .iter()
@@ -260,11 +276,14 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
             // fan-out here could oversubscribe a rendering worker. The sweep still gets
             // the Fire-less fast path; threading it needs a permit-acquiring helper in
             // `render_core`.
-            indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth_geom_threaded(
-                indicatrix::geometry::StoneGeometry {
-                    planes: &scene.planes,
-                    tools: &scene.tools,
-                },
+            indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth_finished_threaded(
+                indicatrix::color::metrics::FinishedStone::new(
+                    indicatrix::geometry::StoneGeometry {
+                        planes: &scene.planes,
+                        tools: &scene.tools,
+                    },
+                    &finishes,
+                ),
                 &scene.material,
                 azimuth_deg,
                 environment,
@@ -375,6 +394,7 @@ mod tests {
 
     fn valid_scene() -> SceneState {
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 4,
             height: 4,
             yaw: 0.4,
@@ -394,6 +414,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 
@@ -546,6 +567,61 @@ mod tests {
         handle_tilt_curves_request(&mut duplex, &request).unwrap();
 
         assert!(!duplex.timeout_active);
+    }
+
+    /// The curves a worker computes for `scene`.
+    fn curves_of(scene: SceneState) -> Box<TiltCurvesResult> {
+        let request = TiltCurvesRequest {
+            request_id: 3,
+            scene,
+        };
+        let mut duplex = DuplexHalf::new(Vec::new());
+        handle_tilt_curves_request(&mut duplex, &request).unwrap();
+        match read_response(&duplex.out) {
+            TiltCurvesResponse::Curves(result) => result,
+            other => panic!("expected TiltCurvesResponse::Curves, got {other:?}"),
+        }
+    }
+
+    /// A polished scene is swept exactly as the plain-geometry sweep does (an empty finish
+    /// list changes nothing), and the frosting of the scene -- the girdle toggle or authored
+    /// frosted planes -- reaches the sweep: the curves of a frosted scene differ.
+    #[test]
+    fn a_frosted_scene_gets_different_curves_than_the_polished_one() {
+        let polished_scene = valid_scene();
+        let scene = &polished_scene;
+        let (brilliance, extinction, windowing) =
+            indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth_geom_threaded(
+                indicatrix::geometry::StoneGeometry::planes_only(&scene.planes),
+                &scene.material,
+                indicatrix::color::metrics::PROFILE_AZIMUTHS_DEG[0],
+                scene
+                    .lighting_preset
+                    .studio(scene.exposure, scene.light_yaw, scene.light_pitch),
+                Some(1),
+            );
+        let polished = curves_of(valid_scene());
+        assert_eq!(
+            polished.axes[0],
+            AxisTiltCurves::from_arrays(brilliance, extinction, windowing),
+            "a polished scene is the plain sweep"
+        );
+
+        let mut girdle = valid_scene();
+        girdle.girdle_frosted = true;
+        assert_ne!(
+            curves_of(girdle).axes,
+            polished.axes,
+            "a frosted girdle changes the curves"
+        );
+
+        let mut authored = valid_scene();
+        authored.frosted_planes = (0..u32::try_from(authored.planes.len()).unwrap()).collect();
+        assert_ne!(
+            curves_of(authored).axes,
+            polished.axes,
+            "authored frosting changes the curves"
+        );
     }
 
     /// Pins that `poll_for_cancel` tolerates a `WriteZero` (which a real TLS stream can

@@ -12,6 +12,10 @@
 //! temporary name and renamed, so a crash never leaves half a file. [`restore`] reads
 //! them back at start-up; files that do not parse are renamed aside (never a panic, never
 //! a lost file).
+//!
+//! A design deleted from the library must not come back from the autosave:
+//! [`DocumentState::forget_library_entries`] removes an autosave that describes a deleted
+//! entry and says what becomes of the open design (see there).
 
 use std::{
     fs, io,
@@ -19,11 +23,14 @@ use std::{
 };
 
 use indicatrix_cut_core::native::{DesignExtras, design_from_str, design_to_string};
+use indicatrix_editor::EditorSession;
 use indicatrix_formats::native::design::DESIGN_EXTENSION_DOTTED;
 use serde::{Deserialize, Serialize};
 
-use super::{DocumentOrigin, display_title, install, open::from_design_file, unix_now};
-use crate::app_state::AppState;
+use super::{
+    DocumentOrigin, DocumentState, display_title, install, open::from_design_file, unix_now,
+};
+use crate::{app_state::AppState, library::EntryId};
 
 /// The directory below the app's files directory.
 const DIR: &str = "autosave";
@@ -130,11 +137,16 @@ pub fn autosave(state: &mut AppState) -> io::Result<()> {
 
 /// Writes `bytes` to `path` through `<path>.tmp` and a rename.
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
+    let temporary = temporary_of(path);
     fs::write(&temporary, bytes)?;
     fs::rename(&temporary, path)
+}
+
+/// The temporary name [`write_atomically`] writes `path`'s bytes to first.
+fn temporary_of(path: &Path) -> PathBuf {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    PathBuf::from(temporary)
 }
 
 /// Restores the design of the last autosave, if there is one. Returns `None` when there
@@ -217,5 +229,231 @@ fn move_aside(path: &Path) {
     aside.push(format!(".corrupt-{}", unix_now()));
     if let Err(error) = fs::rename(path, PathBuf::from(aside)) {
         tracing::debug!(%error, path = %path.display(), "could not move the autosave aside");
+    }
+}
+
+impl DocumentState {
+    /// Settles the autosave and the open design after the library entries `entries` were
+    /// deleted. `files` is the app's files directory and `session` the open design's.
+    ///
+    /// - The autosave is deleted when it describes one of the entries: its note names the
+    ///   entry as where the design came from, or this document wrote it (see
+    ///   [`autosave`]) and is itself the working copy of one of them. Otherwise a restart
+    ///   would bring the deleted design back.
+    /// - When the open design is the working copy of one of the entries, it stays open (the
+    ///   user may be looking at it) but belongs to no entry any more: its origin becomes
+    ///   [`DocumentOrigin::New`], so "Save" no longer overwrites or re-creates an entry by
+    ///   itself, and it reads as unsaved, so replacing it asks first. The autosave does not
+    ///   write it again until the design changes; an edit after the delete is the user's
+    ///   own act and is autosaved like any unsaved design.
+    ///
+    /// Returns whether the open design was one of the deleted entries' working copy.
+    pub fn forget_library_entries(
+        &mut self,
+        session: &mut EditorSession,
+        files: &Path,
+        entries: &[EntryId],
+    ) -> bool {
+        let open_deleted = self
+            .library_entry()
+            .is_some_and(|entry| entries.contains(&entry));
+        let dir = files.join(DIR);
+        let wrote_it = self.autosaved != Mark::default();
+        if (open_deleted && wrote_it) || note_names_one_of(&dir, entries) {
+            remove_autosave_files(&dir);
+        }
+        if !open_deleted {
+            return false;
+        }
+        self.origin = DocumentOrigin::New;
+        // Generations only grow, so the maximum reads as "never saved" (what `restore`
+        // does for a design that had unsaved changes).
+        session.saved_generation = u64::MAX;
+        self.autosaved = Mark(Some((session.current_generation(), session.is_dirty())));
+        true
+    }
+}
+
+/// Whether the autosave note in `dir` names the library entry of one of `entries` as where
+/// the autosaved design came from. A missing or unreadable note names nothing.
+fn note_names_one_of(dir: &Path, entries: &[EntryId]) -> bool {
+    let note = fs::read_to_string(dir.join(NOTE_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Note>(&text).ok());
+    matches!(
+        note,
+        Some(Note {
+            origin: DocumentOrigin::Library { entry_id },
+            ..
+        }) if entries.contains(&entry_id)
+    )
+}
+
+/// Deletes the autosave of `state`'s app, so a closed design does not come back at the next
+/// start.
+pub(super) fn remove_autosave(state: &AppState) {
+    remove_autosave_files(&dir_of(state));
+}
+
+/// Deletes the autosave's two files and any temporary file beside them. A file that is not
+/// there is fine; any other failure is logged.
+fn remove_autosave_files(dir: &Path) {
+    for name in [design_file_name(), NOTE_FILE.to_owned()] {
+        let path = dir.join(name);
+        for target in [temporary_of(&path), path] {
+            if let Err(error) = fs::remove_file(&target)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, path = %target.display(), "the autosave could not be removed");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use indicatrix_cut_core::Edit;
+
+    use super::*;
+    use crate::{document::new_from_template, platform::Platform, platform_mock::MockPlatform};
+
+    /// A saved round brilliant of the library entry `entry_id` (a template, so it has tiers),
+    /// with the autosave written for it.
+    fn autosaved_entry(entry_id: EntryId) -> (AppState, Arc<MockPlatform>) {
+        let mock = Arc::new(MockPlatform::default());
+        let platform: Arc<dyn Platform> = mock.clone();
+        let mut state = AppState::new(platform);
+        new_from_template(&mut state, 1).expect("template 1 exists");
+        state.session.mark_saved();
+        state.document.origin = DocumentOrigin::Library { entry_id };
+        autosave(&mut state).expect("writes");
+        (state, mock)
+    }
+
+    /// The autosave's design file and note.
+    fn autosave_files(mock: &MockPlatform) -> (PathBuf, PathBuf) {
+        let dir = mock.app_dirs().files.join(DIR);
+        (dir.join(design_file_name()), dir.join(NOTE_FILE))
+    }
+
+    #[test]
+    fn deleting_the_entry_of_the_open_design_removes_its_autosave() {
+        let (mut state, mock) = autosaved_entry(42);
+        let (design, note) = autosave_files(&mock);
+        assert!(design.is_file() && note.is_file());
+        let files = mock.app_dirs().files.clone();
+
+        let detached = state
+            .document
+            .forget_library_entries(&mut state.session, &files, &[41, 42]);
+
+        assert!(detached);
+        assert!(!design.exists() && !note.exists());
+        // The design stays open, belongs to no entry and reads as unsaved.
+        assert_eq!(state.document.origin, DocumentOrigin::New);
+        assert_eq!(state.document.library_entry(), None);
+        assert!(state.session.is_dirty());
+        assert_ne!(
+            state.session.design.tiers,
+            [] as [indicatrix_cut_core::ConstraintTier; 0]
+        );
+
+        // Nothing writes the deleted design back while it is unchanged ...
+        autosave(&mut state).expect("nothing to write");
+        assert!(!design.exists(), "the deleted design came back");
+        // ... an edit is the user's own doing and is autosaved like any unsaved design.
+        state
+            .session
+            .apply(Edit::SetGirdleDiameterMm {
+                girdle_diameter_mm: Some(6.0),
+            })
+            .expect("the edit applies");
+        autosave(&mut state).expect("writes");
+        assert!(design.is_file());
+        let text = fs::read_to_string(&note).expect("the note is written");
+        assert!(text.contains("\"type\":\"new\""), "{text}");
+    }
+
+    #[test]
+    fn an_autosave_of_another_entry_stays() {
+        let (mut state, mock) = autosaved_entry(7);
+        let (design, note) = autosave_files(&mock);
+        let files = mock.app_dirs().files.clone();
+
+        let detached = state
+            .document
+            .forget_library_entries(&mut state.session, &files, &[8, 9]);
+
+        assert!(!detached);
+        assert!(design.is_file() && note.is_file());
+        assert_eq!(state.document.library_entry(), Some(7));
+        assert!(!state.session.is_dirty());
+    }
+
+    #[test]
+    fn a_stale_autosave_of_a_deleted_entry_goes_although_another_design_is_open() {
+        // The autosave on disk still describes entry 5; a design of entry 6 was opened
+        // since and has not been written yet.
+        let (mut state, mock) = autosaved_entry(5);
+        state.document.origin = DocumentOrigin::Library { entry_id: 6 };
+        let (design, note) = autosave_files(&mock);
+        let files = mock.app_dirs().files.clone();
+
+        let detached = state
+            .document
+            .forget_library_entries(&mut state.session, &files, &[5]);
+
+        assert!(!detached);
+        assert!(!design.exists() && !note.exists());
+        assert_eq!(state.document.library_entry(), Some(6));
+        assert!(!state.session.is_dirty());
+    }
+
+    #[test]
+    fn the_autosave_the_open_design_wrote_goes_even_when_its_note_cannot_be_read() {
+        let (mut state, mock) = autosaved_entry(3);
+        let (design, note) = autosave_files(&mock);
+        fs::write(&note, b"{").expect("the note can be damaged");
+        let files = mock.app_dirs().files.clone();
+
+        let detached = state
+            .document
+            .forget_library_entries(&mut state.session, &files, &[3]);
+
+        assert!(detached);
+        assert!(!design.exists() && !note.exists());
+    }
+
+    #[test]
+    fn an_unreadable_note_names_no_entry() {
+        let (mut state, mock) = autosaved_entry(3);
+        let (design, note) = autosave_files(&mock);
+        fs::write(&note, b"{").expect("the note can be damaged");
+        state.document.origin = DocumentOrigin::Library { entry_id: 4 };
+        let files = mock.app_dirs().files.clone();
+
+        let detached = state
+            .document
+            .forget_library_entries(&mut state.session, &files, &[3]);
+
+        assert!(!detached);
+        assert!(design.is_file() && note.is_file());
+    }
+
+    #[test]
+    fn deleting_with_no_autosave_is_fine() {
+        let mock = Arc::new(MockPlatform::default());
+        let platform: Arc<dyn Platform> = mock.clone();
+        let mut state = AppState::new(platform);
+        let files = mock.app_dirs().files.clone();
+
+        let detached = state
+            .document
+            .forget_library_entries(&mut state.session, &files, &[1]);
+
+        assert!(!detached);
+        assert_eq!(state.document.origin, DocumentOrigin::Startup);
     }
 }

@@ -1,5 +1,5 @@
 //! Storage that outlives the tab: `localStorage` for small keys (settings, guide state,
-//! GPU admission records, cutting marks), IndexedDB for the autosaved current design,
+//! GPU admission records, cutting marks), `IndexedDB` for the autosaved current design,
 //! and `sessionStorage` for the same-tab reload fast path and as the fallback where the
 //! other two are unavailable.
 //!
@@ -20,7 +20,7 @@
 
 #![allow(
     dead_code,
-    reason = "marks, admission and the IndexedDB clear/meta API are for later lanes"
+    reason = "the typed get/set helpers of marks and admission and the IndexedDB clear/meta API are not all called yet"
 )]
 
 pub mod admission;

@@ -141,7 +141,7 @@ export component TierRowItem inherits Rectangle {
 
     height: root.compact ? 56px : 64px;
     background: root.data.multi ? Theme.primary-container : (root.data.selected ? Theme.secondary-container : transparent);
-    opacity: root.data.concave ? 0.7 : 1.0;
+    opacity: 1.0;
     accessible-role: AccessibleRole.button;
     accessible-label: root.data.code + ", " + root.data.angle + ", " + root.data.name;
     accessible-checkable: true;

@@ -18,6 +18,7 @@ import { TierRowData, TierTableModel, WarningLine } from "editor/tier_table_mode
 import { AppModel, GalleryModel, TemplateCard } from "models/app_model.slint";
 import { RenderModel } from "components/render_model.slint";
 import { ExportDialog } from "components/export_dialog.slint";
+import { StartupOverlay } from "components/startup_overlay.slint";
 import { SolidModel } from "components/solid_model.slint";
 import { ManipulateModel } from "components/manipulate_model.slint";
 import { ConfirmDialog, ConfirmModel } from "components/confirm_dialog.slint";
@@ -407,6 +408,15 @@ export component AppWindow inherits Window {
     }
 
     if ShortcutsModel.open: ShortcutOverlay {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+
+    // The GPU start-up test's progress card, over every dialog but under the walkthrough
+    // panel and the unsaved-changes guard.
+    if RenderModel.startup-active && !RenderModel.startup-hidden: StartupOverlay {
         x: 0;
         y: 0;
         width: root.width;

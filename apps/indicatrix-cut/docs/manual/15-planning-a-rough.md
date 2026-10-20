@@ -49,8 +49,8 @@ a screen that cannot hold that) and cannot be made smaller than 1040 x 560.
 - **Left column** — the rough and the plan. A scrolling upper part holds the
   **ROUGH** section (shape, size, material, weighed carat, the live readout) and
   the **SHAPE** section (Undo, Redo, the cut buttons and the cut list). The
-  **PLAN** section (design limit, candidate designs, losses, the **Plan** button
-  and the progress bar) stays pinned at the bottom.
+  **PLAN** section (design and stone limits, candidate designs, losses, the
+  **Plan** button and the progress bar) stays pinned at the bottom.
 - **Centre** — the 3D view, with its buttons above the image and a hint line
   below it, so no control ever covers the picture.
 - **Right column** — **RESULTS**: the summary line, the result cards, and a
@@ -134,8 +134,8 @@ weight failed: ...", or "The model changed while it was being scaled" if you
 edited the rough meanwhile): the model stays as it was and **Plan** stays
 available. The red line clears when you next change the rough, its material or
 the weighed carat, and when you press **Plan**. The other plan-form fields (the
-kerf, the allowance, the skin, the minimum width and the design limit) do not
-clear it.
+kerf, the allowance, the skin, the minimum width, the design limit and the
+stone limit) do not clear it.
 
 A mesh whose size is not believable in the chosen unit is refused as well: more
 than 2000 mm across, or less than 1 mm across. The message names the unit that
@@ -280,7 +280,7 @@ or not; a block, a cylinder and a pebble have no mesh to put an inclusion in (se
 **Adding one.** Once a mesh rough is in place, the form shows **Add Inclusion...**
 with a **Margin (mm)** field under the mesh choices. Press it and pick the
 inclusion's file (an `.obj`, `.stl` or `.ply`, the same formats as the rough). The
-file is read in the unit chosen in **Mesh file units** and in the same coordinates as
+file is read in the unit chosen in **Mesh File Units** and in the same coordinates as
 the rough's own file, so export both from the same scene. The planner moves the
 inclusion exactly as the import moved the rough (the import puts the rough's bounding
 box at the origin) and as **Fit to Weight** has scaled it since. The file is read in
@@ -624,13 +624,22 @@ planned.
 The **PLAN** section sets up what the planner may use and how much it must
 leave.
 
-- **Designs (up to)** — from 1 to 99: the most *different* designs one layout may
-  mix. The number of stones is not limited: the planner fits as many stones as
-  yield the most weight, one stone or dozens, within the losses and the minimum
-  width below. Set it to 1 and every layout uses a single design (as many stones of
-  it as fit best); raise it to let the planner combine a large stone of one design
-  with smaller stones of others in the space that is left. A plan saved before this
-  setting existed opens with its old stone limit as the design limit.
+- **Designs (Up To)** — from 1 to 99: the most *different* designs one layout may
+  mix. Set it to 1 and every layout uses a single design (as many stones of it as
+  fit best, up to the stone limit below); raise it to let the planner combine a
+  large stone of one design with smaller stones of others in the space that is
+  left. A plan saved when this setting still limited the stones, not the designs,
+  opens with that number as the design limit.
+- **Stones (Up To)** — from 0 to 99: the most stones one layout may hold in all,
+  whatever their designs. **0**, the default, means no limit ("No Limit" shows
+  beside the box): the planner fits as many stones as yield the most weight, one
+  stone or dozens, within the losses and the minimum width below. With a limit,
+  the planner looks for the heaviest layouts of at most that many stones. It does
+  not simply drop stones from a bigger layout, so with fewer stones the pieces,
+  and often the stones, are larger. The two limits apply together:
+  **Designs (Up To)** 2 and **Stones (Up To)** 5 give layouts of at most five
+  stones of at most two designs. A plan saved before this setting existed opens
+  with no stone limit.
 - **Candidate Designs** — which designs the planner may use:
   - **Current Filter (N designs)** — only the designs the library's search and
     filters currently show (Chapter 2). This is the default, and the way to say
@@ -813,9 +822,13 @@ weight.
 
 A mix of different designs can beat any single design when the rough has an
 awkward shape: a broad, shallow stone from one design in one part of the rough
-and a slimmer one in another. **Designs (up to)** sets how many designs may be
+and a slimmer one in another. **Designs (Up To)** sets how many designs may be
 mixed; when the best layout would need more, the planner drops the design that
 adds the least weight and plans again until the layout is within the limit.
+**Stones (Up To)** is part of the search itself: every cut order is planned for
+its heaviest layout of at most that many stones, rather than a larger layout
+being cut down. A small limit on a large rough can leave a piece much bigger
+than its stone; the rest is shaped away when you preform the stone.
 
 ## The 3D View
 
@@ -993,7 +1006,8 @@ the same numbers are listed once, and at most three layouts may use the same set
 of designs, so the list stays varied rather than showing "1 x A", "2 x A" and
 "3 x A" one after another. Alongside the best mix of designs, the planner also
 looks for the next-best mixes that avoid the design the best one uses most, so
-more than one mixed layout can appear.
+more than one mixed layout can appear. Only layouts within both limits
+(**Designs (Up To)** and **Stones (Up To)**) are listed.
 
 ## Library Links
 
@@ -1102,15 +1116,17 @@ under the list's heading; a note about designs that have changed is shown in amb
 
 ### Opening a Saved Plan
 
-**Open** puts the plan's model, settings, weighed carat, material and choice of
-candidate designs (**Current Filter** or **Whole Library**; a file without that
-choice reads as **Current Filter**) back into the left column (the model as one
-undo step, so you can undo your way back), and shows the saved
+**Open** puts the plan's model, settings (both limits and the losses), weighed
+carat, material and choice of candidate designs (**Current Filter** or **Whole
+Library**; a file without that choice reads as **Current Filter**) back into the
+left column (the model as one undo step, so you can undo your way back), and
+shows the saved
 layouts in the results exactly as they were saved, with a banner above them: `Saved
 plan "..." · 2026-09-30 · Re-Plan uses the current model and settings`. The layouts are shown
 from the file; nothing is recomputed. Select any card and the 3D view shows its
 stones just as they were saved. A design that is excluded from planning today is
 shown like any other, with all its stones; only its **Excluded** pill tells you.
+A plan saved before **Stones (Up To)** existed opens with no stone limit.
 
 **Re-Plan** in the banner re-plans with the current model and settings, the ones
 in the left column now (the loaded ones unless you have changed them since), using
@@ -1160,7 +1176,8 @@ the name in the file, and opens it, with the status check above. A file that is
 not a rough plan, or that a newer version of the app wrote, is refused with a
 message ("This plan was made by a newer Indicatrix ... Update Indicatrix to open
 it."), and a file with an invalid value names the field that is wrong. Keys the app
-does not know are ignored.
+does not know are ignored, so a build from before **Stones (Up To)** opens a plan
+that has a stone limit as one without it.
 
 An exported plan carries the plan's color and the stone orientations when it has them
 (plan file version 4 since 2026-10-12), and an import stores them with the new plan, so
@@ -1290,7 +1307,7 @@ designs". Instead the summary line carries the clause "; 2 designs excluded from
 planning" ("; 1 design excluded from planning" for one), on every outcome,
 including "No layout fits". If every candidate is excluded, **Plan** stops before
 it starts and says "Every candidate design is excluded from planning. Restore one
-under Candidate designs, or widen the filter."
+under Candidate Designs, or widen the filter."
 
 ## Next Steps
 

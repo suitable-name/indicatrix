@@ -31,6 +31,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
 ) {
+    super::ray_settings::setup(ui, render_ctx, settings_store);
     // The UI carries the lighting preset's enum discriminant as a plain `int`;
     // `LightingPreset::from_index` maps it back to the enum here, the one boundary
     // crossing from "UI index" to "physics enum", and `.label()` is what's actually
@@ -242,9 +243,11 @@ pub(in crate::gui) fn setup_head_shadow_callback(
         });
 }
 
-/// Wires the backdrop pill row: what the camera sees behind the stone, in the live
-/// view and every export (`RenderContext::backdrop`, persisted as
-/// `AppSettings::backdrop`).
+/// Wires the backdrop pill row: the lit tray the stone lies on, seen around the stone and
+/// through its windows, in the live view and every export (`RenderContext::backdrop`,
+/// persisted as `AppSettings::backdrop`). The render thread resolves the choice to a tray
+/// radiance at the scene's own lighting preset and light pose, so changing the choice, the
+/// rig or the light pose all restart the accumulation through the scene identity.
 pub(in crate::gui) fn setup_backdrop_callback(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,

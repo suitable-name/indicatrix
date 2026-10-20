@@ -29,7 +29,7 @@ use slint::ComponentHandle;
 use super::Shared;
 use crate::{AppWindow, RenderModel, push::toast};
 
-pub use runtime::on_viewport_changed;
+pub use runtime::{on_touch_released, on_viewport_changed};
 
 /// Connects `RenderModel`'s callbacks and gives the timers their handle on the state.
 pub fn wire(window: &AppWindow, state: &Shared) {
@@ -39,15 +39,77 @@ pub fn wire(window: &AppWindow, state: &Shared) {
     let model = window.global::<RenderModel>();
 
     let (weak, shared) = (window.as_weak(), state.clone());
+    model.on_engine_selected(move |index| {
+        let Some(window) = weak.upgrade() else { return };
+        let engine = indicatrix::renderer::engine::RenderEngine::from_index(
+            u8::try_from(index).unwrap_or(0),
+        );
+        {
+            let mut app = shared.borrow_mut();
+            app.update_settings(|settings| settings.render.engine = engine.index());
+            app.render.stop();
+        }
+        crate::design::refresh(&window, &shared);
+    });
+
+    let (weak, shared) = (window.as_weak(), state.clone());
+    model.on_backend_selected(move |index| {
+        let Some(window) = weak.upgrade() else { return };
+        {
+            let mut app = shared.borrow_mut();
+            let Some(backend) = indicatrix_mobile_core::settings::RenderBackend::from_index(index)
+            else {
+                return;
+            };
+            if app.settings.render.backend == backend {
+                return;
+            }
+            app.update_settings(|settings| settings.render.backend = backend);
+            app.render.set_user_paused(false);
+            app.render.stop();
+        }
+        crate::design::refresh(&window, &shared);
+    });
+
+    let (weak, shared) = (window.as_weak(), state.clone());
+    model.on_restart_requested({
+        let weak = window.as_weak();
+        let shared = state.clone();
+        move || {
+            if let Some(window) = weak.upgrade() {
+                shared.borrow_mut().render.stop();
+                crate::design::refresh(&window, &shared);
+            }
+        }
+    });
     model.on_pause_toggled(move || {
         let Some(window) = weak.upgrade() else { return };
         {
             let mut app = shared.borrow_mut();
+            if app.settings.render.backend
+                == indicatrix_mobile_core::settings::RenderBackend::Remote
+            {
+                app.render.cancel_remote();
+                drop(app);
+                model::push(&window, &shared.borrow());
+                toast::show(
+                    &window,
+                    "Remote session cancelled. Retry starts a new session at sample zero.",
+                );
+                return;
+            }
             let paused = app.render.status() == RenderStatus::Paused(PauseReason::User);
             app.render.set_user_paused(!paused);
         }
         model::push(&window, &shared.borrow());
     });
+
+    wire_settings(window, state);
+}
+
+/// The quality, denoise and light chips, and the Export button.
+fn wire_settings(window: &AppWindow, state: &Shared) {
+    let model = window.global::<RenderModel>();
 
     let (weak, shared) = (window.as_weak(), state.clone());
     model.on_quality_cycled(move || {
@@ -72,6 +134,11 @@ pub fn wire(window: &AppWindow, state: &Shared) {
             let mut app = shared.borrow_mut();
             let on = !app.settings.render.denoise;
             app.update_settings(|settings| settings.render.denoise = on);
+            if app.settings.render.backend
+                == indicatrix_mobile_core::settings::RenderBackend::Remote
+            {
+                app.render.stop();
+            }
             app.render.set_denoise(on);
         }
         crate::design::refresh(&window, &shared);
@@ -105,8 +172,23 @@ pub fn wire(window: &AppWindow, state: &Shared) {
 /// Pushes the render view's properties from the state and makes sure the timers that
 /// follow the Render mode run (or stop) with it. Cheap.
 pub fn push(window: &AppWindow, state: &AppState) {
+    export::refresh_document(window, state);
     model::push(window, state);
     runtime::sync(window, state);
+}
+
+/// Lifecycle notifications arrive without a window handle, after releasing `AppState`.
+pub fn refresh_editor() {
+    if let Some((window, shared)) = runtime::context() {
+        super::refresh(&window, &shared);
+    }
+}
+
+/// Cancels a picture export or Send To Server upload that is talking to the remote
+/// endpoint (Forget Server calls this, so no connection outlives the credentials it uses).
+/// An export that renders on this phone keeps running.
+pub fn cancel_remote_export() {
+    export::cancel_remote();
 }
 
 /// Stops the timers and the export thread and drops every thread-local handle (the state,

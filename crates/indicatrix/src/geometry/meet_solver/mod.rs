@@ -416,6 +416,7 @@ pub(super) fn first_non_finite_tier(tiers: &[MeetTierInput]) -> Option<SolveErro
 #[derive(Default, Clone, Copy)]
 pub struct SolveControl<'a> {
     cancel: Option<&'a AtomicBool>,
+    stop: Option<&'a dyn Fn() -> bool>,
     progress: Option<&'a dyn Fn(SolveProgress)>,
 }
 
@@ -428,6 +429,7 @@ impl<'a> SolveControl<'a> {
     pub const fn with_cancel(cancel: &'a AtomicBool) -> Self {
         Self {
             cancel: Some(cancel),
+            stop: None,
             progress: None,
         }
     }
@@ -438,7 +440,18 @@ impl<'a> SolveControl<'a> {
     pub const fn with_progress(progress: &'a dyn Fn(SolveProgress)) -> Self {
         Self {
             cancel: None,
+            stop: None,
             progress: Some(progress),
+        }
+    }
+
+    /// Poll a caller-owned cancellation predicate at every solver checkpoint.
+    #[must_use]
+    pub const fn with_stop(stop: &'a dyn Fn() -> bool) -> Self {
+        Self {
+            cancel: None,
+            stop: Some(stop),
+            progress: None,
         }
     }
 
@@ -458,11 +471,12 @@ impl<'a> SolveControl<'a> {
         self
     }
 
-    /// `true` iff `self.cancel` is set and observed set. Cheap when unused
-    /// (`self.cancel` is `None`): one `Option::is_some` check, no atomic load.
+    /// True when the atomic flag or caller cancellation predicate requests a stop.
+    /// No atomic load or callback is performed when neither source is configured.
     #[must_use]
-    pub(super) fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         self.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+            || self.stop.is_some_and(|stop| stop())
     }
 
     /// Calls `self.progress` with `report` when one is set; a no-op otherwise.

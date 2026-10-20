@@ -42,6 +42,7 @@ import { SolidPreviewModel } from "models/solid_preview.slint";
 // The Solid viewport's drag handles and hint line -- see `models/manipulate.slint`.
 import { ManipulateModel } from "models/manipulate.slint";
 import { ActivityModel, ActivityItem } from "models/activity.slint";
+import { OpticalModel } from "models/optical.slint";
 import { ViewportModel } from "models/viewport.slint";
 import { PhysicscolorModel, PhysicsRow, PhysicsAddOption, PhysicsTreatment } from "models/physics_color.slint";
 // The material editor's Dispersion section (Sellmeier/Cauchy coefficients) -- see `models/dispersion_editor.slint`.
@@ -131,7 +132,7 @@ export {
     OptimizeResultRow, OptimizeToneSwatches, GearRemapRow, RetargetRowItem,
     PhysicscolorModel, PhysicsRow, PhysicsAddOption, PhysicsTreatment,
     DispersionEditorModel, DispersionView,
-    SolidPreviewModel, ManipulateModel, ViewportModel, RetargetModel, RetargetCandidateItem, ExportModel, SettingsModel,
+    SolidPreviewModel, ManipulateModel, OpticalModel, ViewportModel, RetargetModel, RetargetCandidateItem, ExportModel, SettingsModel,
     // The Parameters dock's open/tab state -- see ui/models/parameters.slint.
     ParametersModel,
     // The one remote-availability value (configured / reachable and render-capable).
@@ -963,10 +964,10 @@ export component MainWindow inherits Window {
                 HelpModel.open_context_help();
                 return accept;
             } else if !event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt
-                    && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "4")
+                    && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "4" || event.text == "5")
                     && root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled {
                 // Solid/Diagram viewport view-mode shortcuts
-                // (`SolidPreviewModel.view_mode` 0-3). Only bound while the Edit
+                // (`SolidPreviewModel.view_mode` 0-4). Only bound while the Edit
                 // sub-tab's Solid viewport is actually on screen, so a plain digit
                 // typed anywhere else (the 3D Gem tab, or a text field that already
                 // consumed it before this handler ever saw it -- `TextInput`
@@ -977,8 +978,10 @@ export component MainWindow inherits Window {
                     SolidPreviewModel.view_mode = 1;
                 } else if event.text == "3" {
                     SolidPreviewModel.view_mode = 2;
-                } else {
+                } else if event.text == "4" {
                     SolidPreviewModel.view_mode = 3;
+                } else {
+                    SolidPreviewModel.view_mode = 4;
                 }
                 return accept;
             } else if event.text == Key.Escape {

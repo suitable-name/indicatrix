@@ -6,6 +6,7 @@
 //! progress/cancel hook between the raytrace evaluations, for the browser app's Worker.
 
 use super::{
+    finished::FinishedStone,
     pose_batch::{AxisCurves, sweep_axes, sweep_axes_gated},
     profile::{EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG},
 };
@@ -104,8 +105,30 @@ pub fn evaluate_all_axes_profiles_geom_threaded(
     environment: EnvironmentSource<'_>,
     max_threads: Option<usize>,
 ) -> Vec<AxisProfile> {
+    evaluate_all_axes_profiles_finished_threaded(
+        FinishedStone::polished(geom),
+        material,
+        environment,
+        max_threads,
+    )
+}
+
+/// [`evaluate_all_axes_profiles_geom_threaded`] for a stone with facet finishes.
+///
+/// A frosted facet scatters light diffusely, so a frosted design's tilt curves differ from its polished
+/// ones (see [`evaluate_full_axis_profile_at_azimuth_finished_threaded`]). Without a frosted
+/// facet in `stone.finishes` this is the polished sweep, bit for bit.
+///
+/// [`evaluate_full_axis_profile_at_azimuth_finished_threaded`]: super::profile::evaluate_full_axis_profile_at_azimuth_finished_threaded
+#[must_use]
+pub fn evaluate_all_axes_profiles_finished_threaded(
+    stone: FinishedStone<'_>,
+    material: &GemMaterial,
+    environment: EnvironmentSource<'_>,
+    max_threads: Option<usize>,
+) -> Vec<AxisProfile> {
     sweep_axes(
-        geom,
+        stone,
         material,
         environment,
         &PROFILE_AZIMUTHS_DEG,
@@ -164,10 +187,31 @@ pub fn evaluate_all_axes_profiles_stepped_geom_threaded(
     max_threads: Option<usize>,
     step: &mut dyn FnMut(SweepProgress) -> bool,
 ) -> Option<Vec<AxisProfile>> {
+    evaluate_all_axes_profiles_stepped_finished_threaded(
+        FinishedStone::polished(geom),
+        material,
+        environment,
+        max_threads,
+        step,
+    )
+}
+
+/// [`evaluate_all_axes_profiles_stepped_geom_threaded`] for a stone with facet finishes.
+///
+/// See [`evaluate_all_axes_profiles_finished_threaded`]. Without a frosted facet in
+/// `stone.finishes` this is the polished stepped sweep, bit for bit.
+#[must_use]
+pub fn evaluate_all_axes_profiles_stepped_finished_threaded(
+    stone: FinishedStone<'_>,
+    material: &GemMaterial,
+    environment: EnvironmentSource<'_>,
+    max_threads: Option<usize>,
+    step: &mut dyn FnMut(SweepProgress) -> bool,
+) -> Option<Vec<AxisProfile>> {
     let total = total_evaluations();
     let mut done = 0usize;
     let axes = sweep_axes_gated(
-        geom,
+        stone,
         material,
         environment,
         &PROFILE_AZIMUTHS_DEG,

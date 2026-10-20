@@ -1,58 +1,25 @@
-//! Supervised imitation of the finite-difference teacher: the primary training algorithm.
+//! Bounded supervised imitation of the seven-component finite-difference teacher.
 //!
-//! The environment's teacher measures, at a state, how much each of the four score components
-//! (windowing, extinction, brilliance loss, yield loss) changes per degree of every free tier, plus
-//! the score drop of the oracle step. The network predicts exactly those figures, and the policy
-//! direction is composed from the predicted sensitivities with the objective's weight fractions, so
-//! one model serves every weighting. Training is a regression onto the labels; nothing here needs a
-//! reward, an advantage or a rollout probability.
-//!
-//! # Loss
-//!
-//! `loss = sens_mse + cosine_coeff * cos_loss + gain_coeff * gain_loss`.
-//!
-//! - **Sensitivity regression** (`sens_mse`). A label is a finite difference of a quantised score
-//!   (one ray of the sampling grid is about 0.16 points), so a single label is noisy but unbiased.
-//!   The mean squared error averages that noise out, and a tier whose true slope is below one
-//!   quantum regresses to zero, which is the right answer for it. There is no threshold: every
-//!   finite label trains. The mask keeps out padding, tiers the environment does not move, and
-//!   missing entries (a NaN: the yield of a design without a preform volume, a tier whose probes
-//!   both failed). The sum is divided by the number of labelled entries, so a mini-batch with few
-//!   labels is not diluted.
-//! - **Direction cosine** (`cos_loss`). The environment's line search picks the scale of a step,
-//!   so what the policy must get right is the direction, not the magnitude. The cosine between
-//!   the composed mean (the pre-squash policy direction) and the direction of the teacher's score
-//!   slopes is scale-free: it keeps the direction right while the magnitudes are still off, and
-//!   it trains the sensitivity head through the weight fractions of the observation. Samples
-//!   without a single usable slope contribute nothing and do not count in the divisor.
-//! - **Gain regression** (`gain_loss`). The gain head predicts how many points the oracle step
-//!   would win at the state, which is telemetry (how much is left to gain) and a future stall
-//!   rule. It uses the Huber loss with a one-point knee: the gain spans zero to tens of points and
-//!   a rare large oracle jump must not dominate the sensitivity regression.
-//!
-//! # Updates without labels
-//!
-//! A mini-batch in which no entry carries any label (every sensitivity, slope and gain is missing)
-//! has nothing to learn from. It is skipped instead of stepping with an all-zero gradient, because
-//! Adam would still move the weights by its running momentum. Skipped mini-batches are not counted
-//! in [`ImitationMetrics::updates`] and do not advance the learning-rate schedule.
-//!
-//! # Batch layout
-//!
-//! The states use the layout of the PPO batch (`[global | padded tier tokens]`, see
-//! [`super::TrainBatch`]). Tier `k` of sample `i` is real when `k < n_tiers[i]`, and its labels
-//! count only when `free_tiers[i][k]` holds as well: the environment never moves any other tier, so
-//! a label there would teach the network something it is never asked to do.
+//! Component sensitivities use a masked Huber regression. Raw masked MSE and per-component support
+//! remain telemetry. Direction cosine ignores zero-norm targets; oracle gain uses a separate Huber
+//! term. Immobile and padded tiers remain context tokens but cannot receive action or label weight.
+//! Selected rows are packed once per bounded window and gathered into device mini-batches under a
+//! 32 MiB prepared-input payload bound. Unavailable metrics are masked out.
 
 use burn::{optim::GradientsParams, prelude::*, tensor::TensorData};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::Instant;
 
 use super::{
     LrSchedule, TrainError,
     burn_model::{BurnForward, COUNT_CLAMP_MAX, host_vec},
     burn_ppo::{BurnTrainer, clip_global_grad_norm},
 };
-use crate::env::{N_COMPONENTS, direction_from_slopes};
+use crate::{
+    env::{GLOBAL_DIM, MOBILITY_INDEX, N_COMPONENTS, TIER_DIM, direction_from_slopes},
+    model::Prng,
+};
 
 /// Added to the product of the two norms in the cosine denominator.
 const COSINE_EPS: f32 = 1.0e-8;
@@ -62,6 +29,14 @@ const COSINE_EPS: f32 = 1.0e-8;
 const NORM_SQ_EPS: f32 = 1.0e-12;
 /// Knee of the Huber loss on the gain, in points.
 const HUBER_DELTA: f32 = 1.0;
+/// Maximum observation and label tensor payload for one prepared window; requested updates are
+/// streamed through additional windows rather than truncated to fit.
+const PREPARED_ROUND_BUDGET_BYTES: usize = 32 * 1024 * 1024;
+/// Bounds the schedule metadata when a tiny replay subset is sampled repeatedly.
+const PREPARED_BATCHES_PER_WINDOW: usize = 4096;
+
+/// Default of [`ImitationConfig::updates_per_round`]: 64 mini-batches of 256 samples per round.
+const DEFAULT_UPDATES_PER_ROUND: usize = 64;
 
 /// Hyperparameters of the imitation trainer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,8 +48,15 @@ pub struct ImitationConfig {
     pub lr_schedule: LrSchedule,
     /// Samples per mini-batch (one optimizer update each); capped at the batch size.
     pub mini_batch_size: usize,
-    /// Passes over the batch per call, reshuffled every pass.
+    /// Passes over the batch per call, reshuffled every pass. Used only when
+    /// [`Self::updates_per_round`] is `0`.
     pub epochs_per_round: usize,
+    /// Optimizer updates per call. `0` restores the full-epoch behaviour (`epochs_per_round`
+    /// passes over the whole batch, a cost that grows with the batch). `n > 0` takes exactly `n`
+    /// mini-batches of `mini_batch_size` samples, each drawn uniformly without replacement from
+    /// the batch (mini-batches are independent of each other), so the cost of a call does not
+    /// depend on the batch size. A batch smaller than one mini-batch is used whole every time.
+    pub updates_per_round: usize,
     /// Maximum **global** gradient L2 norm; a larger gradient is rescaled to it before the step.
     pub max_grad_norm: f32,
     /// Weight of the direction-cosine term.
@@ -90,6 +72,7 @@ impl Default for ImitationConfig {
             lr_schedule: LrSchedule::Constant,
             mini_batch_size: 256,
             epochs_per_round: 2,
+            updates_per_round: DEFAULT_UPDATES_PER_ROUND,
             max_grad_norm: 1.0,
             cosine_coeff: 0.5,
             gain_coeff: 0.1,
@@ -157,7 +140,7 @@ pub struct ImitationBatch<'a> {
     /// Free-tier mask of each sample, one flag per real tier. Labels of a tier that is not free
     /// are ignored.
     pub free_tiers: &'a [Vec<bool>],
-    /// Per sample, per real tier: the four component slopes (points per degree), NaN = no label
+    /// Per sample, per real tier: the seven component slopes (points per degree), NaN = no label
     /// for that entry; a tier without a label is all NaN. Length `n_tiers[i]`.
     pub sensitivities: &'a [Vec<[f32; N_COMPONENTS]>],
     /// Per sample, per real tier: the score slope (points per degree, NaN = none). It is the
@@ -198,6 +181,12 @@ impl ImitationBatch<'_> {
         d_tier: usize,
         max_tiers: usize,
     ) -> Result<(), TrainError> {
+        if d_global != GLOBAL_DIM || d_tier != TIER_DIM {
+            return Err(TrainError::ShapeMismatch(format!(
+                "imitation data uses observation layout {}x{}, trainer model is {}x{}",
+                GLOBAL_DIM, TIER_DIM, d_global, d_tier
+            )));
+        }
         self.validate_lengths()?;
         let row_len = d_global + max_tiers * d_tier;
         for i in 0..self.len() {
@@ -285,11 +274,23 @@ pub struct ImitationMetrics {
     /// Real, free tiers of the batch that carry at least one finite component label; counted once
     /// over the whole batch, not once per epoch.
     pub labelled_tiers: usize,
+    /// Number of finite, mobile-tier labels for each objective component, in env component order.
+    /// This reports target support independently of raw MSE, so an unavailable metric is visible.
+    #[serde(default)]
+    pub component_support: [usize; N_COMPONENTS],
     /// Optimizer steps taken (mini-batches without any label are skipped and not counted).
     pub updates: usize,
+    /// Cumulative host elapsed milliseconds spent preparing and uploading bounded row windows.
+    /// This is not device-kernel time; asynchronous device work may spill into later phases.
+    #[serde(default)]
+    pub packing_ms: f32,
+    /// Cumulative host elapsed milliseconds spent gathering and updating mini-batches, including
+    /// existing device readbacks for loss and gradient guards. Not GPU utilization.
+    #[serde(default)]
+    pub update_ms: f32,
 }
 
-/// The five figures one update reports.
+/// Loss/gradient aggregates and cumulative host timings for one imitation call.
 #[derive(Debug, Clone, Copy, Default)]
 struct UpdateStats {
     loss: f32,
@@ -297,6 +298,8 @@ struct UpdateStats {
     cosine: f32,
     gain_loss: f32,
     grad_norm: f32,
+    packing_ms: f32,
+    update_ms: f32,
 }
 
 /// Add one update's figures into the running sums (the mean is taken by the caller).
@@ -306,6 +309,19 @@ const fn add_stats(sum: &mut UpdateStats, m: &UpdateStats) {
     sum.cosine += m.cosine;
     sum.gain_loss += m.gain_loss;
     sum.grad_norm += m.grad_norm;
+    sum.packing_ms += m.packing_ms;
+    sum.update_ms += m.update_ms;
+}
+
+/// Move `count` uniformly drawn entries of `order` to its front (a partial Fisher-Yates step), so
+/// that `order[..count]` is a uniform sample without replacement. `order` must stay a permutation
+/// of the sample indices between calls; whatever permutation it holds, the draw is uniform.
+fn draw_minibatch(rng: &mut Prng, order: &mut [usize], count: usize) {
+    let total = order.len();
+    for at in 0..count.min(total) {
+        let pick = at + rng.next_index(total - at);
+        order.swap(at, pick);
+    }
 }
 
 /// `1.0` for `true`, `0.0` for `false`: the value of a mask entry.
@@ -313,9 +329,16 @@ const fn flag(on: bool) -> f32 {
     if on { 1.0 } else { 0.0 }
 }
 
-/// Whether tier `k` of a sample with `n` real tiers is real and free.
-fn is_free_tier(k: usize, n: usize, free: &[bool]) -> bool {
-    k < n && free.get(k).copied().unwrap_or(false)
+/// Whether tier `k` can receive an action and has a finite-difference label.
+fn is_actionable_tier(batch: &ImitationBatch<'_>, sample: usize, k: usize) -> bool {
+    let n = batch.n_tiers[sample];
+    if k >= n || !batch.free_tiers[sample].get(k).copied().unwrap_or(false) {
+        return false;
+    }
+    let offset = GLOBAL_DIM + k * TIER_DIM + MOBILITY_INDEX;
+    batch.states[sample]
+        .get(offset)
+        .is_some_and(|&mobile| mobile > 0.5)
 }
 
 /// The finite component labels of tier `k`; every entry is `None` unless the tier is `usable`
@@ -330,20 +353,36 @@ fn component_labels(
 }
 
 /// Real, free tiers of the whole batch with at least one finite component label.
-fn count_labelled_tiers(batch: &ImitationBatch<'_>) -> usize {
-    (0..batch.len())
-        .map(|i| {
+fn count_labelled_tiers(batch: &ImitationBatch<'_>, indices: &[usize]) -> usize {
+    indices
+        .iter()
+        .map(|&i| {
             let n = batch.n_tiers[i];
-            let free = &batch.free_tiers[i];
             (0..n)
                 .filter(|&k| {
-                    component_labels(&batch.sensitivities[i], k, is_free_tier(k, n, free))
+                    component_labels(&batch.sensitivities[i], k, is_actionable_tier(batch, i, k))
                         .iter()
                         .any(Option::is_some)
                 })
                 .count()
         })
         .sum()
+}
+
+/// Count finite labels by component, on real tiers the environment can move.
+fn count_component_support(batch: &ImitationBatch<'_>, indices: &[usize]) -> [usize; N_COMPONENTS] {
+    let mut support = [0; N_COMPONENTS];
+    for &i in indices {
+        let n = batch.n_tiers[i];
+        for k in 0..n {
+            if is_actionable_tier(batch, i, k) {
+                for (component, label) in batch.sensitivities[i][k].iter().enumerate() {
+                    support[component] += usize::from(label.is_finite());
+                }
+            }
+        }
+    }
+    support
 }
 
 /// Host-side label rows of one mini-batch, padded to `max_tiers`, before the upload.
@@ -360,40 +399,39 @@ struct LabelRows {
     /// One entry per sample.
     gain_target: Vec<f32>,
     gain_mask: Vec<f32>,
-}
-
-impl LabelRows {
-    /// Whether any mask entry is set, that is, whether the mini-batch can teach anything.
-    fn has_labels(&self) -> bool {
-        [&self.sens_mask, &self.dir_mask, &self.gain_mask]
-            .iter()
-            .any(|mask| mask.iter().any(|&m| m > 0.0))
-    }
+    sample_has_labels: Vec<bool>,
 }
 
 /// Build the label rows of the samples `idx`.
 ///
 /// - Component labels: real AND free AND finite entries.
-/// - Direction: `direction_from_slopes` of the sample's finite score slopes (NaN = no slope),
-///   kept where the tier is real AND free AND its slope is finite.
+/// - Direction: `direction_from_slopes` of the finite actionable score slopes (NaN = no slope),
+///   kept where the tier is mobile, real, free and has a finite slope. Zero directions have
+///   no cosine label.
 /// - Gain: the sample's oracle gain when finite.
 fn label_rows(batch: &ImitationBatch<'_>, idx: &[usize], max_tiers: usize) -> LabelRows {
     let mut rows = LabelRows::default();
     for &i in idx {
+        let sample_start = rows.sens_mask.len();
+        let direction_start = rows.dir_mask.len();
         let n = batch.n_tiers[i];
-        let free = &batch.free_tiers[i];
         let slopes: Vec<Option<f32>> = batch.score_slopes[i]
             .iter()
-            .map(|&s| s.is_finite().then_some(s))
+            .enumerate()
+            .map(|(k, &s)| (is_actionable_tier(batch, i, k) && s.is_finite()).then_some(s))
             .collect();
         let direction = direction_from_slopes(&slopes);
+        let usable_direction = (0..n).any(|k| {
+            is_actionable_tier(batch, i, k) && direction.get(k).is_some_and(|value| *value != 0.0)
+        });
         for k in 0..max_tiers {
-            let usable = is_free_tier(k, n, free);
+            let usable = is_actionable_tier(batch, i, k);
             for label in component_labels(&batch.sensitivities[i], k, usable) {
                 rows.sens_target.push(label.unwrap_or(0.0));
                 rows.sens_mask.push(flag(label.is_some()));
             }
-            let has_slope = usable && slopes.get(k).copied().flatten().is_some();
+            let has_slope =
+                usable_direction && usable && slopes.get(k).copied().flatten().is_some();
             let target = if has_slope {
                 direction.get(k).copied().unwrap_or(0.0)
             } else {
@@ -405,6 +443,13 @@ fn label_rows(batch: &ImitationBatch<'_>, idx: &[usize], max_tiers: usize) -> La
         let gain = Some(batch.oracle_gain[i]).filter(|g| g.is_finite());
         rows.gain_target.push(gain.unwrap_or(0.0));
         rows.gain_mask.push(flag(gain.is_some()));
+        let sample_end = rows.sens_mask.len();
+        let has_component = rows.sens_mask[sample_start..sample_end]
+            .iter()
+            .any(|&m| m > 0.0);
+        let has_direction = rows.dir_mask[direction_start..].iter().any(|&m| m > 0.0);
+        rows.sample_has_labels
+            .push(has_component || has_direction || gain.is_some());
     }
     rows
 }
@@ -431,82 +476,45 @@ struct PackedImitation {
     /// Real-tier mask (attention keys, value pooling), `[batch, max_tiers]`.
     mask: Tensor<2>,
     labels: LabelTensors,
-    /// Whether any label mask entry is set.
-    has_labels: bool,
+    /// Per-row label support, used to skip optimizer steps without any target.
+    row_has_labels: Vec<bool>,
 }
 
-/// Masked mean squared error of the sensitivities,
-/// `sum(mask * (hat - target)^2) / max(sum mask, 1)`, shape `[1]`; exactly `0` when the mask is
-/// empty.
-fn masked_sens_mse(hat: Tensor<3>, target: Tensor<3>, mask: Tensor<3>) -> Tensor<1> {
-    let diff = hat - target;
-    let n_labels = mask.clone().sum().clamp(1.0, COUNT_CLAMP_MAX);
-    (diff.clone() * diff * mask).sum() / n_labels
-}
-
-/// Masked cosine between the predicted and the target direction, per sample, over the tiers of
-/// `mask` (all `[batch, max_tiers]`). Returns `(cosine, cos_loss)`, both `[1]`: the mean cosine
-/// over the samples that have at least one masked tier, and `1 - cosine` over the same samples.
-/// A sample without any masked tier contributes `0` to both and is left out of the divisor, so a
-/// batch without any direction label gives exactly `(0, 0)`.
-fn masked_cosine(hat: Tensor<2>, target: Tensor<2>, mask: Tensor<2>) -> (Tensor<1>, Tensor<1>) {
-    let has_direction = mask.clone().sum_dim(1).clamp(0.0, 1.0);
-    let hat = hat * mask.clone();
-    let target = target * mask;
-    let dot = (hat.clone() * target.clone()).sum_dim(1);
-    let norm_hat = (hat.clone() * hat)
-        .sum_dim(1)
-        .add_scalar(NORM_SQ_EPS)
-        .sqrt();
-    let norm_target = (target.clone() * target).sum_dim(1).sqrt();
-    let cosine = dot / (norm_hat * norm_target).add_scalar(COSINE_EPS);
-    let n_samples = has_direction.clone().sum().clamp(1.0, COUNT_CLAMP_MAX);
-    let cosine_sum = (cosine * has_direction.clone()).sum();
-    let loss = (has_direction.sum() - cosine_sum.clone()) / n_samples.clone();
-    (cosine_sum / n_samples, loss)
-}
-
-/// Masked Huber loss (knee [`HUBER_DELTA`]) of `[batch, 1]` predictions, averaged over the masked
-/// samples, shape `[1]`; exactly `0` when the mask is empty.
-fn masked_huber(hat: Tensor<2>, target: Tensor<2>, mask: Tensor<2>) -> Tensor<1> {
-    let n_samples = mask.clone().sum().clamp(1.0, COUNT_CLAMP_MAX);
-    let abs_error = ((hat - target) * mask).abs();
-    // Quadratic up to the knee, linear beyond it: `0.5 q^2 + delta (a - q)`, `q = min(a, delta)`.
-    let quadratic = abs_error.clone().clamp(0.0, HUBER_DELTA);
-    let linear = abs_error - quadratic.clone();
-    ((quadratic.clone() * quadratic).mul_scalar(0.5) + linear.mul_scalar(HUBER_DELTA)).sum()
-        / n_samples
-}
-
-/// The device-side loss terms of one mini-batch, each of shape `[1]`.
-struct LossTerms {
-    total: Tensor<1>,
-    sens_mse: Tensor<1>,
-    cosine: Tensor<1>,
-    gain_loss: Tensor<1>,
-}
-
-/// `sens_mse + cosine_coeff * cos_loss + gain_coeff * gain_loss` of a forward pass.
-fn imitation_terms(out: BurnForward, labels: LabelTensors, config: &ImitationConfig) -> LossTerms {
-    let sens_mse = masked_sens_mse(out.sensitivities, labels.sens_target, labels.sens_mask);
-    let (cosine, cos_loss) = masked_cosine(out.mean, labels.dir_target, labels.dir_mask);
-    let gain_loss = masked_huber(out.gain, labels.gain_target, labels.gain_mask);
-    let total = sens_mse.clone()
-        + cos_loss.mul_scalar(config.cosine_coeff)
-        + gain_loss.clone().mul_scalar(config.gain_coeff);
-    LossTerms {
-        total,
-        sens_mse,
-        cosine,
-        gain_loss,
+impl PackedImitation {
+    /// Gather a deterministic mini-batch from the prepared round tensors on the training device.
+    fn gather_rows(&self, rows: &[usize], device: &Device) -> Self {
+        let index_values = rows.iter().map(|&row| row as i64).collect::<Vec<_>>();
+        let index_len = index_values.len();
+        let indices =
+            Tensor::<1, Int>::from_data(TensorData::new(index_values, [index_len]), device);
+        let row_has_labels = rows.iter().map(|&row| self.row_has_labels[row]).collect();
+        Self {
+            tiers: self.tiers.clone().select(0, indices.clone()),
+            globals: self.globals.clone().select(0, indices.clone()),
+            mask: self.mask.clone().select(0, indices.clone()),
+            labels: LabelTensors {
+                sens_target: self.labels.sens_target.clone().select(0, indices.clone()),
+                sens_mask: self.labels.sens_mask.clone().select(0, indices.clone()),
+                dir_target: self.labels.dir_target.clone().select(0, indices.clone()),
+                dir_mask: self.labels.dir_mask.clone().select(0, indices.clone()),
+                gain_target: self.labels.gain_target.clone().select(0, indices.clone()),
+                gain_mask: self.labels.gain_mask.clone().select(0, indices),
+            },
+            row_has_labels,
+        }
     }
 }
+
+#[path = "imitation_loss.rs"]
+mod loss;
+use loss::*;
 
 impl BurnTrainer {
     /// Copy the samples `idx` of `batch` into device tensors (padding tiers with zeros), labels
     /// included. The batch must have passed [`ImitationBatch::validate`].
     fn pack_imitation(&self, batch: &ImitationBatch<'_>, idx: &[usize]) -> PackedImitation {
-        let (dt, dg, mt) = (self.model.d_tier, self.model.d_global, self.max_tiers);
+        let (dt, dg) = (self.model.d_tier, self.model.d_global);
+        let mt = idx.iter().map(|&i| batch.n_tiers[i]).max().unwrap_or(1);
         let b = idx.len();
         let mut globals = Vec::with_capacity(b * dg);
         let mut tiers = Vec::with_capacity(b * mt * dt);
@@ -519,7 +527,6 @@ impl BurnTrainer {
             mask.extend((0..mt).map(|k| flag(k < n)));
         }
         let rows = label_rows(batch, idx, mt);
-        let has_labels = rows.has_labels();
         let dev = &self.device;
         PackedImitation {
             tiers: Tensor::<3>::from_data(TensorData::new(tiers, [b, mt, dt]), dev),
@@ -539,7 +546,7 @@ impl BurnTrainer {
                 gain_target: Tensor::<2>::from_data(TensorData::new(rows.gain_target, [b, 1]), dev),
                 gain_mask: Tensor::<2>::from_data(TensorData::new(rows.gain_mask, [b, 1]), dev),
             },
-            has_labels,
+            row_has_labels: rows.sample_has_labels,
         }
     }
 
@@ -550,12 +557,12 @@ impl BurnTrainer {
     /// loss or gradient norm skips the step with [`TrainError::NonFinite`].
     fn imitation_update(
         &mut self,
-        batch: &ImitationBatch<'_>,
+        prepared: &PackedImitation,
         idx: &[usize],
         config: &ImitationConfig,
     ) -> Result<Option<UpdateStats>, TrainError> {
-        let packed = self.pack_imitation(batch, idx);
-        if !packed.has_labels {
+        let packed = prepared.gather_rows(idx, &self.device);
+        if !packed.row_has_labels.iter().any(|&has| has) {
             return Ok(None);
         }
         let out = self
@@ -601,18 +608,42 @@ impl BurnTrainer {
             cosine,
             gain_loss,
             grad_norm,
+            ..UpdateStats::default()
         }))
     }
 
-    /// Multi-epoch mini-batch imitation training over a labelled batch.
+    /// Train every update in one bounded prepared window, accumulating the round metrics.
+    fn train_prepared_window(
+        &mut self,
+        batch: &ImitationBatch<'_>,
+        selected_rows: &[usize],
+        local_batches: &[Vec<usize>],
+        config: &ImitationConfig,
+        sum: &mut UpdateStats,
+        updates: &mut usize,
+    ) -> Result<(), TrainError> {
+        if selected_rows.is_empty() {
+            return Ok(());
+        }
+        let packing_started = Instant::now();
+        let prepared = self.pack_imitation(batch, selected_rows);
+        sum.packing_ms += packing_started.elapsed().as_secs_f64() as f32 * 1000.0;
+        for rows in local_batches {
+            let update_started = Instant::now();
+            if let Some(stats) = self.imitation_update(&prepared, rows, config)? {
+                add_stats(sum, &stats);
+                *updates += 1;
+            }
+            sum.update_ms += update_started.elapsed().as_secs_f64() as f32 * 1000.0;
+        }
+        Ok(())
+    }
+
+    /// Mini-batch imitation training over a labelled batch.
     ///
-    /// Runs `config.epochs_per_round` passes; every pass reshuffles the samples (Fisher-Yates via
-    /// the trainer's seeded generator, see [`Self::with_seed`]) and takes one optimizer step per
-    /// mini-batch of `config.mini_batch_size` samples (capped at the batch size). A mini-batch
-    /// without any label is skipped (see the module docs). The learning rate of every step comes
-    /// from `config.lr_schedule` and the trainer's update counter. The returned figures are means
-    /// over the updates taken; an empty batch (or one that yields no update) returns zeros, and an
-    /// empty batch does not touch the model.
+    /// Packs selected rows into bounded device windows, then gathers each mini-batch on-device.
+    /// All requested updates and epochs are processed. Steps without labels are skipped. The same
+    /// selected row may be packed again if a long schedule requires another bounded window.
     ///
     /// # Errors
     ///
@@ -631,21 +662,88 @@ impl BurnTrainer {
         }
         batch.validate(self.model.d_global, self.model.d_tier, self.max_tiers)?;
         let total = batch.len();
+        let row_values = self.model.d_global
+            + self.max_tiers * self.model.d_tier
+            + self.max_tiers * (2 * N_COMPONENTS + 3)
+            + 2;
+        let bytes_per_row = row_values.saturating_mul(std::mem::size_of::<f32>());
         let mb_size = config.mini_batch_size.min(total);
-
+        // Preserve the configured batch size even when a single batch itself exceeds the nominal
+        // bound; otherwise memory windows are capped by available rows under the bound.
+        let max_rows = (PREPARED_ROUND_BUDGET_BYTES / bytes_per_row.max(1))
+            .max(mb_size)
+            .max(1);
         let mut sum = UpdateStats::default();
         let mut updates = 0usize;
+        let mut selected_rows = Vec::<usize>::new();
+        let mut selected_any = vec![false; total];
+        let mut row_positions = HashMap::<usize, usize>::new();
+        let mut local_batches = Vec::<Vec<usize>>::new();
+        let mut add_batch = |this: &mut Self, rows: &[usize]| -> Result<(), TrainError> {
+            for &row in rows {
+                selected_any[row] = true;
+            }
+            let additional = rows
+                .iter()
+                .filter(|&&row| !row_positions.contains_key(&row))
+                .count();
+            if !local_batches.is_empty()
+                && (selected_rows.len() + additional > max_rows
+                    || local_batches.len() >= PREPARED_BATCHES_PER_WINDOW)
+            {
+                this.train_prepared_window(
+                    batch,
+                    &selected_rows,
+                    &local_batches,
+                    config,
+                    &mut sum,
+                    &mut updates,
+                )?;
+                selected_rows.clear();
+                row_positions.clear();
+                local_batches.clear();
+            }
+            let mut local = Vec::with_capacity(rows.len());
+            for &row in rows {
+                let position = *row_positions.entry(row).or_insert_with(|| {
+                    let position = selected_rows.len();
+                    selected_rows.push(row);
+                    position
+                });
+                local.push(position);
+            }
+            local_batches.push(local);
+            Ok(())
+        };
         let mut order: Vec<usize> = (0..total).collect();
-        for _ in 0..config.epochs_per_round {
-            self.shuffle.shuffle(&mut order);
-            for chunk in order.chunks(mb_size) {
-                if let Some(stats) = self.imitation_update(batch, chunk, config)? {
-                    add_stats(&mut sum, &stats);
-                    updates += 1;
+        if config.updates_per_round == 0 {
+            for _ in 0..config.epochs_per_round {
+                self.shuffle.shuffle(&mut order);
+                for chunk in order.chunks(mb_size) {
+                    add_batch(self, chunk)?;
                 }
             }
+        } else {
+            for _ in 0..config.updates_per_round {
+                draw_minibatch(&mut self.shuffle, &mut order, mb_size);
+                add_batch(self, &order[..mb_size])?;
+            }
         }
+        drop(add_batch);
+        self.train_prepared_window(
+            batch,
+            &selected_rows,
+            &local_batches,
+            config,
+            &mut sum,
+            &mut updates,
+        )?;
 
+        let selected_indices: Vec<usize> = selected_any
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &selected)| selected.then_some(index))
+            .collect();
         let denom = updates.max(1) as f32;
         Ok(ImitationMetrics {
             loss: sum.loss / denom,
@@ -653,12 +751,18 @@ impl BurnTrainer {
             cosine: sum.cosine / denom,
             gain_loss: sum.gain_loss / denom,
             grad_norm: sum.grad_norm / denom,
-            labelled_tiers: count_labelled_tiers(batch),
+            labelled_tiers: count_labelled_tiers(batch, &selected_indices),
+            component_support: count_component_support(batch, &selected_indices),
             updates,
+            packing_ms: sum.packing_ms,
+            update_ms: sum.update_ms,
         })
     }
 }
 
+#[cfg(test)]
+#[path = "imitation_rework_tests.rs"]
+mod rework_tests;
 #[cfg(test)]
 #[path = "imitation_tests.rs"]
 mod tests;

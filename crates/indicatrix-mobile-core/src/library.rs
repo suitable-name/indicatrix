@@ -9,7 +9,8 @@
 //!   the source `local-import`; that prefix is what the "Mine" filter selects;
 //! - the design file itself is the first attachment (an `.isdd` file, a `.asc`, or
 //!   the `.asc` a `.gem`/`.gcs` converts to with the original beside it);
-//! - tags, the ignored mark and the Rough Planner exclusion live in their side tables.
+//! - tags, the ignored mark, the Rough Planner exclusion and the frosting a `.gcs` states
+//!   (which `.asc` cannot) live in their side tables.
 //!
 //! # Threads
 //!
@@ -34,7 +35,10 @@ mod measure;
 mod search;
 mod store;
 mod thumbs;
+mod variants;
 
+#[cfg(test)]
+mod frosting_tests;
 #[cfg(test)]
 mod tests;
 
@@ -46,6 +50,7 @@ use std::sync::{
 use crate::{platform::AppDirs, settings::LibrarySort};
 
 pub use handle::{LibraryHandle, LibraryOpener};
+pub use indicatrix_vault::model::design_variant::{NewVariant, VariantSummary};
 pub use search::QUERY_ROW_CAP;
 
 /// The id of a library entry (`diagram_entries.id`).

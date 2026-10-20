@@ -64,6 +64,9 @@ pub(super) struct ConvertedPick {
     pub(super) asc_text: String,
     /// The reader's and converter's warnings, shown in the open toast.
     pub(super) warnings: Vec<String>,
+    /// The frosting a `.gcs` file states (`.asc` cannot carry it), applied to the design
+    /// built from `asc_text`.
+    pub(super) frosting: Vec<(usize, indicatrix_formats::gcs::GcsTierFrosting)>,
 }
 
 /// Reads and converts a picked `.gem`/`.gcs` file (`path`'s extension picks the
@@ -98,6 +101,7 @@ pub(super) fn read_foreign_design(path: &Path) -> Result<ConvertedPick, String> 
         asc_file_name: converted_asc_file_name(&file_name),
         asc_text: converted.asc_text,
         warnings: converted.warnings,
+        frosting: converted.frosting,
     })
 }
 

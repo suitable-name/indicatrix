@@ -176,7 +176,9 @@ impl CommandState {
         );
         state.set(
             Fact::DiagramView,
-            ui.global::<SolidPreviewModel>().get_view_mode() == 3,
+            crate::gui::view_modes::EditViewMode::from_raw(
+                ui.global::<SolidPreviewModel>().get_view_mode(),
+            ) == crate::gui::view_modes::EditViewMode::Diagram,
         );
 
         // The same `allows_*()` helpers the menu items and buttons are enabled through, so a

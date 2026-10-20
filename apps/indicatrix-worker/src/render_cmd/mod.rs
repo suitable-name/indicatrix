@@ -68,6 +68,11 @@ pub fn validate_render_params(width: u32, height: u32, samples: u32) -> Result<(
 /// Returns a human-readable message for any failure: bad flags, an unreadable or
 /// unparseable `--scene` file, a scene that fails [`validate::validate_scene`], or a
 /// PNG-encoding failure.
+///
+/// # Panics
+///
+/// Panics only if the Ray-Traced AA tap count fails to convert to `u8` after the
+/// 1, 4, 8 or 16 check, which cannot happen.
 pub fn run(args: &RenderArgs) -> Result<(), String> {
     validate_render_params(args.width, args.height, args.samples)?;
 
@@ -84,6 +89,19 @@ pub fn run(args: &RenderArgs) -> Result<(), String> {
     // scene.json serialized, so the same file can be re-rendered at other resolutions.
     scene.width = args.width;
     scene.height = args.height;
+    if let Some(engine) = args.engine.as_deref() {
+        scene.engine.engine = match engine {
+            "path" => indicatrix::renderer::engine::RenderEngine::PathTraced,
+            "ray" => indicatrix::renderer::engine::RenderEngine::RayTraced,
+            _ => return Err("--engine must be path or ray".to_owned()),
+        };
+    }
+    if scene.engine.is_ray() {
+        if ![1, 4, 8, 16].contains(&args.samples) {
+            return Err("Ray-Traced --samples must be 1, 4, 8 or 16 AA taps".to_owned());
+        }
+        scene.engine.ray.aa_taps = u8::try_from(args.samples).expect("1, 4, 8 or 16");
+    }
 
     validate::validate_scene(&scene)?;
 
@@ -106,14 +124,19 @@ pub fn run(args: &RenderArgs) -> Result<(), String> {
     }
 
     let gpu = match args.compute_mode {
+        _ if scene.engine.is_ray() => GpuBackend::disabled(),
         ComputeMode::OnlyCpu => GpuBackend::disabled(),
         ComputeMode::Hybrid | ComputeMode::OnlyGpu => GpuBackend::acquire(),
     };
     let threads = render_core::effective_thread_count(args.threads);
-    let backend_desc = gpu.adapter_label().map_or_else(
-        || format!("CPU across {threads} threads"),
-        |label| format!("GPU: {label} (CPU fallback across {threads} threads if needed)"),
-    );
+    let backend_desc = if scene.engine.is_ray() && args.compute_mode != ComputeMode::OnlyCpu {
+        "Ray-Traced small GPU kernel with complete CPU fallback".to_owned()
+    } else {
+        gpu.adapter_label().map_or_else(
+            || format!("CPU across {threads} threads"),
+            |label| format!("GPU: {label} (CPU fallback across {threads} threads if needed)"),
+        )
+    };
     tracing::info!(
         "indicatrix-worker render: {}x{} @ {} spp -> {} ({backend_desc})",
         args.width,
@@ -122,7 +145,24 @@ pub fn run(args: &RenderArgs) -> Result<(), String> {
         args.out.display()
     );
 
-    let sums = render_core::trace_samples_with_gpu(&gpu, &scene, 0, args.samples, args.threads);
+    let sums = if scene.engine.is_ray() {
+        let mut out = vec![glam::Vec3::ZERO; args.width as usize * args.height as usize];
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        if !render_core::whitted::trace(
+            &scene,
+            0,
+            args.samples,
+            args.threads,
+            args.compute_mode != ComputeMode::OnlyCpu,
+            &cancel,
+            &mut out,
+        ) {
+            return Err("Ray-Traced rendering could not complete the requested AA taps".to_owned());
+        }
+        out
+    } else {
+        render_core::trace_samples_with_gpu(&gpu, &scene, 0, args.samples, args.threads)
+    };
     let rgba = png_out::tonemap_to_rgba(args.width, args.height, args.samples, &sums);
     png_out::write_png(args.width, args.height, rgba, &args.out)?;
 
@@ -167,6 +207,7 @@ mod tests {
 
     fn write_tiny_scene_json(dir: &std::path::Path) -> PathBuf {
         let scene = SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 999, // deliberately wrong -- must be overwritten by --width/--height
             height: 999,
             yaw: 0.4,
@@ -186,6 +227,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         };
         let path = dir.join("scene.json");
         std::fs::write(&path, serde_json::to_string(&scene).unwrap()).unwrap();
@@ -254,6 +296,7 @@ mod tests {
         let out_path = dir.join("render.png");
 
         let args = RenderArgs {
+            engine: None,
             scene: scene_path,
             out: out_path.clone(),
             width: 8,
@@ -276,6 +319,7 @@ mod tests {
     #[test]
     fn run_rejects_a_missing_scene_file() {
         let args = RenderArgs {
+            engine: None,
             scene: PathBuf::from("this/path/does/not/exist.json"),
             out: std::env::temp_dir().join("never.png"),
             width: 8,
@@ -298,6 +342,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let mut scene = SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 8,
             height: 8,
             yaw: 0.4,
@@ -317,6 +362,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         };
         scene.environment =
             indicatrix_net::scene::SceneEnvironment::Hdr(indicatrix_net::scene::HdrEnvironment {
@@ -328,6 +374,7 @@ mod tests {
         std::fs::write(&scene_path, serde_json::to_string(&scene).unwrap()).unwrap();
 
         let args = RenderArgs {
+            engine: None,
             scene: scene_path,
             out: dir.join("never.png"),
             width: 8,
@@ -355,6 +402,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let mut scene = SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 8,
             height: 8,
             yaw: 0.0,
@@ -374,12 +422,14 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         };
         scene.planes[0].normal = [0.0, 0.0, 0.0];
         let scene_path = dir.join("scene.json");
         std::fs::write(&scene_path, serde_json::to_string(&scene).unwrap()).unwrap();
 
         let args = RenderArgs {
+            engine: None,
             scene: scene_path,
             out: dir.join("never.png"),
             width: 8,
@@ -410,6 +460,7 @@ mod tests {
         let out_path = dir.join("render.png");
 
         let args = RenderArgs {
+            engine: None,
             scene: scene_path,
             out: out_path.clone(),
             width: 8,

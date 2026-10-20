@@ -13,7 +13,7 @@ use super::{
 };
 use indicatrix_cut::harness_support::{self, SecondaryWindow};
 use slint::ComponentHandle;
-use slint_harness::report::Report;
+use uiprobe::report::Report;
 
 /// The window's declared `preferred-width/height` (what a user sees first), in logical pixels.
 const fn default_size(which: SecondaryWindow) -> (u32, u32) {
@@ -104,7 +104,7 @@ impl Ctx<'_> {
     /// last), then pumps 50 ms. An unparsable chord is a `bad-chord` finding and sends nothing.
     pub fn press(&mut self, chord: &str) {
         let window = self.app.ui().window();
-        if let Err(finding) = slint_harness::view::press(window, chord) {
+        if let Err(finding) = uiprobe::view::press(window, chord) {
             self.report.add(finding);
         }
     }
@@ -182,7 +182,7 @@ impl Ctx<'_> {
         };
         let stats = smoke::run(&mut host, &config);
         println!(
-            "slint-harness:   smoke {}: {} control(s), {} activated, {} denied, {} gone, {} restore(s)",
+            "uiprobe:   smoke {}: {} control(s), {} activated, {} denied, {} gone, {} restore(s)",
             config.state,
             stats.enumerated,
             stats.activated,

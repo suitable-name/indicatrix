@@ -161,6 +161,7 @@ impl Database {
                 shape_category: row.get(27)?,
                 angle_settings: angles,
                 attached_files: files,
+                frosting: self.diagram_frosting(entry_id)?,
             }));
         }
 
@@ -271,6 +272,7 @@ impl Database {
                 shape_category: row.get(27)?,
                 angle_settings: angles,
                 attached_files: files,
+                frosting: self.diagram_frosting(entry_id)?,
             }));
         }
 

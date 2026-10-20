@@ -5,11 +5,21 @@
 //! without one is keyed by the SHA-256 of its native text without metadata: the marks then
 //! belong to exactly this design and are gone after any edit (an undo brings them back).
 //! A design that gets its id on the first save adopts the marks it had under its text hash.
+//!
+//! Both keys name a file, so removing a design's marks means removing both files:
+//! [`ProgressKeys::into_stems`] lists them.
 
-use indicatrix_cut_core::native::{DesignExtras, design_to_file};
+use indicatrix_cut_core::{
+    Design,
+    native::{DesignExtras, design_to_file},
+};
 use indicatrix_formats::native::design as design_file;
 
 use crate::app_state::AppState;
+
+/// The key a design whose text cannot be written is filed under. Every such design shares
+/// it, so it is never something to delete on behalf of one of them.
+const UNREADABLE_KEY: &str = "sha-unreadable";
 
 /// The two keys of a design's marks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,30 +30,53 @@ pub(super) struct ProgressKeys {
     pub legacy: Option<String>,
 }
 
+impl ProgressKeys {
+    /// Every key a file of this design can carry, the current one first. The shared
+    /// fallback key of an unwritable design is left out.
+    pub(super) fn into_stems(self) -> Vec<String> {
+        let mut stems = vec![self.primary];
+        stems.extend(self.legacy);
+        stems.retain(|stem| stem != UNREADABLE_KEY);
+        stems
+    }
+}
+
 /// The keys of `state`'s design. See the module docs.
 pub(super) fn progress_keys(state: &AppState) -> ProgressKeys {
-    let id = sanitize(&state.document.metadata.id);
+    keys_of(&state.document.metadata.id, &state.session.design)
+}
+
+/// The keys of `design`, whose `[meta]` id is `id` (empty when it has none).
+pub(super) fn keys_of(id: &str, design: &Design) -> ProgressKeys {
+    let id = sanitize(id);
     if id.is_empty() {
         ProgressKeys {
-            primary: text_key(state),
+            primary: text_key(design),
             legacy: None,
         }
     } else {
         ProgressKeys {
             primary: format!("id-{id}"),
-            legacy: Some(text_key(state)),
+            legacy: legacy_key(text_key(design)),
         }
     }
 }
 
+/// `text_key` as the legacy key of a design with an id, unless it is the shared fallback
+/// of an unwritable design: that file belongs to no design in particular, so binding to it
+/// would adopt the marks of another design and a reset would delete them.
+fn legacy_key(text_key: String) -> Option<String> {
+    (text_key != UNREADABLE_KEY).then_some(text_key)
+}
+
 /// The key from the design's native text without metadata.
-fn text_key(state: &AppState) -> String {
-    let file = design_to_file(&state.session.design, None, &DesignExtras::default());
+fn text_key(design: &Design) -> String {
+    let file = design_to_file(design, None, &DesignExtras::default());
     match design_file::to_string(&file) {
         Ok(text) => format!("sha-{}", sha256_hex(text.as_bytes())),
         Err(error) => {
             tracing::warn!(%error, "the design's text could not be hashed for its done marks");
-            "sha-unreadable".to_owned()
+            UNREADABLE_KEY.to_owned()
         }
     }
 }
@@ -94,5 +127,35 @@ mod tests {
     fn sanitize_keeps_only_uuid_characters() {
         assert_eq!(sanitize(" 8f2c-AA01/../x "), "8f2c-AA01x");
         assert_eq!(sanitize(""), "");
+    }
+
+    #[test]
+    fn the_shared_fallback_is_never_the_legacy_key_of_a_design_with_an_id() {
+        assert_eq!(legacy_key(UNREADABLE_KEY.to_owned()), None);
+        assert_eq!(legacy_key("sha-123".to_owned()), Some("sha-123".to_owned()));
+    }
+
+    #[test]
+    fn stems_list_the_current_key_first_and_skip_the_shared_fallback() {
+        let both = ProgressKeys {
+            primary: "id-abc".to_owned(),
+            legacy: Some("sha-123".to_owned()),
+        };
+        assert_eq!(both.into_stems(), ["id-abc", "sha-123"]);
+        let only_text = ProgressKeys {
+            primary: "sha-123".to_owned(),
+            legacy: None,
+        };
+        assert_eq!(only_text.into_stems(), ["sha-123"]);
+        let unreadable = ProgressKeys {
+            primary: "id-abc".to_owned(),
+            legacy: Some(UNREADABLE_KEY.to_owned()),
+        };
+        assert_eq!(unreadable.into_stems(), ["id-abc"]);
+        let nothing_else = ProgressKeys {
+            primary: UNREADABLE_KEY.to_owned(),
+            legacy: None,
+        };
+        assert_eq!(nothing_else.into_stems(), [] as [String; 0]);
     }
 }

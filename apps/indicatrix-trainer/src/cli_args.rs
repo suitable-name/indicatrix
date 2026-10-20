@@ -15,7 +15,7 @@ use crate::{
     dataset::DEFAULT_MAX_TIERS_CAP,
     runner::{
         self, Algorithm, DeviceChoice, EvalFidelity, MAX_WORKERS, ObjectiveSampling, RunConfig,
-        config::{default_workers, linear_schedule_for},
+        config::{bounded_schedule_for, default_workers, linear_schedule_for},
     },
 };
 
@@ -29,26 +29,31 @@ USAGE:
 OPTIONS:
     --mode <optimizer|retarget>   Task to train (default: retarget)
     --tier <s|m|l|xl|xxl>         Model size tier (default: m)
-    --device <cpu|gpu|auto>       Compute backend; 'gpu' fails when no adapter works, 'auto'
-                                  falls back to the CPU with a warning (default: auto)
+    --device <cpu|gpu|wgpu|cuda|auto>  Compute backend; 'gpu'/'wgpu' selects WGPU, 'cuda' selects
+                                  native CUDA (requires --features cuda, no fallback), and 'auto'
+                                  tries WGPU then falls back to CPU with a warning (default: auto)
     --algo <imitation|ppo>        Training algorithm: 'imitation' labels the states of its own
                                   rollouts with finite differences and regresses the network onto
                                   them; 'ppo' is the reinforcement-learning baseline
                                   (default: imitation)
     --iterations <N>              Iterations to run, each one rollout and one update (default: 100)
-    --workers <N>                 Parallel environments, 1-1024 (default: the core count)
+    --workers <N>                 Parallel environments, 1-1024 (default: 3 x the core count)
     --batch-size <N>              Environment steps per iteration, 16-4096 (default: 256)
     --mini-batch <N>              Mini-batch size of both algorithms, 8-1024, not above the batch
                                   size (default: 256 for imitation, 64 for PPO)
     --epochs <N>                  Epochs per round (imitation, default: 2) or per iteration (PPO,
-                                  default: 4), 1-16
+                                  default: 4), 1-16; imitation uses epochs only with
+                                  --updates-per-round 0
+    --updates-per-round <N>       Imitation: optimizer updates per round, each on a mini-batch
+                                  drawn from the aggregate, so a round costs the same however full
+                                  the aggregate is; 0 = the old behaviour, --epochs full passes
+                                  over the whole aggregate, 0-100000 (default: 64)
     --validation-designs <N>      Held-out designs in the fixed validation subset, 1-64 (default: 16)
     --validation-every <N>        Validate every N iterations (and after the last), 1-1000
                                   (default: 10)
-    --label-every <N>             Every N-th rollout sample is labelled with the measured per-tier
-                                  sensitivities and the oracle step, 0-64; 0 = no labels, which
-                                  imitation refuses (default: 2 for imitation; 0 for PPO, whose
-                                  loss does not use them)
+    --label-every <N>             Every N-th rollout sample is labelled with measured sensitivities
+                                  and oracle step, 0-64; 0 = no labels, which imitation refuses
+                                  (default: 2 for imitation; 0 for PPO, whose loss does not use them)
     --label-h <X>                 Probe size of the labels in degrees, above 0
                                   (default: the step limit)
     --label-capacity <N>          Labelled states the imitation aggregate keeps (the oldest are
@@ -58,13 +63,15 @@ OPTIONS:
     --line-search <a,b,c>         Step scales tried in this order, each above 0; the first one
                                   that improves the score is kept (default: 1,0.5,0.25)
     --objectives <balanced|presets|mixed>
-                                  How the objective weights of an episode are drawn: the default
-                                  weights, one of the five non-tone presets, or presets 70 % and
-                                  random weights 30 % (default: mixed)
+                                  How episode objective weights are drawn: default weights, all
+                                  seven presets (including tone), or presets 70 % plus random
+                                  weights 30 % (default: mixed)
     --same-material-frac <X>      Share of retarget episodes whose target is the stone's own
                                   material, 0 to 1 (default: 0.25)
-    --imitation-lr <X>            Imitation peak learning rate, decayed linearly over the updates a
-                                  full aggregate allows (default: 3e-4)
+    --imitation-lr <X>            Imitation peak learning rate, decayed linearly over the run's
+                                  updates: iterations x updates-per-round, or, with
+                                  --updates-per-round 0, the updates a full aggregate allows
+                                  (default: 3e-4)
     --cosine-coeff <X>            Weight of the direction-cosine loss term, 0 or more
                                   (default: 0.5)
     --gain-coeff <X>              Weight of the gain-regression loss term, 0 or more
@@ -81,15 +88,21 @@ OPTIONS:
     --no-spectrum                 Use one fixed target material instead of the whole spectrum
     --target-material <NAME>      Fixed target with --no-spectrum (default: Diamond)
     --eval-test                   Evaluate on the held-out test split at the end
-    --eval-fidelity <fast|full>   Optics used for --eval-test; 'full' takes ~3 s per design and
+    --eval-fidelity <fast|full>   Optics used for --eval-test; full performs the tilt sweep and
                                   skips the oracle pass (default: fast)
+    --train-fidelity <fast|full>  Scoring fidelity for training rollouts and teacher labels (default: fast)
+    --validation-fidelity <fast|full>  Endpoint fidelity for held-out validation (rollout task is unchanged; default: fast)
+    --objective-sweep            Evaluate fixed held-out designs under all seven named presets (default: off)
+    --classical-baseline <N>     Also run public coordinate optimization per design; budget is nominal and one candidate pair may exceed it (1-4096; default: off)
     --fixture                     Train on the built-in concave fixture instead of the library
     --no-update-check             Do not ask GitHub for a newer release before starting (also
                                   off when INDICATRIX_NO_UPDATE_CHECK is set)
-    --resume <PATH>               Continue from a checkpoint (mode and tier must match; the reward
-                                  scale and the Adam moments are re-estimated)
+    --resume <PATH>               Warm-start weights and carry the iteration counter (mode and
+                                  tier must match); optimizer, replay, RNG and reward scale reset
     --save-stats <PATH>           Telemetry JSON output (default: training_stats.json)
     --save-weights <PATH>         Checkpoint output (default: indicatrix-<mode>-<tier>-iter<N>.json)
+    --save-every <N>              Save stats and a numbered checkpoint every N iterations; 0 disables
+                                  this cadence, but pre-validation recovery saves and final save remain (default: 10)
     -h, --help                    Print this help
 
 The design library is found through the DIAGRAM_DB_PATH environment variable, or as
@@ -119,6 +132,9 @@ pub struct CliArgs {
     pub mini_batch: Option<usize>,
     /// `None` keeps the epoch count of each algorithm (see [`CliArgs::epochs_for`]).
     pub epochs: Option<usize>,
+    /// Imitation optimizer updates per round; `None` keeps the built-in value (64), `Some(0)`
+    /// selects the full-epoch mode.
+    pub updates_per_round: Option<usize>,
     pub validation_designs: usize,
     pub validation_every: usize,
     /// Label period; `None` = 2 for imitation, 0 for PPO.
@@ -154,10 +170,15 @@ pub struct CliArgs {
     pub target_material: String,
     pub eval_test: bool,
     pub eval_fidelity: EvalFidelity,
+    pub train_fidelity: EvalFidelity,
+    pub validation_fidelity: EvalFidelity,
+    pub objective_sweep: bool,
+    pub classical_budget: Option<usize>,
     pub fixture: bool,
     pub resume: Option<String>,
     pub stats_path: String,
     pub weights_path: Option<String>,
+    pub save_every: usize,
 }
 
 /// What the command line asks for.
@@ -251,9 +272,12 @@ fn parse_mode(text: &str) -> Result<TrainingMode, String> {
 fn parse_device(text: &str) -> Result<DeviceChoice, String> {
     match text {
         "cpu" => Ok(DeviceChoice::Cpu),
-        "gpu" => Ok(DeviceChoice::Gpu),
+        "gpu" | "wgpu" => Ok(DeviceChoice::Gpu),
+        "cuda" => Ok(DeviceChoice::Cuda),
         "auto" => Ok(DeviceChoice::Auto),
-        other => Err(format!("--device expects cpu, gpu or auto, got '{other}'")),
+        other => Err(format!(
+            "--device expects cpu, gpu/wgpu, cuda or auto, got '{other}'"
+        )),
     }
 }
 
@@ -365,6 +389,7 @@ impl CliArgs {
             batch_size: 256,
             mini_batch: None,
             epochs: None,
+            updates_per_round: None,
             validation_designs: runner::config::DEFAULT_VALIDATION_DESIGNS,
             validation_every: runner::config::DEFAULT_VALIDATION_EVERY,
             label_every: None,
@@ -387,10 +412,15 @@ impl CliArgs {
             target_material: "Diamond".to_owned(),
             eval_test: false,
             eval_fidelity: EvalFidelity::Fast,
+            train_fidelity: EvalFidelity::Fast,
+            validation_fidelity: EvalFidelity::Fast,
+            objective_sweep: false,
+            classical_budget: None,
             fixture: false,
             resume: None,
             stats_path: "training_stats.json".to_owned(),
             weights_path: None,
+            save_every: 10,
         }
     }
 
@@ -452,14 +482,21 @@ impl CliArgs {
                     ("--imitation-lr", self.imitation_lr.is_some()),
                     ("--cosine-coeff", self.cosine_coeff.is_some()),
                     ("--gain-coeff", self.gain_coeff.is_some()),
+                    ("--updates-per-round", self.updates_per_round.is_some()),
                 ],
             ),
         };
-        flags
+        let mut notes: Vec<String> = flags
             .into_iter()
             .filter(|&(_, given)| given)
             .map(|(flag, _)| format!("{flag} applies to --algo {applies_to} only and is ignored"))
-            .collect()
+            .collect();
+        if self.algo == Algorithm::Ppo && self.label_every.unwrap_or(0) > 0 {
+            notes.push(
+                "--label-every runs finite-difference teacher probes for diagnostics; PPO does not use these labels in its loss".to_owned(),
+            );
+        }
+        notes
     }
 }
 
@@ -499,6 +536,10 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--epochs" => {
                 parsed.epochs = Some(parse_range(flag, take(args, &mut i, flag)?, 1, 16)?);
             }
+            "--updates-per-round" => {
+                parsed.updates_per_round =
+                    Some(parse_range(flag, take(args, &mut i, flag)?, 0, 100_000)?);
+            }
             "--validation-designs" => {
                 parsed.validation_designs = parse_range(flag, take(args, &mut i, flag)?, 1, 64)?;
             }
@@ -511,12 +552,26 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--eval-test" => parsed.eval_test = true,
             "--fixture" => parsed.fixture = true,
             "--eval-fidelity" => parsed.eval_fidelity = parse_fidelity(take(args, &mut i, flag)?)?,
+            "--train-fidelity" => {
+                parsed.train_fidelity = parse_fidelity(take(args, &mut i, flag)?)?;
+            }
+            "--validation-fidelity" => {
+                parsed.validation_fidelity = parse_fidelity(take(args, &mut i, flag)?)?;
+            }
+            "--objective-sweep" => parsed.objective_sweep = true,
+            "--classical-baseline" => {
+                parsed.classical_budget =
+                    Some(parse_range(flag, take(args, &mut i, flag)?, 1, 4096)?);
+            }
             "--target-material" => {
                 take(args, &mut i, flag)?.clone_into(&mut parsed.target_material);
             }
             "--resume" => parsed.resume = Some(take(args, &mut i, flag)?.to_owned()),
             "--save-stats" => take(args, &mut i, flag)?.clone_into(&mut parsed.stats_path),
             "--save-weights" => parsed.weights_path = Some(take(args, &mut i, flag)?.to_owned()),
+            "--save-every" => {
+                parsed.save_every = parse_range(flag, take(args, &mut i, flag)?, 0, 1_000_000)?;
+            }
             other => {
                 if !parsed.parse_tuning_flag(other, args, &mut i)?
                     && !parsed.parse_algorithm_flag(other, args, &mut i)?
@@ -578,12 +633,19 @@ fn apply_imitation(config: &mut RunConfig, args: &CliArgs) {
     if let Some(coeff) = args.gain_coeff {
         imitation.gain_coeff = coeff;
     }
-    imitation.lr_schedule = imitation_schedule_for(
-        args.iterations,
-        config.label_capacity,
-        imitation.mini_batch_size,
-        imitation.epochs_per_round,
-    );
+    if let Some(updates) = args.updates_per_round {
+        imitation.updates_per_round = updates;
+    }
+    imitation.lr_schedule = if imitation.updates_per_round > 0 {
+        bounded_schedule_for(args.iterations, imitation.updates_per_round)
+    } else {
+        imitation_schedule_for(
+            args.iterations,
+            config.label_capacity,
+            imitation.mini_batch_size,
+            imitation.epochs_per_round,
+        )
+    };
 }
 
 /// The run configuration the flags ask for. The learning rate decays linearly to zero over the
@@ -603,6 +665,13 @@ pub fn build_config(args: &CliArgs) -> RunConfig {
     config.validation_designs = args.validation_designs;
     config.validation_every = args.validation_every;
     config.max_step_deg = args.max_step_deg;
+    config.train_fidelity = match args.train_fidelity {
+        EvalFidelity::Fast => indicatrix_cut_core::ObjectiveFidelity::Fast,
+        EvalFidelity::Full => indicatrix_cut_core::ObjectiveFidelity::Full,
+    };
+    config.validation_fidelity = args.validation_fidelity;
+    config.objective_sweep = args.objective_sweep;
+    config.classical_budget = args.classical_budget;
     config.algo = args.algo;
     config.objectives = args.objectives;
     // PPO ignores the labels in its loss, so it only pays for them when asked to.

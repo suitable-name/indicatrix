@@ -225,7 +225,10 @@ pub(in crate::gui::editor) fn submit_preview_replan_chained(
     } else {
         cut_slider::current_steps(ui, design)
     };
-    preview_state.set_cut_steps(position_steps.filter(|_| view_mode != 3));
+    preview_state.set_cut_steps(position_steps.filter(|_| {
+        crate::gui::view_modes::EditViewMode::from_raw(i32::from(view_mode))
+            != crate::gui::view_modes::EditViewMode::Diagram
+    }));
     preview_state.request_replan(ReplanRequest {
         design: Arc::clone(&design_snapshot),
         dirty,

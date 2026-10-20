@@ -15,7 +15,6 @@ use crate::{
 use indicatrix::render_setup::inclusion_scale;
 use indicatrix_web_core::settings::RenderSettings;
 use slint::ComponentHandle;
-use tracing as log;
 
 /// Copies the panel's values from `settings`.
 pub(super) fn push_panel(ui: &AppWindow, settings: &RenderSettings) {
@@ -27,8 +26,11 @@ pub(super) fn push_panel(ui: &AppWindow, settings: &RenderSettings) {
     model.set_head_shadow_deg(settings.head_shadow_deg);
     model.set_head_shadow_used(settings.uses_head_shadow());
     model.set_backdrop_index(settings.backdrop_index);
-    model.set_bounces(settings.max_bounces as i32);
-    model.set_target_spp(settings.target_spp as i32);
+    model.set_bounces(settings.max_bounces.cast_signed());
+    model.set_engine(settings.engine);
+    model.set_ray_taps(settings.ray_taps);
+    model.set_ray_fire(settings.ray_fire);
+    model.set_target_spp(settings.target_spp.cast_signed());
     model.set_denoise(settings.denoise);
     model.set_frosted_girdle(settings.frosted_girdle);
     model.set_link_material(settings.link_material);
@@ -68,6 +70,9 @@ fn read_panel(ui: &AppWindow, settings: &RenderSettings) -> RenderSettings {
         head_shadow_deg: model.get_head_shadow_deg(),
         backdrop_index: model.get_backdrop_index(),
         max_bounces: unsigned(model.get_bounces()),
+        engine: model.get_engine(),
+        ray_taps: model.get_ray_taps(),
+        ray_fire: model.get_ray_fire(),
         target_spp: unsigned(model.get_target_spp()),
         denoise: model.get_denoise(),
         frosted_girdle: model.get_frosted_girdle(),
@@ -90,17 +95,22 @@ fn on_edited(ctx: &Ctx) {
     let Some(ui) = ctx.ui.upgrade() else {
         return;
     };
-    let denoise_changed = {
+    let (denoise_changed, gpu_enabled_changed, gpu_enabled) = {
         let mut app = ctx.state.borrow_mut();
         let next = read_panel(&ui, &app.settings);
         let denoise_changed = next.denoise != app.settings.denoise;
+        let gpu_enabled_changed = next.gpu_enabled != app.settings.gpu_enabled;
+        let gpu_enabled = next.gpu_enabled;
         app.settings = next;
-        denoise_changed
+        (denoise_changed, gpu_enabled_changed, gpu_enabled)
     };
     push_panel(&ui, &ctx.state.borrow().settings);
     schedule_save(ctx);
     if denoise_changed {
         live::denoise_setting_changed(ctx);
+    }
+    if gpu_enabled_changed {
+        super::gpu_gate::on_gpu_enabled_changed(ctx, gpu_enabled);
     }
 }
 
@@ -130,10 +140,12 @@ pub(super) fn wire(ui: &AppWindow, ctx: &Ctx) {
     model.on_settings_edited(move || on_edited(&c));
     let c = ctx.clone();
     model.on_load_hdr(move || load_hdr(&c));
-    model.on_gpu_test_clicked(|| {
-        log::info!("Test GPU clicked (stub)");
+    let c = ctx.clone();
+    model.on_gpu_test_clicked(move || {
+        super::gpu_gate::on_gpu_test_clicked(&c);
     });
-    model.on_gpu_forget_clicked(|| {
-        log::info!("Forget GPU clicked (stub)");
+    let c = ctx.clone();
+    model.on_gpu_forget_clicked(move || {
+        super::gpu_gate::on_gpu_forget_clicked(&c);
     });
 }

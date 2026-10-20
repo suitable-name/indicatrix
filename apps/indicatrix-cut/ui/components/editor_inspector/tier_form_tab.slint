@@ -50,6 +50,10 @@ component MeetsCombo inherits ComboBox {
         root.kind = root.full || root.current-index < 2 ? root.current-index : root.current-index + 1;
         root.picked();
     }
+    accessible-action-set-value(val) => {
+        root.kind = Math.round(val.to-float());
+        root.picked();
+    }
 }
 
 // The Inspector's "Tier" tab --`EditorInspector`'s per-tier add/edit form.
@@ -126,6 +130,13 @@ export component TierFormTab inherits VerticalLayout {
     // Whether the form describes a saved tier (the Facets, Cheater Offset, Note and Solved
     // sections only exist then).
     property <bool> has_loaded_tier: root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length;
+    property <int> tracked_suggested_kind: EditorModel.suggested_constraint_kind;
+    changed tracked_suggested_kind => {
+        if root.tracked_suggested_kind >= 0 {
+            root.tier_constraint_kind = root.tracked_suggested_kind;
+            EditorModel.suggested_constraint_kind = -1;
+        }
+    }
 
     // The typed angle as a number (0 for unparsable text), for the side hint on
     // the Angle label: exactly +-90 reads "girdle" (the same band

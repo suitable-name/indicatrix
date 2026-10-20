@@ -4,8 +4,9 @@
 //! (shared with the web app); re-exported here at the old path.
 
 pub(in crate::gui) use indicatrix_editor::material_lookup::{
-    EditorMaterialLookup, MATERIAL_MATCH_TOLERANCE, material_for_refractive_index, material_guess,
-    nearest_built_in_material, resolved_gem_material, traced_gem_material, traced_material_for,
+    EditorMaterialLookup, MATERIAL_MATCH_TOLERANCE, applied_material_guess,
+    material_for_refractive_index, material_guess, nearest_built_in_material,
+    resolved_gem_material, traced_gem_material, traced_material_for,
 };
 // Only the identity pins still name the candidate list directly (the guess badge
 // reaches it through `material_guess`).

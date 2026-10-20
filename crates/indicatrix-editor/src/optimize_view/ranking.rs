@@ -135,6 +135,7 @@ pub fn candidate_lines(result: &OptimizeResult) -> Vec<CandidateLine> {
 #[must_use]
 pub fn candidate_outcome(base: &OptimizeOutcome, candidate: &OptimizeCandidate) -> OptimizeOutcome {
     OptimizeOutcome {
+        provenance: candidate.provenance.clone(),
         changes: candidate.changes.clone(),
         after: candidate.after,
         after_score: candidate.score,
@@ -151,7 +152,18 @@ pub fn candidate_outcome(base: &OptimizeOutcome, candidate: &OptimizeCandidate) 
 pub fn optimize_run_status(result: &OptimizeResult, elapsed_secs: Option<f32>) -> String {
     let outcome = &result.outcome;
     let time = elapsed_secs.map_or_else(String::new, |secs| format!(", {secs:.1} s"));
-    let notes = format!("{}{}", cancelled_note(outcome), polish_note(outcome));
+    let geometry = outcome.provenance.as_ref().map_or_else(String::new, |p| {
+        format!(
+            " {} {} projection(s) rejected before optics.",
+            p.preservation.summary(),
+            p.diagnostics.rejected
+        )
+    });
+    let notes = format!(
+        "{}{}{geometry}",
+        cancelled_note(outcome),
+        polish_note(outcome)
+    );
     match result.candidates.first() {
         None if outcome.evaluations == 0 => format!(
             "Nothing could be changed with these settings: no tier was free to move. Check \
@@ -159,8 +171,8 @@ pub fn optimize_run_status(result: &OptimizeResult, elapsed_secs: Option<f32>) -
         ),
         None => format!(
             "No better arrangement found in {} evaluation(s){}{time}. The tiers it was allowed to \
-             change are already at, or very near, the best for this weighting, so nothing was \
-             changed.{notes}",
+             change produced no better feasible result within this budget, so nothing was changed. \
+             No meets were relaxed.{notes}",
             outcome.evaluations,
             starts_note(result, false)
         ),
@@ -220,6 +232,8 @@ mod tests {
         changes: Vec<AngleChange>,
     ) -> OptimizeCandidate {
         OptimizeCandidate {
+            provenance: None,
+            preservation_baseline: None,
             changes,
             mast_changes: Vec::new(),
             after,
@@ -266,6 +280,7 @@ mod tests {
         );
         OptimizeResult {
             outcome: OptimizeOutcome {
+                provenance: None,
                 before: components(12.5, 8.0, 60.0),
                 before_score: 20.0,
                 before_yield_loss_pct: 30.0,

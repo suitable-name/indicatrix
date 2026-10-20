@@ -7,8 +7,8 @@
 //!
 //! - **Sensitivities** (`sens_head`, `d_model -> N_COMPONENTS`, one prediction per tier): how much
 //!   each objective component changes per degree of that tier, in the order windowing, extinction,
-//!   brilliance loss (`100 - brilliance`), yield loss (`100 - yield`). The values are the raw head
-//!   outputs (no activation).
+//!   brilliance loss, yield loss, lighter-tone loss, deeper-tone loss, and unweighted shape distance
+//!   times 100. The values are raw head outputs (no activation).
 //! - **Value and gain** (`critic_head` and `gain_head`, both `d_model -> 1`) on the same pooled
 //!   vector: the context token plus the mean of the tier tokens. The value is the baseline `V(s)`;
 //!   the gain is the predicted score drop (points) of the oracle step at this state.
@@ -16,9 +16,11 @@
 //!
 //! The policy mean is composed, not predicted: the global token carries the objective's weight
 //! fractions at [`WEIGHT_FRACTION_INDEX`], and [`compose_mean`] weights the sensitivities of each
-//! tier with them (`g_k = sum_c frac[c] * sens[k][c]`) and scales the result so the steepest tier
-//! sits at `-+MEAN_BOUND` in pre-squash units. One network therefore serves every objective preset
-//! and any custom slider setting without having seen that weighting. The Burn twin
+//! tier with them (`g_k = sum_c frac[c] * sens[k][c]`) and normalizes by the steepest mobile tier,
+//! with a documented score-slope floor so nearly flat predictions produce proportionally small
+//! actions rather than an unstable full-scale direction. Above the floor the steepest tier sits at
+//! `-MEAN_BOUND` or `+MEAN_BOUND` in pre-squash units. One optimizer network serves every objective preset and any
+//! custom weighting. Retarget and optimizer artifacts remain distinct capabilities. The Burn twin
 //! (`training::burn_model`) composes the same way with the same operation order.
 //!
 //! Conventions shared with the environments and the trainer: angles are in degrees and **signed**
@@ -34,15 +36,15 @@ use super::{
     weights::WeightError,
 };
 use crate::env::{
-    ContinuousTierAction, GlobalFeature, N_COMPONENTS, TierFeature, WEIGHT_FRACTION_INDEX,
-    observation::magnitude_window,
+    ContinuousTierAction, GlobalFeature, MOBILITY_INDEX, N_COMPONENTS, TierFeature,
+    WEIGHT_FRACTION_INDEX,
 };
 use serde::{Deserialize, Serialize};
 
 // The policy distribution lives in `policy`; these re-exports keep the historical item paths.
 pub use super::policy::{
     BLOCK_TYPE_INDEX, GaussianPolicy, HALF_LN_2PI, HALF_LN_2PI_E, LOG_STD_INIT, LOG_STD_MAX,
-    LOG_STD_MIN, LOG_STD_SLOTS, block_slot, bounded_log_std, compose_mean, log_std_raw_init,
+    LOG_STD_MIN, LOG_STD_SLOTS, block_slot, bounded_log_std, compose_mean_masked, log_std_raw_init,
 };
 
 /// Everything one forward pass of the network produces.
@@ -138,8 +140,8 @@ fn sensitivity_row(out: &[f32]) -> Result<[f32; N_COMPONENTS], ModelError> {
     })
 }
 
-/// The objective's weight fractions (`[w_win, w_ext, w_tilt, w_yield] / sum`), read from the
-/// global token at [`WEIGHT_FRACTION_INDEX`].
+/// The objective's six normalized optical, yield and selected-tone coefficients followed by the
+/// raw shape coefficient, read from the global token at [`WEIGHT_FRACTION_INDEX`].
 fn weight_fractions(global_token: &[f32]) -> Result<[f32; N_COMPONENTS], ModelError> {
     let end = WEIGHT_FRACTION_INDEX + N_COMPONENTS;
     global_token
@@ -285,7 +287,8 @@ impl GemstoneSetAttentionNetwork {
     ///
     /// - `tier_tokens`: per-tier feature vectors, shape `[N, d_tier]`.
     /// - `global_token`: global context feature vector, shape `[d_global]`; its entries from
-    ///   [`WEIGHT_FRACTION_INDEX`] on are the objective's weight fractions.
+    ///   [`WEIGHT_FRACTION_INDEX`] on are the objective's coefficients: six normalized optical,
+    ///   yield and selected-tone weights followed by the raw shape weight.
     ///
     /// Returns the [`GaussianPolicy`] (the composed pre-squash mean of every tier, bounded to
     /// `[-MEAN_BOUND, MEAN_BOUND]`, and the block's [`bounded_log_std`], read from entry
@@ -370,7 +373,11 @@ impl GemstoneSetAttentionNetwork {
         }
 
         // 6. The policy mean is composed from the sensitivities and the weight fractions
-        let mean = compose_mean(&sensitivities, &fractions);
+        let mobile: Vec<bool> = tier_tokens
+            .iter()
+            .map(|token| token.get(MOBILITY_INDEX).copied().unwrap_or(0.0) > 0.5)
+            .collect();
+        let mean = compose_mean_masked(&sensitivities, &fractions, &mobile);
         Ok(ForwardOutput {
             policy: GaussianPolicy {
                 mean,
@@ -451,25 +458,14 @@ impl GemstoneSetAttentionNetwork {
         Ok(())
     }
 
-    /// Project proposed action deltas onto kinematically and physically feasible bounds.
-    ///
-    /// `tiers[i]` describes the tier that `action.deltas_deg[i]` moves. `angle_deg` is **signed** (crown
-    /// positive, pavilion negative) and the delta is added to the signed angle, but every bound is applied
-    /// to the angle's *magnitude* so that the sign can never flip:
-    /// - Pinned, flat and non-finite-delta tiers receive exactly 0 delta; a delta with no matching tier
-    ///   description is zeroed too.
-    /// - Pavilion tiers (`block_type < 0`) keep `|angle|` in `[critical + margin, 85]` degrees.
-    /// - Crown tiers (`block_type > 0`) keep `|angle|` in `[15, 80]` degrees.
-    ///
-    /// The bounds come from [`magnitude_window`] (built on [`crate::env::angle_envelope`] and its constants), the
-    /// same source the observation and its `free_tier_mask` use.
-    /// - Every delta is clamped to `max_step_deg`. A tier that starts outside its bounds moves toward
-    ///   them by at most one step, whatever the delta: the sample is overridden, which is why
-    ///   `free_tier_mask` leaves such a tier out of training.
+    /// Clamp proposed deltas to the shared sign-preserving angle and step limits. Mobility comes from
+    /// the observation token, so pinned/flat/projected-away coordinates stay visible to attention but
+    /// receive neither a policy mean nor an action. The target critical angle remains in this public
+    /// signature for source compatibility; material score determines whether a safe pavilion move helps.
     pub fn project_actions(
         action: &mut ContinuousTierAction,
         tiers: &[TierFeature],
-        target_crit_deg: f32,
+        _target_crit_deg: f32,
         max_step_deg: f64,
     ) {
         for (i, delta) in action.deltas_deg.iter_mut().enumerate() {
@@ -477,35 +473,44 @@ impl GemstoneSetAttentionNetwork {
                 *delta = 0.0;
                 continue;
             };
-            // Pinned or flat tiers (table, culet, unmovable girdle) cannot move
-            if t.is_pinned > 0.5 || t.is_flat > 0.5 || !delta.is_finite() {
+            if t.is_mobile <= 0.5 || !delta.is_finite() {
                 *delta = 0.0;
                 continue;
             }
-
-            // Clamp delta to maximum single-step limit
-            *delta = delta.clamp(-max_step_deg, max_step_deg);
-
-            // The magnitude window is the one `free_tier_mask` also reads (`magnitude_window`);
-            // a girdle has none and the step limit alone applies.
-            let Some((lo, hi)) = magnitude_window(t.block_type, target_crit_deg) else {
-                continue;
-            };
-            if lo > hi {
-                // Critical angle leaves no admissible window: freeze the tier.
-                *delta = 0.0;
-                continue;
-            }
-
             let current = f64::from(t.angle_deg);
-            let sign = if current < 0.0 { -1.0 } else { 1.0 };
-            let current_mag = current.abs();
-            // Magnitude after the step, measured along the tier's own sign (negative = sign flip).
-            let candidate_mag = sign * (current + *delta);
-            let bounded = candidate_mag.clamp(lo, hi);
-            // A tier already outside [lo, hi] approaches the window by at most one step.
-            let new_mag = bounded.clamp(current_mag - max_step_deg, current_mag + max_step_deg);
-            *delta = sign * (new_mag - current_mag);
+            let min_safe = crate::env::MIN_SAFE_CANDIDATE_ANGLE_DEG;
+            let max_safe = crate::env::MAX_SAFE_CANDIDATE_ANGLE_DEG;
+            // Preserve the sign of each facet. Intersect the observation's explicit signed limits
+            // with physical safety bounds; an empty range or an out-of-range source is not repaired
+            // by replacing the sampled move with an automatic correction.
+            let (safe_lo, safe_hi) = if current.is_sign_negative() {
+                (-max_safe, -min_safe)
+            } else {
+                (min_safe, max_safe)
+            };
+            let has_tier_bounds = t.min_angle_deg.is_finite()
+                && t.max_angle_deg.is_finite()
+                && t.min_angle_deg < t.max_angle_deg;
+            let (lo, hi) = if has_tier_bounds {
+                (
+                    safe_lo.max(f64::from(t.min_angle_deg)),
+                    safe_hi.min(f64::from(t.max_angle_deg)),
+                )
+            } else {
+                (safe_lo, safe_hi)
+            };
+            if lo <= hi && (lo..=hi).contains(&current) {
+                let step_bound = if max_step_deg.is_finite() {
+                    max_step_deg.abs()
+                } else {
+                    0.0
+                };
+                let step = delta.clamp(-step_bound, step_bound);
+                let candidate = current + step;
+                *delta = candidate.clamp(lo, hi) - current;
+            } else {
+                *delta = 0.0;
+            }
         }
     }
 }
@@ -513,12 +518,12 @@ impl GemstoneSetAttentionNetwork {
 /// Predefined model sizing tiers for gemstone set attention policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ModelTier {
-    /// Small (S): ~40k parameters.
+    /// Small (S): ~42k parameters.
     Small,
-    /// Medium (M): ~103k parameters - the default balanced tier.
+    /// Medium (M): ~106k parameters - the default balanced tier.
     #[default]
     Medium,
-    /// Large (L): ~535k parameters.
+    /// Large (L): ~540k parameters.
     Large,
     /// Extra Large (XL): ~3.2M parameters.
     ExtraLarge,
@@ -542,18 +547,19 @@ impl ModelTier {
     /// Approximate parameter count for this tier, rounded to tens; a test checks it against
     /// [`GemstoneSetAttentionNetwork::param_count`] within 10 %.
     ///
-    /// Computed for the observation layout of 13 tier and 19 global features, for `d = d_model` and
-    /// `L` layers: `(d_tier + 1) d + (d_global + 1) d + L (8 d^2 + 11 d) + (d + 1)` critic
-    /// `+ (d + 1) N_COMPONENTS` sensitivity head `+ (d + 1)` gain head `+ 2 d` final norm `+ 3` raw
-    /// log-std values, which is `L (8 d^2 + 11 d) + 42 d + 9` for these dimensions.
+    /// Computed for the observation layout of 26 tier and 41 global features (layout 5) and the
+    /// seven-component sensitivity head, for `d = d_model` and `L` layers: `(d_tier + 1) d +
+    /// (d_global + 1) d + L (8 d^2 + 11 d) + (d + 1)` critic `+ (d + 1) N_COMPONENTS` sensitivity
+    /// head `+ (d + 1)` gain head `+ 2 d` final norm `+ 3` raw log-std values, which is
+    /// `L (8 d^2 + 11 d) + 80 d + 12` for these dimensions.
     #[must_use]
     pub const fn param_count_approx(self) -> usize {
         match self {
-            Self::Small => 39_950,
-            Self::Medium => 103_110,
-            Self::Large => 535_310,
-            Self::ExtraLarge => 3_173_390,
-            Self::ExtraExtraLarge => 9_487_110,
+            Self::Small => 41_770,
+            Self::Medium => 105_550,
+            Self::Large => 540_170,
+            Self::ExtraLarge => 3_183_120,
+            Self::ExtraExtraLarge => 9_501_710,
         }
     }
 

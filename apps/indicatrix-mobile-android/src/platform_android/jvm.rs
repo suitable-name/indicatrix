@@ -42,8 +42,14 @@ pub(super) const SIG_ONE_STRING: MethodSignature =
 pub(super) const SIG_KEEP_SCREEN_ON: MethodSignature = jni_sig!("(Z)Ljava/lang/String;");
 /// `thermalHeadroom(): Float`
 pub(super) const SIG_THERMAL_HEADROOM: MethodSignature = jni_sig!("()F");
+/// `systemPowerSave(): Boolean`
+pub(super) const SIG_SYSTEM_POWER_SAVE: MethodSignature = jni_sig!("()Z");
+/// `networkMetered(): Int` (0 unmetered, 1 metered, -1 unknown)
+pub(super) const SIG_NETWORK_METERED: MethodSignature = jni_sig!("()I");
 /// `cacheDirPath(): String`
 pub(super) const SIG_CACHE_DIR: MethodSignature = jni_sig!("()Ljava/lang/String;");
+/// `loadRemoteCredentials(): String?` and `forgetRemoteCredentials(): String?`
+pub(super) const SIG_NO_ARGS_STRING: MethodSignature = jni_sig!("()Ljava/lang/String;");
 
 /// The JVM and the activity, usable from any thread.
 pub(super) struct Jvm {

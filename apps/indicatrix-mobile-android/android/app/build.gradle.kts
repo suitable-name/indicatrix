@@ -13,15 +13,15 @@ val rustAbis: List<String> =
 android {
     namespace = "com.indicatrixsuite.mobile"
     // The installed SDK platform (android-37.0). The target stays at 36, the level Play
-    // requires: targeting 37 would opt into API 37 behaviour changes nobody has tested.
+    // requires: targeting 37 would opt into API 37 behavior changes nobody has tested.
     compileSdk = 37
 
     defaultConfig {
         applicationId = "com.indicatrixsuite.mobile"
         minSdk = 28
-        targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        targetSdk = 37
+        versionCode = 2
+        versionName = "0.2.0"
 
         ndk {
             abiFilters += rustAbis
@@ -33,6 +33,7 @@ android {
             // R8 keeps MainActivity whole (see proguard-rules.pro): Rust calls its methods
             // by name. Signing is the owner's job; this build type is unsigned.
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -56,7 +57,7 @@ android {
 
 dependencies {
     // FileProvider (share sheet) and WindowCompat.
-    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.core:core-ktx:1.19.1")
 }
 
 // ---------------------------------------------------------------------------------------

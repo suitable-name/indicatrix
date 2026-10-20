@@ -57,10 +57,10 @@ fn info_takes_a_design_and_its_flags() {
 }
 
 #[test]
-fn a_design_is_required_and_only_one_is_taken() {
+fn a_design_is_required() {
     assert!(error("info").contains("needs a design file"));
-    assert!(error("info a.asc b.asc").contains("unexpected extra argument \"b.asc\""));
     assert!(error("solve --json").contains("needs a design file"));
+    assert!(error("export --out x.asc").contains("needs a design file"));
 }
 
 #[test]
@@ -273,6 +273,21 @@ fn retarget_no_keep_look_turns_the_shape_penalty_off() {
 }
 
 #[test]
+fn retarget_girdle_allowance_is_off_unless_asked_for() {
+    let Command::Retarget(plain) = parsed("retarget a.asc --ri 1.7") else {
+        panic!("expected retarget");
+    };
+    assert!(
+        !plain.girdle_allowance,
+        "the band is kept as it is by default"
+    );
+    let Command::Retarget(allowed) = parsed("retarget a.asc --ri 1.7 --girdle-allowance") else {
+        panic!("expected retarget");
+    };
+    assert!(allowed.girdle_allowance);
+}
+
+#[test]
 fn retarget_crown_policy_and_mode() {
     let Command::Retarget(args) = parsed(
         "retarget a.asc --ri 1.7681 --crown-fraction 0.33 --mode optimize --range 10 \
@@ -423,6 +438,7 @@ fn render_takes_every_flag() {
     assert_eq!(
         args,
         RenderJobArgs {
+            engine: None,
             kind: JobCommandKind::Render,
             job: PathBuf::from("a.job.json"),
             out: Some(PathBuf::from("pic.png")),
@@ -447,6 +463,7 @@ fn tilt_video_takes_every_flag() {
     assert_eq!(
         args,
         RenderJobArgs {
+            engine: None,
             kind: JobCommandKind::TiltVideo,
             job: PathBuf::from("v.job.json"),
             out: Some(PathBuf::from("frames")),
@@ -576,4 +593,79 @@ fn the_help_pages_of_the_render_commands() {
     assert!(crate::help::text(Topic::TiltVideo).contains("--restart"));
     let message = error("frobnicate x");
     assert!(message.contains("render or tilt-video"), "{message}");
+}
+
+#[test]
+fn census_takes_sources_targets_modes_and_output_flags() {
+    let Command::Census(args) = parsed(
+        "census a.asc --templates --fixtures --db lib.sqlite --all --limit 5 --offset 2 \
+         --targets sapphire,cz,1.7 --modes optimize,shift --crown fraction=0.33 --budget 50 \
+         --timings --out c.csv --out-dir stones --json",
+    ) else {
+        panic!("expected census");
+    };
+    assert_eq!(args.files, vec![PathBuf::from("a.asc")]);
+    assert!(args.builtins.templates && args.builtins.fixtures && args.all);
+    assert!(args.output.timings && args.output.json);
+    assert_eq!(args.db, Some(PathBuf::from("lib.sqlite")));
+    assert_eq!((args.limit, args.offset, args.budget), (Some(5), 2, 50));
+    assert_eq!(
+        args.targets,
+        vec![
+            MaterialArg::Named("sapphire".to_string()),
+            MaterialArg::Named("Cubic Zirconia".to_string()),
+            MaterialArg::Ri(1.7),
+        ]
+    );
+    assert_eq!(args.modes, vec![Mode::Shift, Mode::Optimize]);
+    assert_eq!(
+        args.crown,
+        CrownShift {
+            fraction: 0.33,
+            scale_by_ratio: false,
+            follow_pavilion: false
+        }
+    );
+    assert_eq!(args.out, Some(PathBuf::from("c.csv")));
+    assert_eq!(args.out_dir, Some(PathBuf::from("stones")));
+}
+
+#[test]
+fn census_defaults_are_the_five_materials_in_shift_mode() {
+    let Command::Census(args) = parsed("census --templates") else {
+        panic!("expected census");
+    };
+    assert_eq!(args.targets.len(), 5);
+    assert_eq!(args.modes, vec![Mode::Shift]);
+    assert_eq!(args.crown, CrownShift::default());
+    assert_eq!(args.budget, 100);
+    assert_eq!(parsed("census --help"), Command::Help(Topic::Census));
+}
+
+#[test]
+fn census_refuses_a_line_without_designs_or_with_a_library_misuse() {
+    assert!(error("census").contains("needs designs to measure"));
+    assert!(error("census --all").contains("give --db FILE"));
+    assert!(error("census --db lib.sqlite").contains("--all or --ids"));
+    assert!(error("census --db l.sqlite --all --ids 1,2").contains("not both"));
+    assert!(error("census --templates --crown sideways").contains("--crown needs"));
+    assert!(error("census --templates --modes fast").contains("unknown mode"));
+    assert!(error("census --templates --ids x").contains("whole numbers"));
+}
+
+#[test]
+fn render_engine_is_an_explicit_override_and_unknown_words_are_refused() {
+    use indicatrix::renderer::engine::RenderEngine;
+    assert_eq!(render_args("render a.job.json").engine, None);
+    for command in ["render", "tilt-video"] {
+        assert_eq!(
+            render_args(&format!("{command} a.job.json --engine ray")).engine,
+            Some(RenderEngine::RayTraced)
+        );
+        assert_eq!(
+            render_args(&format!("{command} a.job.json --engine path")).engine,
+            Some(RenderEngine::PathTraced)
+        );
+        assert!(error(&format!("{command} a.job.json --engine unknown")).contains("--engine"));
+    }
 }

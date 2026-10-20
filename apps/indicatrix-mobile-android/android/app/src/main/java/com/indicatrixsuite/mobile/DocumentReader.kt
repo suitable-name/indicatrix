@@ -35,7 +35,7 @@ internal class ReadBudget {
 }
 
 /** One design file found below a picked folder. */
-internal class TreeEntry(val documentId: String, val name: String, val size: Long)
+internal class TreeEntry(val documentId: String, val name: String)
 
 /** Reads files from `content:` and `file:` URIs, within the limits above. */
 internal class DocumentReader(private val resolver: ContentResolver) {
@@ -118,7 +118,7 @@ internal class DocumentReader(private val resolver: ContentResolver) {
                         if (totalBytes > Limits.MAX_TOTAL_BYTES) {
                             throw ImportLimitException("The design files in the folder total more than 256 MiB. Pick a smaller folder.")
                         }
-                        found.add(TreeEntry(id, name, size))
+                        found.add(TreeEntry(id, name))
                     }
                 }
             }

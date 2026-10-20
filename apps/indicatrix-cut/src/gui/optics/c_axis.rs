@@ -7,8 +7,8 @@
 //! like the light-position controls (`light_yaw_deg`/`light_pitch_deg`):
 //!
 //! - `tilt_deg` (theta): angle from the table normal (`+Y`), 0-90 degrees -- how
-//!   lapidaries describe a cut-orientation choice (see Tourmaline's `c_axis: Vec3::X`
-//!   comment in `crates/indicatrix/src/optics/materials/mod.rs`).
+//!   lapidaries describe a cut-orientation choice (see the Tourmaline and Aquamarine
+//!   `c_axis: Vec3::X` comments in `crates/indicatrix/src/optics/materials/`).
 //! - `azimuth_deg` (phi): rotation around `+Y`, 0-360 degrees.
 //!
 //! `c_axis = (sin(theta)*cos(phi), cos(theta), sin(theta)*sin(phi))`.
@@ -25,9 +25,10 @@ use glam::Vec3;
 /// hand-edited settings file) just resolves to whatever direction the formula gives.
 ///
 /// `tilt_deg = 0.0` collapses to `Vec3::Y` for any `azimuth_deg` (`sin(0) == 0` zeroes
-/// both X and Z terms exactly in `f32`) -- every built-in material's default.
-/// `tilt_deg = 90.0, azimuth_deg = 0.0` gives `Vec3::X` (Tourmaline's cut-orientation
-/// override) to within `f32` trig precision.
+/// both X and Z terms exactly in `f32`) -- the default of every built-in except
+/// Tourmaline and Aquamarine.
+/// `tilt_deg = 90.0, azimuth_deg = 0.0` gives `Vec3::X` (the Tourmaline and Aquamarine
+/// cut-orientation override) to within `f32` trig precision.
 #[must_use]
 pub fn angles_to_c_axis(tilt_deg: f32, azimuth_deg: f32) -> Vec3 {
     let theta = tilt_deg.to_radians();
@@ -70,9 +71,10 @@ pub fn c_axis_to_angles(axis: Vec3) -> (f32, f32) {
 mod tests {
     use super::*;
 
-    /// `tilt_deg = 0.0` must reproduce every built-in material's default `c_axis`
-    /// exactly, for any azimuth -- `sin(0.0.to_radians()) == 0.0` exactly in `f32`, so
-    /// both X and Z terms are an exact `0.0 * anything == 0.0`, not merely close.
+    /// `tilt_deg = 0.0` must reproduce the default `c_axis` of every built-in except
+    /// Tourmaline and Aquamarine exactly, for any azimuth -- `sin(0.0.to_radians()) == 0.0`
+    /// exactly in `f32`, so both X and Z terms are an exact `0.0 * anything == 0.0`, not merely
+    /// close.
     #[test]
     fn tilt_zero_reproduces_default_y_axis_exactly_for_any_azimuth() {
         for azimuth_deg in [0.0, 45.0, 90.0, 123.4, 270.0, 359.9] {
@@ -84,8 +86,8 @@ mod tests {
         }
     }
 
-    /// `tilt_deg = 90.0, azimuth_deg = 0.0` must reproduce Tourmaline's `c_axis:
-    /// Vec3::X`. Not bit-exact -- `90.0f32.to_radians()` approximates pi/2, so
+    /// `tilt_deg = 90.0, azimuth_deg = 0.0` must reproduce the Tourmaline and Aquamarine
+    /// `c_axis: Vec3::X`. Not bit-exact -- `90.0f32.to_radians()` approximates pi/2, so
     /// `cos(theta)` lands at roughly `-4.4e-7` -- but well within a tolerance many
     /// orders of magnitude tighter than anything visually or physically meaningful.
     #[test]

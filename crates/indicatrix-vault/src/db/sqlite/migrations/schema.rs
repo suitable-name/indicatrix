@@ -215,6 +215,27 @@ pub(in crate::db::sqlite) const DIAGRAM_PLANNER_EXCLUSIONS_TABLE_SQL: &str = "
     );
 ";
 
+/// `diagram_frosting`'s full `CREATE TABLE IF NOT EXISTS` text, shared verbatim between
+/// [`crate::db::sqlite::Database::migrate_diagram_frosting_table`] and
+/// `create_tables_if_not_exist`, same convention as [`DIAGRAM_PREVIEWS_TABLE_SQL`].
+///
+/// One row per frosted tier of a library design, keyed by `entry_id` and the tier's position
+/// in the design's schedule. `facet_slots` is the comma-separated, ascending list of the
+/// frosted facets' slots in the tier's index list, or the empty text for a tier frosted as a
+/// whole. A design without frosting has no row, which is also what every design that
+/// predates the table reads as. A side table cascading off `diagram_entries` (not
+/// `diagram_details`, which a re-sync deletes and reinserts), like
+/// [`DIAGRAM_PLANNER_EXCLUSIONS_TABLE_SQL`]: no BLOB column, so no `__reordered` variant.
+pub(in crate::db::sqlite) const DIAGRAM_FROSTING_TABLE_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS diagram_frosting (
+        entry_id INTEGER NOT NULL,
+        tier INTEGER NOT NULL,
+        facet_slots TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (entry_id, tier),
+        FOREIGN KEY (entry_id) REFERENCES diagram_entries (id) ON DELETE CASCADE
+    );
+";
+
 /// `design_variants`' full `CREATE TABLE`/`CREATE INDEX IF NOT EXISTS` text, shared
 /// verbatim between [`crate::db::sqlite::Database::migrate_design_variants_table`] and
 /// `create_tables_if_not_exist`, same convention as [`DIAGRAM_PREVIEWS_TABLE_SQL`].

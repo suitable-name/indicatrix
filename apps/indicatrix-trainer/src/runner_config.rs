@@ -5,6 +5,7 @@ use indicatrix_ai::{
     model::{ModelTier, TrainingMode},
     training::{ImitationConfig, LrSchedule, PpoConfig},
 };
+use indicatrix_cut_core::optimize::ObjectiveFidelity;
 
 use super::{Algorithm, ObjectiveSampling, RunnerError};
 
@@ -23,9 +24,7 @@ pub const DEFAULT_EXPLORE_STD: f32 = 0.3;
 /// Default of [`RunConfig::same_material_frac`].
 pub const DEFAULT_SAME_MATERIAL_FRAC: f32 = 0.25;
 
-/// Default of [`RunConfig::validation_designs`]: enough designs that the pass-to-pass noise of the
-/// mean is small against the generalization-gap threshold. A pass costs about a second since the
-/// designs are played in parallel.
+/// Default of [`RunConfig::validation_designs`]: a small fixed cohort for frequent validation.
 pub const DEFAULT_VALIDATION_DESIGNS: usize = 16;
 /// Default of [`RunConfig::validation_every`]: often enough to see a trend within a run of a few
 /// hundred iterations (every 15 left only 13 points in 200 iterations).
@@ -38,8 +37,10 @@ pub const MIN_GAP_DESIGNS: usize = 8;
 pub enum DeviceChoice {
     /// CPU SIMD.
     Cpu,
-    /// GPU; failing to initialise it is an error.
+    /// WGPU backend; failing to initialise it is an error.
     Gpu,
+    /// Native CUDA backend; requires the `cuda` feature and never falls back.
+    Cuda,
     /// GPU when it works, otherwise CPU with a warning.
     Auto,
 }
@@ -76,6 +77,14 @@ pub struct RunConfig {
     /// Step limit override in degrees per step and tier (`None` = each environment's default);
     /// applies to both environment kinds.
     pub max_step_deg: Option<f64>,
+    /// Fidelity used to score training episodes and teacher labels.
+    pub train_fidelity: ObjectiveFidelity,
+    /// Fidelity used to re-score validation endpoints (the rollout policy stays unchanged).
+    pub validation_fidelity: super::EvalFidelity,
+    /// Evaluate every fixed validation/test design under all seven named objective presets.
+    pub objective_sweep: bool,
+    /// Optional per-design classical optimizer evaluation budget.
+    pub classical_budget: Option<usize>,
     /// The training algorithm.
     pub algo: Algorithm,
     /// Imitation hyperparameters (epochs per round, mini-batch size, loss weights); read in
@@ -98,21 +107,36 @@ pub struct RunConfig {
     pub line_search: Vec<f64>,
     /// How the objective weights of an episode are drawn.
     pub objectives: ObjectiveSampling,
-    /// Share of the retarget episodes that are judged in the design's own material (the
-    /// optimizer task), so one model learns both tasks.
+    /// Share of retarget episodes judged in the source material as a same-material robustness
+    /// subset; it does not replace cross-material capability evaluation.
     pub same_material_frac: f32,
 }
 
-/// The default worker count: one environment per core (at least 1, at most [`MAX_WORKERS`]).
+impl RunConfig {
+    /// Environment slots that can receive at least one step in each rollout.
+    #[must_use]
+    pub const fn effective_workers(&self) -> usize {
+        if self.workers < self.rollout_size {
+            self.workers
+        } else {
+            self.rollout_size
+        }
+    }
+}
+
+/// The default worker count: three environments per core (at least 1, at most
+/// [`MAX_WORKERS`]). The threads that step them still follow the core count; the extra episodes
+/// in flight make the slowest slot of a pass a smaller share of it.
 #[must_use]
 pub fn default_workers() -> usize {
     std::thread::available_parallelism()
         .map_or(1, std::num::NonZero::get)
+        .saturating_mul(3)
         .clamp(1, MAX_WORKERS)
 }
 
 impl RunConfig {
-    /// Defaults for `mode` and `tier`: imitation, one worker per core ([`default_workers`]), 128
+    /// Defaults for `mode` and `tier`: imitation, three workers per core ([`default_workers`]), 128
     /// steps per update, a label on every second sample, exploration noise of 0.3, the default
     /// line search, mixed objective weights, a quarter of the retarget episodes in the design's
     /// own material, the environments' own step limit and a constant learning rate (the CLI
@@ -139,6 +163,10 @@ impl RunConfig {
             validation_designs: DEFAULT_VALIDATION_DESIGNS,
             validation_every: DEFAULT_VALIDATION_EVERY,
             max_step_deg: None,
+            train_fidelity: ObjectiveFidelity::Fast,
+            validation_fidelity: super::EvalFidelity::Fast,
+            objective_sweep: false,
+            classical_budget: None,
             algo: Algorithm::Imitation,
             imitation: ImitationConfig::default(),
             label_every: DEFAULT_LABEL_EVERY,
@@ -268,6 +296,18 @@ pub fn linear_schedule_for(
     let total_updates = (iterations as u64)
         .saturating_mul(epochs as u64)
         .saturating_mul(mini_batches as u64);
+    LrSchedule::Linear {
+        total_updates: total_updates.max(1),
+    }
+}
+
+/// The linear learning-rate decay of an imitation run in the bounded mode
+/// (`updates_per_round > 0`): every round takes exactly `updates_per_round` optimizer steps, so
+/// the run takes `iterations * updates_per_round` of them (fewer only when a round finds no
+/// labelled sample).
+#[must_use]
+pub fn bounded_schedule_for(iterations: usize, updates_per_round: usize) -> LrSchedule {
+    let total_updates = (iterations as u64).saturating_mul(updates_per_round as u64);
     LrSchedule::Linear {
         total_updates: total_updates.max(1),
     }

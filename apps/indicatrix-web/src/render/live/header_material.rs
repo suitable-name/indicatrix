@@ -57,6 +57,7 @@ fn show_in_header(ctx: &Ctx, name: &str) {
             .position(|n| n.eq_ignore_ascii_case(name))
     };
     if let (Some(ui), Some(index)) = (ctx.ui.upgrade(), index) {
-        ui.global::<AppModel>().set_material_index(index as i32);
+        ui.global::<AppModel>()
+            .set_material_index(i32::try_from(index).unwrap_or(i32::MAX));
     }
 }

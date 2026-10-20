@@ -1,15 +1,15 @@
 //! Indicatrix's configuration of the crate's click-everything engine.
 //!
 //! The engine (enumerate, press, pump, record `panic` / `error-toast` / `main-closed` /
-//! `window-invalid`, restore on change) is `slint_harness::smoke`; the types and [`run`] are
+//! `window-invalid`, restore on change) is `uiprobe::smoke`; the types and [`run`] are
 //! re-exported here. What stays Indicatrix's: the deny list [`INDICATRIX_DENY`] (the crate
 //! default is only the generic words), the one function that builds every [`Smoke`]
 //! ([`indicatrix_smoke`]) and the hosts that own the real app (`MainHost`, `SecondaryHost` and
 //! the overlay and window hosts of the coverage scenarios).
 
-use slint_harness::smoke::Smoke;
+use uiprobe::smoke::Smoke;
 
-pub use slint_harness::{
+pub use uiprobe::{
     smoke::{DenyField, DenyMatch, DenyRule, SmokeHost, SmokeStats, run},
     take_panics,
 };

@@ -29,6 +29,7 @@ fn sample_scene() -> SceneState {
     );
 
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 640,
         height: 480,
         yaw: 0.37,
@@ -48,6 +49,7 @@ fn sample_scene() -> SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 
@@ -133,9 +135,10 @@ fn scene_state_with_and_without_fluorescence_round_trips_through_postcard() {
         bytes.len() > plain_bytes.len(),
         "emitters are a length-prefixed trailing Vec, so they only add bytes"
     );
-    // The emitter list is followed only by `head_shadow_deg` (an f32, four bytes) on the wire.
+    // The emitter list is followed only by `head_shadow_deg` (an f32, four bytes) and the empty
+    // frosted-plane list (v26, one zero length byte) on the wire.
     let tail = postcard::to_allocvec(&glowing.fluorescence).unwrap();
-    let emitters_end = bytes.len() - 4;
+    let emitters_end = bytes.len() - 8;
     assert_eq!(
         &bytes[emitters_end - tail.len()..emitters_end],
         tail.as_slice()
@@ -148,18 +151,59 @@ fn scene_state_with_and_without_fluorescence_round_trips_through_postcard() {
 #[test]
 fn a_v20_scene_byte_layout_does_not_decode_as_v21() {
     let scene = sample_scene();
-    let v21 = postcard::to_allocvec(&scene).unwrap();
+    let bytes = postcard::to_allocvec(&scene).unwrap();
+    assert_eq!(
+        &bytes[bytes.len() - 3..],
+        &[0, 8, 1],
+        "v28 appends Path-Traced engine, eight taps, Fire"
+    );
+    let current = &bytes[..bytes.len() - 3];
+    // The v21 layout is the current one without the trailing empty frosted-plane list (v26, a
+    // zero length byte), which is the v25 layout too.
+    assert_eq!(
+        current[current.len() - 1],
+        0,
+        "an empty frosted-plane list is one zero trailing byte"
+    );
+    let v21 = &current[..current.len() - 1];
     // The v20 layout is the v21 one without the trailing head-shadow f32 (16.0 = 0, 0, 128, 65).
     assert_eq!(
         v21[v21.len() - 4..],
         16.0f32.to_le_bytes(),
-        "the head shadow is four trailing bytes"
+        "the head shadow is four bytes before the frosted-plane list"
     );
     let v20 = &v21[..v21.len() - 4];
     assert!(postcard::from_bytes::<SceneState>(v20).is_err());
     // The v19 layout (also without the empty emitter list's zero byte) fails too.
     let v19 = &v21[..v21.len() - 5];
     assert!(postcard::from_bytes::<SceneState>(v19).is_err());
+}
+
+/// v26: a v25 scene (no trailing frosted-plane list) does not decode as v26 -- postcard cannot
+/// skip a missing trailing field, so the handshake's refusal is what protects it -- and a scene
+/// with frosted planes round-trips, with the planes only adding bytes.
+#[test]
+fn scene_state_frosted_planes_round_trip_and_a_v25_layout_does_not_decode() {
+    let plain = sample_scene();
+    assert_eq!(plain.frosted_planes, Vec::<u32>::new());
+    let plain_bytes = postcard::to_allocvec(&plain).unwrap();
+    assert_eq!(&plain_bytes[plain_bytes.len() - 3..], &[0, 8, 1]);
+    let v25 = &plain_bytes[..plain_bytes.len() - 4];
+    assert!(
+        postcard::from_bytes::<SceneState>(v25).is_err(),
+        "the old layout must not decode as a scene"
+    );
+
+    let mut frosted = sample_scene();
+    frosted.frosted_planes = vec![2, 5, 40];
+    let bytes = postcard::to_allocvec(&frosted).unwrap();
+    let decoded: SceneState = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(decoded.frosted_planes, vec![2, 5, 40]);
+    assert_eq!(frosted, decoded);
+    assert!(
+        bytes.len() > plain_bytes.len(),
+        "frosted planes are a length-prefixed trailing Vec, so they only add bytes"
+    );
 }
 
 /// The wire carries `LightingPreset` as its derived-serde variant index, which is the
@@ -333,4 +377,25 @@ fn scene_state_head_shadow_round_trips_through_postcard() {
     let bytes = postcard::to_allocvec(&scene).unwrap();
     let decoded: SceneState = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(decoded.head_shadow_deg.to_bits(), 22.5f32.to_bits());
+}
+
+#[test]
+fn v28_appends_engine_and_old_layout_is_refused() {
+    use indicatrix::renderer::engine::{RayOptions, RenderEngine};
+    let mut scene = sample_scene();
+    scene.engine.engine = RenderEngine::RayTraced;
+    scene.engine.ray = RayOptions {
+        aa_taps: 16,
+        fire: false,
+    };
+    let bytes = postcard::to_allocvec(&scene).unwrap();
+    assert_eq!(&bytes[bytes.len() - 3..], &[1, 16, 0]);
+    assert_eq!(postcard::from_bytes::<SceneState>(&bytes).unwrap(), scene);
+    assert!(postcard::from_bytes::<SceneState>(&bytes[..bytes.len() - 3]).is_err());
+    let mut json = serde_json::to_value(&scene).unwrap();
+    json.as_object_mut().unwrap().remove("engine");
+    assert_eq!(
+        serde_json::from_value::<SceneState>(json).unwrap().engine,
+        indicatrix::renderer::engine::EngineSpec::default()
+    );
 }

@@ -1,7 +1,7 @@
 //! Indicatrix's side of the throw-away profile.
 //!
 //! The profile itself (fresh directory, environment redirect, working directory, the
-//! guard that proves the settings file and the database lie inside it) is `slint-harness`'s
+//! guard that proves the settings file and the database lie inside it) is `uiprobe`'s
 //! [`ProfileDir`], configured in `main.rs`. This module adds what is Indicatrix-specific on top
 //! of it: what `settings.toml` looks like when a scenario starts ([`SettingsSeed`],
 //! [`ProfileExt::seed_settings`]) and how the app's persisted data is wiped between launches
@@ -9,12 +9,12 @@
 //! earlier launch left the design library database locked).
 
 use indicatrix_cut::harness_support;
-use slint_harness::profile::{ProfileDir, abort_run};
 use std::{
     fs,
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use uiprobe::profile::{ProfileDir, abort_run};
 
 /// The live throw-away profile of the run.
 pub type Profile = ProfileDir;
@@ -102,7 +102,7 @@ impl ProfileExt for ProfileDir {
                 match fs::create_dir_all(&fresh).and_then(|()| std::env::set_current_dir(&fresh)) {
                     // Said once; `print_locked_summary` prints how often it happened.
                     Ok(()) if n == 1 => println!(
-                        "slint-harness:   the database {} is still locked by an earlier launch; \
+                        "uiprobe:   the database {} is still locked by an earlier launch; \
                          continuing in {} (later moves are counted at the end)",
                         database.display(),
                         fresh.display()
@@ -125,14 +125,14 @@ pub fn print_shutdown_summary() {
     let survivors = harness_support::shutdowns_with_survivors();
     if survivors > 0 {
         println!(
-            "slint-harness: {survivors} shutdown(s) left the main window or the design library \
+            "uiprobe: {survivors} shutdown(s) left the main window or the design library \
              handle alive (see the 'after shutdown' lines above for the first ones)"
         );
     }
     let moves = FRESH_CWDS.load(Ordering::Relaxed);
     if moves > 0 {
         println!(
-            "slint-harness: the database was still locked after {moves} shutdown(s); each time \
+            "uiprobe: the database was still locked after {moves} shutdown(s); each time \
              the run continued in a fresh working directory"
         );
     }

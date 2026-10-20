@@ -220,6 +220,15 @@ fn settings_and_extents_are_validated() {
             Ok(())
         );
     }
+    each_bad_setting_names_its_field(good);
+    // Zero kerf, allowance and skin are fine.
+    assert_eq!(settings_with(2, 0.0, 0.0, 0.01).validate(), Ok(()));
+
+    each_bad_extent_is_refused();
+}
+
+/// Every non-finite or negative physical setting is refused under its own field name.
+fn each_bad_setting_names_its_field(good: PlanSettings) {
     let field_of = |bad: PlanSettings| match bad.validate() {
         Err(PlanInputError::Setting { field, .. }) => field,
         other => panic!("expected a setting error, got {other:?}"),
@@ -263,9 +272,10 @@ fn settings_and_extents_are_validated() {
             "min_width_mm"
         );
     }
-    // Zero kerf, allowance and skin are fine.
-    assert_eq!(settings_with(2, 0.0, 0.0, 0.01).validate(), Ok(()));
+}
 
+/// A rough block with a zero, non-finite or negative extent is refused with its axis.
+fn each_bad_extent_is_refused() {
     assert_eq!(cube(5.0).validate(), Ok(()));
     let thin = RoughBlock {
         x_mm: 4.0,
@@ -292,6 +302,93 @@ fn settings_and_extents_are_validated() {
             "{bad}"
         );
     }
+}
+
+#[test]
+fn the_stone_cap_is_validated() {
+    let good = settings_with(4, 0.3, 0.2, 1.0);
+    // No cap is the default, and 0 means no cap.
+    assert_eq!(PlanSettings::default().max_stones, 0);
+    assert_eq!(good.max_stones, 0);
+    for max_stones in [0, 1, 50, 99] {
+        assert_eq!(PlanSettings { max_stones, ..good }.validate(), Ok(()));
+    }
+    for max_stones in [100, 255] {
+        assert_eq!(
+            PlanSettings { max_stones, ..good }.validate(),
+            Err(PlanInputError::StonesOutOfRange(max_stones))
+        );
+    }
+    assert_eq!(
+        PlanInputError::StonesOutOfRange(100).to_string(),
+        "the stone cap 100 is outside 0 to 99"
+    );
+    // Errors come in declaration order: the designs, then the stones, then the physics.
+    assert_eq!(
+        PlanSettings {
+            max_designs: 0,
+            max_stones: 100,
+            ..good
+        }
+        .validate(),
+        Err(PlanInputError::DesignsOutOfRange(0))
+    );
+    assert_eq!(
+        PlanSettings {
+            max_stones: 100,
+            kerf_mm: -1.0,
+            ..good
+        }
+        .validate(),
+        Err(PlanInputError::StonesOutOfRange(100))
+    );
+
+    // The cap as the planner reads it: none for 0, the number otherwise (never above 99).
+    assert_eq!(good.stone_cap(), None);
+    for max_stones in [1_u8, 7, 99] {
+        assert_eq!(
+            PlanSettings { max_stones, ..good }.stone_cap(),
+            Some(usize::from(max_stones))
+        );
+    }
+    assert_eq!(
+        PlanSettings {
+            max_stones: 255,
+            ..good
+        }
+        .stone_cap(),
+        Some(99)
+    );
+    assert_eq!(
+        good.caps(),
+        LayoutCaps {
+            max_designs: 4,
+            max_stones: usize::MAX
+        }
+    );
+    let both = PlanSettings {
+        max_designs: 2,
+        max_stones: 7,
+        ..good
+    };
+    assert_eq!(
+        both.caps(),
+        LayoutCaps {
+            max_designs: 2,
+            max_stones: 7
+        }
+    );
+    assert_eq!(LayoutCaps::NONE, LayoutCaps::designs_only(usize::MAX));
+
+    // An invalid cap plans nothing, like any invalid setting.
+    let invalid = PlanSettings {
+        max_stones: 100,
+        ..good
+    };
+    assert_eq!(
+        plan_rough(&cube(12.0), &invalid, &[box_design(1)], &mut |_| true),
+        Some(Vec::new())
+    );
 }
 
 #[test]

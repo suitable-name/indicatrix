@@ -270,8 +270,11 @@ fn dispatch_render(
     // Zoning guard: a zoned scene goes only to a remote that advertised the
     // capability (the zones travel in a separate message a default peer cannot decode); the
     // chunk fails like an HDR scene's does and the picture renders locally.
-    if crate::bridge::remote::zoned_scene_refusal(request.scene.material.zoning.is_some(), w.zoning)
-        .is_err()
+    if crate::bridge::remote::zoned_scene_refusal(
+        !request.scene.engine.is_ray() && request.scene.material.zoning.is_some(),
+        w.zoning,
+    )
+    .is_err()
     {
         on_update(RemoteUpdate::Failed {
             request_id,

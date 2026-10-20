@@ -49,8 +49,16 @@ fn retarget_by_shift(sim: &mut Sim, target: &str) {
         "the lesson applies a Shift to {target}: {}",
         check.validity.headline()
     );
-    let edit = apply_with_anchors(&design, &plan.proposal(), &check.anchors);
+    // The checked candidate's own edit: the projection may turn a moving tier by a little more
+    // or less than the plan asked for, so the plan's angles combined with the check's masts
+    // would be a state nobody validated (and Apply, which re-validates, could refuse it).
+    let edit = check.validated_edit(&design).expect("preserved retarget");
     sim.apply(with_material(edit, target));
+    assert_eq!(
+        Some(&sim.session.design.tiers),
+        check.candidate.as_ref().map(|candidate| &candidate.tiers),
+        "the lesson applies exactly the state the check validated"
+    );
 }
 
 /// The Retarget dialog in Optimize mode: a search for `target` with a small budget, its best
@@ -81,8 +89,12 @@ fn retarget_by_search(sim: &mut Sim, target: &str) {
         .first()
         .expect("the search offers at least one option");
     let proposal = plan.with_angles(&design, &best.angles).proposal();
-    let edit = apply_with_anchors(&design, &proposal, &best.anchors);
+    let edit = apply_with_anchors(&design, &proposal, &best.anchors).expect("preserved retarget");
     sim.apply(with_material(edit, target));
+    assert_eq!(
+        sim.session.design.tiers, best.design.tiers,
+        "the lesson applies exactly the option the search validated"
+    );
 }
 
 #[test]

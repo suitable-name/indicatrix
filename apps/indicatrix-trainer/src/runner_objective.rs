@@ -4,8 +4,8 @@
 //! fractions are part of the observation (design section 3.1). That only works for weightings the
 //! model has seen, so every training episode and every validation design draws its own weights
 //! with [`draw_weights`]. The draws are pure functions of a seed: the same seed gives the same
-//! weights in any process and for any thread count. The two face-up tone presets are never drawn;
-//! the environments refuse a tone weight.
+//! weights in any process and for any thread count. All seven presets, including tone goals, are
+//! represented.
 
 use std::fmt;
 
@@ -28,14 +28,15 @@ const OPTICAL_RANGE: (f32, f32) = (0.5, 4.0);
 /// Range (low, high) of the yield weight of a random weighting that has one.
 const YIELD_RANGE: (f32, f32) = (0.5, 3.0);
 
-/// The presets a model is trained on: every preset of [`ObjectivePreset::ALL`] except the two
-/// face-up tone presets (`LightenDark`, `IntensifyPale`), which the environments refuse.
-pub const TRAINABLE_PRESETS: [ObjectivePreset; 5] = [
+/// Every objective preset, including both face-up tone goals.
+pub const TRAINABLE_PRESETS: [ObjectivePreset; 7] = [
     ObjectivePreset::Balanced,
     ObjectivePreset::Brilliance,
     ObjectivePreset::LowWindowing,
     ObjectivePreset::LowExtinction,
     ObjectivePreset::KeepWeight,
+    ObjectivePreset::LightenDark,
+    ObjectivePreset::IntensifyPale,
 ];
 
 /// The training algorithm of a run.
@@ -82,11 +83,11 @@ impl fmt::Display for Algorithm {
 pub enum ObjectiveSampling {
     /// Always the default weights (windowing, extinction and tilt brilliance equal, no yield).
     Balanced,
-    /// Uniform over [`TRAINABLE_PRESETS`].
+    /// Uniform over all seven presets, including both tone goals.
     Presets,
     /// A preset with probability 0.7, otherwise random weights: windowing, extinction and tilt
     /// brilliance uniform in `[0.5, 4.0)`, the yield weight 0 with probability 0.7 and uniform
-    /// in `[0.5, 3.0)` otherwise, no tone term. The default.
+    /// in `[0.5, 3.0)` otherwise, no tone term on random draws. The default.
     #[default]
     Mixed,
 }
@@ -188,7 +189,7 @@ pub fn draws_same_material(fraction: f32, seed: u64) -> bool {
 mod tests {
     use super::*;
 
-    /// The weights of the five trainable presets.
+    /// The weights of the seven trainable presets.
     fn preset_weights() -> Vec<ObjectiveWeights> {
         TRAINABLE_PRESETS.iter().map(|p| p.weights()).collect()
     }
@@ -238,14 +239,8 @@ mod tests {
     }
 
     #[test]
-    fn the_trainable_presets_are_the_non_tone_presets_of_the_library() {
-        let non_tone: Vec<ObjectivePreset> = ObjectivePreset::ALL
-            .into_iter()
-            .filter(|preset| preset.weights().tone_weight <= 0.0)
-            .collect();
-        assert_eq!(non_tone, TRAINABLE_PRESETS);
-        assert!(!TRAINABLE_PRESETS.contains(&ObjectivePreset::LightenDark));
-        assert!(!TRAINABLE_PRESETS.contains(&ObjectivePreset::IntensifyPale));
+    fn every_library_preset_is_trainable_including_both_tone_goals() {
+        assert_eq!(ObjectivePreset::ALL, TRAINABLE_PRESETS);
     }
 
     #[test]
@@ -294,11 +289,15 @@ mod tests {
             let index = allowed
                 .iter()
                 .position(|candidate| *candidate == weights)
-                .expect("a preset draw is one of the five trainable presets");
+                .expect("a preset draw is one of the seven trainable presets");
             reached[index] = true;
-            assert_eq!(weights.tone_weight, 0.0);
         }
         assert!(reached.iter().all(|&hit| hit), "{reached:?}");
+        assert!(
+            TRAINABLE_PRESETS
+                .iter()
+                .any(|p| p.weights().tone_weight > 0.0)
+        );
     }
 
     #[test]
@@ -310,7 +309,6 @@ mod tests {
         let mut random_draws = 0_u32;
         for seed in 0..draws {
             let weights = draw_weights(ObjectiveSampling::Mixed, seed);
-            assert_eq!(weights.tone_weight, 0.0, "seed {seed}");
             if presets.contains(&weights) {
                 preset_draws += 1;
                 continue;

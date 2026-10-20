@@ -74,7 +74,7 @@ fn desktop_recipe(s: &DesktopSettings, planes: &[GpuFacetPlane]) -> DesktopScene
     let environment = s
         .preset
         .studio(s.exposure, s.light_yaw, s.light_pitch)
-        .with_backdrop(s.backdrop.level());
+        .with_backdrop(s.backdrop.resolve(s.preset, s.light_yaw, s.light_pitch));
     DesktopScene {
         material,
         finishes,
@@ -521,7 +521,7 @@ fn the_default_surface_glare_is_the_old_scene_bit_for_bit() {
     // The environment as the web built it before `surface_glare` existed.
     let old_env = LightingPreset::LightTent
         .studio(1.0, 0.4, 0.35)
-        .with_backdrop(Backdrop::Grey.level())
+        .with_backdrop(Backdrop::Grey.resolve(LightingPreset::LightTent, 0.4, 0.35))
         .with_head_shadow(16.0);
     assert_eq!(new.frame_scene().environment.surface_glare(), 1.0);
     let old_frame = FrameScene {
@@ -628,4 +628,32 @@ fn a_custom_materials_bands_colour_the_restored_material() {
     }
     .to_gem_material();
     assert_ne!(banded.absorption, triple_only.absorption);
+}
+
+/// The tray the browser renders is lit by the spec's own preset and pose: the same
+/// white backdrop carries a different radiance under a different rig, and As Lit
+/// carries none.
+#[test]
+fn the_backdrop_follows_the_specs_preset_and_pose() {
+    let radiance = |preset: LightingPreset, backdrop: Backdrop| {
+        let EnvironmentSource::Studio { backdrop, .. } =
+            LightingSpec::new(preset, 1.0, 0.4, 0.35, backdrop, 16.0).studio_environment()
+        else {
+            panic!("a studio environment");
+        };
+        backdrop
+    };
+    let tent = radiance(LightingPreset::LightTent, Backdrop::White);
+    assert_eq!(
+        tent.to_bits(),
+        Backdrop::White
+            .resolve(LightingPreset::LightTent, 0.4, 0.35)
+            .to_bits()
+    );
+    assert!(tent > 0.0);
+    assert_ne!(
+        tent.to_bits(),
+        radiance(LightingPreset::DaylightDome, Backdrop::White).to_bits()
+    );
+    assert_eq!(radiance(LightingPreset::LightTent, Backdrop::AsLit), 0.0);
 }

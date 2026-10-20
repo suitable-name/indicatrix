@@ -372,7 +372,9 @@ fn source_zoning(db: &Database, source: &str) -> Result<Option<StoredZoning>> {
     }))
 }
 
-/// Brings the stored zones in line with a material save, after the material row itself was written:
+/// Brings the stored zones in line with a material save, after the material row itself was written.
+///
+/// What it does:
 /// 1. Saved under a new name, the zones of the material the dialog showed, stored or built in, are
 ///    copied to it (unless the new name has zones of its own), so the copy keeps its colour zones.
 /// 2. An edited body colour goes into the stored base zone ([`write_back_base_colour`]).

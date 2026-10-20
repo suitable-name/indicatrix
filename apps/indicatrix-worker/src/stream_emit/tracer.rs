@@ -15,7 +15,10 @@ use crate::{
 use glam::Vec3;
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_dispatch::SampleRange;
-use indicatrix_net::{SceneState, messages::ErrorMsg};
+use indicatrix_net::{
+    SceneState,
+    messages::{ErrorMsg, error_codes},
+};
 use std::{
     sync::{
         Arc, Mutex,
@@ -55,7 +58,8 @@ pub(super) struct SharedState {
     /// A producer other than [`run_tracer`] (the coordinator's lane pool, see
     /// [`super::ProducerSink`]) ended without completing and without being cancelled:
     /// `run_stream` sends this as a stream `ERROR` (no `DONE`) via
-    /// [`super::StreamOutcome::Failed`]. Always `None` for [`run_tracer`].
+    /// [`super::StreamOutcome::Failed`]. Also set when the tracer stops short
+    /// without cancellation or a panic.
     pub(super) failed: Option<ErrorMsg>,
     /// The producer's own final sum of the whole request, when it has a better one than
     /// the emitter's running total (the coordinator's deterministic chunk-order merge,
@@ -166,6 +170,17 @@ pub(super) fn run_tracer(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard.finished = true;
     guard.panicked = result.is_err();
+    if job.scene.engine.is_ray()
+        && !guard.panicked
+        && !cancel.load(Ordering::Acquire)
+        && guard.samples_done != job.samples
+    {
+        guard.failed = Some(ErrorMsg {
+            code: error_codes::UNSUPPORTED_REQUEST,
+            request_id: None,
+            message: "the renderer could not trace the complete requested sample range".to_owned(),
+        });
+    }
     drop(guard);
     let _ = progress_tx.send(());
 }
@@ -185,12 +200,37 @@ fn trace_all_batches(
     cancel: &AtomicBool,
 ) {
     let mut produced: u32 = 0;
+    if job.scene.engine.is_ray() {
+        // No spectral probes consume or repeat these absolute deterministic taps.
+        while produced < job.samples && !cancel.load(Ordering::Acquire) {
+            let count = if produced == 0 {
+                1
+            } else {
+                (job.samples - produced).min(4)
+            };
+            let first = job.first_sample + produced;
+            let mut part = vec![Vec3::ZERO; job.scene.width as usize * job.scene.height as usize];
+            if !render_core::whitted::trace(
+                &job.scene,
+                first,
+                count,
+                job.threads,
+                job.compute_mode != ComputeMode::OnlyCpu,
+                cancel,
+                &mut part,
+            ) {
+                break;
+            }
+            reporter.fold_and_notify(first, count, &part, &mut produced);
+        }
+        return;
+    }
     let mut batch_size: u32 = seeded_batch_size(key);
 
     // Only `Hybrid` ever attempts a split -- `OnlyGpu`/`OnlyCpu` leave `gpu_frac`
     // `None` for the whole job.
-    // A scene with concave tools is CPU-only (`render_core::scene_uses_gpu`), so it
-    // never calibrates a split either.
+    // A scene the GPU cannot trace (`render_core::scene_uses_gpu`: fluorescence, a UV lamp,
+    // more tools than the kernels trace) is CPU-only, so it never calibrates a split either.
     let mut gpu_frac: Option<f64> = if matches!(job.compute_mode, ComputeMode::Hybrid)
         && job.samples >= render_core::hybrid::HYBRID_MIN_SPP
         && render_core::scene_uses_gpu(&job.scene)
@@ -276,6 +316,8 @@ pub struct TracedRange {
     pub done: u32,
     /// The tracer panicked (`sum`/`done` still hold what came before it).
     pub panicked: bool,
+    /// Tracing stopped short without cancellation or a panic.
+    pub failed: Option<ErrorMsg>,
 }
 
 /// Traces `[first_sample, first_sample + samples)` of `scene` synchronously on this
@@ -308,12 +350,14 @@ pub fn trace_range(
     let mut sum = vec![Vec3::ZERO; pixel_count];
     let range = guard.pending_delta.swap_with(&mut sum);
     let panicked = guard.panicked;
+    let failed = guard.failed.take();
     drop(guard);
     // Nothing folded in leaves `sum` as the untouched all-zero initial buffer.
     TracedRange {
         sum,
         done: range.map_or(0, |(_, n)| n),
         panicked,
+        failed,
     }
 }
 

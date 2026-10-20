@@ -183,7 +183,7 @@ as one undo step, to the first design opened that has neither a `[render_effects
 nor a girdle diameter; then `migrated_stone_effects` becomes `true` and they are ignored.
 
 **Saved lighting.** `[[presets]]` entries now also carry `surface_glare`, `backdrop` and
-`head_shadow_deg` (serde defaults `1.0`, `"Grey"`, `16.0` for presets saved by an older
+`head_shadow_deg` (serde defaults `1.0`, `"White"`, `16.0` for presets saved by an older
 build), so applying a saved lighting sets the whole look. A newly saved lighting is
 named "<rig> - <date>" by default.
 
@@ -220,6 +220,41 @@ not offered (a hand-edited `133`, say) loads as `0`, Automatic.
 `slice_symmetric` is the Slice tool's Symmetric pill; both are remembered. Whether the
 Slice tool itself is on (`slice_mode`) is deliberately not saved: it changes what a
 left-drag does, so every session starts with it off.
+
+### Other Top-Level Keys
+
+The remaining keys of `AppSettings` (`settings/model/app_settings.rs`). Every one is
+optional: a file without it loads the default shown.
+
+| Key | Values | Default |
+|---|---|---|
+| `render_width`, `render_height` | live render size in pixels (the dialog offers 640x480, 800x600, 1280x720, 1920x1080; a hand-edited size still loads) | `800`, `600` |
+| `backdrop` | `"AsLit"`, `"Grey"`, `"White"`, `"Black"`: the lit tray under the stone, seen around and through it (As Lit = the lighting's own ground) | `"White"` |
+| `live_compute_target` | `"LocalOnly"`, `"RemoteOnly"`, `"Both"` (does nothing without a configured remote) | `"Both"` |
+| `local_compute_target` | `"Cpu"`, `"CpuGpu"`, `"Gpu"` | `"CpuGpu"` |
+| `local_preview_scale` | `"Off"`, `"Half"`, `"Quarter"`: resolution while the camera moves, full size once it settles | `"Off"` |
+| `tilt_video_compute_target` | `"Local"`, `"Remote"`, `"Both"` (the tilt video's Compute pill) | `"Both"` |
+| `plan_time_limit_secs` | seconds; the Rough planner's scan plan time limit, `0` is no limit | `120` |
+| `env_map_path` | path of the last loaded Radiance `.hdr` map; empty means the built-in lighting | empty |
+| `preview_size`, `preview_spp` | square size in pixels and samples per pixel of the catalogue front/top thumbnails | `160`, `256` |
+| `export_directory` | folder every high-resolution export writes into; empty means not chosen yet (the next export asks) | empty |
+| `last_import_directory` | folder the `.asc` pickers open in; empty leaves the OS default | empty |
+| `export_filename_template` | export filename template | `gem_export_{material}_{width}x{height}_{spp}spp_{timestamp}` |
+| `library_panel_collapsed` | `true` / `false`: the left library panel folded to a rail | `false` |
+| `solid_view_mode` | `0` Solid, `1` Path-Traced, `2` Both: the Edit tab's Solid viewport mode | `0` |
+| `live_view_mode` | `0` Solid, `1` Path-Traced: the Live Render tab's mode | `1` for a file without the key |
+| `editor_auto_solve_budget_ms` | milliseconds; a design whose last solve was quicker is re-solved automatically after an edit, `0` turns auto-solve off | `300` |
+| `editor_dock_width`, `editor_inspector_height` | Edit tab layout in logical pixels | `640.0`, `340.0` |
+| `editor_settings_collapsed`, `editor_inspector_collapsed`, `editor_tier_table_collapsed`, `editor_remap_collapsed` | `true` / `false`: which Edit tab sections are folded | `false` |
+| `editor_layout_touched` | `true` once you have changed the Edit tab layout | `false` |
+| `recent_native_files` | up to 10 design file paths (`.isdd`, or legacy `.indicatrix`), most recent first | empty |
+| `suppressed_confirmations` | keys of the confirmation prompts you ticked "Don't ask again" on | empty |
+| `render_body_color_override` | three absorption numbers (each limited to 0..=10) for the Stone tab's color of a view that does not show the open design; absent means "Material default" | absent |
+
+**View modes are saved but not restored.** `solid_view_mode` and `live_view_mode` are
+written whenever you change the mode, but startup does not apply them
+(`gui/startup_settings.rs`): the app always opens on the Live Render tab in Solid mode,
+and the Edit tab's Solid viewport starts in Solid as well.
 
 ### Remote Endpoint (`RemoteEndpoint`)
 
@@ -280,10 +315,10 @@ file. It is read from the file at startup (there is no dialog control), so resta
 editing it. The coordinator's own choice for what it sends the viewer is
 `indicatrix-worker serve --payload-encoding`.
 
-`import_preview_choice` (default `"ask"`, top-level; `"full"`, `"solid"` or `"skip"`) is
+`import_preview_choice` (default `"ask"`, top-level; `"full"`, `"solid"`, `"ray"` or `"skip"`) is
 the remembered answer to the question asked after an import about generating catalogue
 previews, stored by the question's "Remember My Choice" box. Set it back to `"ask"` to be
-asked again.
+asked again. `"ray"` makes quick local Ray-Traced drafts; these never satisfy the persistent thumbnail renderer choice.
 
 `remote_batch_lanes` (default `4`, top-level, limited to 1..=32 on load and on set) is
 the remote worker dialog's "Remote Lanes for Batches" spin box: how many pictures
@@ -307,3 +342,18 @@ previews against one are sent a picture at a time.
 `[[settings.remote_workers]]` list. It still loads: the FIRST entry becomes `remote` (it was the only one any
 feature used), the rest are dropped and logged by address, and the next save writes
 only `[settings.remote]`.
+
+## Ray-Traced View
+
+Ray-Traced is an explicit view choice; startup still opens the Live Render tab in Solid. The existing `solid_view_mode` stores 0 Solid, 1 Path-Traced, 2 Both, 3 Diagram or 4 Ray-Traced. `live_view_mode` stores 0 Solid, 1 Path-Traced or 2 Ray-Traced. Both saved mode values track the session but are deliberately not restored at startup.
+
+`[settings.ray_trace]` stores `live_taps = 8` (fixed anti-aliasing taps, snapped to 1, 4, 8 or 16) and `fire = true` (three dispersion chains). These controls appear under Ray-Traced View in Advanced Render & Output and reset with that tab. They do not change the Path-Traced sample target or denoise preference. Ray-Traced itself never denoises. Its averaged absorption tint, approximate frost and omitted optical effects are described beside the controls.
+
+
+## Thumbnail and output renderers
+
+`thumbnail_renderer` defaults to `"PathTraced"`; choose `"RayTraced"` through **Thumbnail Renderer** in Advanced Render & Output or the preview offer's Picture Quality block. Ray thumbnails use 8 fixed AA taps with Fire on. Changing this choice marks cached thumbnails outdated once; Regenerate and startup offers compare against the selected renderer. Quick (Ray-Traced) remains a local CPU draft and never counts as a current persistent thumbnail.
+
+`thumbnail_backdrop` (`"Grey"` by default; `"White"` or `"Black"`) is the tray catalogue thumbnails are rendered on, independent of the live view's `backdrop`. It is part of the preview fingerprint (`backdrop=grey`), so changing it marks cached thumbnails outdated once. Set through **Thumbnail Backdrop** in Advanced Render & Output or the preview offer's Picture Quality block.
+
+The still export and tilt-video dialogs each remember their own `engine` alongside their other output settings. Both default to Path-Traced; switching to Ray-Traced exposes Anti-Aliasing (1, 4, 8 or 16 taps, initially 16) and Fire. This choice is independent of the live view and thumbnail renderer. Output jobs freeze the engine and its AA/Fire settings: legacy Path-Traced jobs remain format 1, Ray-Traced jobs use format 2. Local, Remote and Both compute choices work for both renderers with protocol-29 workers. Ray-Traced output never denoises or adds optical overlays; metric-curve annotations on tilt videos still use the independent analytical tracer.

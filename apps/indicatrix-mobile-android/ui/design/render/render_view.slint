@@ -41,7 +41,7 @@ export component RenderPicture inherits Rectangle {
 // The bar at the foot of the viewport. The chips sit in a row that scrolls sideways when
 // the viewport is too narrow for all of them.
 export component RenderControls inherits Rectangle {
-    height: 3px + 28px + Theme.touch + Theme.space-xs;
+    height: 3px + 48px + Theme.touch + Theme.space-xs + caveat.height;
     background: Theme.surface.with-alpha(0.72);
 
     // Taps on the bar are not taps on the picture below.
@@ -73,6 +73,15 @@ export component RenderControls inherits Rectangle {
             accessible-label: "Render status: " + RenderModel.status-text;
         }
 
+        Text {
+            height: 20px;
+            text: RenderModel.backend-report;
+            color: Theme.on-surface-variant;
+            font-size: Theme.text-label;
+            overflow: elide;
+            accessible-label: RenderModel.backend-report;
+        }
+
         Flickable {
             height: Theme.touch;
             content-width: chips.width;
@@ -89,12 +98,17 @@ export component RenderControls inherits Rectangle {
                 alignment: start;
 
                 Chip {
-                    text: RenderModel.paused ? "Resume" : "Pause";
+                    text: RenderModel.backend == 3 ? "Cancel" : (RenderModel.paused ? "Resume" : "Pause");
                     selected: RenderModel.paused;
                     enabled: RenderModel.can-pause;
                     clicked => {
                         RenderModel.pause-toggled();
                     }
+                }
+
+                if !RenderModel.can-pause && RenderModel.can-render: Chip {
+                    text: "Retry";
+                    clicked => { RenderModel.restart-requested(); }
                 }
 
                 Chip {
@@ -105,6 +119,33 @@ export component RenderControls inherits Rectangle {
                     }
                 }
 
+                Chip {
+                    text: "Automatic On Device";
+                    selected: RenderModel.backend == 0;
+                    clicked => { RenderModel.backend-selected(0); }
+                }
+                Chip {
+                    text: "Device CPU";
+                    selected: RenderModel.backend == 1;
+                    clicked => { RenderModel.backend-selected(1); }
+                }
+                Chip {
+                    text: "Device GPU";
+                    selected: RenderModel.backend == 2;
+                    clicked => { RenderModel.backend-selected(2); }
+                }
+                Chip {
+                    text: "Remote · Upload Scene";
+                    selected: RenderModel.backend == 3;
+                    clicked => { RenderModel.backend-selected(3); }
+                }
+
+                Chip {
+                    text: "Ray-Traced";
+                    selected: RenderModel.engine == 1;
+                    clicked => { RenderModel.engine-selected(RenderModel.engine == 1 ? 0 : 1); }
+                }
+
                 // Tapping steps through Draft, Normal and Fine.
                 Chip {
                     text: RenderModel.quality == 0 ? "Draft" : (RenderModel.quality == 2 ? "Fine" : "Normal");
@@ -113,7 +154,7 @@ export component RenderControls inherits Rectangle {
                     }
                 }
 
-                Chip {
+                if RenderModel.engine == 0: Chip {
                     text: "Denoise";
                     selected: RenderModel.denoise;
                     clicked => {
@@ -129,6 +170,14 @@ export component RenderControls inherits Rectangle {
                     }
                 }
             }
+        }
+        caveat := Text {
+            visible: RenderModel.engine == 1;
+            height: RenderModel.engine == 1 ? self.preferred-height : 0px;
+            text: "Approximate tint and frost. No polarization, double images, haze, zones or rounding. Paths are depth-limited; metrics use their own tracer.";
+            wrap: word-wrap;
+            font-size: Theme.text-label;
+            color: Theme.on-surface-variant;
         }
     }
 }

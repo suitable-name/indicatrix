@@ -86,6 +86,9 @@ pub struct PropsState {
     /// snapshot the next save must carry while the design's material is that one, and the
     /// specific gravity the carat estimate reads. Kept in step with [`Self::custom_materials`].
     pub custom_snapshots: Vec<(String, CustomMaterialSnapshot)>,
+    /// Recipe changes that belong to history steps (opening a variant with another
+    /// definition of a custom material), so Undo and Redo bring the recipe along.
+    pub recipe_steps: Vec<crate::recipe_steps::RecipeStep>,
     /// Whether the render material follows the design's own (see the module docs). On by
     /// default, as on the web.
     pub link_material: bool,
@@ -99,6 +102,7 @@ impl Default for PropsState {
         Self {
             custom_materials: Vec::new(),
             custom_snapshots: Vec::new(),
+            recipe_steps: Vec::new(),
             link_material: true,
             checks_cache: Mutex::new(None),
         }

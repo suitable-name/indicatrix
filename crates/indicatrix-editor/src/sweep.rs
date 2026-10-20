@@ -36,15 +36,19 @@
 //! The work runs on threads natively; on `wasm32-unknown-unknown`, which cannot spawn
 //! one, it runs inline in the same order, so the result is identical either way.
 //!
-//! Tools of concave tiers are not part of the figures, as in Optimize: the stone is
-//! scored on its flat facets.
+//! The stone is scored with the tools of its concave tiers (the stone the Compare window
+//! draws): the table-up figures and the tilt averages are those of the carved stone. A
+//! design without concave tiers is scored exactly as it always was.
 
 mod chart;
 mod csv;
 mod form;
 mod metric;
+mod rows;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_concave;
 
 pub use chart::{
     chart_path, chart_x_percent, current_x_percent, hover_text, nearest_row, series_range_text,
@@ -58,14 +62,15 @@ pub use metric::{BestFlags, SweepMetric, best_flags};
 
 use crate::{
     EditChange, EditorSession,
-    metric_deltas::measure_tilt_average,
+    metric_deltas::measure_tilt_average_geom,
     retarget::plan::tier_display_name,
     session::SessionEditError,
     solve_policy::{design_to_gpu_planes_from_solved, solve_cancellably},
 };
 use indicatrix::{
-    color::metrics::evaluate_gem_optical_metrics,
+    color::metrics::evaluate_gem_optical_metrics_geom,
     geometry::{
+        StoneGeometry,
         meet_solver::{SolveError, SolveStrategy},
         stone_metrics::{SolidStatus, build_solid_mesh, measure_solid},
     },
@@ -73,8 +78,9 @@ use indicatrix::{
 };
 use indicatrix_cut_core::{
     DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, Design, DesignSolveError, Edit, EditError,
-    ManufacturabilityWarning, check_manufacturability, design::snap_noise, volumetric_yield,
+    check_manufacturability, design::snap_noise, volumetric_yield,
 };
+use rows::{count_warnings, note_lost_girdles, set_swept_angle};
 use std::{
     fmt,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -662,17 +668,28 @@ fn evaluate_step(shared: &Shared<'_>, angle_deg: f64, is_current: bool) -> Step 
         &mut row.notes,
     );
     let gpu_planes = design_to_gpu_planes_from_solved(&scratch, &solved);
-    let fast = evaluate_gem_optical_metrics(
-        &gpu_planes,
+    // The stone with its concave tools (none for a flat design), as the Compare window
+    // measures it: the same placement rule, the same tracer entry points.
+    let tools = scratch.tools_for_scoring(&planes);
+    let stone = StoneGeometry {
+        planes: &gpu_planes,
+        tools: &tools,
+    };
+    let fast = evaluate_gem_optical_metrics_geom(
+        stone,
         shared.scene.material,
         0.0,
         TABLE_UP_PITCH_RAD,
         shared.scene.environment,
     );
+    // The yield reads the carved volume (the flat one without tools, or when the tools leave
+    // no closed stone), the same measure the yield report and carat weight use.
+    let volume =
+        Design::carved_metrics(Some(solid), &planes, &tools).map_or(solid.volume, |m| m.volume);
     let tilt = if shared.options.tilt_average {
         // The same measurement the compare window takes, stopped by the sweep's cancel flag.
-        let Some(averages) = measure_tilt_average(
-            &gpu_planes,
+        let Some(averages) = measure_tilt_average_geom(
+            stone,
             shared.scene.material,
             shared.scene.environment,
             &mut |_| !shared.cancel.load(Ordering::Relaxed),
@@ -691,7 +708,7 @@ fn evaluate_step(shared: &Shared<'_>, angle_deg: f64, is_current: bool) -> Step 
         scintillation_pct: fast.scintillation_pct,
         yield_pct: shared
             .preform_volume
-            .and_then(|preform| volumetric_yield(solid.volume, preform))
+            .and_then(|preform| volumetric_yield(volume, preform))
             .map(|fraction| fraction * 100.0),
         warning_count,
         has_girdle: solid
@@ -700,69 +717,6 @@ fn evaluate_step(shared: &Shared<'_>, angle_deg: f64, is_current: bool) -> Step 
         tilt,
     });
     Step::Row(row)
-}
-
-/// Sets the swept tier's angle on the clone and lets every tier whose angle follows a
-/// relation follow, as a real edit does. The error is the relation's plain-English
-/// message (a result outside 0 to 90 degrees, a loop).
-fn set_swept_angle(scratch: &mut Design, tier: usize, angle_deg: f64) -> Result<(), String> {
-    if let Some(swept) = scratch.tiers.get_mut(tier) {
-        swept.angle_deg = angle_deg;
-    }
-    let updates = scratch
-        .evaluate_relations()
-        .map_err(|error| error.to_string())?;
-    for (position, deg) in updates {
-        if let Some(driven) = scratch.tiers.get_mut(position) {
-            driven.angle_deg = deg;
-        }
-    }
-    Ok(())
-}
-
-/// Counts the vanishing and undersized facets of a row and says so in its notes.
-fn count_warnings(warnings: &[ManufacturabilityWarning], notes: &mut Vec<String>) -> usize {
-    let vanishing = warnings
-        .iter()
-        .filter(|warning| matches!(warning, ManufacturabilityWarning::VanishingFacet { .. }))
-        .count();
-    let undersized = warnings
-        .iter()
-        .filter(|warning| matches!(warning, ManufacturabilityWarning::UndersizedFacet { .. }))
-        .count();
-    if vanishing > 0 {
-        notes.push(format!(
-            "{vanishing} facet{} vanish{}.",
-            if vanishing == 1 { "" } else { "s" },
-            if vanishing == 1 { "es" } else { "" }
-        ));
-    }
-    if undersized > 0 {
-        notes.push(format!(
-            "{undersized} facet{} very small.",
-            if undersized == 1 { " is" } else { "s are" }
-        ));
-    }
-    vanishing + undersized
-}
-
-/// Says "the girdle band is gone" on every valid row that lost the band the current
-/// row has.
-fn note_lost_girdles(rows: &mut [SweepRow]) {
-    let had_girdle = rows
-        .iter()
-        .find(|row| row.is_current)
-        .and_then(|row| row.metrics)
-        .is_some_and(|metrics| metrics.has_girdle);
-    if !had_girdle {
-        return;
-    }
-    for row in rows.iter_mut().filter(|row| !row.is_current) {
-        if row.metrics.is_some_and(|metrics| !metrics.has_girdle) {
-            row.notes
-                .push("The girdle band is gone at this angle.".to_owned());
-        }
-    }
 }
 
 /// Makes `new_deg` the real angle of `tier`, as one undo step: the tiers whose angles

@@ -12,26 +12,38 @@
 //! 1 to 5); what only a design can judge (a tier name, a sweep range) is judged by the
 //! command.
 //!
+//! # Several designs
+//!
+//! Every command that takes a design file takes several. A line with one design is the plain
+//! command; a line with several is a [`Command::Batch`] holding the plain command of each, with
+//! the naming rule for their output files in `batch`.
+//!
 //! # Layout
 //!
 //! `types` holds the parsed shapes and the flag words, `values` the cursor along the words and
-//! the check of one flag's value, and `parsers` one parser per command.
+//! the check of one flag's value, `parsers` one parser per command, and `batch` the step that
+//! turns several design files into one command each.
 
+mod batch;
 mod parsers;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_batch;
 mod types;
 mod values;
 
 use parsers::{
-    parse_export, parse_info, parse_metrics, parse_optimize, parse_render_job, parse_retarget,
-    parse_solve, parse_sweep, parse_validate,
+    parse_census, parse_export, parse_info, parse_metrics, parse_optimize, parse_render_job,
+    parse_retarget, parse_solve, parse_sweep, parse_validate,
 };
 pub use types::{
-    Command, ExportArgs, ExportFormat, InfoArgs, JobCommandKind, MaterialArg, MetricsArgs, Mode,
-    OptimizeArgs, RenderJobArgs, ReportFormat, RetargetArgs, SolveArgs, SweepArgs, Topic,
-    ValidateArgs, lighting_name, preset_name,
+    Batch, CensusArgs, Command, ExportArgs, ExportFormat, InfoArgs, JobCommandKind, MaterialArg,
+    MetricsArgs, Mode, OptimizeArgs, RenderJobArgs, ReportFormat, ReportStyle, RetargetArgs,
+    SolveArgs, SweepArgs, Topic, ValidateArgs, lighting_name, preset_name,
 };
+#[cfg(test)]
+pub use types::{CensusBuiltins, CensusOutput};
 
 /// Parses `argv` (without the program name).
 ///
@@ -54,19 +66,20 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
         "help" => Ok(Command::Help(
             rest.first().map_or(Topic::Root, |w| Topic::of(w)),
         )),
-        "info" => parse_info(rest).map(Command::Info),
-        "solve" => parse_solve(rest).map(Command::Solve),
-        "metrics" => parse_metrics(rest).map(Command::Metrics),
-        "validate" => parse_validate(rest).map(Command::Validate),
-        "optimize" => parse_optimize(rest).map(Command::Optimize),
-        "retarget" => parse_retarget(rest).map(Command::Retarget),
-        "sweep" => parse_sweep(rest).map(Command::Sweep),
-        "export" => parse_export(rest).map(Command::Export),
+        "info" => parse_info(rest),
+        "solve" => parse_solve(rest),
+        "metrics" => parse_metrics(rest),
+        "validate" => parse_validate(rest),
+        "optimize" => parse_optimize(rest),
+        "retarget" => parse_retarget(rest),
+        "sweep" => parse_sweep(rest),
+        "export" => parse_export(rest),
+        "census" => parse_census(rest),
         "render" => parse_render_job(JobCommandKind::Render, rest).map(Command::Render),
         "tilt-video" => parse_render_job(JobCommandKind::TiltVideo, rest).map(Command::TiltVideo),
         other => Err(format!(
             "unknown command {other:?} (expected info, solve, metrics, validate, optimize, \
-             retarget, sweep, export, render or tilt-video; see --help)"
+             retarget, sweep, export, census, render or tilt-video; see --help)"
         )),
     }
 }

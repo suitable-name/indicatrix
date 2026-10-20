@@ -2,8 +2,10 @@
 //!
 //! - [`trace_size`]: the raster the trace is drawn at (long edge 512 px on a phone, 768 px
 //!   on a larger window, 384 px in battery saver; the Solid view's minimum aspect);
-//! - [`RenderDriver`] and [`maintain`]: when the trace starts, restarts (at most once per
-//!   150 ms while a finger is down) and stops, and why it could not start;
+//! - [`RenderDriver`] and [`maintain`]: when the trace starts, restarts and stops, and why
+//!   it could not start. A drag of the camera or the light cancels it once and restarts it
+//!   once after the finger lifts (see [`render_drag`](super::render_drag)); [`live_solid`]
+//!   says when the picture area shows the Solid raster at the live pose meanwhile;
 //! - [`status_line`] and [`progress_fraction`]: what the overlay says about the trace;
 //! - [`LightDrag`] and [`drag_light`]: one finger moving the light instead of the camera;
 //! - the export options: [`size_options`], [`spp_options`], [`export_request`],
@@ -14,6 +16,7 @@ use std::time::Duration;
 use indicatrix_solid::preview::view::with_min_aspect;
 
 use super::frame::{MIN_EDGE, SOLID_MIN_ASPECT};
+use super::render_drag::Gate;
 use crate::{
     app_state::AppState,
     design_props::{LightValues, lighting_view, set_light_values},
@@ -46,10 +49,9 @@ pub const SPP_PRESETS: [u32; 3] = [64, 128, 256];
 /// (the camera's field of view is vertical, so a narrower raster would crop the stone's
 /// sides; the picture is letterboxed instead).
 #[must_use]
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     reason = "the edges are small, rounded, positive and at most the long edge"
 )]
 pub fn trace_size(view: (f32, f32), compact: bool, battery_saver: bool) -> (u32, u32) {
@@ -160,8 +162,12 @@ pub enum Maintain {
     Idle,
     /// A new trace epoch was started.
     Started,
-    /// A restart is due but too soon after the last one: call again after this long.
+    /// A restart is due but too soon after the last one (or the pose has not rested since
+    /// the finger went up): call again after this long.
     Wait(Duration),
+    /// A finger is moving the camera or the light: the trace is cancelled and nothing
+    /// starts until it lifts. Nothing to schedule; the release asks again.
+    Held,
     /// The trace could not start; the sentence says why. Not retried until the design,
     /// its solve, the material or the lighting changes.
     Blocked(String),
@@ -192,8 +198,20 @@ impl RenderDriver {
         self.blocked.as_ref().map(|(_, message)| message.as_str())
     }
 
+    /// A drag moved the camera or the light: cancels the running trace once (flags only, no
+    /// join) so the workers leave the cores to the UI, and drops the run key so that the
+    /// next start is a start.
+    fn hold(&mut self, state: &mut AppState) {
+        if !state.viewport.render_live.is_stopped() {
+            state.render.stop();
+            self.running = None;
+            state.viewport.render_live.mark_stopped();
+        }
+    }
+
     fn step(&mut self, state: &mut AppState, now: Duration, touching: bool) -> Maintain {
         if !wants(state) {
+            state.viewport.render_live.reset();
             if self.active {
                 state.render.stop();
                 self.active = false;
@@ -202,6 +220,20 @@ impl RenderDriver {
             }
             return Maintain::Idle;
         }
+        // A drag in progress (camera or light) never builds a scene or starts an epoch.
+        state.viewport.render_live.stamp(now);
+        match state.viewport.render_live.gate(now, touching) {
+            Gate::Hold => {
+                self.hold(state);
+                return Maintain::Held;
+            }
+            Gate::Wait(delay) => {
+                self.hold(state);
+                return Maintain::Wait(delay);
+            }
+            Gate::Idle | Gate::Go => {}
+        }
+        let owes = state.viewport.render_live.owes_restart();
         let compact = state.window_class == crate::layout::WindowClass::Compact;
         let size = trace_size(
             state.viewport.view_size,
@@ -212,13 +244,16 @@ impl RenderDriver {
             size,
             target_spp: render::live_target_spp(state),
         };
-        if self.running.as_ref() == Some(&run_key) && !render::needs_restart(state) {
+        // A moved camera or light is known to need a restart: skip the scene comparison (it
+        // describes the whole scene on the UI thread).
+        if !owes && self.running.as_ref() == Some(&run_key) && !render::needs_restart(state) {
             return Maintain::Idle;
         }
         let key = block_key(state);
         if let Some((blocked, message)) = &self.blocked
             && *blocked == key
         {
+            state.viewport.render_live.abandoned();
             return Maintain::Blocked(message.clone());
         }
         match self.gate.decide(now, touching) {
@@ -229,15 +264,18 @@ impl RenderDriver {
                     height: size.1,
                 };
                 match render::start(state, view) {
-                    Ok(_epoch) => {
+                    Ok(epoch) => {
                         self.gate.started(now);
                         self.active = true;
                         self.running = Some(run_key);
                         self.blocked = None;
+                        let camera = state.viewport.camera;
+                        state.viewport.render_live.started(epoch, camera);
                         Maintain::Started
                     }
                     Err(message) => {
                         self.blocked = Some((key, message.clone()));
+                        state.viewport.render_live.abandoned();
                         Maintain::Blocked(message)
                     }
                 }
@@ -268,11 +306,33 @@ pub fn wants(state: &AppState) -> bool {
         && state.viewport.view_size.1 >= 1.0
 }
 
+/// Whether the Render mode shows the Solid raster at the live pose instead of the traced
+/// picture.
+///
+/// That is the case when the camera moved and the traced picture of the new pose has not
+/// landed yet. Needs a solve (without one the raster has nothing to draw and the status text shows).
+#[must_use]
+pub fn live_solid(state: &AppState) -> bool {
+    let generation = state.session.current_generation();
+    state.viewport.mode.is_render()
+        && state.viewport.render_live.solid()
+        && state.solve.current_tiers(generation).is_some()
+}
+
+/// A traced frame of `epoch` was put on screen. Returns whether the Solid raster gave way to
+/// it, so the viewport must be pushed again.
+pub fn frame_landed(state: &mut AppState, epoch: u64) -> bool {
+    let camera = state.viewport.camera;
+    state.viewport.render_live.frame_landed(epoch, camera)
+}
+
 /// Brings the trace in line with the state.
 ///
-/// It starts it when the Render mode is on show and
-/// the scene (or the view) changed, restarts it at most once per [`DRAG_RESTART_INTERVAL`]
-/// while a finger is down, and stops it when the mode goes off show.
+/// It starts it when the Render mode is on show and the scene (or the view) changed, and
+/// stops it when the mode goes off show. While the camera or the light is being dragged it
+/// cancels the trace once and starts nothing until the finger is up and the pose has rested
+/// for [`SETTLE`](super::render_drag::SETTLE) (see `render_drag`); other restarts with a
+/// finger down are limited to one per [`DRAG_RESTART_INTERVAL`].
 ///
 /// `now` is the time since the app started. Cheap when nothing changed.
 pub fn maintain(state: &mut AppState, now: Duration) -> Maintain {
@@ -298,12 +358,23 @@ pub fn status_line(state: &AppState) -> String {
     if state.viewport.light_drag.on {
         return "Drag to move the light".to_owned();
     }
+    if state.viewport.render_live.owes_restart() && state.viewport.touch.is_down() {
+        return "Release to render this view".to_owned();
+    }
     match state.render.status() {
         RenderStatus::Idle => state
             .viewport
             .driver
             .blocked_message()
             .map_or_else(|| "Starting the render...".to_owned(), str::to_owned),
+        RenderStatus::Tracing { samples, target }
+            if state.settings.render.engine_spec().is_ray() =>
+        {
+            format!("Ray-Traced · Tap {samples} Of {target}")
+        }
+        RenderStatus::Done { .. } if state.settings.render.engine_spec().is_ray() => {
+            "Ray-Traced · Done".to_owned()
+        }
         RenderStatus::Tracing { samples, target } => format!("Rendering {samples} / {target}"),
         RenderStatus::Done { samples } => format!("Done, {samples} samples"),
         RenderStatus::Paused(PauseReason::User) => "Paused".to_owned(),
@@ -316,7 +387,7 @@ pub fn status_line(state: &AppState) -> String {
 /// How far the trace is, `0.0..=1.0`, when the status says; `None` while paused (keep the
 /// last value) or idle.
 #[must_use]
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     reason = "the fraction is within 0 to 1; f32 is plenty"
 )]
@@ -418,6 +489,7 @@ pub fn light_after_drag(values: LightValues, dx: f32, dy: f32) -> LightValues {
 pub fn drag_light(state: &mut AppState, dx: f32, dy: f32) {
     let values = light_after_drag(lighting_view(state).values, dx, dy);
     set_light_values(state, values);
+    state.viewport.render_live.light_moved();
 }
 
 /// The export sizes (long edge, px) the sheet offers under the settings' cap: the presets
@@ -499,7 +571,7 @@ impl ExportEstimate {
 
     /// The estimate for `request`, if there is a measurement.
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         reason = "an estimate in seconds does not need f64"
     )]
@@ -533,10 +605,6 @@ fn round_to_5(value: f32) -> f32 {
 
 /// A file size for the sheet: "850 KB", "1.4 MB".
 #[must_use]
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "a size shown to one decimal does not need every bit"
-)]
 pub fn byte_size_text(bytes: usize) -> String {
     const KB: f64 = 1024.0;
     let value = bytes as f64;
@@ -575,257 +643,5 @@ pub fn export_file_name(title: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-    use crate::platform_mock::MockPlatform;
-
-    fn state() -> AppState {
-        AppState::new(Arc::new(MockPlatform::default()))
-    }
-
-    #[test]
-    #[expect(
-        clippy::suboptimal_flops,
-        reason = "a test bound; the unfused multiply-then-subtract is exact enough for it"
-    )]
-    fn trace_size_follows_the_view_and_the_class() {
-        // A phone viewport is narrower than the minimum aspect: the height is cut.
-        assert_eq!(trace_size((390.0, 320.0), true, false), (512, 320));
-        // A wide tablet viewport keeps its own aspect.
-        let (w, h) = trace_size((800.0, 390.0), false, false);
-        assert_eq!(w, 768);
-        assert!((372..=376).contains(&h), "{h}");
-        // Battery saver shrinks it; nothing is ever below the minimum edge.
-        assert_eq!(trace_size((800.0, 400.0), true, true).0, 384);
-        let (w, h) = trace_size((0.0, 0.0), true, false);
-        assert!(w >= MIN_EDGE && h >= MIN_EDGE);
-        // A tall view is the long edge in height, then letterboxed to the aspect.
-        let (w, h) = trace_size((200.0, 800.0), true, false);
-        assert!(f64::from(w) >= f64::from(h) * f64::from(SOLID_MIN_ASPECT) - 1.0);
-    }
-
-    #[test]
-    fn the_gate_lets_a_still_picture_restart_at_once() {
-        let mut gate = RestartGate::default();
-        let t0 = Duration::from_secs(10);
-        assert_eq!(gate.decide(t0, true), GateDecision::Start);
-        gate.started(t0);
-        assert_eq!(gate.decide(t0, false), GateDecision::Start);
-    }
-
-    #[test]
-    fn the_gate_coalesces_restarts_while_a_finger_is_down() {
-        let mut gate = RestartGate::default();
-        let t0 = Duration::from_secs(10);
-        gate.started(t0);
-        let soon = t0 + Duration::from_millis(40);
-        assert_eq!(
-            gate.decide(soon, true),
-            GateDecision::Wait(Duration::from_millis(110))
-        );
-        assert_eq!(
-            gate.decide(t0 + Duration::from_millis(150), true),
-            GateDecision::Start
-        );
-        assert_eq!(
-            gate.decide(t0 + Duration::from_millis(400), true),
-            GateDecision::Start
-        );
-    }
-
-    #[test]
-    fn touch_state_tracks_both_kinds_of_touch() {
-        let mut touch = TouchState::default();
-        assert!(!touch.is_down());
-        touch.set_pointer(true);
-        assert!(touch.is_down());
-        touch.set_pointer(false);
-        touch.set_pinch(true);
-        assert!(touch.is_down());
-        touch.set_pinch(false);
-        assert!(!touch.is_down());
-    }
-
-    #[test]
-    fn a_light_drag_reports_the_movement_between_events() {
-        let mut drag = LightDrag::default();
-        assert_eq!(drag.moved(5.0, 5.0), None);
-        drag.begin(10.0, 20.0);
-        assert_eq!(drag.moved(14.0, 18.0), Some((4.0, -2.0)));
-        assert_eq!(drag.moved(14.0, 30.0), Some((0.0, 12.0)));
-        drag.end();
-        assert_eq!(drag.moved(1.0, 1.0), None);
-    }
-
-    #[test]
-    fn dragging_right_and_up_turns_the_light_and_raises_it() {
-        let values = LightValues {
-            exposure: 1.0,
-            azimuth_deg: 100.0,
-            elevation_deg: 50.0,
-            head_shadow_deg: 10.0,
-            surface_glare_pct: 100.0,
-        };
-        let moved = light_after_drag(values, 10.0, -10.0);
-        assert!((moved.azimuth_deg - 104.0).abs() < 1e-4);
-        assert!((moved.elevation_deg - 53.0).abs() < 1e-4);
-        assert!((moved.exposure - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn dragging_the_light_stores_clamped_values_in_the_settings() {
-        let mut app = state();
-        let before = app.settings.lighting.azimuth_deg;
-        drag_light(&mut app, 100.0, 0.0);
-        let after = app.settings.lighting.azimuth_deg;
-        assert!(
-            (after - (before + 40.0).rem_euclid(360.0)).abs() < 1e-3,
-            "{after}"
-        );
-        // A huge upward drag stops at the elevation limit.
-        drag_light(&mut app, 0.0, -100_000.0);
-        assert!(app.settings.lighting.elevation_deg <= 88.0 + f32::EPSILON);
-    }
-
-    #[test]
-    fn export_options_respect_the_caps() {
-        assert_eq!(size_options(1024), vec![512, 1024]);
-        assert_eq!(size_options(768), vec![512]);
-        assert_eq!(size_options(300), vec![300]);
-        assert_eq!(spp_options(256), vec![64, 128, 256]);
-        assert_eq!(spp_options(100), vec![64]);
-        assert_eq!(spp_options(10), vec![10]);
-    }
-
-    #[test]
-    fn export_request_picks_the_chosen_options_within_the_caps() {
-        let settings = RenderSettings::default();
-        let request = export_request(&settings, 1, 2, ExportColorSpace::DisplayP3);
-        assert_eq!(request.long_edge_px, 1024);
-        assert_eq!(request.spp, 256);
-        assert_eq!(request.color_space, ExportColorSpace::DisplayP3);
-        // An index past the end picks the last option.
-        let request = export_request(&settings, 9, 9, ExportColorSpace::Srgb);
-        assert_eq!((request.long_edge_px, request.spp), (1024, 256));
-        // A lower cap lowers the choices.
-        let capped = RenderSettings {
-            export_cap_px: 600,
-            export_cap_spp: 100,
-            ..RenderSettings::default()
-        };
-        let request = export_request(&capped, 1, 2, ExportColorSpace::Srgb);
-        assert_eq!((request.long_edge_px, request.spp), (512, 64));
-    }
-
-    #[test]
-    fn color_space_indices_map_to_the_two_spaces() {
-        assert_eq!(color_space_from_index(0), ExportColorSpace::Srgb);
-        assert_eq!(color_space_from_index(1), ExportColorSpace::DisplayP3);
-        assert_eq!(color_space_from_index(7), ExportColorSpace::Srgb);
-    }
-
-    #[test]
-    fn the_estimate_scales_with_pixels_and_samples() {
-        let base = ExportRequest {
-            long_edge_px: 512,
-            spp: 64,
-            color_space: ExportColorSpace::Srgb,
-        };
-        let estimate = ExportEstimate::new(&base, Some(10.0));
-        let double_spp = ExportRequest { spp: 128, ..base };
-        let double_edge = ExportRequest {
-            long_edge_px: 1024,
-            ..base
-        };
-        assert!((estimate.for_request(&base).unwrap() - 10.0).abs() < 1e-3);
-        assert!((estimate.for_request(&double_spp).unwrap() - 20.0).abs() < 1e-3);
-        assert!((estimate.for_request(&double_edge).unwrap() - 40.0).abs() < 1e-3);
-        assert_eq!(ExportEstimate::new(&base, None).for_request(&base), None);
-        assert_eq!(
-            ExportEstimate::new(&base, Some(f32::NAN)).for_request(&base),
-            None
-        );
-    }
-
-    #[test]
-    fn the_estimate_text_reads_naturally() {
-        assert!(estimate_text(None).contains("unavailable"));
-        assert_eq!(estimate_text(Some(3.0)), "Under 10 seconds.");
-        assert_eq!(estimate_text(Some(42.0)), "About 40 seconds.");
-        assert_eq!(estimate_text(Some(300.0)), "About 5 minutes.");
-        assert_eq!(estimate_text(Some(100.0)), "About 2 minutes.");
-    }
-
-    #[test]
-    fn file_names_are_safe_and_end_in_png() {
-        assert_eq!(
-            export_file_name("Standard Round Brilliant"),
-            "Standard Round Brilliant.png"
-        );
-        assert_eq!(export_file_name("  a/b:c*d  "), "a b c d.png");
-        assert_eq!(export_file_name(""), "Indicatrix Render.png");
-        assert_eq!(export_file_name("///"), "Indicatrix Render.png");
-        assert_eq!(export_file_name("..."), "Indicatrix Render.png");
-        let long = "x".repeat(200);
-        assert_eq!(export_file_name(&long).len(), 64);
-    }
-
-    #[test]
-    fn byte_sizes_read_naturally() {
-        assert_eq!(byte_size_text(12), "12 bytes");
-        assert_eq!(byte_size_text(2048), "2 KB");
-        assert_eq!(byte_size_text(1_572_864), "1.5 MB");
-    }
-
-    #[test]
-    fn qualities_cycle_and_have_labels() {
-        assert_eq!(next_quality(RenderQuality::Draft), RenderQuality::Normal);
-        assert_eq!(next_quality(RenderQuality::Normal), RenderQuality::Fine);
-        assert_eq!(next_quality(RenderQuality::Fine), RenderQuality::Draft);
-        assert_eq!(quality_index(RenderQuality::Fine), 2);
-        assert_eq!(quality_label(RenderQuality::Normal), "Normal");
-    }
-
-    #[test]
-    fn progress_follows_the_status() {
-        assert_eq!(
-            progress_fraction(&RenderStatus::Tracing {
-                samples: 16,
-                target: 64
-            }),
-            Some(0.25)
-        );
-        assert_eq!(
-            progress_fraction(&RenderStatus::Done { samples: 64 }),
-            Some(1.0)
-        );
-        assert_eq!(progress_fraction(&RenderStatus::Idle), Some(0.0));
-        assert_eq!(
-            progress_fraction(&RenderStatus::Paused(PauseReason::User)),
-            None
-        );
-        assert_eq!(
-            progress_fraction(&RenderStatus::Tracing {
-                samples: 1,
-                target: 0
-            }),
-            Some(0.0)
-        );
-    }
-
-    #[test]
-    fn an_unsolved_design_says_to_solve_it() {
-        let app = state();
-        assert_eq!(status_line(&app), "Solve the design to render it");
-    }
-
-    #[test]
-    fn nothing_is_wanted_while_the_solid_view_is_up() {
-        let mut app = state();
-        assert!(!wants(&app));
-        assert_eq!(maintain(&mut app, Duration::from_secs(1)), Maintain::Idle);
-        assert!(!app.viewport.driver.is_active());
-    }
-}
+#[path = "render_view_tests.rs"]
+mod tests;

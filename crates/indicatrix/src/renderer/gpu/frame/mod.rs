@@ -253,7 +253,7 @@ use std::{sync::atomic::AtomicBool, time::Instant};
 
 use glam::Vec3;
 
-use crate::renderer::gpu::GpuAcquireError;
+use crate::{geometry::tool::ToolPrimitive, renderer::gpu::GpuAcquireError};
 
 mod accumulate;
 #[cfg(target_arch = "wasm32")]
@@ -283,11 +283,11 @@ pub use crate::renderer::gpu_backend::GpuPipelineKind;
 
 pub(crate) use batch::{BatchEvent, BatchState};
 pub(crate) use bind_groups::TransportDispatchArgs;
-pub(crate) use dispatch::encode_and_dispatch;
+pub(crate) use dispatch::{encode_and_dispatch, environment_params};
 pub use equivalence::{
     ChunkEquivalenceResult, PipelineEquivalenceResult, SpecialisationCaseResult,
-    SpecialisationEquivalenceResult, run_chunk_equivalence, run_pipeline_equivalence,
-    run_specialisation_equivalence, run_wavefront_determinism,
+    SpecialisationEquivalenceResult, run_chunk_equivalence, run_event_wavefront_equivalence,
+    run_pipeline_equivalence, run_specialisation_equivalence, run_wavefront_determinism,
 };
 pub(crate) use readback::GpuReduceParams;
 pub use renderer::GpuFrameRenderer;
@@ -526,6 +526,11 @@ pub(crate) enum ChunkTurnOutcome {
 /// `max_chunks: usize::MAX`.
 pub(crate) struct TurnRequest<'a> {
     pub(crate) scene: &'a GpuFrameScene<'a>,
+    /// The stone's concave tools (`&[]` for a convex stone): packed after the planes in the
+    /// `planes` binding by [`GpuFrameRenderer::prepare_turn`] (see
+    /// `geometry::tool::pack_planes_and_tools` for the layout). Tool `k` has facet id
+    /// `scene.planes.len() + k`.
+    pub(crate) tools: &'a [ToolPrimitive],
     /// One of [`material_class`]'s values -- see `scene.material` and
     /// [`classify_material`].
     pub(crate) pipeline_class: u32,
@@ -552,6 +557,12 @@ pub(crate) struct TurnRequest<'a> {
 /// chunks either -- see [`GpuFrameRenderer::accumulate_via_pipeline`].
 pub(crate) struct ChunkFrameState<'a> {
     pub(crate) scene: &'a GpuFrameScene<'a>,
+    /// Entries in the `planes` binding for this scene: the planes plus the packed tool
+    /// records. This, not `scene.planes.len()`, is the bound byte range of `planes` and of
+    /// the parallel `facet_finishes` buffer (see [`GpuFrameRenderer::prepare_turn`]).
+    pub(crate) packed_len: usize,
+    /// Number of tool records in the `planes` binding (`GpuTransportParams::num_tools`).
+    pub(crate) tool_count: u32,
     pub(crate) pipeline_class: u32,
     pub(crate) sample_offset: u32,
     pub(crate) spp: u32,

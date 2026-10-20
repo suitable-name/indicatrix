@@ -1,4 +1,6 @@
-import { SpinBox, ScrollView } from "std-widgets.slint";
+import { OutputRendererPicker } from "export_dialog/renderer_picker.slint";
+import { OpticalModel } from "../models/optical.slint";
+import { SpinBox, ScrollView, CheckBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { ExportModel } from "../models/export.slint";
 import { RenderJobsModel } from "../models/render_jobs.slint";
@@ -18,6 +20,7 @@ import { MaterialLine } from "material_chip.slint";
 import { ExportOutputLocation } from "export_dialog/output_location.slint";
 import { ExportComputeAndBounces } from "export_dialog/compute_and_bounces.slint";
 import { ExportSamplesAndPresets } from "export_dialog/samples_and_presets.slint";
+import { WrappedNote } from "export_dialog/wrapped_note.slint";
 
 // A section caption with its tooltip.
 component SectionCaption inherits Rectangle {
@@ -74,7 +77,7 @@ export component ExportDialog inherits Rectangle {
     // this is what's shown to the user and what lands in the filename template's
     // `{spp}` variable (`bridge::export_thread::filename_template`).
     property <int> sample_exponent: Math.round(ExportModel.sample_exponent_raw);
-    property <int> effective_samples: Math.round(Math.pow(2.0, root.sample_exponent));
+    property <int> effective_samples: ExportModel.engine_index == 1 ? ExportModel.ray_taps : Math.round(Math.pow(2.0, root.sample_exponent));
     // Index -> rung value, read off the one ladder Rust publishes.
     property <int> effective_max_bounces: SettingsModel.bounce_ladder[root.selected_bounce_index];
     // Whether a choice the Simple view hides is off its default (the pure rule is
@@ -230,6 +233,7 @@ export component ExportDialog inherits Rectangle {
                     preferred-height: body_col.preferred-height;
 
                     body_col := VerticalLayout {
+                        CheckBox { enabled: ExportModel.engine_index == 0; text: "Include Optical Diagnostics (4 Samples/Pixel)"; accessible-description: "Adds the diagnostic picture and its companion legend file to the export."; checked <=> OpticalModel.include_still; }
                         spacing: 14px;
                         padding-right: 12px;
 
@@ -239,7 +243,13 @@ export component ExportDialog inherits Rectangle {
                         // The material this export will use (read-only; the Stone tab changes it).
                         MaterialLine {}
 
-                        ExportOutputLocation {}
+                        ExportOutputLocation {
+                            out_width: root.effective_width;
+                            out_height: root.effective_height;
+                            out_spp: root.effective_samples;
+                            out_bounces: root.effective_max_bounces;
+                            out_color_space: ExportModel.selected_color_space_index;
+                        }
 
                         Rectangle { height: 1px; background: Theme.surface-raised; }
 
@@ -363,7 +373,7 @@ export component ExportDialog inherits Rectangle {
                                 }
                             }
 
-                            if ExportModel.selected_color_space_index != 0: Text {
+                            if ExportModel.selected_color_space_index != 0: WrappedNote {
                                 text: "Wider gamut, tagged with an embedded color profile so viewers display it correctly.";
                                 font-size: 11px;
                                 color: Theme.text-muted;
@@ -386,6 +396,12 @@ export component ExportDialog inherits Rectangle {
                         // out. `effective_samples`/`sample_exponent` stay computed on THIS
                         // dialog (the footer/key handler below need them too) and are
                         // passed in read-only.
+                        OutputRendererPicker {
+                            engine_index <=> ExportModel.engine_index;
+                            ray_taps <=> ExportModel.ray_taps;
+                            ray_fire <=> ExportModel.ray_fire;
+                            enabled: !ExportModel.is_exporting;
+                        }
                         ExportSamplesAndPresets {
                             effective_samples: root.effective_samples;
                             sample_exponent: root.sample_exponent;

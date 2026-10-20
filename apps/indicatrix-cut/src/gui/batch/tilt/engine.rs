@@ -4,15 +4,10 @@
 
 use crate::{
     BatchModel,
-    bridge::{
-        preview_render::{
-            BATCH_TILT_LIGHTING_PRESET, FingerprintMaterial, PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW,
-        },
-        remote::remote_render,
-    },
+    bridge::preview_render::FingerprintMaterial,
     gui::{
         batch::{
-            batch_queue::{WorkQueue, local_lane_count},
+            batch_queue::WorkQueue,
             catalogue_material::{CatalogueMaterialSource, catalogue_material},
             preview::target_ri_for_design,
             remote_dispatch::{DispatcherGroup, RemoteStatus},
@@ -23,25 +18,15 @@ use crate::{
     settings::WorkerSettings,
 };
 use indicatrix::{
-    color::metrics::{
-        PROFILE_AZIMUTHS_DEG, SweepProgress, evaluate_all_axes_profiles_stepped,
-        evaluate_full_axis_profile_at_azimuth_geom_threaded,
+    color::metrics::{FinishedStone, SweepProgress},
+    geometry::{
+        facet_finishes_with_frosted,
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
     },
-    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
-    optics::{
-        fluorescence::Fluorescence,
-        materials::GemMaterial,
-        raytracer::{DEFAULT_MAX_BOUNCES, EnvironmentSource},
-    },
+    optics::{materials::GemMaterial, raytracer::FacetFinish},
 };
-use indicatrix_net::{
-    SceneState,
-    messages::{AxisTiltCurves as WireAxisTiltCurves, TiltCurvesRequest, TiltCurvesResponse},
-};
-use indicatrix_vault::model::tilt_curves::{
-    AxisTiltCurves as StorageAxisTiltCurves, TILT_CURVE_AXIS_COUNT, TILT_CURVE_POINTS_PER_AXIS,
-    TiltPerformanceCurves,
-};
+use indicatrix_vault::model::tilt_curves::TiltPerformanceCurves;
 use slint::{ComponentHandle, Weak};
 use std::{
     any::Any,
@@ -55,32 +40,17 @@ use std::{
 };
 use tracing::warn;
 
+#[cfg(test)]
+mod frosting_tests;
 mod save;
+mod sweep;
 
 use super::remote_lane::run_remote_lane;
 use save::save_curves;
 pub use save::save_tilt_curves_for_entry;
-
-/// `max_bounces` on the [`SceneState`] a remote tilt-curve request carries -- IGNORED
-/// by the worker's `TILT_CURVES` handler entirely (see `indicatrix_net::messages::tilt`'s
-/// module doc comment: only `planes`/`material`/`light_yaw`/`light_pitch` actually feed
-/// the computation), but still validated, so this must be a plausible value
-/// (`1..=128`, see `apps/indicatrix-worker::validate::MAX_BOUNCES`). It is the
-/// raytracer's [`DEFAULT_MAX_BOUNCES`] purely for familiarity -- no render this batch
-/// performs ever actually bounces a ray, so the specific value is otherwise arbitrary.
-const REMOTE_SCENE_MAX_BOUNCES: u32 = DEFAULT_MAX_BOUNCES;
-
-/// The environment the batch's tilt curves are scored under: [`BATCH_TILT_LIGHTING_PRESET`]
-/// at the preview light pose.
-const fn batch_environment() -> EnvironmentSource<'static> {
-    BATCH_TILT_LIGHTING_PRESET.studio(1.0, PREVIEW_LIGHT_YAW, PREVIEW_LIGHT_PITCH)
-}
-
-/// A single fixed request id for every tilt-curve remote dispatch -- safe for the same
-/// reason `bridge::preview_render::PREVIEW_REQUEST_ID` gives: each dispatch opens its
-/// OWN fresh one-shot connection (see [`fetch_tilt_curves_remote`]), so nothing is ever
-/// pipelined behind an unrelated request on the same socket.
-const TILT_REQUEST_ID: u32 = 1;
+use sweep::{
+    compute_tilt_curves_locally, compute_tilt_curves_locally_stepped, fetch_tilt_curves_remote,
+};
 
 /// How long the local lane sleeps before re-checking the queue when it finds nothing to
 /// claim but the remote lane has not yet signalled it is done -- see `gui::batch::batch_queue`'s
@@ -106,7 +76,7 @@ pub(super) struct BatchContext<'a> {
     /// built-ins -- as `gui::batch::preview::engine::BatchContext::custom_materials`.
     pub(super) custom_materials: &'a [GemMaterial],
     /// The designs whose geometry came from the angle table rather than a design
-    /// file -- see `gui::batch::record_planes_for_batch`. Read once at the end for
+    /// file -- see `gui::batch::record_planes_with_frosting_for_batch`. Read once at the end for
     /// the batch's summary line.
     pub(super) angle_table_entries: &'a Mutex<BTreeSet<i64>>,
 }
@@ -120,6 +90,13 @@ pub(super) struct BatchContext<'a> {
 struct ResolvedDesign {
     title: String,
     planes: Vec<GpuFacetPlane>,
+    /// The concave tools cut into `planes` (`CataloguePlanes::render_tools`), empty when
+    /// the design is planar: the curves are those of the stone WITH its tools.
+    tools: Vec<ToolPrimitive>,
+    /// The planes the design frosts (ascending indices into `planes`, from its stored
+    /// frosting); empty for a polished design and on the angle-table path. A frosted facet
+    /// scatters light, so the curves are those of the frosted stone.
+    frosted: Vec<u32>,
     material: GemMaterial,
     /// The persisted preview material's name `material` was looked up by -- part of the
     /// fingerprint the curves are stored with.
@@ -136,6 +113,21 @@ struct ResolvedDesign {
 }
 
 impl ResolvedDesign {
+    /// The stone the curves are swept over: the planes with their concave tools.
+    const fn stone(&self) -> StoneGeometry<'_> {
+        StoneGeometry {
+            planes: self.planes.as_slice(),
+            tools: self.tools.as_slice(),
+        }
+    }
+
+    /// The per-facet finishes of [`Self::stone`]: frosted where the design authors frosting,
+    /// empty (every facet polished) otherwise. The girdle toggle is a live-view setting no
+    /// catalogue design stores, so only the authored frosting counts.
+    fn finishes(&self) -> Vec<FacetFinish> {
+        facet_finishes_with_frosted(&self.planes, false, &self.frosted)
+    }
+
     /// The material part of the fingerprint the design's curves are stored with: the same
     /// name, size and source the scans rebuild from the persisted row.
     fn fingerprint_material(&self) -> FingerprintMaterial<'_> {
@@ -143,21 +135,29 @@ impl ResolvedDesign {
             name: Some(self.material_name.as_str()),
             girdle_mm: self.girdle_mm,
             from_design_file: self.material_source == CatalogueMaterialSource::DesignFile,
+            // The design's stored frosting is added when the curves are saved
+            // (`save::save_curves`), under the same lock as the write; the compare-and-swap
+            // on `updated_at` there refuses curves swept before a re-import or save moved it.
+            frosting: 0,
         }
     }
 }
 
 /// `full`'s facet planes for a tilt-curve sweep, with the material and stone size its
 /// design file records -- the design file first, the angle table only as the fallback
-/// (`gui::batch::record_planes_for_batch`, shared with the preview batch and the library
-/// detail view). Both the local and the remote lane get their planes here, through
-/// [`resolve_design`]; a remote `TILT_CURVES` request ships these planes in its scene, so
-/// the worker never resolves a record itself.
-pub(super) fn record_planes(
+/// (`gui::batch::record_planes_with_frosting_for_batch`, shared with the preview batch and
+/// the library detail view). Both the local and the remote lane get their planes here,
+/// through [`resolve_design`]; a remote `TILT_CURVES` request ships these planes in its
+/// scene, so the worker never resolves a record itself.
+///
+/// The second value is the design's frosted planes: the ascending indices into the returned
+/// planes the design frosts, the form the sweep's finishes and a remote scene's
+/// `frosted_planes` take. Empty for a polished design and on the angle-table path.
+pub(super) fn record_planes_with_frosting(
     ctx: &BatchContext<'_>,
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
-) -> Option<CataloguePlanes> {
-    super::super::record_planes_for_batch(full, ctx.angle_table_entries)
+) -> Option<(CataloguePlanes, Vec<u32>)> {
+    super::super::record_planes_with_frosting_for_batch(full, ctx.angle_table_entries)
 }
 
 /// Resolves `entry_id`'s geometry and preview material, or `None` if either step comes
@@ -186,7 +186,7 @@ fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesig
     let Ok(updated_at) = updated_at else {
         return None;
     };
-    let resolved = record_planes(ctx, &full)?;
+    let (resolved, frosted) = record_planes_with_frosting(ctx, &full)?;
 
     let target_ri = target_ri_for_design(&full);
     let chosen = {
@@ -212,195 +212,14 @@ fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesig
     Some(ResolvedDesign {
         title: full.title,
         planes: resolved.planes,
+        tools: resolved.render_tools,
+        frosted,
         material: chosen.material,
         material_name: chosen.name,
         girdle_mm: chosen.girdle_mm,
         material_source: chosen.source,
         updated_at,
     })
-}
-
-/// Converts one wire [`WireAxisTiltCurves`] (`Vec<f32>` fields, forced by `serde`'s
-/// array-length-32 ceiling -- see that type's own doc comment) into the storage
-/// [`StorageAxisTiltCurves`] (`[f32; 181]` fields) a fixed-length remote reply's axis
-/// must decode into.
-///
-/// # Errors
-///
-/// Returns an error string if any curve's length isn't exactly
-/// `indicatrix_vault::model::tilt_curves::TILT_CURVE_POINTS_PER_AXIS` -- would mean a
-/// worker on a different build with a different `TILT_CURVE_POINTS_PER_AXIS` replied
-/// (the wire type's own length isn't enforced by the type system, only by every
-/// production call site sending exactly that many points; see that constant's own doc
-/// comment), not an ordinary failure this batch should silently swallow the same way as
-/// a connection error.
-fn wire_axis_to_storage(axis: WireAxisTiltCurves) -> Result<StorageAxisTiltCurves, String> {
-    let to_array = |v: Vec<f32>, name: &str| -> Result<[f32; TILT_CURVE_POINTS_PER_AXIS], String> {
-        v.try_into().map_err(|v: Vec<f32>| {
-            format!(
-                "{name} has {} points, expected {TILT_CURVE_POINTS_PER_AXIS}",
-                v.len()
-            )
-        })
-    };
-    Ok(StorageAxisTiltCurves {
-        brilliance_pct: to_array(axis.brilliance_pct, "brilliance_pct")?,
-        extinction_pct: to_array(axis.extinction_pct, "extinction_pct")?,
-        windowing_pct: to_array(axis.windowing_pct, "windowing_pct")?,
-    })
-}
-
-/// Dispatches one design's full tilt-curve sweep to `worker` as a single `TILT_CURVES`
-/// request, blocking until it finishes, fails, or `cancel` is already set. See this
-/// group's `mod.rs` doc comment's "Remote dispatch has no mid-request cancellation or
-/// progress" section for why `cancel` is checked only once, up front, rather than
-/// during the request. Returns `None` on ANY shortfall (connection failure, missing
-/// `tilt_curves` capability, a `Cancelled`/`Error` reply, or a malformed reply) so the
-/// caller can decide what to do next -- see this group's "Local + remote" section:
-/// [`Both`] requeues for guaranteed local processing, [`RemoteOnly`] surfaces the
-/// failure directly.
-///
-/// [`Both`]: crate::settings::LiveComputeTarget::Both
-/// [`RemoteOnly`]: crate::settings::LiveComputeTarget::RemoteOnly
-fn fetch_tilt_curves_remote(
-    worker: &WorkerSettings,
-    planes: &[GpuFacetPlane],
-    material: &GemMaterial,
-    cancel: &AtomicBool,
-) -> Option<TiltPerformanceCurves> {
-    if cancel.load(Ordering::Relaxed) {
-        return None;
-    }
-    let scene = SceneState {
-        // Ignored by the `TILT_CURVES` handler (see this group's `mod.rs` doc
-        // comment) -- `1` is a plausible, `validate_scene`-legal placeholder, not a
-        // real render target.
-        width: 1,
-        height: 1,
-        yaw: 0.0,
-        pitch: 0.0,
-        distance: 1.0,
-        light_yaw: PREVIEW_LIGHT_YAW,
-        light_pitch: PREVIEW_LIGHT_PITCH,
-        exposure: 1.0,
-        max_bounces: REMOTE_SCENE_MAX_BOUNCES,
-        lighting_preset: BATCH_TILT_LIGHTING_PRESET,
-        material: material.clone(),
-        planes: planes.to_vec(),
-        girdle_frosted: false,
-        backdrop: 0.0,
-        environment: indicatrix_net::scene::SceneEnvironment::Studio,
-        surface_glare: 1.0,
-        tools: Vec::new(),
-        fluorescence: Fluorescence::default(),
-        head_shadow_deg: 16.0,
-    };
-    let (mut stream, welcome) = remote_render::connect_and_handshake(worker).ok()?;
-    if !welcome.tilt_curves {
-        return None;
-    }
-    let request = TiltCurvesRequest {
-        request_id: TILT_REQUEST_ID,
-        scene,
-    };
-    indicatrix_net::client::send_tilt_curves_request(&mut stream, &request).ok()?;
-    match indicatrix_net::client::recv_tilt_curves_response(&mut stream) {
-        Ok(TiltCurvesResponse::Curves(result)) => {
-            let mut axes_vec = Vec::with_capacity(result.axes.len());
-            for axis in result.axes {
-                match wire_axis_to_storage(axis) {
-                    Ok(axis) => axes_vec.push(axis),
-                    Err(e) => {
-                        warn!("Remote tilt-curve reply had a malformed axis: {e}");
-                        return None;
-                    }
-                }
-            }
-            let axes: [StorageAxisTiltCurves; TILT_CURVE_AXIS_COUNT] = axes_vec.try_into().ok()?;
-            Some(TiltPerformanceCurves { axes })
-        }
-        Ok(TiltCurvesResponse::Cancelled { .. } | TiltCurvesResponse::Error(_)) | Err(_) => None,
-    }
-}
-
-/// Threads each local lane may spend inside one design's sweep: the machine's parallelism
-/// divided by the lane count, floored at `1`, so lanes x inner threads never exceeds the
-/// cores. The sweep itself is parallel now (`evaluate_full_axis_profile_at_azimuth_geom_threaded`),
-/// and the lanes already run whole designs side by side.
-fn inner_threads_per_lane() -> usize {
-    let cores = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    (cores / local_lane_count()).max(1)
-}
-
-/// Computes all 4 axis sweeps for one design LOCALLY, checking `cancel` before each --
-/// the finer-grained cancellation the local path affords over the remote one (see this
-/// group's `mod.rs` doc comment). Returns `None` the moment `cancel` is observed,
-/// abandoning this one in-flight design without saving anything for it (this group's
-/// own "all-or-nothing" section).
-///
-/// Reports no per-axis progress to the caller -- see this group's `mod.rs` doc
-/// comment's "Progress with N local lanes" section for why a per-axis readout isn't
-/// meaningful once more than one local lane can be mid-design at once. `cancel` is
-/// still checked once per axis regardless: that granularity is about how quickly a
-/// cancel is honoured, unrelated to what the UI displays.
-fn compute_tilt_curves_locally(
-    planes: &[GpuFacetPlane],
-    material: &GemMaterial,
-    cancel: &AtomicBool,
-) -> Option<TiltPerformanceCurves> {
-    let mut axes = Vec::with_capacity(PROFILE_AZIMUTHS_DEG.len());
-    for &azimuth_deg in &PROFILE_AZIMUTHS_DEG {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        let (brilliance_pct, extinction_pct, windowing_pct) =
-            evaluate_full_axis_profile_at_azimuth_geom_threaded(
-                StoneGeometry::planes_only(planes),
-                material,
-                azimuth_deg,
-                batch_environment(),
-                Some(inner_threads_per_lane()),
-            );
-        axes.push(StorageAxisTiltCurves {
-            brilliance_pct,
-            extinction_pct,
-            windowing_pct,
-        });
-    }
-    let axes: [StorageAxisTiltCurves; TILT_CURVE_AXIS_COUNT] = axes.try_into().ok()?;
-    Some(TiltPerformanceCurves { axes })
-}
-
-/// [`compute_tilt_curves_locally`] with `on_step` called before every one of the
-/// sweep's raytrace evaluations, for the single-design run's progress bar. Uses the
-/// shared stepped sweep (`indicatrix::color::metrics::evaluate_all_axes_profiles_stepped`),
-/// whose curves are bit-identical to the plain per-axis calls, and honours `cancel`
-/// between evaluations instead of between axes.
-fn compute_tilt_curves_locally_stepped(
-    planes: &[GpuFacetPlane],
-    material: &GemMaterial,
-    cancel: &AtomicBool,
-    on_step: &mut dyn FnMut(SweepProgress),
-) -> Option<TiltPerformanceCurves> {
-    let profiles = evaluate_all_axes_profiles_stepped(
-        planes,
-        material,
-        batch_environment(),
-        &mut |progress| {
-            on_step(progress);
-            !cancel.load(Ordering::Relaxed)
-        },
-    )?;
-    let axes: Vec<StorageAxisTiltCurves> = profiles
-        .into_iter()
-        .map(|profile| StorageAxisTiltCurves {
-            brilliance_pct: profile.brilliance,
-            extinction_pct: profile.extinction,
-            windowing_pct: profile.windowing,
-        })
-        .collect();
-    let axes: [StorageAxisTiltCurves; TILT_CURVE_AXIS_COUNT] = axes.try_into().ok()?;
-    Some(TiltPerformanceCurves { axes })
 }
 
 /// Resolves and computes `entry_id`'s tilt curves on the LOCAL engine. Returns `true`
@@ -415,8 +234,12 @@ fn process_local_entry(ctx: &BatchContext<'_>, entry_id: i64, cancel: &AtomicBoo
     let Some(resolved) = resolve_design(ctx, entry_id) else {
         return false;
     };
-    let Some(curves) = compute_tilt_curves_locally(&resolved.planes, &resolved.material, cancel)
-    else {
+    let finishes = resolved.finishes();
+    let Some(curves) = compute_tilt_curves_locally(
+        FinishedStone::new(resolved.stone(), &finishes),
+        &resolved.material,
+        cancel,
+    ) else {
         return false;
     };
     save_curves(
@@ -448,9 +271,13 @@ pub(super) fn process_remote_entry(
     let Some(worker) = worker else {
         return false;
     };
-    let Some(curves) =
-        fetch_tilt_curves_remote(worker, &resolved.planes, &resolved.material, cancel)
-    else {
+    let Some(curves) = fetch_tilt_curves_remote(
+        worker,
+        resolved.stone(),
+        &resolved.frosted,
+        &resolved.material,
+        cancel,
+    ) else {
         return false;
     };
     save_curves(
@@ -668,7 +495,9 @@ pub(super) fn run_local_lane(
 }
 
 /// The single-design entry point: computes tilt curves directly from already-resolved
-/// `planes`/`material` -- typically `EditorState::design`'s own solved planes plus
+/// `stone` (planes with their concave tools, as the Compare window draws them; a planar
+/// design passes `StoneGeometry::planes_only`)/`material` -- typically `EditorState::design`'s
+/// own solved stone plus
 /// `gui::editor::material_lookup::resolved_gem_material` (neither defined in this
 /// module) -- entirely bypassing [`resolve_design`]'s
 /// database read. `resolve_design` can only ever see whatever a design's catalogue
@@ -699,6 +528,11 @@ pub(super) fn run_local_lane(
 /// crate already uses (e.g. `gui::tilt::tilt_profile::spawn_tilt_profile_sweep`).
 ///
 ///
+/// `frosted` lists the planes the design frosts (ascending indices into `stone.planes`, as
+/// `Design::frosted_planes_from_solved` or `StoneGeometryBuf::frosted` give them; empty for a
+/// polished design): a frosted facet scatters light, so the sweep, local or remote, is the
+/// frosted stone's.
+///
 /// `on_step` reports the LOCAL sweep's progress, before each raytrace evaluation (see
 /// [`compute_tilt_curves_locally_stepped`]); a remote sweep is one blocking request
 /// and reports nothing.
@@ -706,8 +540,9 @@ pub(super) fn run_local_lane(
 /// [`LiveComputeTarget::Both`]: crate::settings::LiveComputeTarget::Both
 /// [`LiveComputeTarget::LocalOnly`]: crate::settings::LiveComputeTarget::LocalOnly
 #[must_use]
-pub fn tilt_curves_for_planes(
-    planes: &[GpuFacetPlane],
+pub fn tilt_curves_for_stone(
+    stone: StoneGeometry<'_>,
+    frosted: &[u32],
     material: &GemMaterial,
     worker: Option<&WorkerSettings>,
     cancel: &AtomicBool,
@@ -718,11 +553,17 @@ pub fn tilt_curves_for_planes(
     // always computed here.
     let worker = worker.filter(|_| material.zoning.is_none());
     if let Some(worker) = worker
-        && let Some(curves) = fetch_tilt_curves_remote(worker, planes, material, cancel)
+        && let Some(curves) = fetch_tilt_curves_remote(worker, stone, frosted, material, cancel)
     {
         return Some(curves);
     }
-    compute_tilt_curves_locally_stepped(planes, material, cancel, on_step)
+    let finishes = facet_finishes_with_frosted(stone.planes, false, frosted);
+    compute_tilt_curves_locally_stepped(
+        FinishedStone::new(stone, &finishes),
+        material,
+        cancel,
+        on_step,
+    )
 }
 
 /// Runs every lane for one batch attempt inside a `std::thread::scope`, blocking until

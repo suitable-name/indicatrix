@@ -212,7 +212,8 @@ pub struct LightingView {
     pub preset_name: String,
     /// The light values.
     pub values: LightValues,
-    /// The backdrop as the Slint segmented control numbers it: 0 as lit, 1 grey, 2 white.
+    /// The backdrop as the Slint segmented control numbers it: 0 as lit, 1 grey, 2 white, 3 black
+    /// (the control shows them As Lit, Black, Grey, White; it maps positions to these indices).
     pub backdrop_index: i32,
     /// Whether the rig has a key light whose direction the sliders move (every rig but
     /// the grading tray).
@@ -230,17 +231,19 @@ pub const fn backdrop_index(backdrop: Backdrop) -> i32 {
         Backdrop::AsLit => 0,
         Backdrop::Grey => 1,
         Backdrop::White => 2,
+        Backdrop::Black => 3,
     }
 }
 
 /// The backdrop at `index` of the Light tab's segmented control; anything unknown reads as
-/// the default grey card.
+/// the default white tray.
 #[must_use]
 pub const fn backdrop_from_index(index: i32) -> Backdrop {
     match index {
         0 => Backdrop::AsLit,
-        2 => Backdrop::White,
-        _ => Backdrop::Grey,
+        1 => Backdrop::Grey,
+        3 => Backdrop::Black,
+        _ => Backdrop::White,
     }
 }
 

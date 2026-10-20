@@ -3,12 +3,13 @@
 //! The analytic studio rig's per-model falloff shapes
 //! ([`sample_studio_environment_with_rig`] and its
 //! `Studio`/`IsoHemisphere`/`LightTent`/`DaylightDome` arms), the observer head-shadow
-//! and horizon blends they share, the backdrop-card fill for a camera ray that misses
-//! the stone, and next-event-estimation sampling/pdf lookups against an `HdrMap`.
+//! and horizon blends they share, the lit backdrop tray every escape sees below the
+//! horizon (`tray > 0.0`; see `tray.rs`). Next-event-estimation lives in `nee.rs`.
 
+use super::sun::{SUN_DISC_COS, sun_radiance_factor};
 use super::{
     DEFAULT_HEAD_SHADOW_COSINES, EnvironmentSource, LightingModel, LightingPreset,
-    LightingRigParams, head_shadow_cosines,
+    LightingRigParams, d65_relative_spectral_power, head_shadow_cosines,
 };
 use crate::optics::studio_rig::RING_LIGHT_COUNT;
 use glam::Vec3;
@@ -38,11 +39,12 @@ pub(in super::super) fn sample_environment_channel(
             preset,
             exposure,
             head_shadow_deg,
+            backdrop,
             ..
         } => {
             let rig = studio_rig
                 .expect("sample_environment_channel: Studio environment needs a pre-built rig");
-            sample_studio_environment_with_rig_shadow(
+            sample_studio_environment_with_rig_shadow_tray(
                 dir,
                 lambda_nm,
                 preset,
@@ -50,269 +52,10 @@ pub(in super::super) fn sample_environment_channel(
                 rig,
                 observer,
                 head_shadow_cosines(head_shadow_deg),
+                backdrop,
             )
         }
         EnvironmentSource::HdrMap(map) => map.radiance_at(dir, lambda_nm),
-    }
-}
-
-/// Fills every channel of `radiance` with the backdrop card's radiance if the scene
-/// has one, and reports whether it did. For the camera ray only (bounce 0: unit Stokes
-/// intensity, no NEE weight), so the assignment is that ray's whole contribution.
-pub(in super::super) fn fill_backdrop<const N: usize>(
-    environment: EnvironmentSource<'_>,
-    lambdas: &[f32; N],
-    radiance: &mut [f32; N],
-) -> bool {
-    match environment {
-        EnvironmentSource::Studio {
-            preset, backdrop, ..
-        } if backdrop > 0.0 => {
-            // The preset's Planck constants are wavelength-independent, so they are
-            // resolved once for the whole channel loop; each value is unchanged.
-            let spectrum = preset.illuminant_spectrum();
-            for (out, &lambda_nm) in radiance.iter_mut().zip(lambdas) {
-                *out = backdrop * spectrum.power(lambda_nm);
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-/// One next-event-estimation draw toward the environment: the sampled
-/// direction, its solid-angle-measure pdf under [`EnvironmentMap::sample`]'s own
-/// importance distribution, and the raw RGB radiance in that direction (from which a
-/// caller lifts each channel's own spectral radiance via
-/// [`crate::renderer::env_map::rgb_to_spectral_radiance`] -- the same lift
-/// [`EnvironmentMap::radiance_at`] itself uses).
-///
-/// [`EnvironmentMap::sample`]: crate::renderer::env_map::EnvironmentMap::sample
-/// [`EnvironmentMap::radiance_at`]: crate::renderer::env_map::EnvironmentMap::radiance_at
-///
-/// For the analytic sun ([`LightingModel::DaylightSun`]) `rgb` is unused and `sun` carries
-/// the wavelength-independent radiance factor instead, because the sun's radiance is the
-/// preset's own spectral power times a scalar, not an RGB texel: use [`Self::radiance`],
-/// which picks the right source.
-pub(in super::super) struct EnvNeeSample {
-    pub(in super::super) dir: Vec3,
-    pub(in super::super) pdf: f32,
-    pub(in super::super) rgb: [f32; 3],
-    /// `Some` for an analytic-sun draw, `None` for an HDR-map draw.
-    pub(in super::super) sun: Option<SunNeeRadiance>,
-}
-
-/// The radiance of an analytic-sun NEE draw: `geometry * (spectral_power(lambda) *
-/// exposure)`, the very expression [`DirectionLighting::Scaled`] evaluates for a direction
-/// inside the disc, so the light-sampled and the BSDF-sampled technique see the same
-/// radiance.
-#[derive(Clone, Copy)]
-pub(in super::super) struct SunNeeRadiance {
-    geometry: f32,
-    exposure: f32,
-    preset: LightingPreset,
-}
-
-impl EnvNeeSample {
-    /// This draw's spectral radiance at `lambda_nm`: the HDR texel lifted to a spectrum, or
-    /// the sun's `geometry * (spectral_power * exposure)`.
-    #[must_use]
-    pub(in super::super) fn radiance(&self, lambda_nm: f32) -> f32 {
-        self.sun.map_or_else(
-            || crate::renderer::env_map::rgb_to_spectral_radiance(self.rgb, lambda_nm),
-            |sun| sun.geometry * (sun.preset.spectral_power(lambda_nm) * sun.exposure),
-        )
-    }
-}
-
-/// Whether `environment` offers a light-sampling (NEE) technique at all: an HDR map
-/// (importance-sampled texels) or the analytic sun of [`LightingPreset::DaylightSun`]
-/// (uniform cone sampling). Every other analytic rig is smooth enough for BSDF sampling
-/// alone. Replaces the old `matches!(environment, HdrMap(_))` switch at the entry points.
-#[must_use]
-pub(in super::super) fn environment_supports_nee(environment: EnvironmentSource<'_>) -> bool {
-    match environment {
-        EnvironmentSource::Studio { preset, .. } => preset.model() == LightingModel::DaylightSun,
-        EnvironmentSource::HdrMap(_) => true,
-    }
-}
-
-/// Draws one NEE direction from `environment`'s own importance distribution, from two
-/// independent uniform `[0, 1)` randoms.
-///
-/// - [`EnvironmentSource::HdrMap`]: the map's importance distribution; `None` for a
-///   degenerate draw (`pdf <= 0.0`, e.g. a direction whose row/column solid angle collapsed
-///   to nothing at a pole).
-/// - [`EnvironmentSource::Studio`] with [`LightingPreset::DaylightSun`]: a direction
-///   uniform over the sun disc ([`sun_cone_direction`]), `pdf = 1 / SUN_SOLID_ANGLE`.
-/// - every other analytic rig: `None` (no light-sampling technique, see
-///   `scattering::NeeContext`'s doc comment).
-///
-/// Either way a `None` means the caller should simply skip this NEE contribution for the
-/// current event, not fabricate one.
-#[must_use]
-pub(in super::super) fn sample_environment_for_nee(
-    environment: EnvironmentSource<'_>,
-    u0: f32,
-    u1: f32,
-) -> Option<EnvNeeSample> {
-    match environment {
-        EnvironmentSource::Studio {
-            preset,
-            exposure,
-            light_yaw,
-            light_pitch,
-            ..
-        } if preset.model() == LightingModel::DaylightSun => {
-            let key_dir = key_dir_only(light_yaw, light_pitch);
-            Some(EnvNeeSample {
-                dir: sun_cone_direction(key_dir, u0, u1),
-                pdf: 1.0 / SUN_SOLID_ANGLE,
-                rgb: [0.0; 3],
-                sun: Some(SunNeeRadiance {
-                    geometry: sun_radiance_factor(key_dir),
-                    exposure,
-                    preset,
-                }),
-            })
-        }
-        EnvironmentSource::Studio { .. } => None,
-        EnvironmentSource::HdrMap(map) => {
-            let (dir, rgb, pdf) = map.sample(u0, u1);
-            (pdf > 0.0).then_some(EnvNeeSample {
-                dir,
-                pdf,
-                rgb,
-                sun: None,
-            })
-        }
-    }
-}
-
-/// The key light's direction for a light pose, with exactly the arithmetic of
-/// `StudioRig::new`'s `key_dir` (bit-identical, pinned by a test) but without building the
-/// whole rig (~40 sin/cos and 16 normalizes), which the per-event NEE entry points do not need.
-fn key_dir_only(light_yaw: f32, light_pitch: f32) -> Vec3 {
-    let cos_pitch = light_pitch.cos();
-    let sin_pitch = light_pitch.sin();
-    let cos_yaw = light_yaw.cos();
-    let sin_yaw = light_yaw.sin();
-    Vec3::new(cos_pitch * sin_yaw, sin_pitch, cos_pitch * cos_yaw).normalize()
-}
-
-/// Test hook: [`key_dir_only`] for the bit-identity test against `StudioRig`.
-#[cfg(test)]
-pub(super) fn key_dir_only_for_test(light_yaw: f32, light_pitch: f32) -> Vec3 {
-    key_dir_only(light_yaw, light_pitch)
-}
-
-/// The solid-angle-measure pdf [`sample_environment_for_nee`] would assign to `dir`,
-/// computed independently of any particular sample -- the OTHER half of a balance-heuristic
-/// MIS weight: evaluating the light-sampling technique's own density at a direction the
-/// COMPETING (BSDF/phase) technique produced. `0.0` for every [`EnvironmentSource::Studio`]
-/// preset except [`LightingPreset::DaylightSun`] (matching [`sample_environment_for_nee`]'s
-/// `None`: no light-sampling technique exists to compete against there); for the sun it is
-/// `1 / SUN_SOLID_ANGLE` inside the disc and `0.0` outside ([`sun_nee_pdf`]).
-#[must_use]
-pub(in super::super) fn environment_nee_pdf(environment: EnvironmentSource<'_>, dir: Vec3) -> f32 {
-    match environment {
-        EnvironmentSource::Studio {
-            preset,
-            light_yaw,
-            light_pitch,
-            ..
-        } if preset.model() == LightingModel::DaylightSun => {
-            sun_nee_pdf(key_dir_only(light_yaw, light_pitch), dir)
-        }
-        EnvironmentSource::Studio { .. } => 0.0,
-        EnvironmentSource::HdrMap(map) => map.pdf(dir),
-    }
-}
-
-// ---------------------------------------------------------------------------------
-// The direct sun of `LightingModel::DaylightSun` (GPU id 5).
-//
-// Geometry. A disc of angular radius 0.27 degrees about the key direction (the real sun
-// is 0.266 +- 0.008). `SUN_DISC_COS` is cos(0.27 deg) rounded to f32; the f32 value is
-// `1 - 186 * 2^-24`, so the solid angle is derived from that very literal:
-//     SUN_ONE_MINUS_COS = 186 * 2^-24                  = 1.1086464e-5
-//     SUN_SOLID_ANGLE   = 2 pi * SUN_ONE_MINUS_COS     = 6.9658306e-5 sr
-// (the exact small-angle value pi r^2 for 0.27 degrees is 6.9766e-5 sr; the 0.16 % difference
-// is the f32 rounding of the cosine, and is irrelevant because every consumer reads the
-// literals; the disc radius it encodes is 0.2698 degrees).
-//
-// Radiance. The sky it sits in is `DaylightDome`'s: `sky(y) = 0.18 - 0.08 y` (y = d.y)
-// plus a `0.30 cos^8` aureole around the key. Horizontal irradiance of that sky on an
-// upward-facing plane (unit radiance units of the model):
-//     E_sky_dome = 2 pi * integral_0^1 (0.18 y - 0.08 y^2) dy = 2 pi (0.09 - 0.08 / 3)
-//                = 0.39794
-//     E_aureole  = 0.30 * sin(e) * 2 pi / 10          (lobe fully above the horizon for
-//                                                      e >~ 30 deg; sin(e) = key.y)
-//                = 0.17927 at the default key pitch of 72 degrees (sin = 0.95106)
-//     E_sky      = 0.57721 at e = 72 deg.
-// The direct sun delivers E_sun = L_sun * SUN_SOLID_ANGLE * sin(e). Wanting E_sun about
-// 82 % of E_sky + E_sun (a clear day: 80-85 % direct, the rest skylight):
-//     E_sun = 0.82 / 0.18 * 0.57721 = 2.6295  ->  L_sun = 2.6295 / (6.9658e-5 * 0.95106)
-//           = 39 691  ->  SUN_RADIANCE = 40 000   (E_sun = 2.650, direct share 82.1 %).
-// At other key elevations the share follows sin(e): 73.9 % at 30 degrees (E_sun 1.393,
-// E_sky 0.492), 87.5 % at 90 degrees. The radiance ratio to the sky (40 000 / 0.14 ~ 3e5)
-// is the right order for a real clear sky (sun ~1.6e9 cd/m2, sky ~5e3 cd/m2, ratio ~3e5).
-//
-// The sun is NOT dimmed by the observer's head shadow: the shadow models the observer's
-// body blocking the large sky dome reflected in a face-up table, and the NEE draw has no
-// access to the observer. It IS faded by the horizon blend evaluated once at the key
-// direction (`sun_radiance_factor`), so a key below the horizon switches the sun off
-// everywhere on the disc.
-//
-// Spectrum: D65 for now. Direct sun is ~5500-5800 K (warmer than the 6500 K whole-sky mix);
-// a separate sun SPD would need its own `spec_power` input in the twins.
-// ---------------------------------------------------------------------------------
-
-/// Cosine of the sun disc's angular radius (0.27 degrees), as an f32 literal.
-pub(super) const SUN_DISC_COS: f32 = 0.999_988_9;
-/// `1 - SUN_DISC_COS`, exactly (`186 * 2^-24`), kept as its own literal so the cone sampler
-/// never subtracts two nearly equal numbers.
-pub(super) const SUN_ONE_MINUS_COS: f32 = 1.108_646_4e-5;
-/// Solid angle of the sun disc in steradians: `2 pi * SUN_ONE_MINUS_COS`.
-pub(super) const SUN_SOLID_ANGLE: f32 = 6.965_831e-5;
-/// Radiance of the sun disc in the dome's radiance units (see the derivation above).
-pub(super) const SUN_RADIANCE: f32 = 40_000.0;
-
-/// The sun's wavelength-independent radiance factor: [`SUN_RADIANCE`] faded by the horizon
-/// blend at the key direction. The disc is uniform, so this one number is the sun's radiance
-/// for every direction inside it, for the BSDF-sampled lookup and the NEE draw alike.
-pub(super) fn sun_radiance_factor(key_dir: Vec3) -> f32 {
-    SUN_RADIANCE * horizon_blend(key_dir)
-}
-
-/// A direction drawn uniformly over the sun disc about `key_dir` from two uniform `[0, 1)`
-/// randoms (equal-area cone sampling: `1 - cos(theta) = u0 * (1 - cos(theta_max))`).
-/// `sin(theta)` comes from `(1 - cos)(1 + cos)` with `1 - cos` kept exact, so the radial
-/// resolution is not quantised by the f32 spacing of the cosine near 1. The WGSL twin
-/// `daylight_sun_cone_direction` is operation for operation the same.
-pub(super) fn sun_cone_direction(key_dir: Vec3, u0: f32, u1: f32) -> Vec3 {
-    let one_minus_cos = u0 * SUN_ONE_MINUS_COS;
-    let cos_t = 1.0 - one_minus_cos;
-    let sin_t = (one_minus_cos * (2.0 - one_minus_cos)).max(0.0).sqrt();
-    let phi = 2.0 * std::f32::consts::PI * u1;
-    let (sin_p, cos_p) = phi.sin_cos();
-    let a = if key_dir.x.abs() > 0.9 {
-        Vec3::Y
-    } else {
-        Vec3::X
-    };
-    let t = (a - key_dir * key_dir.dot(a)).normalize_or_zero();
-    let b = key_dir.cross(t);
-    (t * (sin_t * cos_p) + b * (sin_t * sin_p) + key_dir * cos_t).normalize_or_zero()
-}
-
-/// The solid-angle pdf of [`sun_cone_direction`] at `dir`: `1 / SUN_SOLID_ANGLE` inside the
-/// disc, `0.0` outside. `dir` must be a unit vector.
-pub(super) fn sun_nee_pdf(key_dir: Vec3, dir: Vec3) -> f32 {
-    if dir.dot(key_dir) >= SUN_DISC_COS {
-        1.0 / SUN_SOLID_ANGLE
-    } else {
-        0.0
     }
 }
 
@@ -354,7 +97,7 @@ fn observer_visibility(d: Vec3, observer: Vec3, shadow: [f32; 2]) -> f32 {
 
 /// `0.0` below the girdle plane, `1.0` above, blended over `-0.05..0.05` in `d.y` so
 /// the horizon never aliases.
-fn horizon_blend(d: Vec3) -> f32 {
+pub(super) fn horizon_blend(d: Vec3) -> f32 {
     smoothstep(-0.05, 0.05, d.y)
 }
 
@@ -379,6 +122,10 @@ enum DirectionLighting {
         ring: [f32; RING_LIGHT_COUNT],
         /// How many leading entries of `ring` are live.
         ring_len: usize,
+        /// The tray, `Some((horizon, ground))` only with `tray > 0.0`: `horizon` is the
+        /// horizon blend and `ground` is `((1 - horizon) * tray) * exposure`, which the
+        /// radiance finishes as `fma(horizon, rig, ground * spec_power)`.
+        ground: Option<(f32, f32)>,
     },
     /// A lit model: a geometric factor scaled by `spec_power * exposure`.
     Scaled(f32),
@@ -386,7 +133,13 @@ enum DirectionLighting {
     /// lit by one narrow spectral band each. For this variant the `spec_power` argument
     /// of [`Self::radiance`] is the wavelength in nm, not an illuminant power (see
     /// [`aset_spec_input`]).
-    Banded { red: f32, green: f32, blue: f32 },
+    /// `tray_ground` is `(1 - horizon) * tray`, `0.0` for As Lit.
+    Banded {
+        red: f32,
+        green: f32,
+        blue: f32,
+        tray_ground: f32,
+    },
 }
 
 /// Centre wavelengths (nm) of the three ASET zone bands.
@@ -432,6 +185,7 @@ impl DirectionLighting {
                 fill,
                 ring,
                 ring_len,
+                ground,
             } => {
                 let mut radiance = bg_val * spec_power;
                 if let Some(softbox) = softbox {
@@ -443,22 +197,58 @@ impl DirectionLighting {
                 for &intensity in &ring[..ring_len] {
                     radiance = intensity.mul_add(spec_power, radiance);
                 }
-                radiance
+                ground.map_or(radiance, |(horizon, ground)| {
+                    horizon.mul_add(radiance, ground * spec_power)
+                })
             }
             Self::Scaled(factor) => factor * (spec_power * exposure),
-            Self::Banded { red, green, blue } => {
+            Self::Banded {
+                red,
+                green,
+                blue,
+                tray_ground,
+            } => {
                 let lambda_nm = spec_power;
                 let r = (red * aset_band(lambda_nm, ASET_RED_NM)) * ASET_RED_GAIN;
                 let g = (green * aset_band(lambda_nm, ASET_GREEN_NM)) * ASET_GREEN_GAIN;
                 let b = (blue * aset_band(lambda_nm, ASET_BLUE_NM)) * ASET_BLUE_GAIN;
-                ((r + g) + b) * exposure
+                let zones = ((r + g) + b) * exposure;
+                // A neutral D65 tray (`E / pi := 1`); the branch keeps As Lit's bits.
+                if tray_ground > 0.0 {
+                    (tray_ground * d65_relative_spectral_power(lambda_nm)).mul_add(exposure, zones)
+                } else {
+                    zones
+                }
             }
         }
     }
 }
 
-fn iso_hemisphere_lighting(d: Vec3, observer: Vec3, shadow: [f32; 2]) -> DirectionLighting {
-    DirectionLighting::Scaled(horizon_blend(d) * observer_visibility(d, observer, shadow))
+/// The ground term of the lit models. With a tray (`tray > 0.0`) the tray replaces the
+/// model's own ground and gets the model's observer treatment: `((1 - horizon) * vis) * tray`;
+/// As Lit keeps `own_ground * (1 - horizon)` exactly (a branch, never a multiply by zero).
+fn lit_ground(horizon: f32, vis: f32, tray: f32, own_ground: f32) -> f32 {
+    if tray > 0.0 {
+        ((1.0 - horizon) * vis) * tray
+    } else {
+        own_ground * (1.0 - horizon)
+    }
+}
+
+fn iso_hemisphere_lighting(
+    d: Vec3,
+    observer: Vec3,
+    shadow: [f32; 2],
+    tray: f32,
+) -> DirectionLighting {
+    let horizon = horizon_blend(d);
+    let vis = observer_visibility(d, observer, shadow);
+    if tray > 0.0 {
+        // fma((1 - horizon) * vis, tray, horizon * vis)
+        DirectionLighting::Scaled(((1.0 - horizon) * vis).mul_add(tray, horizon * vis))
+    } else {
+        DirectionLighting::Scaled(horizon * vis)
+    }
 }
 
 fn light_tent_lighting(
@@ -468,6 +258,7 @@ fn light_tent_lighting(
     rig: &crate::optics::studio_rig::StudioRig,
     observer: Vec3,
     shadow: [f32; 2],
+    tray: f32,
 ) -> DirectionLighting {
     let horizon = horizon_blend(d);
     // Tent walls: 0.14 at the girdle plane rising to 0.22 at the zenith -- middle grey
@@ -497,8 +288,9 @@ fn light_tent_lighting(
     let spark = smoothstep(SPARK_OUTER_COS, SPARK_INNER_COS, d.dot(rig.fill_dir))
         * (5.0 * spot_mult)
         * tent.spark;
-    let above = ((walls + key) + spark) * (horizon * observer_visibility(d, observer, shadow));
-    let ground = tent.ground * (1.0 - horizon);
+    let vis = observer_visibility(d, observer, shadow);
+    let above = ((walls + key) + spark) * (horizon * vis);
+    let ground = lit_ground(horizon, vis, tray, tent.ground);
     DirectionLighting::Scaled(above + ground)
 }
 
@@ -507,6 +299,7 @@ fn daylight_dome_lighting(
     rig: &crate::optics::studio_rig::StudioRig,
     observer: Vec3,
     shadow: [f32; 2],
+    tray: f32,
 ) -> DirectionLighting {
     let horizon = horizon_blend(d);
     let sun_dot = d.dot(rig.key_dir);
@@ -520,8 +313,9 @@ fn daylight_dome_lighting(
     // Sky only: the old 2-4 degree "sun" (1 % of the irradiance, with no NEE to make it
     // anything but a glow) is gone; `DaylightSun` is the preset with a real sun. For every
     // direction the old smoothstep disc left at zero this is bit-identical to before.
-    let above = (sky + aureole) * (horizon * observer_visibility(d, observer, shadow));
-    let ground = 0.04 * (1.0 - horizon);
+    let vis = observer_visibility(d, observer, shadow);
+    let above = (sky + aureole) * (horizon * vis);
+    let ground = lit_ground(horizon, vis, tray, 0.04);
     DirectionLighting::Scaled(above + ground)
 }
 
@@ -531,6 +325,7 @@ fn studio_rig_lighting(
     exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
     ambient_fill: bool,
+    tray: f32,
 ) -> DirectionLighting {
     // 1. Ambient luxury studio backdrop (pure neutral dark charcoal velvet); absent for
     //    the UV lamps (dark room).
@@ -560,16 +355,27 @@ fn studio_rig_lighting(
         }
     }
 
+    // The tray replaces everything below the horizon: `fma(h, rig, ((g * tray) * exposure) * S)`.
+    // The rig ignores the observer, so the tray does too.
+    let ground = (tray > 0.0).then(|| {
+        let horizon = horizon_blend(d);
+        (horizon, ((1.0 - horizon) * tray) * exposure)
+    });
+
     DirectionLighting::Rig {
         bg_val,
         softbox,
         fill,
         ring: sparks,
         ring_len,
+        ground,
     }
 }
 
 /// Evaluates `lighting_preset`'s wavelength-independent lighting of `dir` once.
+///
+/// `tray` is the lit backdrop's radiance at exposure 1 (`0.0` = As Lit, the preset's own
+/// ground, which is today's arithmetic untouched; see `tray.rs`).
 fn direction_lighting(
     dir: Vec3,
     lighting_preset: LightingPreset,
@@ -577,6 +383,7 @@ fn direction_lighting(
     rig: &crate::optics::studio_rig::StudioRig,
     observer: Vec3,
     shadow: [f32; 2],
+    tray: f32,
 ) -> DirectionLighting {
     let d = dir.normalize();
     let LightingRigParams {
@@ -589,13 +396,35 @@ fn direction_lighting(
             exposure,
             rig,
             lighting_preset.has_ambient_fill(),
+            tray,
         ),
-        LightingModel::IsoHemisphere => iso_hemisphere_lighting(d, observer, shadow),
-        LightingModel::LightTent => light_tent_lighting(d, spot_mult, tent, rig, observer, shadow),
-        LightingModel::DaylightDome => daylight_dome_lighting(d, rig, observer, shadow),
-        LightingModel::Aset => aset_radiance(d, rig, observer, shadow),
-        LightingModel::DaylightSun => daylight_sun_radiance(d, rig, observer, shadow),
+        LightingModel::IsoHemisphere => iso_hemisphere_lighting(d, observer, shadow, tray),
+        LightingModel::LightTent => {
+            light_tent_lighting(d, spot_mult, tent, rig, observer, shadow, tray)
+        }
+        LightingModel::DaylightDome => daylight_dome_lighting(d, rig, observer, shadow, tray),
+        LightingModel::Aset => aset_radiance(d, rig, observer, shadow, tray),
+        LightingModel::DaylightSun => daylight_sun_radiance(d, rig, observer, shadow, tray),
     }
+}
+
+/// The wavelength-independent geometry of `lighting_preset` along `dir` at exposure 1 with no
+/// observer and no tray, `radiance(1.0, 1.0)`: the `G(d)` the tray's irradiance integrates.
+pub(super) fn unit_radiance(
+    dir: Vec3,
+    lighting_preset: LightingPreset,
+    rig: &crate::optics::studio_rig::StudioRig,
+) -> f32 {
+    direction_lighting(
+        dir,
+        lighting_preset,
+        1.0,
+        rig,
+        Vec3::ZERO,
+        DEFAULT_HEAD_SHADOW_COSINES,
+        0.0,
+    )
+    .radiance(1.0, 1.0)
 }
 
 /// ASET-style contrast view (model id 4), after the Angular Spectrum Evaluation Tool.
@@ -612,6 +441,7 @@ fn aset_radiance(
     _rig: &crate::optics::studio_rig::StudioRig,
     _observer: Vec3,
     _shadow: [f32; 2],
+    tray: f32,
 ) -> DirectionLighting {
     let horizon = horizon_blend(d);
     let s45 = smoothstep(ASET_EDGE_45_LO, ASET_EDGE_45_HI, d.y);
@@ -620,12 +450,17 @@ fn aset_radiance(
         red: (s45 * (1.0 - s75)) * horizon,
         green: (1.0 - s45) * horizon,
         blue: s75 * horizon,
+        tray_ground: if tray > 0.0 {
+            (1.0 - horizon) * tray
+        } else {
+            0.0
+        },
     }
 }
 
 /// Daylight sky plus a physically bright direct sun (model id 5): `DaylightDome`'s sky,
 /// aureole, ground and head shadow, plus the hard-edged 0.27 degree sun disc of
-/// [`SUN_RADIANCE`] (see the derivation above [`SUN_DISC_COS`]). The sun is not scaled by the
+/// [`SUN_RADIANCE`](super::sun::SUN_RADIANCE) (see the derivation above [`SUN_DISC_COS`]). The sun is not scaled by the
 /// head shadow; it carries its own horizon fade ([`sun_radiance_factor`]). The disc is
 /// sampled analytically by next-event estimation ([`sample_environment_for_nee`]).
 fn daylight_sun_radiance(
@@ -633,6 +468,7 @@ fn daylight_sun_radiance(
     rig: &crate::optics::studio_rig::StudioRig,
     observer: Vec3,
     shadow: [f32; 2],
+    tray: f32,
 ) -> DirectionLighting {
     let horizon = horizon_blend(d);
     let sun_dot = d.dot(rig.key_dir);
@@ -641,8 +477,9 @@ fn daylight_sun_radiance(
     let glow2 = glow * glow;
     let glow4 = glow2 * glow2;
     let aureole = (glow4 * glow4) * 0.30;
-    let above = (sky + aureole) * (horizon * observer_visibility(d, observer, shadow));
-    let ground = 0.04 * (1.0 - horizon);
+    let vis = observer_visibility(d, observer, shadow);
+    let above = (sky + aureole) * (horizon * vis);
+    let ground = lit_ground(horizon, vis, tray, 0.04);
     let sun = if sun_dot >= SUN_DISC_COS {
         sun_radiance_factor(rig.key_dir)
     } else {
@@ -696,7 +533,39 @@ pub fn sample_studio_environment_with_rig_shadow(
     observer: Vec3,
     shadow: [f32; 2],
 ) -> f32 {
-    direction_lighting(dir, lighting_preset, exposure, rig, observer, shadow)
+    sample_studio_environment_with_rig_shadow_tray(
+        dir,
+        lambda_nm,
+        lighting_preset,
+        exposure,
+        rig,
+        observer,
+        shadow,
+        0.0,
+    )
+}
+
+/// [`sample_studio_environment_with_rig_shadow`] over a lit backdrop tray.
+///
+/// `tray` is [`EnvironmentSource::Studio`]'s `backdrop`: the tray's radiance at exposure 1
+/// (`rho * E_rig / pi`, see `tray.rs`), seen below the horizon in place of the preset's own
+/// ground. `0.0` is As Lit and is bit-identical to the unsuffixed entry point.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the unsuffixed entry point plus the tray, kept flat to mirror its WGSL twin"
+)]
+pub fn sample_studio_environment_with_rig_shadow_tray(
+    dir: Vec3,
+    lambda_nm: f32,
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
+    shadow: [f32; 2],
+    tray: f32,
+) -> f32 {
+    direction_lighting(dir, lighting_preset, exposure, rig, observer, shadow, tray)
         .radiance(studio_spec_power(lighting_preset, lambda_nm), exposure)
 }
 
@@ -730,6 +599,83 @@ pub fn sample_studio_environment_with_rig_spec_power(
     observer: Vec3,
     spec_power: f32,
 ) -> f32 {
+    sample_studio_environment_with_rig_spec_power_tray(
+        dir,
+        lighting_preset,
+        exposure,
+        rig,
+        observer,
+        spec_power,
+        0.0,
+    )
+}
+
+/// [`sample_studio_environment_with_rig_spec_power`] with an explicit head-shadow cone.
+///
+/// `shadow` is the `[outer, inner]` cosine pair from [`head_shadow_cosines`](super::head_shadow_cosines);
+/// the default pair gives the same bits as the unsuffixed spec-power entry. One arithmetic
+/// path serves every shadow setting (As Lit, no tray).
+#[must_use]
+pub fn sample_studio_environment_with_rig_spec_power_shadow(
+    dir: Vec3,
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
+    spec_power: f32,
+    shadow: [f32; 2],
+) -> f32 {
+    sample_studio_environment_with_rig_spec_power_shadow_tray(
+        dir,
+        lighting_preset,
+        exposure,
+        rig,
+        observer,
+        spec_power,
+        shadow,
+        0.0,
+    )
+}
+
+/// [`sample_studio_environment_with_rig_spec_power_shadow`] over a lit backdrop tray.
+///
+/// `tray` is [`EnvironmentSource::Studio`]'s `backdrop` (radiance at exposure 1, see
+/// `tray.rs`); `0.0` is As Lit and bit-identical to the unsuffixed entry point. The
+/// Ray-Traced leaf calls this one.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the unsuffixed entry point plus the tray, kept flat to mirror its WGSL twin"
+)]
+pub fn sample_studio_environment_with_rig_spec_power_shadow_tray(
+    dir: Vec3,
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
+    spec_power: f32,
+    shadow: [f32; 2],
+    tray: f32,
+) -> f32 {
+    direction_lighting(dir, lighting_preset, exposure, rig, observer, shadow, tray)
+        .radiance(spec_power, exposure)
+}
+
+/// [`sample_studio_environment_with_rig_spec_power`] over a lit backdrop tray (default head
+/// shadow).
+///
+/// `tray = 0.0` is bit-identical to the unsuffixed entry point. See
+/// [`sample_studio_environment_with_rig_shadow_tray`].
+#[must_use]
+pub fn sample_studio_environment_with_rig_spec_power_tray(
+    dir: Vec3,
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
+    spec_power: f32,
+    tray: f32,
+) -> f32 {
     direction_lighting(
         dir,
         lighting_preset,
@@ -737,6 +683,7 @@ pub fn sample_studio_environment_with_rig_spec_power(
         rig,
         observer,
         DEFAULT_HEAD_SHADOW_COSINES,
+        tray,
     )
     .radiance(spec_power, exposure)
 }
@@ -747,6 +694,10 @@ pub fn sample_studio_environment_with_rig_spec_power(
 /// bit-identical to `sample_studio_environment_with_rig(dir, lambdas[k], ..)`, since the
 /// hoisted terms never depend on the wavelength.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the single-wavelength entry's parameters plus the lambda array and the tray"
+)]
 fn sample_studio_environment_channels<const N: usize>(
     dir: Vec3,
     lambdas: &[f32; N],
@@ -755,8 +706,9 @@ fn sample_studio_environment_channels<const N: usize>(
     rig: &crate::optics::studio_rig::StudioRig,
     observer: Vec3,
     shadow: [f32; 2],
+    tray: f32,
 ) -> [f32; N] {
-    let lighting = direction_lighting(dir, lighting_preset, exposure, rig, observer, shadow);
+    let lighting = direction_lighting(dir, lighting_preset, exposure, rig, observer, shadow, tray);
     let spectrum = lighting_preset.illuminant_spectrum();
     let aset = lighting_preset == LightingPreset::Aset;
     std::array::from_fn(|k| {
@@ -785,6 +737,7 @@ pub(in super::super) fn sample_environment_channels<const N: usize>(
             preset,
             exposure,
             head_shadow_deg,
+            backdrop,
             ..
         } => {
             let rig = studio_rig
@@ -797,6 +750,7 @@ pub(in super::super) fn sample_environment_channels<const N: usize>(
                 rig,
                 observer,
                 head_shadow_cosines(head_shadow_deg),
+                backdrop,
             )
         }
         EnvironmentSource::HdrMap(map) => {

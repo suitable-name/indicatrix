@@ -14,13 +14,11 @@ use std::num::NonZeroUsize;
 
 use super::{
     evaluate::{MetricsWanted, evaluate_pose, placeholder_metrics},
+    finished::FinishedStone,
     prepared::PreparedEval,
     profile::{EVALUATIONS_PER_AXIS, HALF_AXIS_PITCH_DEG},
 };
-use crate::{
-    geometry::tool::StoneGeometry,
-    optics::{materials::GemMaterial, raytracer::EnvironmentSource},
-};
+use crate::optics::{materials::GemMaterial, raytracer::EnvironmentSource};
 
 /// Most worker threads one sweep uses. Past ~16 the 181-pose axes run out of work to split
 /// and the fixed cost of a scoped thread stops paying back.
@@ -199,13 +197,13 @@ fn evaluate_axes(
 /// prepared stone, every pose in one parallel batch. `max_threads` caps the workers
 /// (`None` = the machine's parallelism, at most [`MAX_SWEEP_THREADS`]).
 pub(super) fn sweep_axes(
-    geom: StoneGeometry<'_>,
+    stone: FinishedStone<'_>,
     material: &GemMaterial,
     environment: EnvironmentSource<'_>,
     azimuths_deg: &[f32],
     max_threads: Option<usize>,
 ) -> Vec<AxisCurves> {
-    let prepared = PreparedEval::new(geom, material, environment);
+    let prepared = PreparedEval::new_finished(stone.geom, stone.finishes, material, environment);
     // The gate never answers `false`, so the sweep is never stopped.
     evaluate_axes(
         prepared.as_ref(),
@@ -220,14 +218,14 @@ pub(super) fn sweep_axes(
 /// [`sweep_axes`] with `gate(axis)` asked before every pose (see [`evaluate_axes`]); `None`
 /// when the gate stopped the sweep.
 pub(super) fn sweep_axes_gated(
-    geom: StoneGeometry<'_>,
+    stone: FinishedStone<'_>,
     material: &GemMaterial,
     environment: EnvironmentSource<'_>,
     azimuths_deg: &[f32],
     max_threads: Option<usize>,
     gate: &mut dyn FnMut(usize) -> bool,
 ) -> Option<Vec<AxisCurves>> {
-    let prepared = PreparedEval::new(geom, material, environment);
+    let prepared = PreparedEval::new_finished(stone.geom, stone.finishes, material, environment);
     let threads = resolve_threads(max_threads);
     // Serial (wasm, or one thread): ask, evaluate, ask, ... exactly as before. Parallel:
     // ask a few evaluations per thread ahead, then run that batch across the workers.
@@ -242,6 +240,7 @@ pub(super) fn sweep_axes_gated(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::tool::StoneGeometry;
 
     /// The slot map is a bijection onto the 181 tilt indices, with the pole at 90 and the
     /// two edge-on poses at the ends.

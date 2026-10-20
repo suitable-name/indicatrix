@@ -16,6 +16,7 @@ pub(super) fn push(state: &AppState) {
         generation: state.session.current_generation(),
         solve_revision: state.solve.revision(),
         selected: state.selected_tier,
+        selected_concave: state.session.selected_concave,
         multi: state.session.multi_selected.clone(),
     };
     if ui::with(|ui| ui.rows_key.as_ref() == Some(&key)) {

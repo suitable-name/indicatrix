@@ -112,6 +112,44 @@ struct Search {
     last_components: Option<ObjectiveComponents>,
 }
 
+/// Reads the candidates of a line search in list order: `first` is the first scale, `rest` the
+/// others (lazily for the sequential search, so the candidates after the accepted one are never
+/// evaluated; already computed for the parallel one). Stops at the first accepted candidate.
+fn fold_search(
+    first: (f64, CandidateOutcome),
+    rest: impl Iterator<Item = (f64, CandidateOutcome)>,
+) -> Search {
+    let (first_scale, first) = first;
+    let mut evaluations = usize::from(first.evaluated);
+    let mut last_components = first.components();
+    if first.is_accepted() {
+        return Search {
+            outcome: first,
+            accepted_scale: Some(first_scale),
+            evaluations,
+            last_components,
+        };
+    }
+    for (scale, outcome) in rest {
+        evaluations += usize::from(outcome.evaluated);
+        last_components = outcome.components().or(last_components);
+        if outcome.is_accepted() {
+            return Search {
+                outcome,
+                accepted_scale: Some(scale),
+                evaluations,
+                last_components,
+            };
+        }
+    }
+    Search {
+        outcome: first,
+        accepted_scale: None,
+        evaluations,
+        last_components,
+    }
+}
+
 impl EnvCore {
     /// Builds the candidate `action * scale` from the current design, scores it and judges it
     /// against the current design, the girdle gate and the manufacturability gate.
@@ -133,12 +171,17 @@ impl EnvCore {
             Ok(candidate) => candidate,
             Err(reason) => return CandidateOutcome::refused(reason, false),
         };
+        if candidate == self.current_design {
+            return CandidateOutcome::refused(StepRejection::NotImproved, false);
+        }
         let eval = match evaluate_design(
             &candidate,
             &self.gem,
             &self.settings.weights,
             self.settings.fidelity,
             self.preform_volume,
+            self.settings.lighting,
+            self.settings.shape_target,
         ) {
             Ok(eval) => eval,
             Err(failure) => return CandidateOutcome::refused(failure.rejection(), true),
@@ -165,40 +208,64 @@ impl EnvCore {
         }
     }
 
+    /// Tries every scale of `scales` at once, one scoped thread per scale after the first (the
+    /// calling thread takes the first), and returns the outcomes in list order.
+    ///
+    /// [`Self::try_candidate`] is pure and `&self`, so the outcomes are exactly those a
+    /// sequential loop would compute; the caller then reads them in order and stops at the
+    /// first accepted one, which is how the sequential search decides. The price is the
+    /// candidates after the accepted one, evaluated for nothing: a trade for wall-clock time
+    /// when cores would otherwise idle.
+    pub(crate) fn try_scales_parallel(
+        &self,
+        action: &ContinuousTierAction,
+        scales: &[f64],
+    ) -> Vec<CandidateOutcome> {
+        let [first_scale, rest @ ..] = scales else {
+            return Vec::new();
+        };
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = rest
+                .iter()
+                .map(|&scale| scope.spawn(move || self.try_candidate(action, scale)))
+                .collect();
+            let mut outcomes = Vec::with_capacity(scales.len());
+            outcomes.push(self.try_candidate(action, *first_scale));
+            for handle in handles {
+                match handle.join() {
+                    Ok(outcome) => outcomes.push(outcome),
+                    Err(payload) => std::panic::resume_unwind(payload),
+                }
+            }
+            outcomes
+        })
+    }
+
     /// Tries `scales` in order until one candidate is accepted. An empty list (or one with
     /// no usable scale, see [`usable_scales`]) tries the unit scale.
-    fn search(&self, action: &ContinuousTierAction, scales: &[f64]) -> Search {
-        let mut usable = usable_scales(scales);
-        let first_scale = usable.next().unwrap_or(1.0);
-        let first = self.try_candidate(action, first_scale);
-        let mut evaluations = usize::from(first.evaluated);
-        let mut last_components = first.components();
-        if first.is_accepted() {
-            return Search {
-                outcome: first,
-                accepted_scale: Some(first_scale),
-                evaluations,
-                last_components,
-            };
+    ///
+    /// With `parallel` the candidates are evaluated concurrently
+    /// ([`Self::try_scales_parallel`]) and then folded in list order; the result, the
+    /// evaluation count included (that of the SEQUENTIAL search), is identical.
+    fn search(&self, action: &ContinuousTierAction, scales: &[f64], parallel: bool) -> Search {
+        let mut list: Vec<f64> = usable_scales(scales).collect();
+        if list.is_empty() {
+            list.push(1.0);
         }
-        for scale in usable {
-            let outcome = self.try_candidate(action, scale);
-            evaluations += usize::from(outcome.evaluated);
-            last_components = outcome.components().or(last_components);
-            if outcome.is_accepted() {
-                return Search {
-                    outcome,
-                    accepted_scale: Some(scale),
-                    evaluations,
-                    last_components,
-                };
+        if parallel && list.len() > 1 {
+            let outcomes = self.try_scales_parallel(action, &list);
+            let mut pairs = list.iter().copied().zip(outcomes);
+            if let Some(first) = pairs.next() {
+                return fold_search(first, pairs);
             }
         }
-        Search {
-            outcome: first,
-            accepted_scale: None,
-            evaluations,
-            last_components,
+        let mut pairs = list
+            .iter()
+            .map(|&scale| (scale, self.try_candidate(action, scale)));
+        match pairs.next() {
+            Some(first) => fold_search(first, pairs),
+            // Unreachable: `list` has at least the unit scale.
+            None => fold_search((1.0, self.try_candidate(action, 1.0)), std::iter::empty()),
         }
     }
 
@@ -231,9 +298,22 @@ impl EnvCore {
         action: &ContinuousTierAction,
         scales: &[f64],
     ) -> CoreStep {
+        self.step_scaled_with(action, scales, false)
+    }
+
+    /// [`Self::step_scaled`], optionally evaluating the candidates of the line search
+    /// concurrently (`parallel`). The step, the reward and every field of the info are
+    /// bit-identical either way, and `StepInfo::evaluations` is the count of the sequential
+    /// search.
+    pub(crate) fn step_scaled_with(
+        &mut self,
+        action: &ContinuousTierAction,
+        scales: &[f64],
+        parallel: bool,
+    ) -> CoreStep {
         self.step_count += 1;
         let score_before = self.current_eval.score;
-        let search = self.search(action, scales);
+        let search = self.search(action, scales, parallel);
         self.last_components = search.last_components.or(self.last_components);
         let CandidateOutcome {
             rejection,
@@ -356,8 +436,8 @@ mod tests {
             let one = plain.step(&action);
             let other = scaled_env.step_scaled(&action, &[1.0]);
             assert_eq!(one, other);
-            // The action reaches the scorer (it is safe and well-formed): one evaluation.
-            assert_eq!(one.info.evaluations, 1);
+            // A repeated action can become a projection no-op; it bypasses scoring.
+            assert!(one.info.evaluations <= 1);
             assert_eq!(one.info.scale.is_some(), one.info.rejection.is_none());
             if let Some(scale) = one.info.scale {
                 assert_eq!(scale, 1.0);
@@ -366,6 +446,52 @@ mod tests {
         assert_eq!(plain.current_score(), scaled_env.current_score());
         assert_eq!(plain.step_count(), scaled_env.step_count());
         assert_eq!(plain.last_components(), scaled_env.last_components());
+    }
+
+    #[test]
+    fn a_projected_noop_is_rejected_without_an_evaluation() {
+        let mut env = fixture_env();
+        let action = ContinuousTierAction::new(vec![0.0; env.base_design().tiers.len()]);
+        let step = env.step(&action);
+        assert_eq!(step.info.evaluations, 0);
+        assert_eq!(step.info.rejection, Some(StepRejection::NotImproved));
+    }
+
+    #[test]
+    fn the_parallel_line_search_is_the_sequential_one_bit_for_bit() {
+        let scale_lists: [&[f64]; 4] = [&[1.0, 0.5, 0.25], &[0.5, f64::NAN, 1.0], &[], &[1.0]];
+        let mut sequential = fixture_env_with(|config| config.max_step_deg = 4.0);
+        let mut parallel = fixture_env_with(|config| config.max_step_deg = 4.0);
+        let mut accepted_any = false;
+        for action in ladder(&sequential) {
+            for scales in scale_lists {
+                let _ = sequential.reset(0);
+                let _ = parallel.reset(0);
+                let one = sequential.step_scaled(&action, scales);
+                let other = parallel.step_scaled_with(&action, scales, true);
+                assert_eq!(one, other, "{scales:?}");
+                // The evaluation count is the sequential one.
+                assert_eq!(one.info.evaluations, other.info.evaluations);
+                assert_eq!(sequential.current_score(), parallel.current_score());
+                assert_eq!(sequential.last_components(), parallel.last_components());
+                accepted_any |= one.info.scale.is_some();
+            }
+        }
+        assert!(accepted_any, "no action of the ladder was accepted");
+    }
+
+    #[test]
+    fn the_parallel_oracle_is_the_sequential_one() {
+        let env = fixture_env_with(|config| config.max_step_deg = 4.0);
+        let slopes = crate::env::score_slopes(&env.teacher_label(0.25, &[]).tiers);
+        let scale_lists: [&[f64]; 4] = [&DEFAULT_LINE_SEARCH, &[0.25, 1.0], &[], &[0.5]];
+        for scales in scale_lists {
+            assert_eq!(
+                env.oracle_outcome_with(&slopes, scales, true),
+                env.oracle_outcome(&slopes, scales),
+                "{scales:?}"
+            );
+        }
     }
 
     #[test]

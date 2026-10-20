@@ -1,4 +1,4 @@
-use crate::model::{angle::AngleSetting, file::AttachedFile};
+use crate::model::{angle::AngleSetting, file::AttachedFile, frosting::StoredTierFrosting};
 use serde::{Deserialize, Serialize};
 
 /// A catalogue row's identity fields -- what
@@ -147,6 +147,10 @@ pub struct FullDiagramMeta {
     pub angle_settings: Vec<AngleSetting>,
     /// Files attached to the design.
     pub attached_files: Vec<AttachedFileMeta>,
+    /// The frosted tiers and facets of the design (the `diagram_frosting` side table),
+    /// tiers ascending; empty for a design without frosting.
+    #[serde(default)]
+    pub frosting: Vec<StoredTierFrosting>,
 }
 
 /// Carries every `diagram_details` column [`crate::model::detail::FacetingDiagramDetail`] has.
@@ -216,4 +220,10 @@ pub struct FullDiagramRecord {
     pub angle_settings: Vec<AngleSetting>,
     /// Files attached to the design.
     pub attached_files: Vec<AttachedFile>,
+    /// The frosted tiers and facets of the design (the `diagram_frosting` side table),
+    /// tiers ascending; empty for a design without frosting. `.asc` cannot state frosting,
+    /// so a reader that builds the design from the `.asc` (or converted `.gem`/`.gcs`)
+    /// attachment applies this beside it.
+    #[serde(default)]
+    pub frosting: Vec<StoredTierFrosting>,
 }

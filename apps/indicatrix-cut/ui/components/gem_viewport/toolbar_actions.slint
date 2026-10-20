@@ -5,13 +5,14 @@ import { ExportRunModel } from "../../models/export_run.slint";
 import { ViewportModel } from "../../models/viewport.slint";
 import { SettingsModel } from "../../models/settings.slint";
 import { TiltModel } from "../../models/tilt.slint";
+import { OpticalModel } from "../../models/optical.slint";
 import { EditorModel } from "../../models/editor.slint";
 import { GuideModel } from "../../models/guide.slint";
 import { PhysicscolorModel } from "../../models/physics_color.slint";
 import { StaleBadge } from "../stale_badge.slint";
 import { ParametersButtons } from "../parameters_panel/toolbar_buttons.slint";
 import { SaveNameRow } from "../settings_dialog/lighting_presets_section.slint";
-import { MaterialChip, PreviewBadge } from "../material_chip.slint";
+import { PreviewBadge } from "../material_chip.slint";
 // A running catalogue-wide batch (tilt sweep or preview render) sets
 // `ctx.export_active`, which suspends the live tracer exactly like an explicit
 // pause -- read here to fold the same suspended-display treatment into the
@@ -324,9 +325,9 @@ component PoseButtons inherits HorizontalLayout {
 export component GemViewportToolbarActions inherits VerticalLayout {
     spacing: 8px;
 
-    // Set by `gem_viewport.slint` from the viewport width: drops the color readout,
-    // the "Tilt Curve" label (its icon stays) and shortens the chip and the Previewing
-    // badge, so the row fits a narrower window.
+    // Set by `gem_viewport.slint` from the viewport width: drops the "Tilt Curve" and
+    // "Optical Diagnostics" labels (their icons stay) and shortens the Previewing badge, so
+    // the row fits a narrower window.
     in property <bool> compact: false;
     // Set by `gem_viewport.slint` from the viewport width: the right-hand end goes on its own row.
     in property <bool> wrap: false;
@@ -345,12 +346,10 @@ export component GemViewportToolbarActions inherits VerticalLayout {
     HorizontalLayout {
         spacing: 8px;
 
-    // The stone's material and colour, read-only (the Stone tab edits them: press the chip).
-    // Another material is only ever tried through the Stone tab's "Preview as..."; the
-    // Previewing badge below ends it with "Back to design".
-    material-chip-l300 := MaterialChip {
-        compact: root.compact;
-    }
+    // No material chip here: it only opened the Stone tab, which the Stone button of the
+    // Parameters buttons (`ToolbarTail`) already does. Another material is only ever tried
+    // through the Stone tab's "Preview as..."; the Previewing badge below ends it with
+    // "Back to design".
 
     // Shown while the picture uses a preview material instead of the design's own.
     // While the tail wraps to its own row the badge goes there with it (a 700px viewport's
@@ -452,6 +451,20 @@ export component GemViewportToolbarActions inherits VerticalLayout {
         lit: TiltModel.dialog_open;
         checkable: true;
         clicked => { TiltModel.toggle_dialog(); }
+    }
+
+    // Opens the Optical Diagnostics panel (`optical_panel.slint`, mounted below the toolbar in
+    // `gem_viewport.slint`). Path-Traced only: the diagnostics overlay the traced picture.
+    if ViewportModel.live_view_mode == 1: ToolbarButton {
+        text: "Optical Diagnostics";
+        icon: @image-url("../../icons/search.svg");
+        icon_size: 13px;
+        show_text: !root.compact;
+        name: "Optical Diagnostics";
+        hint: "Show or hide the optical diagnostics: windowing, extinction, brilliance, fire and scintillation drawn over the stone.";
+        lit: OpticalModel.panel_open;
+        checkable: true;
+        clicked => { OpticalModel.panel_open = !OpticalModel.panel_open; }
     }
 
     if !root.wrap: PoseButtons {

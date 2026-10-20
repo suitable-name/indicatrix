@@ -15,14 +15,14 @@ use super::{
         preform_table_from_spec, source_table_from_proportions, tier_table_from_tier,
     },
     load::{
-        MaterialResolution, apply_tier_ids_and_targets, apply_tier_relations,
-        cheater_offsets_from_native, material_resolution_of, raw_tier_ids_from_native,
-        raw_tier_relations_from_native, raw_tier_targets_from_native, restore_concave_tiers,
-        tier_from_table_with_full_geometry, tier_notes_from_native,
+        MaterialResolution, apply_tier_frosting, apply_tier_ids_and_targets, apply_tier_relations,
+        cheater_offsets_from_native, material_resolution_of, raw_tier_frosting_from_native,
+        raw_tier_ids_from_native, raw_tier_relations_from_native, raw_tier_targets_from_native,
+        restore_concave_tiers, tier_from_table_with_full_geometry, tier_notes_from_native,
     },
     unknown_keys::UnknownFileKeys,
 };
-use crate::design::{Design, ScheduleMeta, StoneRenderEffects, TierId, TierRelation};
+use crate::design::{Design, ScheduleMeta, StoneRenderEffects, TierFrosting, TierId, TierRelation};
 use indicatrix::geometry::stone_metrics::ExternalProportions;
 use indicatrix_formats::native::{
     CustomMaterialSnapshot, HistoryTable, SourceTable,
@@ -205,6 +205,16 @@ fn bounded_history(entries: &[String]) -> Vec<String> {
     entries.get(start..).unwrap_or_default().to_vec()
 }
 
+/// A tier's frosting as the two columns of its file record: the whole-tier flag and the
+/// single frosted facets' positions (a polished tier is `(false, [])`, which is not written).
+fn frosting_columns(frosting: Option<&TierFrosting>) -> (bool, Vec<f64>) {
+    match frosting {
+        Some(TierFrosting::Tier) => (true, Vec::new()),
+        Some(TierFrosting::Facets(positions)) => (false, positions.clone()),
+        None => (false, Vec::new()),
+    }
+}
+
 fn build_file(
     design: &Design,
     source: Option<SourceTable>,
@@ -223,6 +233,8 @@ fn build_file(
                 .then(|| design.tier_id_at(index))
                 .flatten()
                 .unwrap_or(TierId(index as u64));
+            let (frosted, frosted_facets) =
+                frosting_columns(ids_in_step.then(|| design.tier_frosting(index)).flatten());
             tier_table_from_tier(
                 tier,
                 design.tier_notes.get(&index).cloned(),
@@ -237,6 +249,7 @@ fn build_file(
                     .flatten()
                     .map(TierRelation::to_canonical),
             )
+            .with_frosting(frosted, frosted_facets)
         })
         .collect();
     // `DesignFile::new` picks version 4 for a plane-set preform and version 3 when a
@@ -373,6 +386,7 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
     let raw_ids = raw_tier_ids_from_native(&tiers);
     let raw_targets = raw_tier_targets_from_native(&tiers);
     let raw_relations = raw_tier_relations_from_native(&tiers);
+    let raw_frosting = raw_tier_frosting_from_native(&tiers);
     // The keys this build does not claim, set aside before the tables are consumed;
     // the per-tier ones are matched to their tier's id once the ids are assigned.
     let tier_unknown: Vec<toml::Table> = tiers.iter().map(|t| t.unknown.clone()).collect();
@@ -405,6 +419,7 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
     design.tier_notes = notes;
     design.cheater_offsets_deg = offsets;
     apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets);
+    apply_tier_frosting(&mut design, &raw_frosting);
     apply_tier_relations(&mut design, &raw_relations)
         .map_err(|(index, reason)| DesignLoadError::Relation { index, reason })?;
     restore_concave_tiers(&mut design, concave_tiers)

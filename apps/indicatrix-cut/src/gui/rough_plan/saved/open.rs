@@ -158,13 +158,14 @@ fn gravity_note(material: &str, saved: f64, listed: f64) -> Option<String> {
     })
 }
 
-/// Writes the plan's settings, weighed carat and candidate source into the form and picks
-/// its material. Returns the notes: the material is not in the list, or its specific
+/// Writes the plan's settings (both caps and the losses), weighed carat and candidate source
+/// into the form and picks its material. Returns the notes: the material is not in the list, or its specific
 /// gravity is not the plan's.
 fn push_settings(host: &Host, plan: &LoadedPlan) -> Vec<String> {
     let model = host.window.global::<RoughPlanModel>();
     let settings = &plan.settings;
     model.set_max_designs(i32::from(settings.max_designs));
+    model.set_max_stones(i32::from(settings.max_stones));
     model.set_kerf_mm(fmt_exact(settings.kerf_mm).into());
     model.set_allowance_mm(fmt_exact(settings.allowance_mm).into());
     model.set_skin_mm(fmt_exact(settings.skin_mm).into());

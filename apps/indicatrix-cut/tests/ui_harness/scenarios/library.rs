@@ -16,8 +16,8 @@ use crate::support::{
 };
 use indicatrix_cut::{LibraryModel, MainWindow};
 use slint::{ComponentHandle, Model};
-use slint_harness::{AccessibleRole, backend::wait_until_labeled};
 use std::time::Duration;
+use uiprobe::{AccessibleRole, backend::wait_until_labeled};
 
 /// Number of rows the library list shows.
 fn list_len(ui: &MainWindow) -> usize {

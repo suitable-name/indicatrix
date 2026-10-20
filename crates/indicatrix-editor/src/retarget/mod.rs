@@ -3,27 +3,35 @@
 //!
 //! Pure Rust, no Slint types: [`build_proposal`] takes a `Design` and a resolved
 //! target material and returns a [`RetargetProposal`] the dialog shows for review;
-//! [`apply`] turns an accepted proposal into the one `Edit::RetargetAngles` the
-//! caller pushes through `History`, exactly like every other edit in this crate.
+//! [`apply`] turns an accepted proposal into one validated `Edit::Batch` the caller
+//! pushes through `History`, exactly like every other edit in this crate. Both are the
+//! legacy, angle-only interface: they can only represent a change that keeps the
+//! original meets WITHOUT moving any mast, so they refuse a design whose crown and
+//! pavilion facets are pinned (every imported design). Those go through [`check`]
+//! ([`check::check_retarget`]) and [`apply_with_anchors`], which carry the projected
+//! masts too.
 //!
 //! The desktop dialog uses the richer pieces on top of that:
 //!
 //! - [`plan`]: [`build_plan`] is the cheap synchronous half (which tiers move, the
 //!   guarded new angles, the per-row margin and risk). Nothing in it solves the design.
 //! - [`check`]: the half that needs a solved stone and runs on a worker thread. It
-//!   re-anchors the masts so every facet turns about its girdle-side edge (the girdle
-//!   keeps its outline and height), refits the table and culet heights, judges the
-//!   result with [`validity`]'s gate and measures the optics ([`metrics`]).
+//!   seeds the masts so every facet turns about its girdle corners, projects that
+//!   seed back onto the ORIGINAL meet network (the girdle keeps its outline and height),
+//!   refits the table and culet heights, judges the result with [`validity`]'s gate and
+//!   measures the optics ([`metrics`]). The web app reaches it through the solve Worker.
 //! - [`anchors`]: [`apply_with_anchors`] turns a proposal plus the re-anchored masts
 //!   into ONE undoable `Edit::Batch` (angles and masts together).
 //! - [`search`]: the desktop dialog's Optimize mode. It starts from the Shift result and
 //!   searches every crown and pavilion angle inside a range (pinned facets included, each
-//!   turning about its girdle edge), then runs the validity gate on the ranked results.
-//!   [`RetargetMode::Optimize`] below is the older, simpler path the web app still uses.
+//!   turning about its girdle corners), then runs the validity gate on the ranked results.
+//!   [`RetargetMode::Optimize`] below is the older, simpler path the web app still uses
+//!   for designs with nothing pinned.
 //!
 //! # The two algorithms
 //!
-//! - [`RetargetMode::Shift`] (default): every pavilion tier's angle moves by
+//! - [`RetargetMode::Shift`] (default; [`build_proposal`] additionally requires the
+//!   angle-only result to keep the original meets): every pavilion tier's angle moves by
 //!   `retarget_angle_deg`, which keeps that tier's margin over the critical angle
 //!   exactly fixed; every crown tier moves by [`CrownShift`]'s policy -- by default it
 //!   follows the pavilion's vertical stretch so the stone keeps its silhouette, with a
@@ -34,23 +42,17 @@
 //!   Girdle tiers are never touched -- not even listed: a tier at (or near)
 //!   plus-or-minus 90 degrees from the girdle plane classifies as `Block::Girdle`,
 //!   structural rather than optical.
-//! - [`RetargetMode::Optimize`] seeds a clone of the design with the `Shift` angles
-//!   above, then runs `optimize_design` unchanged (only the objective material
-//!   differs) over whatever tiers that search already treats as free
-//!   (non-`ScaleReference`). Since an anchored tier's angle can never actually move
-//!   under that search, retargeting a currently-anchored tier via this mode is
-//!   refused up front ([`RetargetError::AnchoredTiers`]). Only the web app takes this path
-//!   now; the desktop dialog uses [`search`], which varies pinned tiers too and so never
-//!   returns that refusal.
+//! - [`RetargetMode::Optimize`] searches from the original design against the target
+//!   material under the strict Retarget preservation policy. This legacy angle-only
+//!   interface refuses pinned tiers because it cannot transport coordinated mast
+//!   changes. The desktop uses [`search`] and carries the complete candidate state.
 //!
 //! # Why `apply` also takes the `Design`
 //!
-//! [`RetargetProposal::rows`] carries each row's `old_angle` for display, but
-//! [`apply`] re-reads the CURRENT `angle_deg` from `design` when it builds the
-//! `Edit::RetargetAngles` -- trust runtime state, not a caller's claimed previous
-//! value. This also means a proposal is safe to apply even if the design moved
-//! slightly between building it and pressing Apply; a row naming a tier index the
-//! design names is dropped rather than panicking.
+//! Apply checks the proposal's previous angles and validates the exact reconstructed
+//! geometry against the current original before producing an undoable edit. Invalid
+//! or stale rows fail explicitly. The desktop additionally retains the operation-start
+//! baseline and design generation, including changes to otherwise untouched tiers.
 
 use indicatrix::{
     geometry::meet_solver::{Block, MeetConstraint, classify_blocks},
@@ -58,7 +60,7 @@ use indicatrix::{
 };
 use indicatrix_cut_core::{
     AngleChange, Design, DesignSolveError, Edit, OptimizeConfig, ResolvedMaterial, Risk,
-    SearchHooks, critical_angle_deg, optics_hints::is_horizontal_angle_deg, optimize_design,
+    SearchHooks, critical_angle_deg, optics_hints::is_horizontal_angle_deg,
 };
 
 pub mod anchors;
@@ -133,10 +135,10 @@ impl Default for CrownShift {
 /// Which of the two algorithms builds the proposal.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RetargetMode {
-    /// The deterministic critical-angle shift -- always available, never fails to
-    /// solve (it never even calls `Design::solve`).
+    /// The deterministic critical-angle preference, accepted only if its authored
+    /// result solves and preserves the original meets.
     Shift,
-    /// Seeds from the shift above, then runs `optimize_design` (unchanged) with
+    /// Searches the original design under the Retarget preservation policy with
     /// `config` against the resolved target material.
     Optimize(OptimizeConfig),
 }
@@ -179,8 +181,8 @@ pub struct RetargetProposal {
 /// Why [`build_proposal`] could not build a proposal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RetargetError {
-    /// `RetargetMode::Optimize` needs a real solved baseline before it can search
-    /// at all -- propagated from `optimize_design`/`Design::solve` verbatim.
+    /// Both modes require a valid baseline and preserved candidate geometry;
+    /// Optimize additionally propagates search/solve errors.
     Solve(DesignSolveError),
     /// `RetargetMode::Optimize` was asked to retarget one or more tiers currently
     /// `ScaleReference` (so `optimize_design` can never move them). `(tier_index,
@@ -388,9 +390,16 @@ pub fn build_notes(
 /// - [`RetargetError::AnchoredTiers`] (`Optimize` only): one or more pavilion/crown
 ///   tiers this proposal would otherwise retarget are still `ScaleReference`-pinned.
 ///   Adopt them first, then call this again.
-/// - [`RetargetError::Solve`] (`Optimize` only): `design` itself does not solve.
+/// - [`RetargetError::Solve`]: the baseline or candidate cannot be solved and
+///   validated under the preservation policy. This is the answer for a design whose
+///   facets are pinned (`ScaleReference`, which is every imported design): turning such a
+///   facet while keeping its mast splits the meets it takes part in, and this legacy
+///   interface has no way to carry the masts that would keep them. Route those through
+///   [`anchored_tiers_in`] to find them, then through [`check::check_retarget`] (Shift)
+///   or [`search`] (Optimize) and [`apply_with_anchors`].
 ///
-/// `RetargetMode::Shift` never fails: pure angle arithmetic, never calls `Design::solve`.
+/// Shift validates the angle-only proposal this legacy interface can represent.
+/// Callers needing projected angles and masts use the richer plan/check path.
 #[must_use = "a proposal must be shown to the user before it is applied"]
 pub fn build_proposal(
     design: &Design,
@@ -419,21 +428,23 @@ fn build_proposal_impl(
     crown: CrownShift,
     mode: RetargetMode,
 ) -> Result<RetargetProposal, RetargetError> {
-    match mode {
-        RetargetMode::Shift => Ok(plan::build_plan_from(design, n_from, target, crown).proposal()),
+    let baseline =
+        indicatrix_cut_core::meet_preservation::MeetPreservationBaseline::capture(design)
+            .map_err(|e| RetargetError::Solve(DesignSolveError::Preservation(e)))?;
+    let proposal = match mode {
+        RetargetMode::Shift => plan::build_plan_from(design, n_from, target, crown).proposal(),
         RetargetMode::Optimize(config) => {
             // Every pavilion/crown tier that moves, in schedule order. Girdle tiers and
             // flat tiers are never part of this set -- not filtered out later, never
             // considered in the first place.
             let (scope, blocks) = retarget_scope(design);
-            let final_angles =
-                build_optimized_angles(design, n_from, target, &scope, crown, &config)?;
+            let final_angles = build_optimized_angles(design, target, &scope, &config)?;
             let entries: Vec<(usize, Block, f64)> = scope
                 .iter()
                 .zip(&final_angles)
                 .map(|(&index, &angle)| (index, blocks[index], angle))
                 .collect();
-            Ok(RetargetProposal {
+            RetargetProposal {
                 rows: plan::legacy_rows(design, &entries, target.n_d),
                 target: target.clone(),
                 notes: build_notes(
@@ -443,31 +454,40 @@ fn build_proposal_impl(
                     crown,
                     plan::pavilion_stretch(design, n_from, target.n_d),
                 ),
-            })
+            }
         }
+    };
+    let mut trial = design.clone();
+    for row in &proposal.rows {
+        trial.tiers[row.tier_index].angle_deg = row.new_angle;
     }
+    // A relation that cannot be satisfied says so; it is not a fault of the original meets.
+    let followers = trial.evaluate_relations().map_err(|e| {
+        RetargetError::Solve(DesignSolveError::Preservation(
+            indicatrix_cut_core::meet_preservation::PreservationViolation::Relation(e.to_string()),
+        ))
+    })?;
+    for (index, angle) in followers {
+        trial.tiers[index].angle_deg = angle;
+    }
+    baseline
+        .validate(
+            &trial,
+            indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET,
+        )
+        .map_err(|e| RetargetError::Solve(DesignSolveError::Preservation(e)))?;
+    Ok(proposal)
 }
 
-/// [`build_proposal`]'s `RetargetMode::Optimize` half, split out to keep
-/// `build_proposal` itself short. Seeds a clone of `design` with the shift angles
-/// for every tier in `scope`, runs `optimize_design` unchanged against
-/// `target.gem`, then reads back the final angle for each `scope` tier (the seeded
-/// angle, overridden by `AngleChange::to_deg` for whichever tiers actually moved).
-///
-/// `n_from` is the caller's already-resolved source index (custom-material-aware).
-/// Recomputing it here via the built-ins-only `Design::effective_refractive_index()`
-/// would silently seed from the wrong index for a design on a custom catalogue
-/// material.
+/// Searches from the original geometry, retaining only angle changes this legacy
+/// proposal format can represent. Pinned tiers require the rich desktop path.
 ///
 /// # Errors
-///
 /// See [`build_proposal`]'s `# Errors` section.
 fn build_optimized_angles(
     design: &Design,
-    n_from: f64,
     target: &ResolvedMaterial,
     scope: &[usize],
-    crown: CrownShift,
     config: &OptimizeConfig,
 ) -> Result<Vec<f64>, RetargetError> {
     let anchored = anchored_tiers_in(design, scope);
@@ -475,14 +495,22 @@ fn build_optimized_angles(
         return Err(RetargetError::AnchoredTiers(anchored));
     }
 
-    let n_to = target.n_d;
-    let blocks = classify_blocks(&design.meet_tier_inputs());
-    let seeded = seed_shift_design(design, scope, &blocks, n_from, n_to, crown);
+    let options = indicatrix_cut_core::OptimizeOptions {
+        only_tiers: Some(scope.iter().copied().collect()),
+        preservation_policy: indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET,
+        ..Default::default()
+    };
+    let outcome = indicatrix_cut_core::optimize_design_with(
+        design,
+        &target.gem,
+        config,
+        &options,
+        &SearchHooks::default(),
+    )
+    .map_err(RetargetError::Solve)?
+    .outcome;
 
-    let outcome = optimize_design(&seeded, &target.gem, config, &SearchHooks::default())
-        .map_err(RetargetError::Solve)?;
-
-    let mut final_angles: Vec<f64> = scope.iter().map(|&i| seeded.tiers[i].angle_deg).collect();
+    let mut final_angles: Vec<f64> = scope.iter().map(|&i| design.tiers[i].angle_deg).collect();
     for change in &outcome.changes {
         if let Some(slot) = scope.iter().position(|&i| i == change.index) {
             final_angles[slot] = change.to_deg;
@@ -491,25 +519,28 @@ fn build_optimized_angles(
     Ok(final_angles)
 }
 
-/// Turns an accepted [`RetargetProposal`] into the one `Edit::RetargetAngles` the
-/// caller pushes through `History::apply`.
+/// Turns an accepted [`RetargetProposal`] into the one atomic `Edit::Batch` the caller
+/// pushes through `History::apply`.
 ///
-/// This moves angles only; a caller that also wants every facet to keep turning about its
-/// girdle-side edge uses [`apply_with_anchors`] with the masts [`check`] computed.
+/// This moves angles only (it is [`apply_with_anchors`] with no masts), and it validates
+/// the exact reconstructed geometry against the meets of `design` under the Retarget
+/// policy, so a proposal that would detach a meet is refused. A caller that also needs
+/// every facet to keep turning about its girdle corners (every pinned design) uses
+/// [`apply_with_anchors`] with the masts [`check`] computed.
 ///
 /// See the module doc comment for why `design` (the CURRENT design, not
 /// necessarily the one `build_proposal` was called against) is read here rather
 /// than trusting each row's `old_angle`.
-#[must_use]
-pub fn apply(design: &Design, proposal: &RetargetProposal) -> Edit {
-    let changes = proposal
-        .rows
-        .iter()
-        .filter(|row| row.tier_index < design.tiers.len())
-        .map(|row| {
-            let current = design.tiers[row.tier_index].angle_deg;
-            (row.tier_index, current, row.new_angle)
-        })
-        .collect();
-    Edit::RetargetAngles { changes }
+///
+/// # Errors
+///
+/// The [`PreservationViolation`](indicatrix_cut_core::meet_preservation::PreservationViolation)
+/// that refuses the change: a stale row (`StaleCandidate`), a relation that cannot be
+/// satisfied, or a meet that would detach.
+#[must_use = "an edit that is not applied changes nothing"]
+pub fn apply(
+    design: &Design,
+    proposal: &RetargetProposal,
+) -> Result<Edit, indicatrix_cut_core::meet_preservation::PreservationViolation> {
+    anchors::apply_with_anchors(design, proposal, &[])
 }

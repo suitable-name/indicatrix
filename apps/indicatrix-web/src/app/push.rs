@@ -65,7 +65,7 @@ pub fn push_settings(ui: &AppWindow, app: &WebApp) {
         .position(|name| name.eq_ignore_ascii_case(&app.settings.material))
         .unwrap_or(0);
     model.set_material_options(string_model(materials));
-    model.set_material_index(material_index as i32);
+    model.set_material_index(i32::try_from(material_index).unwrap_or(i32::MAX));
     model.set_lighting_options(string_model(lighting_options()));
     model.set_lighting_index(app.settings.lighting_preset().index());
     model.set_view_tab(app.settings.view_tab);
@@ -102,7 +102,7 @@ pub fn push_design(ui: &AppWindow, app: &WebApp) {
     model.set_source_kind(design.source.label().into());
     model.set_design_info(design.info_text().into());
     model.set_is_dirty(design.session.is_dirty());
-    model.set_tier_count(design.session.design.tiers.len() as i32);
+    model.set_tier_count(i32::try_from(design.session.design.tiers.len()).unwrap_or(i32::MAX));
     model.set_can_undo(design.session.history.can_undo());
     model.set_can_redo(design.session.history.can_redo());
 }

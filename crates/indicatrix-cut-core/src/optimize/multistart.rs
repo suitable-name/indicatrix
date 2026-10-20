@@ -186,7 +186,12 @@ pub(super) struct StartPoint {
 /// One start's state: where its descent (and polish) ended.
 #[derive(Debug, Clone)]
 pub(super) struct StartState {
-    /// The free angles the start ended on.
+    /// Complete accepted authored state, carried through descent and polish.
+    pub(super) design: Option<crate::design::Design>,
+    /// The free angles the start ended on. Only the driver tests read them (through
+    /// [`MultiOutcome::best_angles`]); a real run hands over `design`, which carries the
+    /// same angles.
+    #[cfg(test)]
     pub(super) angles: Vec<f64>,
     /// Their `Fast` score (infinite for a start that could not be built).
     pub(super) score: f32,
@@ -258,7 +263,9 @@ pub(super) struct DriverHooks<'a> {
 
 /// What a multi-start run found.
 pub(super) struct MultiOutcome {
+    pub(super) best_design: Option<crate::design::Design>,
     /// The best state's free angles.
+    #[cfg(test)]
     pub(super) best_angles: Vec<f64>,
     /// Every start's pool, merged in start order.
     pub(super) pool: CandidatePool,
@@ -601,8 +608,10 @@ impl<E: StartEngine> Driver<'_, E> {
     }
 
     /// Phase P. Polishes the best `max(1, keep_candidates)` starts by their
-    /// coordinate-stage score (ties by start index) in place. Returns the polish
-    /// evaluations spent and whether the cancel flag cut a polish short.
+    /// coordinate-stage score (ties by start index) in place, never more than the run's
+    /// effective start count: extra waves can leave more states than that, and the run's
+    /// evaluation budget (`inclusive_max_evaluations_for`) pays for no more polishes.
+    /// Returns the polish evaluations spent and whether the cancel flag cut a polish short.
     fn polish_best(
         &self,
         states: &mut [StartState],
@@ -611,7 +620,10 @@ impl<E: StartEngine> Driver<'_, E> {
     ) -> (usize, bool) {
         let mut ranked: Vec<usize> = (0..states.len()).collect();
         ranked.sort_by(|&a, &b| states[a].score.total_cmp(&states[b].score).then(a.cmp(&b)));
-        ranked.truncate(polished_starts(states.len(), self.spec.polish_keep));
+        ranked.truncate(polished_starts(
+            states.len().min(self.spec.starts),
+            self.spec.polish_keep,
+        ));
         ranked.sort_unstable();
         let count_now = states.len();
         let announce = |task: usize| {
@@ -664,17 +676,24 @@ impl<E: StartEngine> Driver<'_, E> {
             }
         }
         let starts_run = states.len().max(1);
-        let (best_angles, polish_improvement) = states.get(best_start).map_or_else(
-            || (self.incumbent.angles.clone(), 0.0),
-            |state| (state.angles.clone(), state.polish_improvement),
+        let polish_improvement = states
+            .get(best_start)
+            .map_or(0.0, |state| state.polish_improvement);
+        #[cfg(test)]
+        let best_angles = states.get(best_start).map_or_else(
+            || self.incumbent.angles.clone(),
+            |state| state.angles.clone(),
         );
+        let best_design = states.get(best_start).and_then(|s| s.design.clone());
         let mut pool = self.engine.new_pool();
         for state in states {
             for entry in state.pool.into_entries() {
-                pool.offer(entry.angles, entry.score);
+                pool.offer_entry(entry);
             }
         }
         MultiOutcome {
+            best_design,
+            #[cfg(test)]
             best_angles,
             pool,
             evaluations,

@@ -12,8 +12,8 @@ use super::{
 };
 use crate::{
     design::{
-        ConstraintTier, Design, GirdleBand, KNIFE_EDGE_GAP, ScheduleMeta, girdle_band_in,
-        mast_through, tier_hinges, tier_plane_ranges,
+        ConstraintTier, Design, FacetSide, GirdleBand, KNIFE_EDGE_GAP, ScheduleMeta,
+        girdle_band_in, mast_through, tier_hinges, tier_plane_ranges,
     },
     preform::PreformSpec,
 };
@@ -206,11 +206,62 @@ fn measured_thickness(measured: &Measured) -> f64 {
         .expect("the stone has a girdle")
 }
 
+/// The pivot the hinge rule used before the owner's outline decision (2026-10-19): the extreme
+/// wall vertex of the tier's first live facet, the highest for a crown facet and the lowest for
+/// a pavilion facet, with vertices tied in height combined into the midpoint of their bounding
+/// box.
+///
+/// `design::hinge::tier_hinges` now pivots such a facet about its girdle OUTLINE corner, which
+/// keeps the corner and so cannot make the pinch the guard test below needs: the guard must
+/// still refuse a band that runs out between the walls, and the only way to build one with a
+/// break facet turned about a point on the wall is to turn it about the extreme vertex, where
+/// the corners move while the overall extent stays. So the fixture builds that pivot itself.
+fn extreme_wall_vertex(
+    measured: &Measured,
+    range: &std::ops::Range<usize>,
+    side: FacetSide,
+) -> DVec3 {
+    let (_, ring) = range
+        .clone()
+        .find_map(|plane| {
+            measured
+                .mesh
+                .rings
+                .iter()
+                .find(|(index, ring)| *index == plane && ring.len() >= 3)
+        })
+        .expect("the tier has a live facet");
+    let on_wall: Vec<DVec3> = ring
+        .iter()
+        .copied()
+        .filter(|vertex| {
+            measured.planes.iter().any(|&(normal, offset)| {
+                normal.y.abs() <= 1e-6 && (normal.dot(*vertex) - offset).abs() <= 1e-7
+            })
+        })
+        .collect();
+    let key = |vertex: &DVec3| match side {
+        FacetSide::Crown => -vertex.y,
+        FacetSide::Pavilion => vertex.y,
+    };
+    let best = on_wall.iter().map(key).fold(f64::INFINITY, f64::min);
+    assert!(best.is_finite(), "the facet touches a girdle wall");
+    let (low, high) = on_wall
+        .iter()
+        .filter(|vertex| key(vertex) <= best + 1e-6)
+        .fold(
+            (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY)),
+            |(low, high), vertex| (low.min(*vertex), high.max(*vertex)),
+        );
+    (low + high) * 0.5
+}
+
 /// The standard brilliant's two break facets (`start`'s Upper and Lower Girdle) turned steeper
-/// about their girdle edges, the way a retarget re-anchors them, by `share` of the full turn
-/// the pinch test below uses: `0.0` is `start` itself, `1.0` the angles 45.3 and -46.24.
+/// about their extreme girdle-wall vertices (see [`extreme_wall_vertex`]), by `share` of the full
+/// turn the pinch test below uses: `0.0` is `start` itself, `1.0` the angles 45.3 and -46.24.
 fn pinch_turned(start: &Measured, share: f64) -> Measured {
     let hinges = tier_hinges(&start.design, &start.solved);
+    let ranges = tier_plane_ranges(&start.design, &start.solved);
     let mut turned = start.design.clone();
     for (name, full_turn) in [("Upper Girdle", 45.3), ("Lower Girdle", -46.24)] {
         let index = turned
@@ -222,7 +273,8 @@ fn pinch_turned(start: &Measured, share: f64) -> Measured {
             .angle_deg
             .mul_add(1.0 - share, full_turn * share);
         let hinge = hinges[&index];
-        let mast = mast_through(angle, hinge.azimuth_rad, hinge.side, hinge.point);
+        let pivot = extreme_wall_vertex(start, &ranges[index], hinge.side);
+        let mast = mast_through(angle, hinge.azimuth_rad, hinge.side, pivot);
         turned.tiers[index].angle_deg = angle;
         turned.tiers[index].constraint = MeetConstraint::ScaleReference(mast);
     }
@@ -235,7 +287,7 @@ fn band_of(measured: &Measured) -> Option<GirdleBand> {
     girdle_band_in(&measured.design, &ranges, &measured.planes, &measured.mesh)
 }
 
-/// A facet turned about its girdle edge keeps the extreme wall vertices the measured girdle
+/// A facet turned about its extreme wall vertex keeps the extreme wall vertices the measured girdle
 /// thickness is read from, so that figure cannot see the band pinch out between the walls.
 /// The guard measures the thinnest point too, and says no.
 #[test]
@@ -405,6 +457,7 @@ fn evaluate_candidate_rejects_what_the_guard_rejects() {
 
 fn entry(angles: &[f64], score: f32) -> PoolEntry {
     PoolEntry {
+        design: None,
         angles: angles.to_vec(),
         score,
     }

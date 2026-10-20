@@ -30,6 +30,8 @@ use std::sync::Arc;
 /// unequal to itself; the big shared buffers by `Arc` identity (a writer always
 /// replaces the `Arc` when their content changes).
 struct SceneKey {
+    engine: indicatrix::renderer::engine::EngineSpec,
+    planes_owner: super::PlanesOwner,
     dims: [u32; 4],
     floats: [u32; 11],
     c_axis: Option<[u32; 3]>,
@@ -42,6 +44,9 @@ struct SceneKey {
     /// bit patterns -- see `RenderContext::effective_view_body_color`.
     view_color: Option<[u32; 3]>,
     active_planes: Arc<Vec<GpuFacetPlane>>,
+    /// Compared by value: a claim that finds the list unchanged keeps the `Arc`, and a
+    /// changed list is a changed scene either way.
+    active_frosted: Arc<Vec<u32>>,
     active_tools: Arc<Vec<ToolPrimitive>>,
     custom_materials: Arc<Vec<GemMaterial>>,
     fluorescence: Option<Arc<Fluorescence>>,
@@ -97,6 +102,8 @@ fn same_env(a: Option<&Arc<EnvironmentMap>>, b: Option<&Arc<EnvironmentMap>>) ->
 impl SceneKey {
     fn of(ctx: &RenderContext) -> Self {
         Self {
+            engine: ctx.engine,
+            planes_owner: ctx.planes_owner,
             dims: dims(ctx),
             floats: floats(ctx),
             c_axis: c_axis(ctx),
@@ -107,6 +114,7 @@ impl SceneKey {
             material_override: ctx.material_override.clone(),
             view_color: view_color_bits(ctx),
             active_planes: Arc::clone(&ctx.active_planes),
+            active_frosted: Arc::clone(&ctx.active_frosted),
             active_tools: Arc::clone(&ctx.active_tools),
             custom_materials: Arc::clone(&ctx.custom_materials),
             fluorescence: ctx.active_fluorescence(),
@@ -117,7 +125,9 @@ impl SceneKey {
     /// Whether `ctx`'s scene still equals this key -- compared in place, with no
     /// allocation, since the render loop asks every frame.
     fn matches(&self, ctx: &RenderContext) -> bool {
-        self.dims == dims(ctx)
+        self.engine == ctx.engine
+            && self.planes_owner == ctx.planes_owner
+            && self.dims == dims(ctx)
             && self.floats == floats(ctx)
             && self.c_axis == c_axis(ctx)
             && self.girdle_frosted == ctx.girdle_frosted
@@ -127,6 +137,7 @@ impl SceneKey {
             && self.material_override == ctx.material_override
             && self.view_color == view_color_bits(ctx)
             && Arc::ptr_eq(&self.active_planes, &ctx.active_planes)
+            && *self.active_frosted == *ctx.active_frosted
             && Arc::ptr_eq(&self.active_tools, &ctx.active_tools)
             && Arc::ptr_eq(&self.custom_materials, &ctx.custom_materials)
             && same_fluorescence(
@@ -171,6 +182,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn changing_the_image_engine_or_its_taps_restarts_the_scene() {
+        let mut ctx = RenderContext::default();
+        let spectral = ctx.scene_generation();
+        ctx.engine.engine = indicatrix::renderer::engine::RenderEngine::RayTraced;
+        let ray = ctx.scene_generation();
+        assert!(ray > spectral);
+        ctx.engine.ray.aa_taps = 16;
+        assert!(ctx.scene_generation() > ray);
+    }
+
+    #[test]
     fn an_unchanged_scene_keeps_its_generation() {
         let mut ctx = RenderContext::default();
         let first = ctx.scene_generation();
@@ -199,6 +221,43 @@ mod tests {
             ctx.scene_generation() > second,
             "a lighting change bumps it the same way"
         );
+    }
+
+    #[test]
+    fn a_changed_planes_owner_bumps_the_generation() {
+        let mut ctx = RenderContext::default();
+        let owner = |generation| super::super::PlanesOwner::Editor { generation };
+        ctx.planes_owner = owner(1);
+        let first = ctx.scene_generation();
+        assert_eq!(ctx.scene_generation(), first, "the same owner is no change");
+        ctx.planes_owner = owner(2);
+        assert!(
+            ctx.scene_generation() > first,
+            "another owner of the same planes is another scene"
+        );
+    }
+
+    #[test]
+    fn a_changed_frosted_set_bumps_the_generation_and_an_unchanged_one_does_not() {
+        let mut ctx = RenderContext::default();
+        let first = ctx.scene_generation();
+        ctx.claim_active_frosted(Vec::new());
+        assert_eq!(
+            ctx.scene_generation(),
+            first,
+            "no frosting claimed over no frosting is no change"
+        );
+        ctx.claim_active_frosted(vec![3, 4]);
+        let second = ctx.scene_generation();
+        assert!(second > first, "frosting a plane is a scene change");
+        ctx.claim_active_frosted(vec![3, 4]);
+        assert_eq!(
+            ctx.scene_generation(),
+            second,
+            "the same frosted planes again is no change"
+        );
+        ctx.claim_active_frosted(vec![3]);
+        assert!(ctx.scene_generation() > second, "so is a changed set");
     }
 
     #[test]

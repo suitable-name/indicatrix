@@ -250,6 +250,8 @@ mod tests {
             preform_plane_count: 0,
             tools: Vec::new(),
             concave_error: None,
+            render_tools: Vec::new(),
+            render_placements: Vec::new(),
             material,
             girdle_diameter_mm,
             custom_material,

@@ -11,6 +11,7 @@
 //! handlers) recomputes it through the shared [`recompute_tab_visible`] helper, so no
 //! call site's formula can ever drift out of sync with another's.
 
+use crate::gui::view_modes::{EditViewMode, LiveViewMode};
 use crate::{
     MainWindow, RetargetModel, SolidPreviewModel, ViewportModel,
     bridge::render_thread::RenderContext,
@@ -27,15 +28,16 @@ use std::sync::{Arc, Mutex};
 ///
 /// The tracer only runs where it can actually be seen, which depends on the Live
 /// Render/Edit sub-tab's OWN view-mode toggle, not just which sub-tab is selected:
-/// - Live Render tab (`render_view_tab == 0`): visible only in Path-traced mode
-///   (`live_view_mode == 1`, `ViewportModel.live_view_mode`). In Solid mode the
-///   viewport shows the flat-shaded CPU rasterizer instead, and the spectral tracer
-///   must not burn GPU/remote compute time on a frame nobody is looking at.
-/// - Edit tab (`render_view_tab == 1`): visible in Path-traced (`1`) or Both (`2`)
-///   mode (`SolidPreviewModel.view_mode`), not Solid (`0`) or Diagram (`3`) --
-///   `render_view_tab == 1` alone must not suspend tracing unconditionally, or the
-///   Edit tab's own "Path-traced"/"Both" pills would show a stale, frozen frame
-///   instead of a live one.
+/// - Live Render tab (`render_view_tab == 0`): visible in Path-traced (`1`) or
+///   Ray-Traced (`2`) mode (`ViewportModel.live_view_mode`, [`LiveViewMode`]). In
+///   Solid mode (`0`) the viewport shows the flat-shaded CPU rasterizer instead, and
+///   the tracers must not burn GPU/remote compute time on a frame nobody is looking
+///   at.
+/// - Edit tab (`render_view_tab == 1`): visible in Path-traced (`1`), Both (`2`) or
+///   Ray-Traced (`4`) mode (`SolidPreviewModel.view_mode`, [`EditViewMode`]), not
+///   Solid (`0`) or Diagram (`3`) -- `render_view_tab == 1` alone must not suspend
+///   tracing unconditionally, or the Edit tab's own traced pills would show a stale,
+///   frozen frame instead of a live one.
 ///
 /// `modal_compare_open` (the Retarget dialog, whose embedded comparison pane is the
 /// only view of the change) overrides everything above: the viewport behind the
@@ -50,8 +52,8 @@ const fn render_is_visible(
 ) -> bool {
     !modal_compare_open
         && active_tab == 0
-        && ((render_view_tab == 0 && live_view_mode == 1)
-            || (render_view_tab == 1 && (solid_view_mode == 1 || solid_view_mode == 2)))
+        && ((render_view_tab == 0 && LiveViewMode::from_raw(live_view_mode).is_traced())
+            || (render_view_tab == 1 && EditViewMode::from_raw(solid_view_mode).is_traced()))
 }
 
 /// Reads the current signals off `ui` and writes the result into
@@ -78,6 +80,15 @@ pub(in crate::gui) fn recompute_tab_visible(
         ui.global::<RetargetModel>().get_is_open(),
     );
     let mut ctx = RenderContext::lock(render_ctx);
+    let engine = if ui.get_render_view_tab() == 1 {
+        EditViewMode::from_raw(ui.global::<SolidPreviewModel>().get_view_mode()).engine()
+    } else {
+        LiveViewMode::from_raw(ui.global::<ViewportModel>().get_live_view_mode()).engine()
+    };
+    if ctx.engine.engine != engine {
+        ctx.engine.engine = engine;
+        ctx.dirty = true;
+    }
     ctx.tab_visible = visible;
     // A view switch mid-drag must never leave the preview gate closed (the release
     // may go to a different, now-hidden viewport); the next press re-arms it.
@@ -156,31 +167,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_render_sub_tab_traces_only_in_path_traced_mode() {
-        // Solid mode (0): the flat-shaded CPU raster is shown instead -- the spectral
-        // tracer must not burn GPU/remote time on a frame nobody is looking at.
+    fn live_render_sub_tab_traces_only_in_path_or_ray_traced_mode() {
+        // Solid mode (0): the flat-shaded CPU raster is shown instead -- the tracers
+        // must not burn GPU/remote time on a frame nobody is looking at.
         assert!(!render_is_visible(0, 0, 0, 0, false));
-        // Path-traced mode (1): visible.
+        // Path-traced mode (1) and Ray-Traced mode (2): visible.
         assert!(render_is_visible(0, 0, 1, 0, false));
+        assert!(render_is_visible(0, 0, 2, 0, false));
     }
 
     #[test]
-    fn edit_sub_tab_traces_only_in_path_traced_or_both_mode() {
-        // Solid (0) and Diagram (3): no path-traced image is shown there, so tracing
+    fn edit_sub_tab_traces_only_in_path_traced_both_or_ray_traced_mode() {
+        // Solid (0) and Diagram (3): no traced image is shown there, so tracing
         // stays suspended.
         assert!(!render_is_visible(0, 1, 1, 0, false));
         assert!(!render_is_visible(0, 1, 1, 3, false));
-        // Path-traced (1) and Both (2): these pills trace LIVE, showing a fresh frame
-        // rather than a stale, frozen one.
+        // Path-traced (1), Both (2) and Ray-Traced (4): these pills trace LIVE,
+        // showing a fresh frame rather than a stale, frozen one.
         assert!(render_is_visible(0, 1, 1, 1, false));
         assert!(render_is_visible(0, 1, 1, 2, false));
+        assert!(render_is_visible(0, 1, 1, 4, false));
     }
 
     #[test]
     fn never_visible_outside_the_3d_tab() {
         for render_view_tab in [0, 1] {
-            for live_view_mode in [0, 1] {
-                for solid_view_mode in [0, 1, 2, 3] {
+            for live_view_mode in 0..=2 {
+                for solid_view_mode in 0..=4 {
                     assert!(!render_is_visible(
                         1,
                         render_view_tab,
@@ -207,8 +220,8 @@ mod tests {
         // otherwise have kept it tracing.
         for active_tab in [0, 1, 2] {
             for render_view_tab in [0, 1] {
-                for live_view_mode in [0, 1] {
-                    for solid_view_mode in [0, 1, 2, 3] {
+                for live_view_mode in 0..=2 {
+                    for solid_view_mode in 0..=4 {
                         assert!(!render_is_visible(
                             active_tab,
                             render_view_tab,

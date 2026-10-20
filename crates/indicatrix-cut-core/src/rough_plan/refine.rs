@@ -19,10 +19,13 @@ use super::{
     FINAL_TOP, PASSES, REFINE_TOP, REL_TOL,
     pareto::sanitize,
     piece::{ASSIGNMENTS, Norm, best_pick, stone_value},
-    rank::{as_layout, flatten_groups, rank_indices_capped, take_indices},
+    rank::{as_layout, flatten_groups, rank_indices_within, take_indices},
     shaped::parallel::run_lanes_dynamic,
     tree::{Bar, Leaf, Slab, Tree, layout_from_tree, to_canonical},
-    types::{CandidateDesign, LayoutGroup, PlanProgress, PlanSettings, RoughBlock, RoughLayout},
+    types::{
+        CandidateDesign, LayoutCaps, LayoutGroup, PlanProgress, PlanSettings, RoughBlock,
+        RoughLayout,
+    },
 };
 
 /// Even samples per boundary.
@@ -427,6 +430,9 @@ pub fn own_pool(pool: &[CandidateDesign], layout: &RoughLayout) -> Vec<Candidate
 /// The re-pick may give a leaf a design the layout did not use. When that takes the layout
 /// past [`PlanSettings::max_designs`], the refinement is redone over the layout's own designs
 /// (taken from `all`, the sanitised catalogue), which can never add one.
+///
+/// The stone cap needs no such care: the refinement keeps the tree and every leaf holds one
+/// stone, so the stone count never grows (a debug assertion checks it).
 #[must_use]
 pub fn refine_capped(
     rough: &RoughBlock,
@@ -436,11 +442,16 @@ pub fn refine_capped(
     layout: &RoughLayout,
 ) -> RoughLayout {
     let refined = refine_with_pool(rough, settings, pool, layout);
-    if refined.design_count() <= settings.max_designs_usize() {
+    let within = if refined.design_count() <= settings.max_designs_usize() {
         refined
     } else {
         refine_with_pool(rough, settings, &own_pool(all, layout), layout)
-    }
+    };
+    debug_assert!(
+        within.stone_count() <= layout.stone_count(),
+        "the refinement keeps the tree, so it never adds a stone"
+    );
+    within
 }
 
 /// The final ranked top 10 of `refined`.
@@ -459,7 +470,7 @@ pub fn final_ranking<L: Borrow<RoughLayout>>(
     flat: &[L],
     refined_indices: &[usize],
 ) -> Vec<RoughLayout> {
-    final_ranking_capped(refined, flat, refined_indices, usize::MAX)
+    final_ranking_within(refined, flat, refined_indices, LayoutCaps::NONE)
 }
 
 /// [`final_ranking`] keeping only layouts of at most `max_designs` different designs, in the
@@ -471,7 +482,24 @@ pub fn final_ranking_capped<L: Borrow<RoughLayout>>(
     refined_indices: &[usize],
     max_designs: usize,
 ) -> Vec<RoughLayout> {
-    let keep = rank_indices_capped(&refined, FINAL_TOP, max_designs);
+    final_ranking_within(
+        refined,
+        flat,
+        refined_indices,
+        LayoutCaps::designs_only(max_designs),
+    )
+}
+
+/// [`final_ranking`] keeping only the layouts `caps` admits (its design cap and its stone
+/// cap), in the refined list and in the top-up pool alike.
+#[must_use]
+pub fn final_ranking_within<L: Borrow<RoughLayout>>(
+    refined: Vec<RoughLayout>,
+    flat: &[L],
+    refined_indices: &[usize],
+    caps: LayoutCaps,
+) -> Vec<RoughLayout> {
+    let keep = rank_indices_within(&refined, FINAL_TOP, caps);
     if keep.len() >= FINAL_TOP || refined_indices.len() >= flat.len() {
         return take_indices(refined, &keep);
     }
@@ -487,7 +515,7 @@ pub fn final_ranking_capped<L: Borrow<RoughLayout>>(
         .filter(|(_, done)| !**done)
         .map(|(layout, _)| as_layout(layout));
     let pool: Vec<&RoughLayout> = refined.iter().chain(unrefined).collect();
-    rank_indices_capped(&pool, FINAL_TOP, max_designs)
+    rank_indices_within(&pool, FINAL_TOP, caps)
         .into_iter()
         .map(|i| pool[i].clone())
         .collect()
@@ -531,8 +559,8 @@ pub fn finish_plan_lanes(
 ) -> Option<Vec<RoughLayout>> {
     let all = sanitize(designs);
     let (flat, group_of) = flatten_groups(groups);
-    let max_designs = settings.max_designs_usize();
-    let ranked = rank_indices_capped(&flat, usize::MAX, max_designs);
+    let caps = settings.caps();
+    let ranked = rank_indices_within(&flat, usize::MAX, caps);
     let split = ranked.len().min(REFINE_TOP);
     let refined = run_lanes_dynamic(
         (0..split).collect(),
@@ -552,10 +580,5 @@ pub fn finish_plan_lanes(
         },
         on_progress,
     )?;
-    Some(final_ranking_capped(
-        refined,
-        &flat,
-        &ranked[..split],
-        max_designs,
-    ))
+    Some(final_ranking_within(refined, &flat, &ranked[..split], caps))
 }

@@ -17,6 +17,7 @@ pub const fn choice_code(choice: ImportPreviewChoice) -> i32 {
         ImportPreviewChoice::Full => 1,
         ImportPreviewChoice::Solid => 2,
         ImportPreviewChoice::Skip => 3,
+        ImportPreviewChoice::Ray => 4,
     }
 }
 
@@ -47,12 +48,14 @@ pub fn offer_import_previews(ui: &MainWindow, ids: &[i64]) {
     }
     let model = ui.global::<BatchModel>();
     match model.get_preview_import_choice() {
-        1 | 2 => {
+        1 | 2 | 4 => {
             open_offer(ui, ids, true);
             // The answer is already stored; do not store it again.
             model.set_preview_remember_choice(false);
             if model.get_preview_import_choice() == 1 {
                 model.invoke_preview_generate_confirmed();
+            } else if model.get_preview_import_choice() == 4 {
+                model.invoke_preview_generate_ray_confirmed();
             } else {
                 model.invoke_preview_generate_solid_confirmed();
             }
@@ -73,8 +76,9 @@ mod tests {
             ImportPreviewChoice::Full,
             ImportPreviewChoice::Solid,
             ImportPreviewChoice::Skip,
+            ImportPreviewChoice::Ray,
         ]
         .map(choice_code);
-        assert_eq!(codes, [0, 1, 2, 3]);
+        assert_eq!(codes, [0, 1, 2, 3, 4]);
     }
 }

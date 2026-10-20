@@ -32,9 +32,12 @@ export global RenderModel {
     // (`push_settings`); a change reports through `surface-glare-edited`, not `settings-edited`.
     // Not used while an HDR map lights the scene.
     in-out property <float> surface-glare-percent: 100.0;
-    // 0 as lit, 1 grey, 2 white.
-    in-out property <int> backdrop-index: 1;
+    // 0 as lit, 1 grey, 2 white (default), 3 black.
+    in-out property <int> backdrop-index: 2;
     in-out property <int> bounces: 12;
+    in-out property <int> engine: 0;
+    in-out property <int> ray-taps: 4;
+    in-out property <bool> ray-fire: true;
     in-out property <int> target-spp: 256;
     in-out property <bool> denoise: true;
     in-out property <bool> frosted-girdle: false;
@@ -53,13 +56,30 @@ export global RenderModel {
     in-out property <bool> use-hdr: true;
     in-out property <bool> gpu-enabled: false;
     in-out property <string> gpu-status-text: "";
-    // 0 off, 1 unknown, 2 testing, 3 ok, 4 failed.
+    // 0 off, 1 unknown, 2 testing, 3 ok, 4 failed, 5 starting
+    // (`indicatrix_web_core::gpu_startup::GpuState`).
     in-out property <int> gpu-state: 0;
+    // Whether "Forget GPU Test Result" leads anywhere: false once the GPU worker is gone for
+    // this page session (lost or unavailable), when only a reload can try again.
+    in-out property <bool> gpu-can-forget: true;
+    // What the app renders with, in one sentence ("Rendering on the GPU (...) with 7 workers on
+    // the CPU.", "Rendering on the CPU (7 workers): ...", "GPU rendering is off. ..."); stays
+    // after the start-up run is over (`src/render/gpu_gate/status.rs`).
+    in property <string> gpu-summary: "";
+
+    // -- The GPU start-up run -----------------------------------------------------------
+    // A run (the test at page load, or after switching GPU rendering on) is in progress: the
+    // overlay shows its step and a bar. "Hide" only hides the overlay; the run goes on.
+    in property <bool> startup-active: false;
+    in property <float> startup-progress: 0.0;
+    in property <string> startup-step: "";
+    in-out property <bool> startup-hidden: false;
 
     // -- The PNG export dialog ---------------------------------------------------------
     in-out property <bool> export-open: false;
     in-out property <int> export-long-edge: 1600;
     in-out property <int> export-spp: 256;
+    in-out property <int> export-ray-taps: 16;
     // 0 sRGB, 1 Display P3, 2 Rec.2020 (`display::EXPORT_COLOR_SPACES`).
     in-out property <int> export-color-space: 0;
     in-out property <bool> export-denoise: false;

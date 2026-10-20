@@ -75,7 +75,7 @@ const fn describe_algorithm(algo: Algorithm) -> &'static str {
 const fn describe_objectives(sampling: ObjectiveSampling) -> &'static str {
     match sampling {
         ObjectiveSampling::Balanced => "balanced (the default weights in every episode)",
-        ObjectiveSampling::Presets => "presets (uniform over the five non-tone presets)",
+        ObjectiveSampling::Presets => "presets (uniform over all seven objective presets)",
         ObjectiveSampling::Mixed => "mixed (presets 70 %, random weights 30 %)",
     }
 }
@@ -109,6 +109,27 @@ fn describe_schedule(schedule: LrSchedule) -> String {
     }
 }
 
+/// The rollout banner phrase: the steps per rollout, the mini-batch and how much the update
+/// trains. Imitation trains `updates_per_round` mini-batches per round, or, when that is 0, the
+/// old `epochs_per_round` full epochs over the aggregate; PPO trains epochs per iteration.
+fn describe_rollout(config: &RunConfig) -> String {
+    let steps = config.rollout_size;
+    match config.algo {
+        Algorithm::Imitation if config.imitation.updates_per_round > 0 => format!(
+            "{steps} steps, {} updates per round, mini-batch {}",
+            config.imitation.updates_per_round, config.imitation.mini_batch_size
+        ),
+        Algorithm::Imitation => format!(
+            "{steps} steps, mini-batch {}, {} epochs per round",
+            config.imitation.mini_batch_size, config.imitation.epochs_per_round
+        ),
+        Algorithm::Ppo => format!(
+            "{steps} steps, mini-batch {}, {} epochs per iteration",
+            config.ppo.mini_batch_size, config.ppo.epochs_per_batch
+        ),
+    }
+}
+
 /// Prints the run configuration; `sizes` is the (train, val, test) design count.
 pub fn print_banner(
     runner: &TrainingRunner,
@@ -129,9 +150,16 @@ pub fn print_banner(
     println!("  backend      {}", runner.device_label());
     println!("  mode         {}", args.mode);
     println!(
-        "  workers      {}",
-        describe_workers(runner.config().workers, core_count())
+        "  workers      {} configured, {} effective rollout slots; {} persistent CPU pool threads",
+        describe_workers(runner.config().workers, core_count()),
+        runner.config().effective_workers(),
+        crate::runner::cpu_pool_threads()
     );
+    if cfg!(debug_assertions) {
+        println!(
+            "  warning      debug assertions enabled; training builds may run substantially slower"
+        );
+    }
     print_tuning(runner, args);
     println!("  data set     {train} train / {val} val / {test} test, padded to {max_tiers} tiers");
     if val == 0 {
@@ -157,22 +185,7 @@ pub fn print_banner(
 fn print_tuning(runner: &TrainingRunner, args: &CliArgs) {
     let config = runner.config();
     println!("  algorithm    {}", describe_algorithm(config.algo));
-    let (mini_batch, epochs, unit) = match config.algo {
-        Algorithm::Imitation => (
-            config.imitation.mini_batch_size,
-            config.imitation.epochs_per_round,
-            "per round",
-        ),
-        Algorithm::Ppo => (
-            config.ppo.mini_batch_size,
-            config.ppo.epochs_per_batch,
-            "per iteration",
-        ),
-    };
-    println!(
-        "  rollout      {} steps, mini-batch {mini_batch}, {epochs} epochs {unit}",
-        config.rollout_size
-    );
+    println!("  rollout      {}", describe_rollout(config));
     println!(
         "  step limit   {:.2} degrees per tier and step ({})",
         runner.max_step_deg(),
@@ -234,13 +247,28 @@ fn print_learning(config: &RunConfig) {
 /// cosine and aggregate size for imitation, the critic's explained variance for PPO.
 fn learning_figures(point: &IterationMetricPoint, imitation: bool) -> String {
     if imitation {
+        // The first iteration has no update yet: its loss is a default, not a measurement.
+        let loss = if point.has_update() {
+            format!("{:.3}", point.imitation_loss)
+        } else {
+            "-".to_owned()
+        };
         format!(
-            "loss {:.3} | cos {} | labels {}",
-            point.imitation_loss,
+            "loss {loss} | cos {} | labels {} | support {} | host ms pack/update/export/fwd {:.0}/{:.0}/{:.0}/{:.0}",
             point
                 .train_cosine
                 .map_or_else(|| "-".to_owned(), |c| format!("{c:+.2}")),
-            point.labelled_samples
+            point.labelled_samples,
+            point
+                .component_support
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join("/"),
+            point.packing_ms,
+            point.training_host_ms,
+            point.weight_export_ms,
+            point.rollout_forward_ms,
         )
     } else {
         format!(
@@ -249,6 +277,23 @@ fn learning_figures(point: &IterationMetricPoint, imitation: bool) -> String {
                 .explained_variance
                 .map_or_else(|| "-".to_owned(), |ev| format!("{ev:+.2}"))
         )
+    }
+}
+
+/// The update phrase of an imitation progress line: how long the update took on its own thread,
+/// how long the main thread waited for it and which iteration's rollout it trained on, `upd 4.3s
+/// (waited 0.0s, of #12)`; `upd -` while no update exists yet (the first iteration).
+fn update_figures(point: &IterationMetricPoint) -> String {
+    match point.update_of_iteration {
+        Some(of) => format!(
+            "upd {:.1}s (waited {:.1}s, of #{of})",
+            point.update_secs, point.update_wait_secs
+        ),
+        None if point.has_update() => format!(
+            "upd {:.1}s (waited {:.1}s)",
+            point.update_secs, point.update_wait_secs
+        ),
+        None => "upd -".to_owned(),
     }
 }
 
@@ -303,8 +348,11 @@ fn progress_segments(
         format!("acc {:.0}%", point.accepted_frac * 100.0),
         format!("{:>6.0} steps/s", point.steps_per_sec),
         format!("{evaluations:>6} evals/s"),
-        format!("reward [{}]", render_sparkline(rewards, 16)),
     ]);
+    if imitation {
+        segments.push(update_figures(point));
+    }
+    segments.push(format!("reward [{}]", render_sparkline(rewards, 16)));
     segments
 }
 
@@ -349,11 +397,23 @@ fn mean_phase_seconds(history: &[IterationMetricPoint]) -> Option<(f32, f32, f32
     ))
 }
 
-/// Candidate evaluations per second over the whole run (rollout and update time); `None` when no
-/// evaluation or no time was recorded.
+/// Mean seconds per iteration the main thread waited for the update thread; `None` for an empty
+/// history. With the update running beside the rollout this is the part of the update that
+/// slowed the run down (PPO waits for the whole update).
+fn mean_update_wait(history: &[IterationMetricPoint]) -> Option<f32> {
+    (!history.is_empty())
+        .then(|| history.iter().map(|p| p.update_wait_secs).sum::<f32>() / history.len() as f32)
+}
+
+/// Candidate evaluations per second over the whole run (the main thread's wall time per
+/// iteration, see [`IterationMetricPoint::main_thread_secs`]); `None` when no evaluation or no
+/// time was recorded.
 fn overall_evaluations_per_sec(history: &[IterationMetricPoint]) -> Option<f32> {
     let evaluations: usize = history.iter().map(|p| p.evaluations_this_round).sum();
-    let seconds: f32 = history.iter().map(|p| p.rollout_secs + p.update_secs).sum();
+    let seconds: f32 = history
+        .iter()
+        .map(IterationMetricPoint::main_thread_secs)
+        .sum();
     (evaluations > 0 && seconds > 0.0).then_some(evaluations as f32 / seconds)
 }
 
@@ -367,8 +427,10 @@ fn print_utilisation(workers: usize, history: &[IterationMetricPoint]) {
     if let Some((rollout, label, update)) =
         mean_phase_seconds(history).filter(|&(r, l, u)| r + l + u > 0.0)
     {
+        let waited = mean_update_wait(history).unwrap_or(0.0);
         println!(
-            "  seconds per iteration  rollout {rollout:.2} / label {label:.2} / update {update:.2}"
+            "  seconds per iteration  rollout {rollout:.2} / label {label:.2} / update {update:.2} \
+             (waited {waited:.2})"
         );
     }
     if let Some(rate) = overall_evaluations_per_sec(history) {

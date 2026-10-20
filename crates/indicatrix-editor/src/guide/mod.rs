@@ -41,6 +41,7 @@ mod model;
 mod perform;
 mod perform_table;
 mod rebuilt;
+mod stage;
 mod start;
 pub mod steps;
 mod tour;
@@ -56,6 +57,8 @@ mod goal_tests;
 mod perform_tests;
 #[cfg(test)]
 mod rebuilt_tests;
+#[cfg(test)]
+mod stage_tests;
 #[cfg(test)]
 mod tests;
 
@@ -83,6 +86,9 @@ pub use perform::{
     concave_position, default_perform, resolve_tier, tier_position,
 };
 pub use rebuilt::{MAST_FLOOR, mast_within};
+pub use stage::{
+    CameraFocus, LibraryPanel, Stage, StageOverride, StageView, opening_stage, stage_for,
+};
 pub use start::{
     EMPTY_START_PREFORM, LIBRARY_GRACE_TICKS, LaunchObservation, LaunchStatus, NEEDS_A_DESIGN,
     StartPlan, launch_status, lesson_start_spec, plan_start,

@@ -23,6 +23,7 @@
 use super::{
     launch,
     runtime::{self, UiFacts},
+    stage_nav,
 };
 use crate::{
     EditorModel, GuideModel, MainWindow, SolidPreviewModel, gui::editor::state::EditorState,
@@ -80,7 +81,10 @@ pub(in crate::gui::editor) fn check_design_progress(ui: &MainWindow, design: &De
     let model = ui.global::<EditorModel>();
     let facts = UiFacts {
         solved_closed: model.get_solve_state() == "solved" && !model.get_status_is_problem(),
-        view_mode: ui.global::<SolidPreviewModel>().get_view_mode(),
+        view_mode: crate::gui::view_modes::EditViewMode::from_raw(
+            ui.global::<SolidPreviewModel>().get_view_mode(),
+        )
+        .raw(),
         inspector_tab: model.get_inspector_tab(),
     };
     if runtime::goal_is_met(guide.get_guide_id().as_str(), index, design, facts) {
@@ -90,6 +94,7 @@ pub(in crate::gui::editor) fn check_design_progress(ui: &MainWindow, design: &De
 
 /// Re-checks the current step against the editor state as it is now.
 pub(super) fn check_now(ui: &MainWindow) {
+    stage_nav::check_stage_alignment(ui);
     if !try_check(ui) {
         // Someone is writing the state right now; their refresh ends in a check of its own,
         // and one more try a moment later covers a caller that does not refresh.

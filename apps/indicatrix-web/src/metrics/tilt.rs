@@ -6,10 +6,12 @@
 //!
 //! Opening the dialog sweeps automatically when the curves on screen were not swept for
 //! the current inputs (the desktop does the same); Run sweeps again. The sweep runs in
-//! the analysis Worker as `SolveRequest::Tilt`, streaming a stage line and a fraction, and
+//! the analysis Worker as `SolveRequest::Tilt` (`TiltWithTools` for a concave stone, which
+//! the sweep scores with its tools like the desktop), streaming a stage line and a fraction, and
 //! Cancel stops it between points (`SolveClient::request_cancel`) -- the curves already on
-//! screen stay. The inputs are the desktop's key: the stone's solved planes, the
-//! material, and the light; the camera is not one (the sweep moves it). While the dialog is
+//! screen stay. The inputs are the desktop's key: the stone's solved planes and concave tools, its
+//! frosting (the frosted-girdle setting and the design's frosted facets, which scatter light),
+//! the material, and the light; the camera is not one (the sweep moves it). While the dialog is
 //! open a short poll compares them with the swept ones and marks the curves stale.
 //!
 //! # Lighting
@@ -31,9 +33,7 @@ use indicatrix::color::metrics::AxisProfile;
 use indicatrix_editor::view_model::curve_path::full_axis_curve_path;
 use indicatrix_web_core::{
     host::{SolveClient, WorkerPool},
-    solve::{
-        SolveRequest, SolveResponse, TiltAxisData, TiltParams, TiltResultData, tilt_lighting_note,
-    },
+    solve::{SolveResponse, TiltAxisData, TiltJob, TiltResultData, tilt_lighting_note},
     solve_error::SolveError,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -48,7 +48,7 @@ struct Runtime {
     epoch: u64,
     running: bool,
     /// The inputs the curves on screen were swept for.
-    computed: Option<TiltParams>,
+    computed: Option<TiltJob>,
     /// The dialog opened before there was a stone to sweep: sweep as soon as there is.
     wants_run: bool,
     poll: Timer,
@@ -65,10 +65,10 @@ pub fn is_running() -> bool {
 }
 
 /// The current inputs and the traced material's name, or why there is nothing to sweep.
-fn current_inputs(ctx: &Ctx) -> Result<(TiltParams, String), String> {
-    let spec = crate::render::optics_scene(ctx)?;
+fn current_inputs(ctx: &Ctx) -> Result<(TiltJob, String), String> {
+    let (spec, tools) = crate::render::optics_geometry(ctx)?;
     let name = spec.material.name.clone();
-    Ok((TiltParams::from_scene(&spec), name))
+    Ok((TiltJob::from_scene(&spec, &tools), name))
 }
 
 fn set_status(ctx: &Ctx, text: &str) {
@@ -98,12 +98,16 @@ fn opened(ctx: &Ctx) {
 }
 
 /// Names the traced material and what the sweep for `params` is scored under.
-fn show_inputs(ctx: &Ctx, params: &TiltParams, material: &str) {
+fn show_inputs(ctx: &Ctx, params: &TiltJob, material: &str) {
     if let Some(ui) = ctx.ui.upgrade() {
         let model = ui.global::<TiltModel>();
         model.set_material_name(material.into());
         model.set_lighting_note(
-            tilt_lighting_note(params.preset_index, crate::render::hdr_lights_viewport()).into(),
+            tilt_lighting_note(
+                params.params.preset_index,
+                crate::render::hdr_lights_viewport(),
+            )
+            .into(),
         );
     }
 }
@@ -192,22 +196,16 @@ fn run(ctx: &Ctx) {
         model.set_status_text("Starting the tilt sweep...".into());
     }
     let weak = ctx.ui.clone();
-    let future = client.solve_with_progress(
-        String::new(),
-        SolveRequest::Tilt {
-            params: params.clone(),
-        },
-        move |progress| {
-            if RUNTIME.with(|rt| rt.borrow().epoch) != epoch {
-                return;
-            }
-            if let Some(ui) = weak.upgrade() {
-                let model = ui.global::<TiltModel>();
-                model.set_status_text(progress.message.into());
-                model.set_progress(progress.fraction.unwrap_or(-1.0));
-            }
-        },
-    );
+    let future = client.solve_with_progress(String::new(), params.request(), move |progress| {
+        if RUNTIME.with(|rt| rt.borrow().epoch) != epoch {
+            return;
+        }
+        if let Some(ui) = weak.upgrade() {
+            let model = ui.global::<TiltModel>();
+            model.set_status_text(progress.message.into());
+            model.set_progress(progress.fraction.unwrap_or(-1.0));
+        }
+    });
     let ctx = ctx.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let result = future.await;
@@ -216,7 +214,7 @@ fn run(ctx: &Ctx) {
 }
 
 /// A sweep ended: shows its curves, or says why not.
-fn finish(ctx: &Ctx, epoch: u64, params: TiltParams, result: Result<SolveResponse, SolveError>) {
+fn finish(ctx: &Ctx, epoch: u64, params: TiltJob, result: Result<SolveResponse, SolveError>) {
     if RUNTIME.with(|rt| rt.borrow().epoch) != epoch {
         return;
     }
@@ -261,7 +259,7 @@ fn poll_now(ctx: &Ctx) {
 }
 
 /// Puts a finished sweep on screen; the status line it leaves.
-fn install(ctx: &Ctx, params: TiltParams, data: &TiltResultData) -> String {
+fn install(ctx: &Ctx, params: TiltJob, data: &TiltResultData) -> String {
     let profiles: Option<Vec<AxisProfile>> =
         data.axes.iter().map(TiltAxisData::to_profile).collect();
     let Some(profiles) = profiles.filter(|p| p.len() == 4) else {

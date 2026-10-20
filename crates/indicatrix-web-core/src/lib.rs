@@ -25,6 +25,11 @@
 //!   a `GemMaterial` and the snapshot a design file stores for it.
 //! - [`design_meta`]: the `.isdd` file's descriptive `[meta]` table as the page
 //!   keeps and stamps it (ISO-8601 UTC time, UUID v4 from caller-supplied bytes).
+//! - [`gpu_admission`]: the pure half of the GPU admission gate -- scene eligibility, the
+//!   per-adapter record and key, the self-check scene.
+//! - [`gpu_startup`]: the GPU start-up test's pure half -- what to do at page load, the
+//!   progress of a run, and the sentence that says what the app renders with.
+//! - [`gpu_ledger`]: the pool's book of full passes posted to the GPU Worker.
 //! - [`guide`]: the guided walkthrough's tab-session state (open, step, collapsed,
 //!   where the floating panel was dragged to).
 //! - [`hdr`]: the browser's HDR limits and the render-worker count rule for a map.
@@ -45,6 +50,9 @@
 pub mod custom_material;
 pub mod design_meta;
 pub mod display;
+pub mod gpu_admission;
+pub mod gpu_ledger;
+pub mod gpu_startup;
 pub mod guide;
 pub mod hdr;
 #[cfg(target_arch = "wasm32")]
@@ -73,3 +81,7 @@ pub mod worker;
 /// `./indicatrix-web-compute_bg.wasm`. The URL is relative, so it resolves against the
 /// page and keeps working when the app is served from a sub-path.
 pub const WORKER_LOADER_URL: &str = "./indicatrix-web-compute_loader.js";
+
+/// Where the host finds the GPU Worker script: the loader shim Trunk writes next to the
+/// app for `apps/indicatrix-web/index.html`'s `data-type="worker"` link for `indicatrix-web-gpu`.
+pub const GPU_WORKER_LOADER_URL: &str = "./indicatrix-web-gpu_loader.js";

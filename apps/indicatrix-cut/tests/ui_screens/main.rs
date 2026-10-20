@@ -38,7 +38,7 @@
 //!
 //! Shots: main, `solid_rendering`, `cutting_instructions`, `tilt_performance`, `tilt_performance_export`,
 //! `tilt_performance_cad`, `emerald_export_settings_4k`, cad, `cad_solved_diagram`, `diagram_view`,
-//! `diagram_view_detail`, `retarget_dialog`, `retarget_dialog_1`, `retarget_gear_2`, `retarget_merge`,
+//! `diagram_view_detail`, `retarget_dialog`, `retarget_dialog_1`, `retarget_dialog_ray`, `retarget_gear_2`, `retarget_merge`,
 //! `optimizer_1`, `optimizer_2`, `optimizer__compare_1`, `optimizer__compare_2`, `tutorial_from_design`,
 //! `tutorial_from_design_2`, `tutorial_from_design_3`, `rough_planner`, `rough_planner_result`,
 //! `parameters_stone`, `parameters_lighting`, `parameters_render`, and the shots of the user
@@ -74,7 +74,13 @@ mod window_shots;
 
 use config::{Config, MISSING_LIBRARY};
 use kit::Sc;
-use slint_harness::{
+use std::{
+    cell::{Cell, RefCell},
+    process::ExitCode,
+    rc::Rc,
+};
+use support::{Ctx, HarnessApp, SettingsSeed, profile::print_shutdown_summary};
+use uiprobe::{
     Harness, Jobs,
     backend::{Renderer, require_debug_info},
     profile::{Profile as HarnessProfile, request_abort},
@@ -82,12 +88,6 @@ use slint_harness::{
     screenshot::Shot,
     take_panics,
 };
-use std::{
-    cell::{Cell, RefCell},
-    process::ExitCode,
-    rc::Rc,
-};
-use support::{Ctx, HarnessApp, SettingsSeed, profile::print_shutdown_summary};
 
 /// The app, shared by the scenario closures and the teardown (one UI thread).
 type SharedApp = Rc<RefCell<HarnessApp>>;
@@ -96,7 +96,7 @@ type SharedApp = Rc<RefCell<HarnessApp>>;
 type ShotFn = fn(&mut Sc<'_, '_>) -> Result<Shot, String>;
 
 /// Every shot, in the order it is taken: the file stem and the function that makes it.
-const SHOTS: [(&str, ShotFn); 40] = [
+const SHOTS: [(&str, ShotFn); 41] = [
     ("main", library_shots::main_window),
     ("solid_rendering", library_shots::solid_rendering),
     ("cutting_instructions", library_shots::cutting_instructions),
@@ -116,6 +116,7 @@ const SHOTS: [(&str, ShotFn); 40] = [
     ("diagram_view_detail", editor_shots::diagram_view_detail),
     ("retarget_dialog", editor_shots::retarget_dialog),
     ("retarget_dialog_1", editor_shots::retarget_dialog_1),
+    ("retarget_dialog_ray", editor_shots::retarget_dialog_ray),
     ("retarget_gear_2", editor_shots::retarget_gear_2),
     ("retarget_merge", editor_shots::retarget_merge),
     ("optimizer_1", editor_shots::optimizer_1),
@@ -167,9 +168,9 @@ fn main() -> ExitCode {
         )
         .renderer(Renderer::Software)
         // Worker processes while cores are idle (each its own profile and library copy); the
-        // shots are independent. `SLINT_HARNESS_JOBS=serial` runs them one after another.
+        // shots are independent. `UIPROBE_JOBS=serial` runs them one after another.
         .jobs(Jobs::Auto)
-        .report_dir(slint_harness::target_dir!().join("ui-screens"))
+        .report_dir(uiprobe::target_dir!().join("ui-screens"))
         .formats([Format::Markdown]);
 
     let app: SharedApp = Rc::new(RefCell::new(HarnessApp::empty()));

@@ -10,6 +10,7 @@ import { Shell } from "../../models.slint";
 import { Chip } from "../../shell/chips.slint";
 import { PrimaryButton, TextButton } from "../../shell/buttons.slint";
 import { TiersModel } from "tiers_model.slint";
+import { ConcaveModel } from "../concave.slint";
 import { TierRowItem } from "tier_row.slint";
 import { AngleSheet } from "angle_sheet.slint";
 import { TierSheet } from "tier_sheet.slint";
@@ -114,6 +115,10 @@ export component TiersTab inherits Rectangle {
                         clicked => {
                             TiersModel.add-tier();
                         }
+                    }
+                    Chip {
+                        text: "+ Concave";
+                        clicked => { ConcaveModel.create(); }
                     }
 
                     Chip {

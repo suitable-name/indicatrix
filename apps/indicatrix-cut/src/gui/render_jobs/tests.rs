@@ -91,6 +91,7 @@ fn still_inputs<'a>(
 
 fn tiny_params() -> ExportParams {
     ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 16,
         height: 16,
         samples_per_pixel: 2,

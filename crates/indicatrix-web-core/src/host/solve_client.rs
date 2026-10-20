@@ -655,7 +655,13 @@ impl Inner {
             | FromWorker::ChunkDropped { .. }
             | FromWorker::ChunkAborted { .. }
             | FromWorker::SceneError { .. }
-            | FromWorker::HdrLoaded { .. } => {}
+            | FromWorker::HdrLoaded { .. }
+            | FromWorker::GpuAdapter { .. }
+            | FromWorker::GpuUnavailable { .. }
+            | FromWorker::GpuCompiled { .. }
+            | FromWorker::GpuCompileFailed { .. }
+            | FromWorker::FullPassResult { .. }
+            | FromWorker::GpuLost { .. } => {}
         }
         deliveries
     }

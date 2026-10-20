@@ -1,6 +1,7 @@
 //! [`to_gcs_string`]: `.asc` cutting instructions as a Gem Cut Studio `.gcs` file.
 
 use super::{
+    frosting::{FROSTED_VALUE, GcsTierFrosting, frosting_of},
     polytope::{HalfSpace, PolytopeError, polytope_faces},
     tier::normal_from_index_angle,
 };
@@ -207,12 +208,17 @@ fn info_line(schedule: &AscSchedule) -> String {
 }
 
 /// Appends the `<tier>` blocks.
+///
+/// A tier `frosting` names as a whole gets the tier-level `frosting` attribute (Gem Cut
+/// Studio 1.1's "Frosted" toggle), one it names facet by facet gets the facet-level one on
+/// those facets. A tier `frosting` does not name is written exactly as before.
 fn write_tiers(
     out: &mut String,
     schedule: &AscSchedule,
     rows: &[FacetRow],
     faces: &[Vec<[f64; 3]>],
     frame: &Frame,
+    frosting: &[(usize, GcsTierFrosting)],
 ) {
     for (tier_index, tier) in schedule.tiers.iter().enumerate() {
         let tier_rows: Vec<usize> = (0..rows.len())
@@ -221,23 +227,35 @@ fn write_tiers(
         let depth = tier_rows
             .first()
             .map_or(0.0, |&k| frame.depth(rows[k].mast, rows[k].normal));
+        let how = frosting_of(frosting, tier_index);
+        let tier_frosting = if matches!(how, Some(GcsTierFrosting::Whole)) {
+            format!(" frosting=\"{FROSTED_VALUE}\"")
+        } else {
+            String::new()
+        };
         line(
             out,
             1,
             &format!(
-                "<tier angle=\"{}\" depth=\"{depth}\" name=\"{}\" instructions=\"{}\" visible=\"true\" guide=\"false\">",
+                "<tier angle=\"{}\" depth=\"{depth}\" name=\"{}\" instructions=\"{}\" visible=\"true\" guide=\"false\"{tier_frosting}>",
                 gcs_angle(tier),
                 escape(&tier.name),
                 escape(&tier.notes),
             ),
         );
-        for &k in &tier_rows {
+        for (slot, &k) in tier_rows.iter().enumerate() {
             let [nx, ny, nz] = rows[k].normal;
+            let facet_frosting = match how {
+                Some(GcsTierFrosting::Facets(slots)) if slots.contains(&slot) => {
+                    format!(" frosting=\"{FROSTED_VALUE}\"")
+                }
+                _ => String::new(),
+            };
             line(
                 out,
                 2,
                 &format!(
-                    "<facet nx=\"{nx}\" ny=\"{ny}\" nz=\"{nz}\" index_angle=\"{}\">",
+                    "<facet nx=\"{nx}\" ny=\"{ny}\" nz=\"{nz}\" index_angle=\"{}\"{facet_frosting}>",
                     rows[k].index_angle
                 ),
             );
@@ -251,12 +269,21 @@ fn write_tiers(
     }
 }
 
-#[doc = "Experimental: writes `schedule` as a Gem Cut Studio `.gcs` file."]
+/// Experimental: writes `schedule` as a Gem Cut Studio `.gcs` file.
 ///
 /// Not yet loaded into Gem Cut Studio itself. The index winding rule was measured
 /// on a corpus with no chiral design, so a chiral design (crown and pavilion
 /// twisted against each other) may come out mirrored on one side: check such an
 /// export visually in Gem Cut Studio before relying on it.
+///
+/// The open question, exactly: the `.asc` tooth is written as the `index_angle` on both
+/// sides, and the side rule then puts a crown facet and a pavilion facet of the same tooth
+/// at mirrored azimuths (`phi = ia - 90°` on the crown, `270° - ia` below). `GemCAD`'s own
+/// `.gem` planes put them at the same azimuth (`phi = 90° - 360°·t/gear` on both sides, see
+/// the `gem` module). The two readings give the same stone whenever the teeth of every tier
+/// are mirrored about tooth 0, as in every corpus file, and a different one (the crown
+/// mirrored against the pavilion) for a tier whose teeth are not. Only a chiral design
+/// opened in Gem Cut Studio can say which reading it expects.
 ///
 /// Format per the Gem Cut Studio User's Manual v1.1.0 pp. 58-61; conventions per
 /// the files Gem Cut Studio 1.1 writes.
@@ -269,16 +296,35 @@ fn write_tiers(
 /// `90° + phi`, pavilion and girdle `270° - phi`), and a negative gear or a gear
 /// offset is folded into the tooth as `GemCAD`'s `.gem` geometry does.
 ///
-/// `<index>` gets `base="0"`, `symmetry` = the schedule's symmetry order (at least
-/// 1) and `mirror="0"` (UI state only); `<render>` the schedule's refractive index
-/// (1.54 when it has none) with the manual's example defaults; `<info>` the headers
-/// and footnotes.
+/// `<index>` gets `base="0"`, `symmetry` = the schedule's symmetry order (at least 1)
+/// and `mirror="0"` (UI state only); `<render>` the schedule's refractive index (1.54
+/// when it has none) with the manual's example defaults; `<info>` the headers and
+/// footnotes.
 ///
 /// # Errors
 ///
 /// [`GcsWriteError`] for a zero gear, no tiers, a non-finite value, or planes that
 /// do not enclose a bounded, non-empty stone.
 pub fn to_gcs_string(schedule: &AscSchedule) -> Result<String, GcsWriteError> {
+    to_gcs_string_with_frosting(schedule, &[])
+}
+
+/// [`to_gcs_string`] for a design that has frosted tiers or facets.
+///
+/// `frosting` (what [`super::gcs_frosting`] reads, by tier position and facet slot) is written
+/// as Gem Cut Studio's `frosting` attributes, `0.5` as GCS 1.1 writes it. `.asc` has no
+/// notation for frosting, so the schedule itself cannot carry it; a position past the
+/// schedule's tiers or a slot past a tier's facets names nothing and is ignored.
+///
+/// With an empty `frosting` the text is exactly [`to_gcs_string`]'s.
+///
+/// # Errors
+///
+/// The same as [`to_gcs_string`].
+pub fn to_gcs_string_with_frosting(
+    schedule: &AscSchedule,
+    frosting: &[(usize, GcsTierFrosting)],
+) -> Result<String, GcsWriteError> {
     let gear = schedule.gear_teeth_abs();
     if gear == 0 {
         return Err(GcsWriteError::ZeroGear);
@@ -313,7 +359,7 @@ pub fn to_gcs_string(schedule: &AscSchedule) -> Result<String, GcsWriteError> {
             schedule.symmetry_order.max(1)
         ),
     );
-    write_tiers(&mut out, schedule, &rows, &faces, &frame);
+    write_tiers(&mut out, schedule, &rows, &faces, &frame, frosting);
     line(
         &mut out,
         1,

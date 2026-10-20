@@ -111,9 +111,127 @@ fn dist2d_pdf(dir: vec3<f32>) -> f32 {
     return pdf_uv_to_solid_angle_from_sin(pdf_uv, sin_theta);
 }
 
-// optics::raytracer::scattering::nee_contribution_hg_scatter. `alphas` mirrors that
-// function's own explicit parameter; `sigma_s`/`absorption_path_scale`
-// and `facet_finishes` are read directly off the global
+// ---- concave-stone shadow probe of the Henyey-Greenstein NEE ----
+// optics::raytracer::scattering::hg_nee::{exit_transmittance, walk_exits}. Only reached when
+// `params.num_tools > 0`; a convex stone has exactly one crossing and keeps the original
+// single-exit code in `nee_contribution_hg_scatter`.
+
+// The most boundaries the probe crosses before it gives the sample up
+// (`HG_NEE_MAX_CROSSINGS`).
+const HG_NEE_MAX_CROSSINGS: u32 = 4u;
+
+struct HgExit {
+    ok: bool,
+    normal: vec3<f32>,
+    t_material: f32,
+    cos_i: f32,
+    cos_t: f32,
+    t_unpol: f32,
+}
+
+// Unpolarised exit Fresnel transmittance and refracted-angle cosine for a ray leaving an
+// interior of index `n_inside` at `cos_i`, as `(t_unpol, cos_t)`; `x < 0` marks total
+// internal reflection (the sample is dropped).
+fn hg_exit_transmittance(n_inside: f32, cos_i: f32) -> vec2<f32> {
+    let sin2_t = min(n_inside * n_inside * fma(-cos_i, cos_i, 1.0), 1.0);
+    if (sin2_t >= 1.0) {
+        return vec2<f32>(-1.0, 0.0);
+    }
+    let cos_t = sqrt(max(1.0 - sin2_t, 0.0));
+    let r_s = fma(n_inside, cos_i, -cos_t) / fma(n_inside, cos_i, cos_t);
+    let r_p = fma(n_inside, -cos_t, cos_i) / fma(n_inside, cos_t, cos_i);
+    let r_unpol = clamp(0.5 * fma(r_p, r_p, r_s * r_s), 0.0, 1.0);
+    return vec2<f32>(1.0 - r_unpol, cos_t);
+}
+
+// The concave-stone probe: follows the sample direction through up to
+// `HG_NEE_MAX_CROSSINGS` boundaries, multiplying in the Fresnel transmittance at each exit
+// and at each re-entry through a cavity's far wall, and summing the length of every
+// in-material segment for the Beer-Lambert term (each measured from the scattering point
+// or the re-entry wall itself: every in-material segment starts `HG_SHADOW_PROBE_OFFSET`
+// inside the material, so the offset is added back). Drops the sample above the cap, on
+// TIR or a frosted exit at any crossing, and when the walk ends on an entry. The walk
+// keeps the interior direction through the air gaps; only the last exit bends it (see the
+// CPU twin).
+fn hg_walk_exits(probe_origin: vec3<f32>, dir: vec3<f32>, first: HitInfo, n_inside: f32) -> HgExit {
+    var out: HgExit;
+    out.ok = false;
+    out.normal = vec3<f32>(0.0, 0.0, 0.0);
+    out.t_material = 0.0;
+    out.cos_i = 0.0;
+    out.cos_t = 0.0;
+    out.t_unpol = 0.0;
+    var origin = probe_origin;
+    var hit = first;
+    var crossings: u32 = 1u;
+    var chain: f32 = 1.0;
+    var material_len: f32 = 0.0;
+    var have_last = false;
+    var last_normal = vec3<f32>(0.0, 0.0, 0.0);
+    var last_cos_i: f32 = 0.0;
+    var last_cos_t: f32 = 0.0;
+    for (var guard: u32 = 0u; guard <= HG_NEE_MAX_CROSSINGS; guard = guard + 1u) {
+        if (hit.facet_idx < arrayLength(&facet_finishes) && facet_finishes[hit.facet_idx] == FACET_FINISH_FROSTED) {
+            return out;
+        }
+        let cos_d = dot(dir, hit.normal);
+        if (cos_d > 0.0) {
+            // The segment ending at an exit is in-material, from an origin offset
+            // `HG_SHADOW_PROBE_OFFSET` inside it (the probe's own origin, or the restart
+            // just past a re-entry).
+            material_len = material_len + (hit.t + HG_SHADOW_PROBE_OFFSET);
+            let cos_in = clamp(cos_d, 0.0, 1.0);
+            let tr = hg_exit_transmittance(n_inside, cos_in);
+            if (tr.x < 0.0) {
+                return out;
+            }
+            chain = chain * tr.x;
+            have_last = true;
+            last_normal = hit.normal;
+            last_cos_i = cos_in;
+            last_cos_t = tr.y;
+        } else {
+            // Re-entry through a far cavity wall: the air-gap segment ending here is not
+            // absorbing, but the interface transmits only `T`.
+            let tr = hg_exit_transmittance(n_inside, clamp(-cos_d, 0.0, 1.0));
+            if (tr.x < 0.0) {
+                return out;
+            }
+            chain = chain * tr.x;
+            have_last = false;
+        }
+        origin = origin + hit.t * dir + dir * HG_SHADOW_PROBE_OFFSET;
+        let next = intersect_ray(origin, dir);
+        if (!next.hit) {
+            break;
+        }
+        crossings = crossings + 1u;
+        if (crossings > HG_NEE_MAX_CROSSINGS) {
+            return out;
+        }
+        hit = next;
+    }
+    if (!have_last) {
+        return out;
+    }
+    out.ok = true;
+    out.normal = last_normal;
+    out.t_material = material_len;
+    out.cos_i = last_cos_i;
+    out.cos_t = last_cos_t;
+    out.t_unpol = chain;
+    return out;
+}
+
+// optics::raytracer::scattering::hg_nee::nee_contribution_hg_scatter. `alphas` is the
+// segment's own per-channel array (`bounce_scatter_alphas`, evaluated at the direction the
+// ray ARRIVED along): used as it is for an isotropic material, whose coefficients do not
+// depend on direction (the CPU's `ShadowAlphas::Fixed` arm); for an anisotropic material
+// (`rc.is_anisotropic`, the `ShadowAlphas::AssignedMode` arm) the shadow ray's coefficients
+// are re-evaluated per channel at the SHADOW direction below, since that is what the
+// phase-sampled continuation in that direction pays -- see the CPU `ShadowAlphas` doc
+// comment for the NEE-on-darker bias the incoming-direction alphas caused on the ruby.
+// `sigma_s`/`absorption_path_scale` and `facet_finishes` are read directly off the global
 // `material`/`facet_finishes` bindings instead, exactly as the megakernel's own scatter
 // call site above (`transport_bounce_step`) already does for the SAME quantities.
 // This deposit is a complete, self-contained direct-lighting sample -- it must
@@ -136,6 +254,8 @@ fn nee_contribution_hg_scatter(
     compat: ptr<function, array<u32, 8>>,
     nee_xyz: ptr<function, vec3<f32>>,
     alphas: array<f32, 8>,
+    rc: RayConstants,
+    is_extraordinary: bool,
 ) {
     let u0 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ NEE_ENV_DIR_U_STREAM))) / 4294967295.0;
     let u1 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ NEE_ENV_DIR_V_STREAM))) / 4294967295.0;
@@ -144,28 +264,51 @@ fn nee_contribution_hg_scatter(
         return;
     }
 
-    let probe_origin = scatter_point + sample.dir * 1e-4;
+    let probe_origin = scatter_point + sample.dir * HG_SHADOW_PROBE_OFFSET;
     let hit = intersect_ray(probe_origin, sample.dir);
     if (!hit.hit) {
         return;
     }
-    // A frosted exit facet has no well-defined specular Fresnel/refraction
-    // for this shadow ray to use -- `nee_contribution_frosted_exterior` already handles
-    // NEE for a frosted exit's own diffusely-sampled surface point.
-    if (hit.facet_idx < arrayLength(&facet_finishes) && facet_finishes[hit.facet_idx] == FACET_FINISH_FROSTED) {
-        return;
-    }
 
-    let cos_i = clamp(dot(sample.dir, hit.normal), 0.0, 1.0);
-    let sin2_t = min(n_inside_hero * n_inside_hero * fma(-cos_i, cos_i, 1.0), 1.0);
-    if (sin2_t >= 1.0) {
-        return;
+    // The exit the shadow ray finally leaves through. A convex stone has exactly one
+    // crossing (`hit`); a concave one may cross out into a cavity and back in first, so
+    // the probe walks its boundaries (`hg_walk_exits`, the twin of `walk_exits`). The
+    // in-material length is measured from the scattering point itself: the probe's origin
+    // sits `HG_SHADOW_PROBE_OFFSET` inside the material, so `hit.t` alone is that much short.
+    var exit_normal = hit.normal;
+    var exit_t = hit.t + HG_SHADOW_PROBE_OFFSET;
+    var cos_i: f32 = 0.0;
+    var cos_t: f32 = 0.0;
+    var t_unpol: f32 = 0.0;
+    if (params.num_tools == 0u) {
+        // A frosted exit facet has no well-defined specular Fresnel/refraction
+        // for this shadow ray to use -- `nee_contribution_frosted_exterior` already handles
+        // NEE for a frosted exit's own diffusely-sampled surface point.
+        if (hit.facet_idx < arrayLength(&facet_finishes) && facet_finishes[hit.facet_idx] == FACET_FINISH_FROSTED) {
+            return;
+        }
+
+        cos_i = clamp(dot(sample.dir, hit.normal), 0.0, 1.0);
+        let sin2_t = min(n_inside_hero * n_inside_hero * fma(-cos_i, cos_i, 1.0), 1.0);
+        if (sin2_t >= 1.0) {
+            return;
+        }
+        cos_t = sqrt(max(1.0 - sin2_t, 0.0));
+        let r_s = fma(n_inside_hero, cos_i, -cos_t) / fma(n_inside_hero, cos_i, cos_t);
+        let r_p = fma(n_inside_hero, -cos_t, cos_i) / fma(n_inside_hero, cos_t, cos_i);
+        let r_unpol = clamp(0.5 * fma(r_p, r_p, r_s * r_s), 0.0, 1.0);
+        t_unpol = 1.0 - r_unpol;
+    } else {
+        let walked = hg_walk_exits(probe_origin, sample.dir, hit, n_inside_hero);
+        if (!walked.ok) {
+            return;
+        }
+        exit_normal = walked.normal;
+        exit_t = walked.t_material;
+        cos_i = walked.cos_i;
+        cos_t = walked.cos_t;
+        t_unpol = walked.t_unpol;
     }
-    let cos_t = sqrt(max(1.0 - sin2_t, 0.0));
-    let r_s = fma(n_inside_hero, cos_i, -cos_t) / fma(n_inside_hero, cos_i, cos_t);
-    let r_p = fma(n_inside_hero, -cos_t, cos_i) / fma(n_inside_hero, cos_t, cos_i);
-    let r_unpol = clamp(0.5 * fma(r_p, r_p, r_s * r_s), 0.0, 1.0);
-    let t_unpol = 1.0 - r_unpol;
 
     let phase_cos = dot(sample.dir, scatter_dir_in);
     let phase_val = henyey_greenstein_phase(phase_cos, g);
@@ -181,16 +324,18 @@ fn nee_contribution_hg_scatter(
     // normal. `sample.pdf` itself stays in the INTERIOR (pre-refraction) measure
     // `dist2d_sample` sampled in -- only the radiance LOOKUP moves to the refracted
     // direction.
-    let refracted_dir = normalize(n_inside_hero * sample.dir - fma(n_inside_hero, cos_i, -cos_t) * hit.normal);
+    let refracted_dir = normalize(n_inside_hero * sample.dir - fma(n_inside_hero, cos_i, -cos_t) * exit_normal);
     let refracted_uv = hdr_direction_to_uv(refracted_dir);
     let env_rgb = hdr_env_sample_bilinear(refracted_uv.x, refracted_uv.y);
 
-    // The medium transmittance a phase-sampled continuation reaching this
-    // same boundary would have paid -- the same per-channel `exp_poly(-(alphas[k]+sigma_s)*
-    // hit.t*path_scale)` `maybe_scatter_or_extinguish`'s survive branch applies
-    // (`exp_poly`, not the `exp()` builtin -- see that function's own doc comment,
-    // `transport_physics.wgsl`).
-    let hit_t_scaled = hit.t * material.absorption_path_scale;
+    // The medium transmittance a phase-sampled continuation in this same direction would
+    // pay on its way to this same boundary -- the same per-channel
+    // `exp_poly(-(alpha_k+sigma_s)*d*path_scale)` `maybe_scatter_or_extinguish`'s survive
+    // branch applies (`exp_poly`, not the `exp()` builtin -- see that function's own doc
+    // comment, `transport_physics.wgsl`), with `alpha_k` the assigned mode's coefficient AT
+    // the shadow direction (see the header comment) and `d` the full distance from the
+    // scattering point.
+    let hit_t_scaled = exit_t * material.absorption_path_scale;
     // `scattering_sigma_s` is per model unit (size-independent): converted to absorption-length
     // units exactly as the CPU twin does (`sigma_s / absorption_path_scale`).
     let sigma_s_abs = material.scattering_sigma_s / material.absorption_path_scale;
@@ -198,7 +343,15 @@ fn nee_contribution_hg_scatter(
     let nee_common = t_unpol * phase_val * mis_weight / sample.pdf;
     var nee_deposit: array<f32, 8>;
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
-        let transmittance_k = exp_poly(-(alphas[k] + sigma_s_abs) * hit_t_scaled);
+        // The shadow ray's own extinction coefficient: the segment's `alphas[k]` for an
+        // isotropic material (direction-independent), the assigned mode's coefficient at
+        // the shadow direction for an anisotropic one (`scatter_alpha_anisotropic`, the same
+        // evaluation `bounce_scatter_alphas` makes for the ray's own segments).
+        var alpha_k: f32 = alphas[k];
+        if (rc.is_anisotropic) {
+            alpha_k = scatter_alpha_anisotropic(rc, k, sample.dir, is_extraordinary);
+        }
+        let transmittance_k = exp_poly(-(alpha_k + sigma_s_abs) * hit_t_scaled);
         let env_k = rgb_to_spectral_radiance(env_rgb.x, env_rgb.y, env_rgb.z, (*lambdas)[k]);
         nee_deposit[k] = fma((*stokes)[k].x * transmittance_k * nee_common * env_k, 1.0, 0.0);
     }
@@ -221,6 +374,8 @@ fn nee_contribution_hg_scatter(
 // `daylight_sun_factor * (spd * exposure)`). `key_dir` is only read for the sun.
 fn nee_contribution_frosted_exterior(
     lambdas: ptr<function, array<f32, 8>>,
+    // The surface point of this bounce, the origin of the concave-stone shadow probe.
+    origin: vec3<f32>,
     ext_normal: vec3<f32>,
     rng_seed: u32,
     bounce: u32,
@@ -250,6 +405,19 @@ fn nee_contribution_frosted_exterior(
     let cos_light = dot(light_dir, ext_normal);
     if (cos_light <= 0.0) {
         return;
+    }
+
+    // Concave stone: the sampled direction may run into the far side of a cavity (a point
+    // on a groove wall moving along its outward normal can meet the opposite wall), so cast
+    // a real shadow probe and deposit only on a miss. Any hit, even one past a cavity, is an
+    // occluder: the escaping BSDF-sampled continuation sees the same visibility, so the two
+    // MIS techniques stay consistent. The probe runs after the RNG draws, so the stream
+    // consumption equals the convex stone's. Optics twin:
+    // `nee_contribution_frosted_exterior`'s "Concave stones" section.
+    if (params.num_tools != 0u) {
+        if (intersect_ray(origin + light_dir * 1e-4, light_dir).hit) {
+            return;
+        }
     }
 
     let brdf_pdf = cos_light / PI;

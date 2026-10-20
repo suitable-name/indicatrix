@@ -33,7 +33,7 @@ pub enum DesignSource {
     /// A `.gem` or `.gcs` design converted to `.asc`; carries `".gem"`/`".gcs"`.
     Converted(&'static str),
     /// Restored after a reload (this tab's `sessionStorage`) or after a restart (the
-    /// IndexedDB autosave).
+    /// `IndexedDB` autosave).
     Restored,
 }
 

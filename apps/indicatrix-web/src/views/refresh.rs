@@ -244,6 +244,10 @@ fn update(ui: &AppWindow, app: &WebApp, views: &mut ViewsState, view_mode: u8) -
 
 /// The loaded design's gear, for a Diagram reproject (the desktop's
 /// `RenderContext::design_gear`).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the reference angle is in degrees; the Diagram reproject takes an f32, like the desktop"
+)]
 const fn gear_of(design: &DesignState) -> (u32, f32) {
     let meta = &design.session.design.meta;
     (meta.gear_teeth_abs(), meta.gear_reference_angle as f32)

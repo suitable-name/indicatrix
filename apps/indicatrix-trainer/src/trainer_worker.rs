@@ -24,8 +24,7 @@
 //! command sender; an error or panic is caught and reported as [`WorkerEvent::Died`]. To make a
 //! shutdown prompt the UI should clear the `is_active` flag before sending `Shutdown`: the
 //! rollout loop checks the flag between environment steps, a validation pass that would start is
-//! skipped once the flag is clear, and only the update itself (about a second) is not
-//! interruptible.
+//! skipped once the flag is clear, and an update already in progress must finish before shutdown.
 
 #[path = "runner.rs"]
 pub mod runner;
@@ -53,7 +52,7 @@ use crate::{
     ui_state::{DesignInfo, ProgressSnapshot, ValidationSnapshot, WorkerEvent},
 };
 use commands::{DatasetLoader, defer_without_dataset, load_dataset};
-use runner::{RunConfig, RunnerError, TrainingRunner};
+use runner::{Algorithm, IterationReport, RunConfig, RunnerError, TrainingRunner};
 
 /// Status line every this many iterations.
 const STATUS_EVERY: usize = 20;
@@ -106,6 +105,9 @@ pub enum TrainerCommand {
         mini_batch: usize,
         /// Epochs per update (per round for imitation).
         ppo_epochs: usize,
+        /// Imitation mini-batches trained per round; 0 trains `ppo_epochs` full epochs over the
+        /// whole aggregate instead. No effect in a PPO run.
+        updates_per_round: usize,
         /// Adam learning rate.
         learning_rate: f32,
         /// PPO clipping threshold (no effect in an imitation run).
@@ -152,8 +154,9 @@ pub fn spawn_trainer_worker(
 /// The periodic status line: smoothed step reward, throughput, evaluation rate and the share of
 /// proposals that changed the design, then the figures of the update from the iteration's metric
 /// `point`. An `imitation` run shows the loss, the cosine between the composed direction and the
-/// measured one, the labels of the round and the aggregate size; a PPO run the KL of the update
-/// and the critic's explained variance (`-` when undefined).
+/// measured one, the labels of the round, the aggregate size and the label support of each of
+/// the seven components; a PPO run the KL of the update and the critic's explained variance
+/// (`-` when undefined).
 fn status_line(
     iteration: usize,
     smoothed_reward: f32,
@@ -169,11 +172,28 @@ fn status_line(
         let cosine = point
             .train_cosine
             .map_or_else(|| "-".to_owned(), |c| format!("{c:+.2}"));
+        // No update installed yet (the first iteration): the loss is a default, not a figure.
+        let loss = if point.has_update() {
+            format!("{:.3}", point.imitation_loss)
+        } else {
+            "-".to_owned()
+        };
+        let component_support = point
+            .component_support
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join("/");
         return format!(
             "Iter #{iteration}: step reward {smoothed_reward:+.3}, \
-             {steps_per_sec:.0} steps/s{rate}, loss {:.3}, cosine {cosine}, \
-             {} labels this round ({} in the aggregate), accepted {accepted:.0}%",
-            point.imitation_loss, point.labels_this_round, point.labelled_samples
+             {steps_per_sec:.0} steps/s{rate}, loss {loss}, cosine {cosine}, \
+             {} labels this round ({} in the aggregate; support {component_support}), host ms pack/update/export/fwd {:.0}/{:.0}/{:.0}/{:.0}, accepted {accepted:.0}%",
+            point.labels_this_round,
+            point.labelled_samples,
+            point.packing_ms,
+            point.training_host_ms,
+            point.weight_export_ms,
+            point.rollout_forward_ms
         );
     }
     let explained = point
@@ -189,6 +209,20 @@ fn status_line(
             ""
         }
     )
+}
+
+/// The tail of the status line that says which update the loss figures belong to and how long it
+/// took: the update installed during the iteration is the one of the previous iteration in an
+/// imitation run (it trained while this rollout ran), so the line names it. `waited` is how long
+/// the worker stood still for it: near 0 the rollout is the bottleneck, large the update is.
+/// Empty when no update was installed (the first iteration of a run).
+fn update_note(report: &IterationReport) -> String {
+    report.update_of_iteration.map_or_else(String::new, |of| {
+        format!(
+            ", update of iteration #{of} took {:.1}s (waited {:.1}s)",
+            report.update_secs, report.update_wait_secs
+        )
+    })
 }
 
 fn panic_text(payload: &(dyn Any + Send)) -> String {
@@ -382,6 +416,7 @@ impl Worker<'_> {
             rollout_size: hp.rollout_size,
             batch_size: hp.mini_batch,
             ppo_epochs: hp.ppo_epochs,
+            updates_per_round: config.imitation.updates_per_round,
             worker_count: hp.workers,
             weights_dirty: self.weights_dirty,
             run_generation: self.run_generation,
@@ -417,6 +452,8 @@ impl Worker<'_> {
                     self.rate_start = Instant::now();
                 }
                 let mut point = self.runner.metric_point(self.steps_per_sec);
+                // The report has the exact iteration; the runner's point rebuilds it.
+                point.update_of_iteration = report.update_of_iteration;
                 self.flush_warnings();
 
                 let iteration = self.runner.stats().iteration;
@@ -441,6 +478,7 @@ impl Worker<'_> {
                         self.busy("Validating…", Self::validate);
                         // The point carries the fresh validation figures.
                         point = self.runner.metric_point(self.steps_per_sec);
+                        point.update_of_iteration = report.update_of_iteration;
                     }
                 } else if iteration.is_multiple_of(STATUS_EVERY) {
                     let reward = self.runner.stats().mean_step_reward;
@@ -449,9 +487,9 @@ impl Worker<'_> {
                         reward,
                         self.steps_per_sec,
                         &point,
-                        report.imitation.is_some(),
+                        self.runner.config().algo == Algorithm::Imitation,
                     );
-                    self.log("OPT", line);
+                    self.log("OPT", format!("{line}{}", update_note(&report)));
                 }
                 if self.history.len() >= HISTORY_CAP {
                     self.history.remove(0);
@@ -484,9 +522,11 @@ impl Worker<'_> {
                 self.log(
                     "VAL",
                     format!(
-                        "Validation on {} unseen designs: score {:.2}, {drops}, {:.2} evals/step, \
+                        "Validation cohort: {} attempted ({} evaluated, {} failed), score {:.2}, {drops}, {:.2} evals/step, \
                          brilliance {:.1}%, windowing {:.1}%, generalization gap {gap}",
+                        report.cases.len(),
                         report.designs,
+                        report.failed,
                         report.mean_final_score,
                         report.mean_evaluations_per_step,
                         report.final_optics.brilliance,
@@ -502,7 +542,7 @@ impl Worker<'_> {
                     "WARN",
                     format!(
                         "validation could not evaluate any design ({})",
-                        report.first_failure.unwrap_or_default()
+                        report.first_failure.as_deref().unwrap_or_default()
                     ),
                 );
             }

@@ -1,6 +1,6 @@
 [package]
 name = "indicatrix-trainer"
-version = "0.7.2"
+version = "0.8.2"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -9,6 +9,10 @@ publish = false
 description = "Desktop reinforcement learning trainer GUI for Indicatrix: live training metrics, reward curves, and optical gemstone diagnostics."
 
 [workspace]
+
+[features]
+default = []
+cuda = ["indicatrix-ai/cuda"]
 
 # Same lint set as the root `[workspace.lints.clippy]` (this crate is standalone).
 [lints.clippy]
@@ -26,9 +30,9 @@ path = "src/cli_main.rs"
 
 [dependencies]
 indicatrix-ai = { path = "../../crates/indicatrix-ai" }
+indicatrix = { path = "../../crates/indicatrix" }
 indicatrix-cut-core = { path = "../../crates/indicatrix-cut-core" }
 indicatrix-formats = { path = "../../crates/indicatrix-formats" }
-# The new-version check (GitHub releases): GUI banner and the CLI's first info line.
 indicatrix-update = { path = "../../crates/indicatrix-update" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -36,17 +40,12 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 # Native file dialog of the GUI's "Load Weights" (same version as the workspace).
 rfd = "0.17.2"
 # Clipboard copy of the GUI console (already in the lockfile through Slint's winit backend).
-arboard = { version = "3.6.1", default-features = false }
+arboard = { version = "3.7.0", default-features = false }
 # Console width of the CLI progress line (a line that wraps cannot be redrawn in place).
 terminal_size = "0.4.4"
-slint = { version = "1.18.1", default-features = false, features = [
-    "std",
-    "compat-1-18",
-    "backend-default",
-    "renderer-femtovg",
-    "renderer-software",
-    "accessibility",
-] }
+rayon = "1.12.0"
+tempfile = "3.27.0"
+slint = { version = "1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-default", "renderer-femtovg", "renderer-software", "accessibility"] }
 
 [build-dependencies]
 slint-build = "1.18.1"

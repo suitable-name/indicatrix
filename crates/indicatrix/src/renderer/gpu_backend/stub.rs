@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use glam::Vec3;
 
 use super::{GpuAccumulate, GpuBatchItem, GpuPipelineKind, GpuSceneRef};
+use crate::geometry::tool::ToolPrimitive;
 
 /// Gpu backend.
 pub struct GpuBackend;
@@ -82,6 +83,33 @@ impl GpuBackend {
     pub const fn try_accumulate_cancellable(
         &self,
         _scene: &GpuSceneRef<'_>,
+        _sample_offset: u32,
+        _spp: u32,
+        _accum: &mut [Vec3],
+        _cancel: &AtomicBool,
+    ) -> GpuAccumulate {
+        GpuAccumulate::Declined
+    }
+
+    /// Always reports the GPU as unavailable -- see the `gpu`-gated
+    /// [`super::backend::GpuBackend::try_accumulate_geom`] for what it stands in for.
+    pub const fn try_accumulate_geom(
+        &self,
+        _scene: &GpuSceneRef<'_>,
+        _tools: &[ToolPrimitive],
+        _sample_offset: u32,
+        _spp: u32,
+        _accum: &mut [Vec3],
+    ) -> bool {
+        false
+    }
+
+    /// Always declines, leaving `accum` untouched -- see the `gpu`-gated
+    /// [`super::backend::GpuBackend::try_accumulate_geom_cancellable`].
+    pub const fn try_accumulate_geom_cancellable(
+        &self,
+        _scene: &GpuSceneRef<'_>,
+        _tools: &[ToolPrimitive],
         _sample_offset: u32,
         _spp: u32,
         _accum: &mut [Vec3],

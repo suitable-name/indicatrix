@@ -1,12 +1,16 @@
 [package]
 name = "indicatrix-ai"
-version = "0.7.2"
+version = "0.8.2"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
 license = "MIT"
 publish = false
 description = "Reinforcement learning environments, neural policy models, and inference pipelines for gemstone cut optimization and material retargeting."
+
+[features]
+default = []
+cuda = ["burn/cuda"]
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

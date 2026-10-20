@@ -21,7 +21,10 @@ pub mod tool;
 
 pub use brep::GemPolyhedron;
 pub use cuts::{FacetSpec, StandardGemCuts};
-pub use girdle::{classify_girdle_plane_indices, girdle_facet_finishes};
+pub use girdle::{
+    classify_girdle_plane_indices, facet_finishes_with_frosted, finishes_wire_form,
+    girdle_facet_finishes,
+};
 pub use meet_solver::{
     MeetConstraint, MeetTierInput, SolveStrategy, SolvedTier, build_reconstructed_schedule,
     meet_tier_inputs_from_asc, solve_meet_points, vertex_meet_groups,

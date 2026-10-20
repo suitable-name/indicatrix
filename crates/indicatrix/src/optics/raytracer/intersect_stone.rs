@@ -77,14 +77,21 @@ struct Boundary {
 }
 
 /// Walks the sorted boundaries of `[a, b]` and every tool interval and returns
-/// the first change of the "inside the stone" state past [`T_FLOOR`].
+/// the first change of the "inside the stone" state past [`T_FLOOR`], with the
+/// state it changes *to*: `true` when the hit is an entry into the material
+/// (the ray was in air or in a cavity just before it), `false` when it is an
+/// exit.
+///
+/// The state also advances over every boundary at or before [`T_FLOOR`], so it
+/// is the state of the stretch of ray that ends at the hit, whatever the
+/// restart offset of the caller did to the ray's own bookkeeping.
 fn carve(
     ray: Ray,
     slab: Slab,
     plane_count: usize,
     tools: &[ToolPrimitive],
     plane_normal: impl Fn(usize) -> Vec3,
-) -> Option<HitRecord> {
+) -> Option<(HitRecord, bool)> {
     debug_assert!(tools.len() <= MAX_TOOL_PRIMITIVES, "too many tools");
     // Excess tools are ignored rather than overflowing the stack array; the
     // validators reject such scenes before they get here.
@@ -129,7 +136,7 @@ fn carve(
         if ev.t <= T_FLOOR {
             continue;
         }
-        return Some(match ev.key {
+        let hit = match ev.key {
             0 | 1 => {
                 let idx = if ev.key == 0 { slab.near } else { slab.far };
                 HitRecord {
@@ -149,7 +156,8 @@ fn carve(
                     facet_idx: plane_count + tool_idx,
                 }
             }
-        });
+        };
+        return Some((hit, now_inside));
     }
     None
 }
@@ -172,6 +180,7 @@ pub fn intersect_stone(ray: Ray, geom: StoneGeometry<'_>) -> Option<HitRecord> {
     carve(ray, slab, geom.planes.len(), geom.tools, |i| {
         Vec3::from_array(geom.planes[i].normal)
     })
+    .map(|(hit, _)| hit)
 }
 
 /// `SoA` twin used by transport: identical result to [`intersect_stone`].
@@ -184,8 +193,33 @@ pub(crate) fn intersect_stone_soa(
     planes_len: usize,
     tools: &[ToolPrimitive],
 ) -> Option<HitRecord> {
+    intersect_stone_soa_side(ray, plane_soa, planes_len, tools).map(|(hit, _)| hit)
+}
+
+/// [`intersect_stone_soa`] that also reports which side of the surface the ray
+/// came from.
+///
+/// The second field is `Some(true)` when the hit is an entry into the material
+/// (the stretch of ray before it is in air or in a cavity) and `Some(false)`
+/// when it is an exit (the stretch is in the material); `None` for a stone
+/// without tools, where the transport's own toggle is exact and nothing is
+/// computed (the hit is `intersect_polyhedron_soa`'s, bit for bit).
+///
+/// The bounce loop restarts a ray `1e-4` past the surface it just crossed, and
+/// [`T_FLOOR`] makes the next intersection ignore any boundary that restart
+/// stepped over. On a concave stone two surfaces can lie that close (the rim
+/// where a tool meets a facet, or the crease where two tools meet), so the
+/// loop's `inside_gem` toggle can disagree with the stretch it is about to
+/// trace. This answer is the state the intersection itself walked to, so the
+/// loop adopts it.
+pub(crate) fn intersect_stone_soa_side(
+    ray: Ray,
+    plane_soa: &PlanesSoA32,
+    planes_len: usize,
+    tools: &[ToolPrimitive],
+) -> Option<(HitRecord, Option<bool>)> {
     if tools.is_empty() {
-        return intersect_polyhedron_soa(ray, plane_soa);
+        return intersect_polyhedron_soa(ray, plane_soa).map(|hit| (hit, None));
     }
     let SlabScan::Slab {
         t_near,
@@ -206,6 +240,7 @@ pub(crate) fn intersect_stone_soa(
         far: usize::try_from(far_idx).ok(),
     };
     carve(ray, slab, planes_len, tools, |i| plane_soa.normal(i))
+        .map(|(hit, entering)| (hit, Some(entering)))
 }
 
 #[cfg(test)]
@@ -377,6 +412,54 @@ mod tests {
         };
         let hit = intersect_stone(ray, geom).expect("hits the top plane");
         assert_eq!(hit.facet_idx, 2);
+    }
+
+    /// The rim where a tool meets a facet leaves a wedge of material the bounce loop's
+    /// `1e-4` restart can step across. A ball centred on the unit cube's top face: a ray
+    /// restarted in the wedge, `5e-5` outside the ball and `1e-4` below the face, heading
+    /// into the ball, is in the cavity for the rest of its stretch. The ball boundary it
+    /// crossed is within [`T_FLOOR`], so it is not a hit, and the hit that follows (the ball's
+    /// far side, back into the material) is an entry: the loop's toggle, which would still
+    /// say "inside the material", has to take that from the intersection.
+    #[test]
+    fn a_restart_across_a_tool_rim_wedge_reports_the_hit_as_an_entry() {
+        let planes = unit_cube_planes();
+        let tools = [ToolPrimitive::ball(Vec3::new(0.0, 0.5, 0.0), 0.3)];
+        let soa = crate::optics::raytracer::build_plane_soa(&planes);
+        let wedge = Ray {
+            origin: Vec3::new(0.300_05, 0.499_9, 0.0),
+            dir: Vec3::NEG_X,
+        };
+        let (hit, entering) = intersect_stone_soa_side(wedge, &soa, planes.len(), &tools)
+            .expect("the ray leaves the ball through its far side");
+        assert_eq!(hit.facet_idx, planes.len(), "the ball's far side: {hit:?}");
+        assert!((hit.t - 0.600_05).abs() < 1e-4, "{hit:?}");
+        assert_eq!(entering, Some(true), "{hit:?}");
+        assert!(hit.normal.dot(wedge.dir) < 0.0, "an entry faces the ray");
+
+        // The same ray started in the material on the ball's own side of the rim, far
+        // enough from it, meets the ball as an exit from the material.
+        let inside = Ray {
+            origin: Vec3::new(0.4, 0.4, 0.0),
+            dir: Vec3::NEG_X,
+        };
+        let (hit, entering) = intersect_stone_soa_side(inside, &soa, planes.len(), &tools)
+            .expect("the ray meets the ball");
+        assert_eq!(hit.facet_idx, planes.len(), "{hit:?}");
+        assert_eq!(entering, Some(false), "{hit:?}");
+        assert!(hit.normal.dot(inside.dir) > 0.0, "an exit faces away");
+
+        // No tools: the plain polyhedron result, no side computed.
+        let (plain, side) = intersect_stone_soa_side(inside, &soa, planes.len(), &[])
+            .expect("the ray leaves the cube");
+        assert_eq!(side, None);
+        assert_eq!(
+            plain.t.to_bits(),
+            intersect_polyhedron_soa(inside, &soa)
+                .expect("the same ray")
+                .t
+                .to_bits()
+        );
     }
 
     #[test]

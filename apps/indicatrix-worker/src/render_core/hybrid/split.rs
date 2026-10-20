@@ -84,7 +84,7 @@ pub fn hybrid_trace_into(
     }
 
     // A cached `Split` decision is keyed by hardware, not geometry, so it can arrive here
-    // for a concave scene the GPU cannot trace: drop it and go CPU-only.
+    // for a scene the GPU cannot trace (see `scene_uses_gpu`): drop it and go CPU-only.
     if !scene_uses_gpu(scene) {
         *gpu_frac = None;
     }
@@ -228,8 +228,9 @@ impl SplitBatch<'_> {
 
         let (gpu_outcome, gpu_elapsed, cpu_elapsed) = if cpu_share == 0 {
             let start = Instant::now();
-            let outcome = gpu.try_accumulate_cancellable(
+            let outcome = gpu.try_accumulate_geom_cancellable(
                 &gpu_scene,
+                &scene.tools,
                 first_sample,
                 gpu_share,
                 gpu_buf.as_mut_slice(),
@@ -332,11 +333,20 @@ fn dispatch_concurrently(
     cancel: &AtomicBool,
     cpu: CpuShare<'_>,
 ) -> (GpuAccumulate, Duration, Duration) {
+    // The stone's tools ride with the GPU half of the split, the CPU half reads them from
+    // `cpu.scene` itself.
+    let tools = &cpu.scene.tools;
     thread::scope(|scope| {
         let gpu_handle = scope.spawn(move || {
             let start = Instant::now();
-            let outcome =
-                gpu.try_accumulate_cancellable(gpu_scene, first_sample, gpu_share, gpu_buf, cancel);
+            let outcome = gpu.try_accumulate_geom_cancellable(
+                gpu_scene,
+                tools,
+                first_sample,
+                gpu_share,
+                gpu_buf,
+                cancel,
+            );
             (outcome, start.elapsed())
         });
         let cpu_start = Instant::now();

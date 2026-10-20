@@ -162,6 +162,7 @@ pub(super) fn exact_fit_layout_in(model: &RoughModel) -> RoughLayout {
 pub(super) fn settings() -> PlanSettings {
     PlanSettings {
         max_designs: 6,
+        max_stones: 0,
         kerf_mm: 0.3,
         allowance_mm: 0.2,
         skin_mm: 0.0,
@@ -196,6 +197,17 @@ pub(super) fn write_with(
     layouts: &[RankedLayout<'_>],
     designs: &[SavedDesignDto],
 ) -> String {
+    write_with_settings(model, &settings(), layouts, designs)
+}
+
+/// [`write_with`] for a plan planned with `settings` (the stone cap, say) instead of the
+/// fixture's.
+pub(super) fn write_with_settings(
+    model: &RoughModel,
+    settings: &PlanSettings,
+    layouts: &[RankedLayout<'_>],
+    designs: &[SavedDesignDto],
+) -> String {
     serialize_plan_to_toml(&SerializeInput {
         name: "Test plan",
         created_at: 1_790_000_000,
@@ -203,7 +215,7 @@ pub(super) fn write_with(
         model,
         material_name: "Aquamarine",
         weighed_ct: Some(8.9),
-        settings: &settings(),
+        settings,
         candidate_source: CandidateSource::Library,
         designs,
         layouts,

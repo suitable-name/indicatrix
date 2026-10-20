@@ -2,14 +2,15 @@
 //!
 //! Adapts a design authored for material A (e.g. Quartz, RI 1.54) to material B
 //! (e.g. Sapphire, RI 1.77, or Diamond, RI 2.42), training an RL policy to jointly adjust
-//! crown and pavilion angles and maintain the critical-angle margin while the stone is
-//! scored in material B. The source material is the one the design carries (named preset and
+//! crown and pavilion angles within the shared sign-preserving safety interval while the stone
+//! is scored in material B. Critical-angle margin is observed as context, not autonomously
+//! corrected. The source material is the one the design carries (named preset and
 //! overrides, or the `.asc` refractive index), so the source index and critical angle in the
 //! observation are real.
 //!
 //! The episode mechanics (greedy acceptance, girdle and manufacturability gates, hinge
 //! anchoring of pinned tiers, the line search of [`RetargetEnv::step_scaled`], the yield term of
-//! the score, the refusal of a face-up tone weight) are the optimizer environment's; see
+//! the score and the measurement of face-up tone) are the optimizer environment's; see
 //! `optimizer_env`. The optimizer is this task with the target equal to the source material.
 
 use super::{
@@ -24,9 +25,12 @@ use super::{
     teacher::{OracleOutcome, TeacherLabel, TierProbe},
     traits::{GemstoneRlEnv, Step},
 };
+use indicatrix::optics::raytracer::LightingPreset;
+use indicatrix_cut_core::ShapeTarget;
 use indicatrix_cut_core::{
     Design, ObjectiveComponents, ObjectiveWeights, ResolvedMaterial, optimize::ObjectiveFidelity,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Configuration for material retargeting RL environment.
 #[derive(Debug, Clone)]
@@ -40,19 +44,29 @@ pub struct RetargetEnvConfig {
     pub max_step_deg: f64,
     /// Reward calculation hyperparameters.
     pub reward_config: RewardConfig,
-    /// Target optical evaluation weights. A yield weight above zero adds the yield loss to the
-    /// score (when the design's preform makes the yield measurable); a face-up tone weight
-    /// above zero is refused by [`RetargetEnv::new`] ([`EnvError::InvalidConfig`]).
+    /// Objective weights, including tone goals and measured yield when available.
     pub weights: ObjectiveWeights,
     /// Evaluation fidelity.
     pub fidelity: ObjectiveFidelity,
+    /// Lighting preset used for training and endpoint scoring.
+    pub lighting: LightingPreset,
+    /// Optional shape target and additive penalty.
+    pub shape_target: Option<ShapeTarget>,
+    /// Probe displacement in degrees, also represented in observations.
+    pub probe_scale_deg: f64,
+    /// Optional allow-list of angle coordinates; coupled mast repairs remain enabled.
+    pub only_tiers: Option<BTreeSet<usize>>,
+    /// Inclusive authored-angle bounds by tier index.
+    pub angle_bounds: BTreeMap<usize, (f64, f64)>,
+    /// Optional source metadata override (for deterministic material augmentation).
+    pub source_material_override: Option<ResolvedMaterial>,
     /// Target material the design is being adapted towards.
     pub target_material: ResolvedMaterial,
     /// Let `ScaleReference` tiers move by turning about their hinge (see
     /// `OptimizerEnvConfig::vary_anchored`).
     pub vary_anchored: bool,
-    /// An episode terminates when the score falls below this. Default `0.0`: an episode only
-    /// ends at the step limit (scores are never negative).
+    /// An episode terminates when the score falls below this. Default `0.0`: ordinary positive
+    /// scores continue to the step limit.
     pub terminal_score: f32,
     /// Fraction of the base design's thinnest girdle gap a candidate must keep (`0..=1`).
     pub min_girdle_ratio: f32,
@@ -68,6 +82,12 @@ impl RetargetEnvConfig {
             reward_config: RewardConfig::default(),
             weights: ObjectiveWeights::default(),
             fidelity: ObjectiveFidelity::Fast,
+            lighting: LightingPreset::IsoHemisphere,
+            shape_target: None,
+            probe_scale_deg: 0.25,
+            only_tiers: None,
+            angle_bounds: BTreeMap::new(),
+            source_material_override: None,
             target_material,
             vary_anchored: true,
             terminal_score: DEFAULT_TERMINAL_SCORE,
@@ -80,7 +100,7 @@ impl RetargetEnvConfig {
 pub struct RetargetEnv {
     config: RetargetEnvConfig,
     source: ResolvedMaterial,
-    core: EnvCore,
+    pub(super) core: EnvCore,
 }
 
 impl RetargetEnv {
@@ -89,13 +109,13 @@ impl RetargetEnv {
     ///
     /// # Errors
     ///
-    /// [`EnvError`] when the configuration is out of range or weighs the face-up tone
-    /// ([`EnvError::InvalidConfig`]), the design does not solve into a closed, scorable solid
-    /// in the target material, no tier of it can move, or it returns no light face-up in the
-    /// target material ([`EnvError::NoLightReturn`]: a dead stone whose score no move
-    /// changes).
+    /// [`EnvError`] when configuration is invalid, the design cannot be solved and scored in
+    /// the target material, or no tier can move. No-light results are scored normally.
     pub fn new(design: Design, config: RetargetEnvConfig) -> Result<Self, EnvError> {
-        let source = design_source_material(&design);
+        let source = config
+            .source_material_override
+            .clone()
+            .unwrap_or_else(|| design_source_material(&design));
         let settings = CoreSettings {
             max_steps: config.max_steps,
             max_step_deg: config.max_step_deg,
@@ -104,6 +124,12 @@ impl RetargetEnv {
             terminal_score: config.terminal_score,
             min_girdle_ratio: config.min_girdle_ratio,
             vary_anchored: config.vary_anchored,
+            task_kind: 1.0,
+            lighting: config.lighting,
+            shape_target: config.shape_target,
+            probe_scale_deg: config.probe_scale_deg,
+            only_tiers: config.only_tiers.clone(),
+            angle_bounds: config.angle_bounds.clone(),
         };
         let core = EnvCore::new(
             design,
@@ -140,6 +166,21 @@ impl RetargetEnv {
     #[must_use]
     pub const fn base_design(&self) -> &Design {
         self.core.base_design()
+    }
+
+    /// Exact meet-preservation facts for the current design against the immutable episode baseline.
+    pub fn preservation_facts(
+        &self,
+    ) -> Result<indicatrix_cut_core::meet_preservation::PreservationFacts, String> {
+        self.core.preservation_facts()
+    }
+
+    /// Certify a materialized result against this episode's original baseline.
+    pub fn certify_design(
+        &self,
+        design: &Design,
+    ) -> Result<indicatrix_cut_core::meet_preservation::PreservationFacts, String> {
+        self.core.certify_design(design)
     }
 
     /// The best design accepted so far in this episode (the state never gets worse).
@@ -211,7 +252,8 @@ impl RetargetEnv {
     ///
     /// One entry per tier of the design: `None` for a tier the environment does not move, and
     /// for a free tier whose `+h_deg` and `-h_deg` candidates are both refused (unsafe, open,
-    /// unscorable, or failing a gate); otherwise the one-sided difference quotient of the
+    /// unscorable, or failing a gate); otherwise the two-sided derivative (nonuniform when
+    /// clipped) of the
     /// score over `h_deg` degrees (the score slopes of [`Self::teacher_label`]). Cost: one or
     /// two candidate evaluations per free tier. The environment is left exactly as it was (no
     /// step counted, no state change). An `h_deg` that is not finite and positive gives all
@@ -221,9 +263,9 @@ impl RetargetEnv {
         self.core.score_gradient_fd(h_deg)
     }
 
-    /// What the teacher measures at the current design: per free tier the slopes of the four
-    /// score components and of the score itself per degree (probe at `+h_deg`, else
-    /// `-h_deg`), and the gain of the oracle step (the steepest-descent action of the score
+    /// What the teacher measures at the current design: per free tier the slopes of seven
+    /// score components and of the score itself per degree (two-sided when both probes are
+    /// feasible, otherwise one-sided), and the gain of the oracle step (the steepest-descent action of the score
     /// slopes tried at `scales`, in order, without changing the environment).
     ///
     /// An empty `scales` means "no oracle step" (`oracle_gain` is `None`); this differs from
@@ -263,6 +305,33 @@ impl RetargetEnv {
     #[must_use]
     pub fn oracle_outcome(&self, slopes: &[Option<f32>], scales: &[f64]) -> OracleOutcome {
         self.core.oracle_outcome(slopes, scales)
+    }
+
+    /// [`Self::oracle_outcome`] with the candidates of the line search evaluated concurrently
+    /// when `parallel` is set (one scoped thread per scale). The outcome is bit-identical to the
+    /// sequential one, `evaluations` included.
+    #[must_use]
+    pub fn oracle_outcome_with(
+        &self,
+        slopes: &[Option<f32>],
+        scales: &[f64],
+        parallel: bool,
+    ) -> OracleOutcome {
+        self.core.oracle_outcome_with(slopes, scales, parallel)
+    }
+
+    /// [`GemstoneRlEnv::step_scaled`] with the candidates of the line search evaluated
+    /// concurrently when `parallel` is set (one scoped thread per scale). The step is
+    /// bit-identical to the sequential one, and `StepInfo::evaluations` is the count of the
+    /// sequential search.
+    pub fn step_scaled_with(
+        &mut self,
+        action: &ContinuousTierAction,
+        scales: &[f64],
+        parallel: bool,
+    ) -> Step<GemstoneObservation> {
+        let outcome = self.core.step_scaled_with(action, scales, parallel);
+        self.finish(outcome)
     }
 
     /// The step the trait methods return: the core outcome plus the observation after it.
@@ -395,33 +464,50 @@ mod tests {
     }
 
     #[test]
-    fn score_gradient_fd_is_the_secant_of_the_step_the_policy_would_make() {
-        // For every free tier whose `+h` probe is a stone a step accepts or merely does not
-        // improve (closed, both gates passed), the gradient times h is exactly the step's own
-        // candidate score minus the current one.
-        let mut env = fixture_env();
-        let tiers = env.base_design().tiers.len();
+    fn score_gradient_fd_is_the_secant_of_the_steps_the_policy_would_make() {
+        // The label probes every free tier on both sides. With the step limit set to `h`, a
+        // single-tier step of `+h` or `-h` builds exactly the probe's candidate, so the slope is
+        // the two-sided difference quotient of the two steps' candidate scores when both are
+        // closed stones that pass the gates, the one-sided quotient against the current score
+        // when only one is, and `None` when neither is.
         let h = 0.25;
+        let mut env = fixture_env_with(|config| config.max_step_deg = h);
+        let tiers = env.base_design().tiers.len();
         let gradient = env.score_gradient_fd(h);
         let base = env.current_score();
         let mut checked = 0;
         for tier in env.movable_tier_indices().to_vec() {
-            let _ = env.reset(0);
-            let mut deltas = vec![0.0; tiers];
-            deltas[tier] = h;
-            let step = env.step(&ContinuousTierAction::new(deltas));
-            if matches!(step.info.rejection, None | Some(StepRejection::NotImproved)) {
-                let candidate = step
-                    .info
-                    .candidate_score
-                    .expect("a closed, scored candidate");
-                let slope = gradient[tier].expect("a free tier with a feasible +h probe");
-                let secant = f64::from(candidate - base) / h;
-                assert!((f64::from(slope) - secant).abs() < 1e-4, "tier {tier}");
-                checked += 1;
+            let mut side = |delta: f64| {
+                let _ = env.reset(0);
+                let mut deltas = vec![0.0; tiers];
+                deltas[tier] = delta;
+                let step = env.step(&ContinuousTierAction::new(deltas));
+                matches!(step.info.rejection, None | Some(StepRejection::NotImproved)).then(|| {
+                    step.info
+                        .candidate_score
+                        .expect("a closed, scored candidate")
+                })
+            };
+            let (plus, minus) = (side(h), side(-h));
+            let secant = match (plus, minus) {
+                (Some(plus), Some(minus)) => Some(f64::from(plus - minus) / (2.0 * h)),
+                (Some(plus), None) => Some(f64::from(plus - base) / h),
+                (None, Some(minus)) => Some(f64::from(base - minus) / h),
+                (None, None) => None,
+            };
+            match (gradient[tier], secant) {
+                (Some(slope), Some(secant)) => {
+                    assert!(
+                        (f64::from(slope) - secant).abs() < 1e-4,
+                        "tier {tier}: {slope} vs {secant}"
+                    );
+                    checked += 1;
+                }
+                (None, None) => {}
+                (slope, secant) => panic!("tier {tier}: label {slope:?}, steps {secant:?}"),
             }
         }
-        assert!(checked > 0, "no free tier had a feasible +h probe");
+        assert!(checked > 0, "no free tier had a feasible probe");
     }
 
     #[test]
@@ -502,10 +588,13 @@ mod tests {
     fn the_observation_carries_the_weight_fractions() {
         let balanced = fixture_env().build_observation();
         let third = 1.0 / 3.0;
-        assert_eq!(balanced.global.weight_fractions, [third, third, third, 0.0]);
+        assert_eq!(
+            balanced.global.weight_fractions,
+            [third, third, third, 0.0, 0.0, 0.0, 0.0]
+        );
         assert_eq!(
             balanced.global_token()[WEIGHT_FRACTION_INDEX..],
-            [third, third, third, 0.0]
+            [third, third, third, 0.0, 0.0, 0.0, 0.0]
         );
 
         for preset in [
@@ -531,20 +620,14 @@ mod tests {
     }
 
     #[test]
-    fn a_face_up_tone_weight_is_refused() {
+    fn face_up_tone_weights_are_scored() {
         for preset in [ObjectivePreset::LightenDark, ObjectivePreset::IntensifyPale] {
             let config = RetargetEnvConfig {
                 weights: preset.weights(),
                 ..RetargetEnvConfig::new_with_target(sapphire())
             };
-            let refused = RetargetEnv::new(Design::concave_fixture(), config);
-            assert!(
-                matches!(
-                    refused,
-                    Err(EnvError::InvalidConfig(text)) if text.contains("tone")
-                ),
-                "{preset:?}"
-            );
+            let accepted = RetargetEnv::new(Design::concave_fixture(), config);
+            assert!(accepted.is_ok(), "{preset:?}");
         }
     }
 

@@ -27,6 +27,8 @@ use std::sync::{Mutex, atomic::AtomicU32};
 #[test]
 fn export_completes_via_hybrid_or_cpu_path() {
     let scene = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: 0.6,
         pitch: -0.4,
         distance: 3.0,
@@ -46,6 +48,7 @@ fn export_completes_via_hybrid_or_cpu_path() {
         head_shadow_deg: 16.0,
     };
     let params = ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 48,
         height: 48,
         samples_per_pixel: 12,
@@ -91,6 +94,7 @@ fn a_local_share_plus_its_complement_matches_render_accumulation() {
     let (width, height, spp) = (6u32, 6u32, 12u32);
     let (cam_yaw, cam_pitch) = (0.3f32, 0.2f32);
     let params = ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width,
         height,
         samples_per_pixel: spp,
@@ -177,6 +181,7 @@ fn render_local_share_returns_none_when_stopped() {
     let scene =
         SceneSnapshot::capture(&Mutex::new(RenderContext::default())).expect("Diamond resolves");
     let params = ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 4,
         height: 4,
         samples_per_pixel: 8,

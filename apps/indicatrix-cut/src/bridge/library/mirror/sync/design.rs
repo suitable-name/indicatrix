@@ -1,7 +1,10 @@
 //! Fetches, saves and (on an update) invalidates the stale cache of exactly one
 //! mirrored design.
 
-use crate::bridge::library::mirror::options::{LibraryTransport, MirrorCounts, MirrorOptions};
+use crate::bridge::library::{
+    frosting_from_wire,
+    mirror::options::{LibraryTransport, MirrorCounts, MirrorOptions},
+};
 use indicatrix_net::library::{AngleSettingWire, DesignRecord, LibraryRequest, LibraryResponse};
 use indicatrix_vault::{
     db::sqlite::Database,
@@ -98,6 +101,16 @@ pub(super) fn sync_one_design(
     let Ok(id) = db.save_design(&entry, &detail, source_id) else {
         return Err(());
     };
+    // `.asc` cannot state frosting, so the remote's frosting rows are copied beside the
+    // detail: replaced (the remote is authoritative), so a design that lost its frosting
+    // there loses it here too. A failure is logged and does not fail the design: it reads
+    // as unfrosted, and the next sync retries.
+    if let Err(e) = db.set_diagram_frosting(id, &frosting_from_wire(&design.frosting)) {
+        warn!(
+            "Mirror sync: failed to store the frosting of entry #{id} ({}): {e}",
+            design.url
+        );
+    }
     // An UPDATED (not new) design just had its detail row replaced with fresh
     // geometry/metadata -- any cached preview thumbnail/tilt curves rendered from the
     // OLD geometry are now stale and must be invalidated, mirroring

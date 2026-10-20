@@ -71,6 +71,7 @@ const COMPARE_COMPARE_SHARED: &[Row] = rows!(CompareWindow, Compare, Compare, fa
     CompareModel.invoke_orbit(Default::default(), Default::default());
     CompareModel.invoke_reference_changed(Default::default());
     CompareModel.invoke_renderer_changed(Default::default());
+    CompareModel.invoke_renderer_changed(2);
     CompareModel.invoke_reset_pose();
     CompareModel.invoke_size_changed(Default::default(), Default::default());
     CompareModel.invoke_tilt_cancelled();

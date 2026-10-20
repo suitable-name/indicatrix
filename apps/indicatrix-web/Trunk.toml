@@ -36,7 +36,7 @@ no_sri = true
 # The Web Worker (`index.html`'s `data-type="worker"` link) and the compute core it
 # and the app share live in sibling crates; watch them too so `trunk serve` rebuilds
 # on their edits.
-watch = ["src", "ui", "Cargo.toml", "build.rs", "../../crates/indicatrix-web-core/src", "../../crates/indicatrix-web-core/Cargo.toml", "../indicatrix-web-compute/src", "../indicatrix-web-compute/Cargo.toml"]
+watch = ["src", "ui", "Cargo.toml", "build.rs", "../../crates/indicatrix-web-core/src", "../../crates/indicatrix-web-core/Cargo.toml", "../indicatrix-web-compute/src", "../indicatrix-web-compute/Cargo.toml", "../indicatrix-web-gpu/src", "../indicatrix-web-gpu/Cargo.toml"]
 
 [serve]
 addresses = ["127.0.0.1"]

@@ -7,10 +7,10 @@ use std::fmt;
 mod restore;
 
 pub(super) use restore::{
-    apply_tier_ids_and_targets, apply_tier_relations, cheater_offsets_from_native,
-    material_resolution_of, raw_tier_ids_from_native, raw_tier_relations_from_native,
-    raw_tier_targets_from_native, restore_concave_tiers, tier_from_table_with_full_geometry,
-    tier_notes_from_native,
+    apply_tier_frosting, apply_tier_ids_and_targets, apply_tier_relations,
+    cheater_offsets_from_native, material_resolution_of, raw_tier_frosting_from_native,
+    raw_tier_ids_from_native, raw_tier_relations_from_native, raw_tier_targets_from_native,
+    restore_concave_tiers, tier_from_table_with_full_geometry, tier_notes_from_native,
 };
 
 /// Whether the loaded design's [`crate::material::MaterialSelection::name`] resolves

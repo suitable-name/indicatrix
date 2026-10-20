@@ -22,11 +22,7 @@ use crate::{
     settings::ExportTransfer,
 };
 use indicatrix::color::ColorSpace;
-use indicatrix_render_jobs::{
-    codec,
-    job::{DesignInfo, JOB_FORMAT_VERSION},
-    paths::reserve_unique_file,
-};
+use indicatrix_render_jobs::{codec, job::DesignInfo, paths::reserve_unique_file};
 use indicatrix_vault::model::render_job::NewRenderJob;
 use slint::ComponentHandle;
 use std::{
@@ -93,7 +89,7 @@ fn refuse(ui: &MainWindow, message: &str) {
 /// "Add to Queue": validates the settings, finds the export folder and the finished stone,
 /// and adds one job per picture. Nothing is added when anything is refused.
 pub(super) fn add_still_jobs(ui: &MainWindow, deps: &Deps, args: StillArgs) {
-    let params = match export_thread::validate_export_params(
+    let mut params = match export_thread::validate_export_params(
         args.width,
         args.height,
         args.samples,
@@ -105,10 +101,16 @@ pub(super) fn add_still_jobs(ui: &MainWindow, deps: &Deps, args: StillArgs) {
             return;
         }
     };
+    params.engine = crate::gui::render::output_defaults::still_engine(ui);
+    params.samples_per_pixel = params.engine.target_samples(params.samples_per_pixel);
     let color_space = crate::gui::color_space_from_index(args.color_space_index);
     let snapshot = deps.settings_store.snapshot();
     let remote = RemoteSelection {
-        compute_target: compute_target_from_index(args.compute_target_index),
+        compute_target: if crate::bridge::render_thread::remote_allowed(params.engine) {
+            compute_target_from_index(args.compute_target_index)
+        } else {
+            export_thread::ComputeTarget::LocalOnly
+        },
         worker: snapshot.settings.remote_worker(),
         transfer: ExportTransfer::from_index(ui.global::<ExportModel>().get_transfer_index()),
         contribute_local: snapshot.settings.contribute_to_final_picture,
@@ -163,6 +165,7 @@ struct AddRequest {
 
 /// One picture to queue: its job, label, summary and output path, ready to store.
 struct Prepared {
+    format: u32,
     label: String,
     summary: String,
     output: PathBuf,
@@ -189,19 +192,30 @@ fn continue_add(
     request: &AddRequest,
     finished: Option<&indicatrix_solid::preview::StoneGeometryBuf>,
 ) {
-    let base_scene = match SceneSnapshot::capture_finished(&deps.render_ctx, finished) {
+    let mut base_scene = match SceneSnapshot::capture_finished(&deps.render_ctx, finished) {
         Ok(scene) => apply_export_bounce_cap(scene, request.params.max_bounces),
         Err(reason) => {
             refuse(ui, &reason);
             return;
         }
     };
+    base_scene.engine = request.params.engine;
+    if !base_scene.engine.is_ray() && ui.global::<crate::OpticalModel>().get_include_still() {
+        base_scene.optical_diagnostics = Some(crate::bridge::optical_overlay::presentation(ui));
+    }
     let jobs = fan_out_jobs(
         ui,
         &deps.settings_store,
         &base_scene,
         &deps.mesh_bounding_radius,
     );
+    if let Some(reason) = jobs
+        .iter()
+        .find_map(|job| crate::bridge::optical_overlay::export::refusal(&job.scene))
+    {
+        refuse(ui, reason);
+        return;
+    }
     let (design, designer, shape, ri) = design_naming(ui, &deps.render_ctx);
     let naming = Naming {
         design,
@@ -326,6 +340,7 @@ fn prepare_jobs(
         )?;
         let text = codec::to_text(&file).map_err(|error| error.to_string())?;
         prepared.push(Prepared {
+            format: file.format,
             label,
             summary: still_summary(&params, colorspace, job.scene.lighting_preset.label()),
             output,
@@ -353,7 +368,7 @@ fn store(deps: &Deps, prepared: &[Prepared], now: i64) -> Result<(), (usize, Str
                     summary: &job.summary,
                     frames_total: 1,
                     output_path: &output,
-                    snapshot_version: JOB_FORMAT_VERSION,
+                    snapshot_version: job.format,
                     snapshot: &job.text,
                 },
                 now,

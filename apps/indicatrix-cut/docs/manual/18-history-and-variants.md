@@ -124,8 +124,8 @@ be compared at a glance. They use the flat shading of the Solid view.
 - A step whose design **does not solve** (for example a tier that no longer meets
   anything) shows "Does Not Solve" instead of a picture. You can still go to that
   step.
-- The pictures show the flat facets. A tool-cut (concave) facet (Chapter 16) is not
-  drawn in a picture, as in the compare window (Chapter 14).
+- A step's picture shows the stone with the cuts of its concave tiers (Chapter 16),
+  the grooves and dimples, as the compare window does (Chapter 14).
 - A picture is kept while the program is running, so scrolling back to a row, or
   jumping to another step and back, does not draw it again. A picture is drawn
   again when the step's words or its design change, or when the window's scale
@@ -212,8 +212,8 @@ If you chose a step and the history has changed since (you made a new change aft
 going back, which drops steps), a message asks you to choose the step again, rather
 than saving something other than what you picked.
 
-A small picture is drawn for the variant in the background, from the flat Solid view
-at the same angle as the Steps pictures. A design that does not solve is saved
+A small picture is drawn for the variant in the background, from the flat facets of the
+Solid view at the same angle as the Steps pictures. A design that does not solve is saved
 without a picture and shows "No picture" in the list.
 
 ### Reading the Variants List
@@ -323,6 +323,6 @@ first.
   variant. A name or note can be changed with **Rename** and **Note**.
 - The list does not search or filter, and a variant cannot be exported by itself. To
   keep one as a file, open it and use **Save As**.
-- A picture shows the flat facets only; tool-cut (concave) facets are not drawn
-  (Chapter 16), as in the Steps pictures.
+- A variant's picture shows the flat facets only; tool-cut (concave) facets are not
+  drawn (Chapter 16), unlike the Steps pictures.
 - Comparing as text needs a design that solves.

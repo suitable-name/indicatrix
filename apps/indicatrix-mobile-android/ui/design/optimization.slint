@@ -1,0 +1,107 @@
+import { ComboBox, CheckBox, LineEdit, SpinBox, ProgressIndicator } from "std-widgets.slint";
+import { Shell } from "../models.slint";
+import { Theme } from "../theme.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { PrimaryButton, TextButton } from "../shell/buttons.slint";
+import { ListRow } from "../shell/list_row.slint";
+
+export struct OptimizeRange { tier: int, name: string, minimum: string, maximum: string, locked: bool }
+export global OptimizeModel {
+    in-out property <bool> open: false;
+    in property <bool> release-ready: false;
+    in property <[string]> presets;
+    in-out property <int> preset: 0;
+    in-out property <int> effort: 1;
+    in-out property <bool> only-selected: false;
+    in-out property <bool> vary-anchored: false;
+    in-out property <bool> keep-girdle: true;
+    in-out property <bool> advanced: false;
+    in-out property <string> budget: "300";
+    in-out property <int> starts: 4;
+    in-out property <string> seed: "0";
+    in-out property <bool> polish: true;
+    in-out property <int> candidates: 3;
+    in-out property <string> window-weight: "0.5";
+    in-out property <string> extinction-weight: "0.3";
+    in-out property <string> tilt-weight: "0.2";
+    in-out property <string> yield-weight: "0";
+    in-out property <string> tone: "0";
+    in-out property <[OptimizeRange]> ranges;
+    in property <bool> running: false;
+    in property <string> status;
+    in property <[string]> results;
+    in property <string> comparison;
+    in property <bool> can-apply: false;
+    in-out property <string> variant-name: "Optimize candidate";
+    callback show(); callback close(); callback start(); callback cancel();
+    callback select(int); callback apply(); callback save-variant(); callback reset-ranges();
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> value;
+    Text { text: root.label; color: Theme.on-surface-variant; }
+    LineEdit { text <=> root.value; }
+}
+
+export component OptimizeScreen inherits Rectangle {
+    background: Theme.surface;
+    TouchArea { }
+    VerticalLayout {
+        TopBar { title: "Optimize"; show-back: true; back-clicked => { Shell.request-back(); } }
+        PageScroll {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: Theme.space-md;
+                spacing: Theme.space-sm;
+                if !OptimizeModel.release-ready: Text {
+                    text: "Awaiting shared preservation regression validation. Available in development builds; release enablement requires owner validation.";
+                    color: Theme.on-surface-variant; wrap: word-wrap;
+                }
+                ComboBox { model: OptimizeModel.presets; current-index <=> OptimizeModel.preset; }
+                ComboBox {
+                    model: ["Quick · 100 evaluations", "Normal · 300 evaluations", "Thorough · 800 evaluations"];
+                    current-index <=> OptimizeModel.effort;
+                    selected(value) => { OptimizeModel.budget = OptimizeModel.effort == 0 ? "100" : OptimizeModel.effort == 1 ? "300" : "800"; }
+                }
+                CheckBox { text: "Only Selected Flat Tiers"; checked <=> OptimizeModel.only-selected; }
+                CheckBox { text: "Vary Anchored Tiers About Their Girdle Hinges"; checked <=> OptimizeModel.vary-anchored; toggled => { OptimizeModel.reset-ranges(); } }
+                CheckBox { text: "Keep Girdle Thickness"; checked <=> OptimizeModel.keep-girdle; }
+                CheckBox { text: "Advanced"; checked <=> OptimizeModel.advanced; }
+                if OptimizeModel.advanced: VerticalLayout {
+                    spacing: Theme.space-sm;
+                    Field { label: "Evaluation Budget"; value <=> OptimizeModel.budget; }
+                    Field { label: "Seed"; value <=> OptimizeModel.seed; }
+                    Text { text: "Starts"; color: Theme.on-surface-variant; }
+                    SpinBox { minimum: 1; maximum: 32; value <=> OptimizeModel.starts; }
+                    Text { text: "Candidates"; color: Theme.on-surface-variant; }
+                    SpinBox { minimum: 1; maximum: 5; value <=> OptimizeModel.candidates; }
+                    CheckBox { text: "Polish Candidates"; checked <=> OptimizeModel.polish; }
+                    Field { label: "Custom Windowing Weight"; value <=> OptimizeModel.window-weight; }
+                    Field { label: "Custom Extinction Weight"; value <=> OptimizeModel.extinction-weight; }
+                    Field { label: "Custom Tilt Brilliance Weight"; value <=> OptimizeModel.tilt-weight; }
+                    Field { label: "Custom Yield Weight"; value <=> OptimizeModel.yield-weight; }
+                    Field { label: "Custom Tone (−3 to +3)"; value <=> OptimizeModel.tone; }
+                    Text { text: "Angle magnitudes (degrees). Relation followers stay locked."; color: Theme.on-surface-variant; wrap: word-wrap; }
+                    for row[index] in OptimizeModel.ranges: VerticalLayout {
+                        Text { text: row.name + (row.locked ? " · relation follower" : ""); color: Theme.on-surface; }
+                        HorizontalLayout {
+                            LineEdit { text <=> row.minimum; enabled: !row.locked; }
+                            LineEdit { text <=> row.maximum; enabled: !row.locked; }
+                        }
+                    }
+                }
+                PrimaryButton { text: "Run Optimize"; enabled: OptimizeModel.release-ready && !OptimizeModel.running; clicked => { OptimizeModel.start(); } }
+                if OptimizeModel.running: ProgressIndicator { indeterminate: true; }
+                if OptimizeModel.running: TextButton { text: "Cancel Search"; clicked => { OptimizeModel.cancel(); } }
+                Text { text: OptimizeModel.status; color: Theme.on-surface; wrap: word-wrap; }
+                for candidate[index] in OptimizeModel.results: ListRow { title: candidate; clicked => { OptimizeModel.select(index); } }
+                Text { text: OptimizeModel.comparison; color: Theme.on-surface; wrap: word-wrap; }
+                PrimaryButton { text: "Apply Selected Candidate"; enabled: OptimizeModel.can-apply; clicked => { OptimizeModel.apply(); } }
+                Field { label: "Variant Name"; value <=> OptimizeModel.variant-name; }
+                TextButton { text: "Save Selected Candidate As Variant"; enabled: OptimizeModel.can-apply; clicked => { OptimizeModel.save-variant(); } }
+            }
+        }
+    }
+}

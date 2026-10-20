@@ -69,6 +69,9 @@ pub fn wire(window: &AppWindow, state: &Shared) {
     model.on_save_as(action(state, &weak, |window, state| {
         files::start(window, state, Action::SaveAs, false);
     }));
+    model.on_close_design(action(state, &weak, |window, state| {
+        guard::confirm_discard(window, state, Pending::Close);
+    }));
     model.on_save_to_library(action(state, &weak, |window, state| {
         library::save(window, state, false);
     }));
@@ -142,12 +145,13 @@ pub fn open_incoming(window: &AppWindow, state: &Shared, files: Vec<PickedFile>)
     guard::confirm_discard(window, state, Pending::Incoming(files));
 }
 
-/// Answers a dialog of the document (the unsaved-changes questions). Returns false for a
-/// dialog id that is not the document's. `Shell.dialog-result` has one handler; `wire`
-/// installs one that calls this, so a later lane that needs dialogs of its own either
-/// chains this function from its handler or asks the lead to merge them.
+/// Answers a dialog of the document (the unsaved-changes questions and "Clear Recent
+/// Items?"). Returns false for a dialog id that is not the document's. `Shell.dialog-result`
+/// has one handler; `wire` installs one that calls this, so a later lane that needs dialogs
+/// of its own either chains this function from its handler or asks the lead to merge them.
 pub fn handle_dialog_result(window: &AppWindow, state: &Shared, id: i32, confirmed: bool) -> bool {
     guard::handle_dialog_result(window, state, id, confirmed)
+        || library::handle_dialog_result(window, state, id, confirmed)
 }
 
 /// Closes the New Design page and folds its Empty form.
@@ -234,6 +238,9 @@ fn restore_last_design(window: &AppWindow, state: &Shared) {
     if restored.is_none() {
         return;
     }
+    // A design of a library entry that was deleted meanwhile must not come back as that
+    // entry's working copy.
+    library::settle_restored(window, state);
     // `document::install` continues the generation counter and bumps it, so a moved
     // generation means the restored session is no longer the one on screen.
     let restored_generation = state.borrow().session.current_generation();

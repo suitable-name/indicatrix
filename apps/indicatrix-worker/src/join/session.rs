@@ -242,6 +242,8 @@ pub fn join_once(target: &JoinTarget, setup: &WorkerSetup) -> Result<Session, Jo
             session: None,
             // The coordinator answers this worker's `NEED_ASSET`.
             assets: setup.assets.as_deref(),
+            // A joined worker keeps no durable jobs; the coordinator does.
+            jobs: None,
         },
     );
     Ok(Session {

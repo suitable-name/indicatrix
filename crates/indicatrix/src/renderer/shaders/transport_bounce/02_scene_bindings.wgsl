@@ -33,8 +33,9 @@ struct GpuTransportParams {
     // `blackbody_spectrum`.
     studio_use_d65: u32,
     studio_model: u32,
-    // `EnvironmentSource::Studio::backdrop`: the card the camera ray sees where it
-    // misses the stone, 0.0 for none.
+    // `EnvironmentSource::Studio::backdrop`: the radiance, at exposure 1, of the lit tray
+    // below the girdle plane (`albedo * E_rig / pi`), seen by every escape and by the camera;
+    // 0.0 = As Lit (the preset's own ground).
     backdrop: f32,
     // `EnvironmentSource::Studio::surface_glare`: scale of the camera path's first-surface
     // specular reflection, 1.0 for no change.
@@ -44,7 +45,10 @@ struct GpuTransportParams {
     head_shadow_inner_cos: f32,
     // `TentParams::flat`, in the first former pad slot (offset 84).
     tent_flat: f32,
-    _pad_head_shadow1: u32,
+    // Number of concave-tool records appended to `planes` (`CT_RECORD_VECS` entries each,
+    // right after the real planes); 0 for a planar stone. Occupies the former
+    // `_pad_head_shadow1` slot (offset 88), so the struct size is unchanged.
+    num_tools: u32,
     _pad_head_shadow2: u32,
     // `LightingRigParams::tent` (`TentParams`): the light-tent model's per-preset knobs.
     tent_walls: f32,
@@ -162,4 +166,33 @@ fn plane_at(i: u32, plane_count: u32) -> FacetPlane {
         return planes_shared[i];
     }
     return planes[i];
+}
+
+// Concave tools (`transport_physics/10_concave_tools.wgsl`) ride in the `planes` storage
+// binding, after the real planes: `params.num_tools` records of `CT_RECORD_VECS` entries.
+// Reusing the binding keeps the storage-buffer count unchanged
+// (`MEGAKERNEL_STORAGE_BUFFERS`). Every loop over the real planes must use
+// `scene_plane_count()`, never `arrayLength(&planes)`, which also counts the records.
+//
+// `params.num_tools` is a uniform, so every branch on it is uniform control flow.
+fn scene_plane_count() -> u32 {
+    return arrayLength(&planes) - CT_RECORD_VECS * params.num_tools;
+}
+
+// Tool `k`, whose records start at `planes[plane_count + 5k]`. An entry is a `FacetPlane`
+// only by shape: `normal` holds `xyz` and `d` the `w` of the record's `vec4`.
+fn scene_tool(plane_count: u32, k: u32) -> CtTool {
+    let base = plane_count + CT_RECORD_VECS * k;
+    let r0 = planes[base];
+    let r1 = planes[base + 1u];
+    let r2 = planes[base + 2u];
+    let r3 = planes[base + 3u];
+    let r4 = planes[base + 4u];
+    return ct_tool_from_vecs(
+        vec4<f32>(r0.normal, r0.d),
+        vec4<f32>(r1.normal, r1.d),
+        vec4<f32>(r2.normal, r2.d),
+        vec4<f32>(r3.normal, r3.d),
+        vec4<f32>(r4.normal, r4.d),
+    );
 }

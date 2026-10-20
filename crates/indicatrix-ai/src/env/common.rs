@@ -6,10 +6,11 @@
 //! [`EnvCore`] and only differ in the gem they score with and in how they describe the
 //! materials in the observation.
 //!
-//! The core is spread over four modules that share its crate-visible fields: this one (the
-//! state, scoring and the observation), [`super::moves`] (the movable set and how an action
-//! becomes a candidate), [`super::stepping`] (the greedy step and its line search) and
-//! [`super::teacher`] (the finite-difference labels).
+//! The core is spread over five modules that share its crate-visible fields: this one (the
+//! state and scoring), [`super::observe`] (the observation of the current state),
+//! [`super::moves`] (the movable set and how an action becomes a candidate),
+//! [`super::stepping`] (the greedy step and its line search) and [`super::teacher`] (the
+//! finite-difference labels).
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -18,21 +19,19 @@
 
 use super::{
     error::EnvError,
-    observation::{
-        GemstoneObservation, GlobalFeature, TierFeature, angle_envelope, azimuth_sin_cos,
-        weight_fractions,
-    },
     reward::{RewardConfig, RewardEvaluator},
     traits::{StepInfo, StepRejection},
 };
 use glam::DVec3;
 use indicatrix::{
+    color::metrics::FaceUpTone,
     geometry::{
-        GpuFacetPlane,
-        meet_solver::{Block, classify_blocks},
-        stone_metrics::{SolidStatus, StoneProportions, build_solid_mesh, measure_solid},
+        GpuFacetPlane, StoneGeometry,
+        stone_metrics::{
+            SolidMesh, SolidStatus, StoneProportions, build_solid_mesh_geom, measure_solid,
+        },
     },
-    optics::materials::GemMaterial,
+    optics::{materials::GemMaterial, raytracer::LightingPreset},
 };
 use indicatrix_cut_core::{
     BuiltinMaterials, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, Design, DesignSolveError,
@@ -40,10 +39,10 @@ use indicatrix_cut_core::{
     ObjectiveWeights, ResolvedMaterial, ShapeTarget, critical_angle_deg,
     design::{girdle_band_in, tier_plane_ranges},
     manufacturability::check_manufacturability_with_geometry,
-    optics_hints::is_horizontal_angle_deg,
-    optimize::{MAX_SAFE_CANDIDATE_ANGLE_DEG, ObjectiveFidelity, evaluate_objective_threaded},
+    optimize::{ObjectiveFidelity, evaluate_objective_with_tone_geom_under_threaded},
     volumetric_yield,
 };
+use std::sync::Arc;
 
 pub(crate) use super::moves::{MoveSpace, apply_action};
 
@@ -54,8 +53,8 @@ pub(crate) use super::moves::{MoveSpace, apply_action};
 /// and ignores it. The sweep result does not depend on the thread count.
 const ENV_INNER_THREADS: Option<usize> = Some(1);
 
-/// Default score below which an episode counts as solved: `0.0` = an episode only ends at the
-/// step limit; scores are never negative. (A threshold of 5 ended the episodes of designs
+/// Default score below which an episode counts as solved: `0.0`, so ordinary positive-score
+/// episodes end at the step limit. (A threshold of 5 ended the episodes of designs
 /// whose base score was already below it after their first step, producing one-step
 /// episodes that taught nothing.)
 pub(crate) const DEFAULT_TERMINAL_SCORE: f32 = 0.0;
@@ -134,6 +133,10 @@ impl From<EvalFailure> for EnvError {
 pub(crate) struct DesignEval {
     pub(crate) score: f32,
     pub(crate) components: ObjectiveComponents,
+    pub(crate) tone_lighter_loss_pct: Option<f32>,
+    pub(crate) tone_deeper_loss_pct: Option<f32>,
+    pub(crate) tone: FaceUpTone,
+    pub(crate) shape_distance_pct: f32,
     /// Solved mast per tier.
     pub(crate) masts: Vec<f64>,
     pub(crate) table_percent: Option<f64>,
@@ -143,6 +146,15 @@ pub(crate) struct DesignEval {
     pub(crate) girdle_thickness: Option<f64>,
     pub(crate) vanishing_facets: usize,
     pub(crate) undersized_facets: usize,
+    pub(crate) width_axis: Option<f64>,
+    pub(crate) live_tier_geometry: Vec<LiveTierGeometry>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LiveTierGeometry {
+    pub(crate) area_fraction: f32,
+    pub(crate) centroid: [f64; 3],
+    pub(crate) available: bool,
 }
 
 /// The volume of `design`'s preform, `None` when it does not measure.
@@ -161,6 +173,7 @@ pub(crate) fn preform_volume(design: &Design) -> Option<f64> {
 /// loss [`yield_loss_pct`] joins it ([`ObjectiveWeights::score_with_yield`]). A stone with no
 /// measurable yield is scored on its optics alone, and a zero yield weight reproduces the
 /// optical score bit for bit.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn objective_score(
     weights: &ObjectiveWeights,
@@ -175,40 +188,47 @@ pub(crate) fn objective_score(
     }
 }
 
-/// The yield loss the score and the teacher's yield component use: `100 - yield_pct`, floored
-/// at zero.
-///
-/// Angle moves can push a stone's solid outside its preform (a yield above 100 %; nothing in
-/// the environment keeps the stone inside the preform). Such a stone counts as a full yield,
-/// not as a gain: without the floor the score could drop below zero and end an episode as
-/// "perfect" (`terminal_score` is 0), and a tier would be rewarded for growing the stone past
-/// the rough.
+/// The yield loss the score and the teacher's yield component use: exactly `100 - yield_pct`,
+/// matching the shared cut-core objective, including when measured yield exceeds 100 %.
 #[must_use]
 pub(crate) fn yield_loss_pct(yield_pct: f32) -> f32 {
-    (100.0 - yield_pct).max(0.0)
+    100.0 - yield_pct
 }
 
 /// Solves, closes, scores and measures `design` in `gem`.
 ///
 /// `preform_volume` is [`preform_volume`] of `design`: the caller measures it once per
 /// base design. The plane list, mesh and solid measurement of the candidate are built once
-/// here and shared with the manufacturability check. The score is [`objective_score`]:
-/// optical, plus the yield term when the weights ask for it and the yield measures.
+/// here and shared with the manufacturability check. The score uses the same core objective
+/// path as optimization, including measured yield when requested and available.
 pub(crate) fn evaluate_design(
     design: &Design,
     gem: &GemMaterial,
     weights: &ObjectiveWeights,
     fidelity: ObjectiveFidelity,
     preform_volume: Option<f64>,
+    lighting: LightingPreset,
+    shape_target: Option<ShapeTarget>,
 ) -> Result<DesignEval, EvalFailure> {
     let solved = design.solve().map_err(EvalFailure::Unsolvable)?;
     let planes = design.planes_from_solved(&solved);
-    let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) else {
+    let tools = design.tools_for_scoring(&planes);
+    let gpu_planes = to_gpu_planes(&planes);
+    let geometry = StoneGeometry {
+        planes: &gpu_planes,
+        tools: &tools,
+    };
+    let SolidStatus::Closed(mesh) = build_solid_mesh_geom(&planes, &tools) else {
         return Err(EvalFailure::NotClosed);
     };
 
-    let components =
-        evaluate_objective_threaded(&to_gpu_planes(&planes), gem, fidelity, ENV_INNER_THREADS);
+    let (components, tone) = evaluate_objective_with_tone_geom_under_threaded(
+        geometry,
+        gem,
+        fidelity,
+        lighting,
+        ENV_INNER_THREADS,
+    );
     // The components are checked before the solid is measured, so a dead measurement exits
     // early; the final score is checked once the yield term (if any) is in.
     let finite = [
@@ -222,7 +242,8 @@ pub(crate) fn evaluate_design(
         return Err(EvalFailure::NonFiniteScore);
     }
 
-    let metrics = measure_solid(&planes);
+    let flat_metrics = measure_solid(&planes);
+    let metrics = Design::carved_metrics(flat_metrics, &planes, &tools);
     let (table_percent, crown_to_pavilion) = metrics.as_ref().map_or((None, None), |metrics| {
         let proportions = StoneProportions::from_solid(metrics, &mesh, &planes);
         let ratio = match (proportions.crown_height, proportions.pavilion_depth) {
@@ -235,12 +256,40 @@ pub(crate) fn evaluate_design(
         .as_ref()
         .and_then(|finished| volumetric_yield(finished.volume, preform_volume?))
         .map(|fraction| (fraction * 100.0) as f32);
-    let score = objective_score(weights, &components, yield_pct);
+    let tone_lighter_loss = indicatrix_cut_core::ToneGoal::Lighter.loss_pct(&tone);
+    let tone_deeper_loss = indicatrix_cut_core::ToneGoal::Deeper.loss_pct(&tone);
+    let tone_lighter_loss_pct = Some(tone_lighter_loss);
+    let tone_deeper_loss_pct = Some(tone_deeper_loss);
+    let effective_yield_weight = if yield_pct.is_some() {
+        weights.yield_weight
+    } else {
+        0.0
+    };
+    let effective_weights = ObjectiveWeights {
+        yield_weight: effective_yield_weight,
+        ..*weights
+    };
+    let tone_loss = match weights.tone_goal {
+        indicatrix_cut_core::ToneGoal::Lighter => tone_lighter_loss,
+        indicatrix_cut_core::ToneGoal::Deeper => tone_deeper_loss,
+    };
+    let mut score = effective_weights.score_with_tone(
+        &components,
+        yield_pct.map_or(0.0, yield_loss_pct),
+        tone_loss,
+    );
+    let shape_distance_pct = shape_target.map_or(f32::NAN, |target| {
+        (100.0 * target.distance(table_percent, crown_to_pavilion)) as f32
+    });
+    if let Some(target) = shape_target {
+        score += target.penalty(table_percent, crown_to_pavilion);
+    }
     if !score.is_finite() {
         return Err(EvalFailure::NonFiniteScore);
     }
 
     let ranges = tier_plane_ranges(design, &solved);
+    let live_tier_geometry = live_geometry_by_tier(&ranges, &mesh);
     let girdle_thickness =
         girdle_band_in(design, &ranges, &planes, &mesh).map(|band| band.min_thickness);
 
@@ -263,6 +312,10 @@ pub(crate) fn evaluate_design(
     Ok(DesignEval {
         score,
         components,
+        tone_lighter_loss_pct,
+        tone_deeper_loss_pct,
+        tone,
+        shape_distance_pct,
         masts: solved.iter().map(|tier| tier.mast).collect(),
         table_percent,
         crown_to_pavilion,
@@ -270,7 +323,72 @@ pub(crate) fn evaluate_design(
         girdle_thickness,
         vanishing_facets,
         undersized_facets,
+        width_axis: metrics.as_ref().map(|m| m.width_axis),
+        live_tier_geometry,
     })
+}
+
+fn live_geometry_by_tier(
+    ranges: &[std::ops::Range<usize>],
+    mesh: &SolidMesh,
+) -> Vec<LiveTierGeometry> {
+    let mut areas = vec![0.0_f64; ranges.len()];
+    let mut moments = vec![[0.0_f64; 3]; ranges.len()];
+    let mut total = 0.0_f64;
+    for (facet, ring) in &mesh.rings {
+        let Some((tier_index, _)) = ranges.iter().enumerate().find(|(_, r)| r.contains(facet))
+        else {
+            continue;
+        };
+        if ring.len() < 3 {
+            continue;
+        }
+        let origin = ring[0];
+        let mut area = 0.0;
+        let mut moment = [0.0; 3];
+        for i in 1..ring.len() - 1 {
+            let a = ring[i] - origin;
+            let b = ring[i + 1] - origin;
+            let triangle_area = 0.5 * a.cross(b).length();
+            if !triangle_area.is_finite() {
+                continue;
+            }
+            let center = (origin + ring[i] + ring[i + 1]) / 3.0;
+            area += triangle_area;
+            moment[0] += center.x * triangle_area;
+            moment[1] += center.y * triangle_area;
+            moment[2] += center.z * triangle_area;
+        }
+        areas[tier_index] += area;
+        for axis in 0..3 {
+            moments[tier_index][axis] += moment[axis];
+        }
+        total += area;
+    }
+    ranges
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let area = areas[i];
+            LiveTierGeometry {
+                area_fraction: if total > 0.0 {
+                    (area / total) as f32
+                } else {
+                    0.0
+                },
+                centroid: if area > 0.0 {
+                    [
+                        moments[i][0] / area,
+                        moments[i][1] / area,
+                        moments[i][2] / area,
+                    ]
+                } else {
+                    [0.0; 3]
+                },
+                available: area > 0.0 && total > 0.0,
+            }
+        })
+        .collect()
 }
 
 /// Whether a candidate keeps the girdle: not lost, not a knife edge, and at least
@@ -284,13 +402,6 @@ fn girdle_ok(base: Option<f64>, candidate: Option<f64>, min_ratio: f32) -> bool 
             candidate >= f64::from(min_ratio) * base && (candidate > 0.0 || base <= 0.0)
         }
     }
-}
-
-/// Whether a stone returns no light face-up (tilt brilliance `0 %`): the tracer finds no
-/// light, every move scores exactly the same and a step costs 7 ms for nothing. Such a dead
-/// stone is refused at construction ([`EnvError::NoLightReturn`]).
-pub(crate) const fn returns_no_light(components: &ObjectiveComponents) -> bool {
-    components.tilt_brilliance_pct <= 0.0
 }
 
 /// Thinnest girdle gap of `current` relative to `base` (`1.0` when there is nothing to
@@ -323,6 +434,12 @@ pub(crate) struct CoreSettings {
     pub(crate) terminal_score: f32,
     pub(crate) min_girdle_ratio: f32,
     pub(crate) vary_anchored: bool,
+    pub(crate) task_kind: f32,
+    pub(crate) lighting: LightingPreset,
+    pub(crate) shape_target: Option<ShapeTarget>,
+    pub(crate) probe_scale_deg: f64,
+    pub(crate) only_tiers: Option<std::collections::BTreeSet<usize>>,
+    pub(crate) angle_bounds: std::collections::BTreeMap<usize, (f64, f64)>,
 }
 
 impl CoreSettings {
@@ -343,9 +460,42 @@ impl CoreSettings {
                 "min_girdle_ratio must lie in 0..=1",
             ));
         }
-        if self.weights.tone_weight > 0.0 {
+        if !self.probe_scale_deg.is_finite() || self.probe_scale_deg <= 0.0 {
             return Err(EnvError::InvalidConfig(
-                "the face-up tone objective is not supported",
+                "probe_scale_deg must be finite and positive",
+            ));
+        }
+        if [
+            self.weights.windowing,
+            self.weights.extinction,
+            self.weights.tilt_brilliance,
+            self.weights.yield_weight,
+            self.weights.tone_weight,
+        ]
+        .iter()
+        .any(|w| !w.is_finite())
+        {
+            return Err(EnvError::InvalidConfig("objective weights must be finite"));
+        }
+        if self.shape_target.is_some_and(|target| {
+            !target.weight.is_finite()
+                || target.weight < 0.0
+                || target.table_percent.is_some_and(|value| !value.is_finite())
+                || target
+                    .crown_to_pavilion
+                    .is_some_and(|value| !value.is_finite())
+        }) {
+            return Err(EnvError::InvalidConfig(
+                "shape target values must be finite and its weight non-negative",
+            ));
+        }
+        if self
+            .angle_bounds
+            .values()
+            .any(|(lo, hi)| !lo.is_finite() || !hi.is_finite() || lo > hi)
+        {
+            return Err(EnvError::InvalidConfig(
+                "angle bounds must be finite inclusive ranges",
             ));
         }
         Ok(())
@@ -386,11 +536,9 @@ impl EnvCore {
     ///
     /// # Errors
     ///
-    /// [`EnvError::InvalidConfig`] for an out-of-range setting or a face-up tone weight (the
-    /// environments do not trace the face-up tone); [`EnvError::Unsolvable`],
+    /// [`EnvError::InvalidConfig`] for an out-of-range setting; [`EnvError::Unsolvable`],
     /// [`EnvError::NotClosed`] or [`EnvError::NonFiniteScore`] when the base design cannot be
-    /// scored; [`EnvError::NoLightReturn`] when it scores but returns no light face-up (a dead
-    /// stone: no move changes its score, see [`returns_no_light`]); [`EnvError::NoMovableTiers`]
+    /// scored; [`EnvError::NoMovableTiers`]
     /// when no tier can move.
     pub(crate) fn new(
         design: Design,
@@ -399,6 +547,22 @@ impl EnvCore {
         reward_config: RewardConfig,
     ) -> Result<Self, EnvError> {
         settings.validate()?;
+        reward_config.validate().map_err(EnvError::InvalidConfig)?;
+        if settings
+            .only_tiers
+            .as_ref()
+            .is_some_and(|tiers| tiers.iter().any(|&i| i >= design.tiers.len()))
+            || settings.angle_bounds.iter().any(|(&i, &(lo, hi))| {
+                design
+                    .tiers
+                    .get(i)
+                    .is_none_or(|tier| tier.angle_deg < lo || tier.angle_deg > hi)
+            })
+        {
+            return Err(EnvError::InvalidConfig(
+                "tier scope or angle bounds do not contain the design",
+            ));
+        }
         let preform_volume = preform_volume(&design);
         let base_eval = evaluate_design(
             &design,
@@ -406,11 +570,21 @@ impl EnvCore {
             &settings.weights,
             settings.fidelity,
             preform_volume,
+            settings.lighting,
+            settings.shape_target,
         )?;
-        if returns_no_light(&base_eval.components) {
-            return Err(EnvError::NoLightReturn);
-        }
-        let space = MoveSpace::measure(&design, settings.vary_anchored)?;
+        let policy = if settings.task_kind > 0.5 {
+            indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET
+        } else {
+            indicatrix_cut_core::meet_preservation::PreservationPolicy::OPTIMIZE
+        };
+        let space = MoveSpace::measure_with(
+            &design,
+            settings.vary_anchored,
+            settings.only_tiers.as_ref(),
+            policy,
+            &settings.angle_bounds,
+        )?;
         Ok(Self {
             best_score: base_eval.score,
             current_eval: base_eval.clone(),
@@ -460,6 +634,25 @@ impl EnvCore {
         self.current_eval.score
     }
 
+    pub(crate) fn preservation_facts(
+        &self,
+    ) -> Result<indicatrix_cut_core::meet_preservation::PreservationFacts, String> {
+        self.space.certify(&self.current_design)
+    }
+
+    pub(crate) fn certify_design(
+        &self,
+        design: &Design,
+    ) -> Result<indicatrix_cut_core::meet_preservation::PreservationFacts, String> {
+        self.space.certify(design)
+    }
+
+    pub(crate) fn preservation_baseline(
+        &self,
+    ) -> Arc<indicatrix_cut_core::meet_preservation::MeetPreservationBaseline> {
+        self.space.baseline()
+    }
+
     pub(crate) const fn best_score(&self) -> f32 {
         self.best_score
     }
@@ -495,274 +688,8 @@ impl EnvCore {
         eval.vanishing_facets <= self.base_eval.vanishing_facets
             && eval.undersized_facets <= self.base_eval.undersized_facets
     }
-
-    /// Describes the current state. `source` is the material the design was authored for,
-    /// `target` the one the stone is judged in (the same for the optimizer).
-    pub(crate) fn observation(
-        &self,
-        source: &ResolvedMaterial,
-        target: &ResolvedMaterial,
-    ) -> GemstoneObservation {
-        let design = &self.current_design;
-        let eval = &self.current_eval;
-        let target_crit = target.critical_angle_deg as f32;
-        let blocks = classify_blocks(&design.meet_tier_inputs());
-        let max_mast = eval
-            .masts
-            .iter()
-            .fold(0.0_f64, |max, mast| max.max(mast.abs()));
-
-        let tier_count = design.tiers.len() as f32;
-        let tiers = design
-            .tiers
-            .iter()
-            .enumerate()
-            .map(|(index, tier)| {
-                let angle = tier.angle_deg as f32;
-                // The base and the current design have the same tiers (a step only moves
-                // angles and masts), so the base tier at `index` always exists.
-                let base_angle = self.base_design.tiers[index].angle_deg as f32;
-                let (azimuth_sin, azimuth_cos) =
-                    azimuth_sin_cos(tier.indices.first().copied(), design.meta.gear_teeth);
-                let block = match blocks.get(index).copied() {
-                    Some(Block::Crown) => 1.0_f32,
-                    Some(Block::Pavilion) => -1.0,
-                    _ => 0.0,
-                };
-                let flat = is_horizontal_angle_deg(tier.angle_deg)
-                    || tier.angle_deg.abs() >= MAX_SAFE_CANDIDATE_ANGLE_DEG;
-                let (min_angle_deg, max_angle_deg) = if flat {
-                    (0.0, 0.0)
-                } else {
-                    angle_envelope(block, target_crit)
-                };
-                let mast = match eval.masts.get(index) {
-                    Some(mast) if max_mast > 0.0 => (mast.abs() / max_mast) as f32,
-                    _ => 0.0,
-                };
-                TierFeature {
-                    angle_normalized: angle / 90.0,
-                    angle_deg: angle,
-                    base_angle_deg: base_angle,
-                    orbit_count: tier.indices.len() as u32,
-                    block_type: block,
-                    is_pinned: if self.space.is_free(index) { 0.0 } else { 1.0 },
-                    is_flat: if flat { 1.0 } else { 0.0 },
-                    critical_margin_deg: if block < 0.0 {
-                        angle.abs() - target_crit
-                    } else {
-                        0.0
-                    },
-                    mast,
-                    min_angle_deg,
-                    max_angle_deg,
-                    index_frac: index as f32 / tier_count,
-                    azimuth_sin,
-                    azimuth_cos,
-                }
-            })
-            .collect();
-
-        GemstoneObservation {
-            tiers,
-            global: GlobalFeature {
-                refractive_index: source.n_d as f32,
-                target_refractive_index: target.n_d as f32,
-                critical_angle_deg: source.critical_angle_deg as f32,
-                target_critical_angle_deg: target_crit,
-                dispersion: target.gem.dispersion.evaluate(486.1)
-                    - target.gem.dispersion.evaluate(656.3),
-                windowing_pct: eval.components.windowing_pct,
-                extinction_pct: eval.components.extinction_pct,
-                tilt_brilliance_pct: eval.components.tilt_brilliance_pct,
-                yield_pct: eval.yield_pct.unwrap_or(0.0),
-                table_pct: eval.table_percent.unwrap_or(0.0) as f32,
-                crown_to_pavilion_ratio: eval.crown_to_pavilion.unwrap_or(0.0) as f32,
-                min_girdle_ratio: girdle_ratio(
-                    self.base_eval.girdle_thickness,
-                    eval.girdle_thickness,
-                ),
-                best_score_so_far: self.best_score,
-                progress_ratio: self.step_count as f32 / self.settings.max_steps as f32,
-                base_score: self.base_eval.score,
-                weight_fractions: weight_fractions(&self.settings.weights),
-            },
-        }
-    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use indicatrix_cut_core::ObjectivePreset;
-
-    fn fixture_settings() -> CoreSettings {
-        CoreSettings {
-            max_steps: 60,
-            max_step_deg: 0.5,
-            weights: ObjectiveWeights::default(),
-            fidelity: ObjectiveFidelity::Fast,
-            terminal_score: DEFAULT_TERMINAL_SCORE,
-            min_girdle_ratio: DEFAULT_MIN_GIRDLE_RATIO,
-            vary_anchored: true,
-        }
-    }
-
-    #[test]
-    fn source_material_reads_the_design_refractive_index() {
-        let material = design_source_material(&Design::concave_fixture());
-        assert!((material.n_d - 1.54).abs() < 1e-9, "{}", material.n_d);
-        assert!((material.critical_angle_deg - critical_angle_deg(1.54)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn source_material_of_a_design_without_a_material_takes_the_i_line_index() {
-        // Every `.asc` import carries `MaterialSelection::none()`: the index comes from the
-        // design metadata, as a flat (dispersion-free) material.
-        let mut design = Design::concave_fixture();
-        design.material = MaterialSelection::none();
-        let material = design_source_material(&design);
-        assert!((material.n_d - 1.54).abs() < 1e-9, "{}", material.n_d);
-        assert!((material.critical_angle_deg - critical_angle_deg(1.54)).abs() < 1e-9);
-        let at_d = f64::from(material.gem.dispersion.evaluate(589.3));
-        assert!((at_d - 1.54).abs() < 1e-4, "{at_d}");
-        let spread =
-            material.gem.dispersion.evaluate(486.1) - material.gem.dispersion.evaluate(656.3);
-        assert!(
-            spread.abs() < 1e-6,
-            "flat index has no dispersion: {spread}"
-        );
-    }
-
-    #[test]
-    fn a_dead_stone_is_refused() {
-        let components = |tilt_brilliance_pct| ObjectiveComponents {
-            windowing_pct: 30.0,
-            extinction_pct: 40.0,
-            tilt_brilliance_pct,
-        };
-        // Brilliance exactly 0 (the `shah` stone of the review: every move scores 0.00) is
-        // dead; a tenth of a percent is not.
-        assert!(returns_no_light(&components(0.0)));
-        assert!(!returns_no_light(&components(0.1)));
-        assert!(!returns_no_light(&components(70.0)));
-        assert_eq!(DEFAULT_TERMINAL_SCORE, 0.0);
-    }
-
-    #[test]
-    fn the_fixture_returns_light_so_the_core_accepts_it() {
-        let design = Design::concave_fixture();
-        let material = design_source_material(&design);
-        let core = EnvCore::new(
-            design,
-            material.gem,
-            fixture_settings(),
-            RewardConfig::default(),
-        )
-        .expect("the fixture returns light face-up");
-        assert!(core.base_components().tilt_brilliance_pct > 0.0);
-        assert_eq!(core.weights(), &ObjectiveWeights::default());
-    }
-
-    #[test]
-    fn girdle_gate_rules() {
-        assert!(girdle_ok(None, None, 0.5));
-        assert!(!girdle_ok(Some(1.0), None, 0.5));
-        assert!(girdle_ok(Some(1.0), Some(0.6), 0.5));
-        assert!(!girdle_ok(Some(1.0), Some(0.4), 0.5));
-        assert!(!girdle_ok(Some(1.0), Some(0.0), 0.0));
-    }
-
-    #[test]
-    fn a_tone_weight_is_refused_at_construction() {
-        let design = Design::concave_fixture();
-        let material = design_source_material(&design);
-        for preset in [ObjectivePreset::LightenDark, ObjectivePreset::IntensifyPale] {
-            let settings = CoreSettings {
-                weights: preset.weights(),
-                ..fixture_settings()
-            };
-            let refused = EnvCore::new(
-                design.clone(),
-                material.gem.clone(),
-                settings,
-                RewardConfig::default(),
-            );
-            assert!(
-                matches!(
-                    refused,
-                    Err(EnvError::InvalidConfig(text)) if text.contains("tone")
-                ),
-                "{preset:?}"
-            );
-        }
-        // Every other preset builds.
-        let settings = CoreSettings {
-            weights: ObjectivePreset::KeepWeight.weights(),
-            ..fixture_settings()
-        };
-        assert!(
-            EnvCore::new(design, material.gem, settings, RewardConfig::default()).is_ok(),
-            "a yield weight is supported"
-        );
-    }
-
-    #[test]
-    fn the_score_carries_the_yield_only_when_it_is_weighted_and_measurable() {
-        let design = Design::concave_fixture();
-        let gem = design_source_material(&design).gem;
-        let volume = preform_volume(&design);
-        assert!(volume.is_some(), "the fixture's block preform measures");
-        let evaluate = |weights: &ObjectiveWeights, volume| {
-            evaluate_design(&design, &gem, weights, ObjectiveFidelity::Fast, volume)
-                .expect("the fixture scores")
-        };
-
-        // Weight zero: the optical score, bit for bit, whatever the yield is.
-        let optical_weights = ObjectiveWeights::default();
-        let optical = evaluate(&optical_weights, volume);
-        assert_eq!(optical.score, optical_weights.score(&optical.components));
-        assert!(optical.yield_pct.is_some());
-
-        // A positive weight and a measurable yield: the yield loss joins the score.
-        let weights = ObjectivePreset::KeepWeight.weights();
-        let weighted = evaluate(&weights, volume);
-        let yield_pct = weighted.yield_pct.expect("measurable");
-        assert!(yield_pct > 0.0 && yield_pct.is_finite());
-        assert_eq!(
-            weighted.score,
-            weights.score_with_yield(&weighted.components, 100.0 - yield_pct)
-        );
-        assert_ne!(weighted.score, weights.score(&weighted.components));
-        // The optical measurements do not depend on the weights.
-        assert_eq!(weighted.components, optical.components);
-
-        // No preform volume: the yield cannot be measured and the optics score alone.
-        let blind = evaluate(&weights, None);
-        assert_eq!(blind.yield_pct, None);
-        assert_eq!(blind.score, weights.score(&blind.components));
-    }
-
-    #[test]
-    fn objective_score_falls_back_to_the_optics() {
-        let components = ObjectiveComponents {
-            windowing_pct: 20.0,
-            extinction_pct: 30.0,
-            tilt_brilliance_pct: 70.0,
-        };
-        let weights = ObjectivePreset::KeepWeight.weights();
-        assert_eq!(
-            objective_score(&weights, &components, None),
-            weights.score(&components)
-        );
-        assert_eq!(
-            objective_score(&weights, &components, Some(40.0)),
-            weights.score_with_yield(&components, 60.0)
-        );
-        let plain = ObjectiveWeights::default();
-        assert_eq!(
-            objective_score(&plain, &components, Some(40.0)),
-            plain.score(&components)
-        );
-    }
-}
+#[path = "common_tests.rs"]
+mod tests;

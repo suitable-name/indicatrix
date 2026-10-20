@@ -2,7 +2,10 @@
 //! logic shared across the detail module's local/remote load paths.
 
 use super::{
-    planes::{DesignFileMaterial, apply_catalogue_material, planes_gear_and_reference_angle},
+    planes::{
+        ConcaveRow, DesignFileMaterial, apply_catalogue_material, claim_catalogue_stone,
+        planes_gear_and_reference_angle, remote_tools,
+    },
     shared::{count_angles_for_mode, parse_catalogue_angle_deg, sides_from_rows, standard_codes},
 };
 use crate::{
@@ -18,6 +21,7 @@ use indicatrix_cut_core::{
     material::MaterialSelection,
     native::{CustomMaterialSnapshot, gem_material_from_custom_snapshot},
 };
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{ModelRc, VecModel};
 
 // --- parse_catalogue_angle_deg / sides_from_rows ---
@@ -317,6 +321,59 @@ fn prefers_the_real_designs_own_planes_and_reference_angle_when_resolved() {
     assert_eq!(reference_angle, 2.5);
 }
 
+/// The remote route places the tools its concave rows describe on the stone it rebuilds
+/// from the flat rows; a flat row (no tool line) is no concave row, and a record without any
+/// has no tools.
+#[test]
+fn the_remote_route_places_the_tools_of_its_concave_rows_on_the_rebuilt_stone() {
+    let design = indicatrix_cut_core::Design::concave_fixture();
+    let owned: Vec<(String, String, String, String, String)> = design
+        .concave_tiers
+        .iter()
+        .map(|tier| {
+            (
+                tier.name.clone(),
+                format!("{}\u{b0}", tier.angle_deg),
+                tier.indices
+                    .iter()
+                    .map(f64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                tier.instructions.clone(),
+                tier.second_line_fields().join("  "),
+            )
+        })
+        .collect();
+    let rows = ConcaveRow::from_wire(
+        owned
+            .iter()
+            .map(|(f, a, i, n, t)| {
+                (
+                    f.as_str(),
+                    a.as_str(),
+                    i.as_str(),
+                    n.as_str(),
+                    Some(t.as_str()),
+                )
+            })
+            .chain([("P1", "-41.0\u{b0}", "0", "", None)]),
+    );
+    assert_eq!(
+        rows.len(),
+        design.concave_tiers.len(),
+        "the flat row is left out"
+    );
+
+    let record = angle_table_record();
+    let planes = resolve_catalogue_planes(&record);
+    let (tools, placements) = remote_tools(&rows, &planes.planes, planes.gear_teeth);
+    assert!(!tools.is_empty(), "the concave rows are tools of the stone");
+    assert_eq!(tools.len(), placements.len());
+
+    let (none, none_placements) = remote_tools(&[], &planes.planes, planes.gear_teeth);
+    assert!(none.is_empty() && none_placements.is_empty());
+}
+
 // --- standard_codes ---
 
 /// The codes the Cutting Instructions tab shows for `rows`, classified the way the load
@@ -597,6 +654,30 @@ fn a_file_naming_a_custom_material_uses_the_contexts_one_or_its_own_snapshot() {
         ctx.material_override,
         Some(gem_material_from_custom_snapshot("Lost Garnet", &snapshot))
     );
+}
+
+/// A Library row's claim carries the planes its design frosts, and a following claim of a
+/// polished row clears them: the viewport shows the finish the thumbnail and the editor show.
+#[test]
+fn a_catalogue_claim_sets_the_frosted_planes_and_a_polished_claim_clears_them() {
+    let planes = resolve_catalogue_planes(&angle_table_record()).planes;
+    let mut ctx = RenderContext::default();
+
+    let frosted = StoneGeometryBuf {
+        frosted: vec![3, 9],
+        ..StoneGeometryBuf::planes_only(planes.clone())
+    };
+    assert!(claim_catalogue_stone(&mut ctx, 7, frosted, Some((96, 0.0))));
+    assert_eq!(ctx.active_frosted.as_slice(), [3, 9]);
+
+    let polished = StoneGeometryBuf::planes_only(planes);
+    assert!(claim_catalogue_stone(
+        &mut ctx,
+        8,
+        polished,
+        Some((96, 0.0))
+    ));
+    assert!(ctx.active_frosted.is_empty());
 }
 
 /// The angle-table path has no design file: its resolution converts to nothing.

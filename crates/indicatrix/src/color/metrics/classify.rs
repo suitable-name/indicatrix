@@ -7,8 +7,8 @@ use glam::Vec3;
 use super::{
     fan::FanGeometry,
     lighting::ExitLighting,
-    ray_trace::{RayFate, StoneArena, trace_wavelength},
-    visibility::ray_is_visibly_returned,
+    ray_trace::{EntryRay, RayFate, StoneArena, trace_entry},
+    visibility::returned_or_reason,
 };
 use crate::optics::raytracer::Ray;
 
@@ -44,6 +44,8 @@ pub(super) struct ApertureSampleContext<'a> {
 /// instead would change which intermediate values a fused multiply-add rounds against,
 /// perturbing the bit-exact result).
 pub(super) enum RayClassification {
+    /// Non-finite diagnostic path; retained as unknown, never extinction.
+    Invalid,
     /// Not classified into any bucket. See `RayFate::EntryBlocked` doc.
     EntryBlocked,
     /// Leaked out through the pavilion bottom.
@@ -93,16 +95,66 @@ pub(super) fn classify_aperture_sample(
         dir: ray_dir,
     };
 
+    // The fan's rays run along the camera axis, so the eye is straight back along it.
+    classify_ray(ctx, ray, -ctx.cam_forward, None)
+}
+
+/// Shared classification of an already generated camera or fan ray.
+///
+/// `observer` is the unit direction from the stone towards the eye that the head-shadow cone
+/// is centred on. The legacy fan rays are parallel to the camera axis, so they pass
+/// `-ctx.cam_forward` (bit-identical to the former `(-exit_dir) . cam_forward` test); the
+/// perspective image path passes `-ray.dir`, the eye direction of its own pixel, exactly as
+/// the beauty render does (`bounce_body.rs`, `observer`).
+pub(super) fn classify_ray(
+    ctx: &ApertureSampleContext,
+    ray: Ray,
+    observer: Vec3,
+    mut detail: Option<&mut super::image_types::RayDetail>,
+) -> Option<RayClassification> {
     let hit = ctx.stone.intersect(ray);
     let hit_rec = hit?;
 
+    if let Some(d) = detail.as_deref_mut() {
+        d.entry_facet = Some(hit_rec.facet_idx);
+    }
     let hit_point_entry = ray.origin + hit_rec.t * ray.dir;
+    if detail.is_some()
+        && (!hit_rec.t.is_finite() || !hit_point_entry.is_finite() || !hit_rec.normal.is_finite())
+    {
+        if let Some(d) = detail.as_deref_mut() {
+            d.reason = super::image_types::ExtinctionReason::Invalid;
+        }
+        return Some(RayClassification::Invalid);
+    }
     let n_entry = hit_rec.normal;
 
     // Refract from air (1.0) into gemstone (nd) using Snell's Law
     let cos_i = (-ray.dir).dot(n_entry).clamp(0.0, 1.0);
 
-    match trace_wavelength(hit_point_entry, ray.dir, n_entry, cos_i, ctx.stone, ctx.nd) {
+    let mut trace_detail = super::image_types::RayDetail::default();
+    let entry = EntryRay {
+        point: hit_point_entry,
+        dir: ray.dir,
+        normal: n_entry,
+        cos_i,
+        facet: hit_rec.facet_idx,
+    };
+    let fate = trace_entry(
+        entry,
+        ctx.stone,
+        ctx.nd,
+        detail.as_ref().map(|_| &mut trace_detail),
+    );
+    if let Some(d) = detail.as_deref_mut() {
+        d.exit_facet = trace_detail.exit_facet;
+        d.bounces = trace_detail.bounces;
+        d.reason = trace_detail.reason;
+    }
+    if trace_detail.reason == super::image_types::ExtinctionReason::Invalid {
+        return Some(RayClassification::Invalid);
+    }
+    match fate {
         RayFate::EntryBlocked => Some(RayClassification::EntryBlocked),
         RayFate::Leaked => Some(RayClassification::Windowed),
         // The d-line's own exit cosine is deliberately not used as a Fire weight: it
@@ -113,15 +165,18 @@ pub(super) fn classify_aperture_sample(
             let exit_dir = exit_d.dir;
             let transmittance = exit_d.transmittance;
             // Directional Extinction Analysis: head-shadow cone vs. the environment's
-            // light sources (see `ray_is_visibly_returned`).
-            if !ray_is_visibly_returned(exit_dir, ctx.cam_forward, ctx.lighting) {
+            // light sources (see `returned_or_reason`).
+            if let Err(reason) = returned_or_reason(exit_dir, observer, ctx.lighting) {
+                if let Some(d) = detail {
+                    d.reason = reason;
+                }
                 return Some(RayClassification::Extinct);
             }
 
             // The Fire measurement costs two more full traces per returned ray; the sweep
             // and the optimiser never read it, so they switch it off (`want_fire`).
             let fire = if ctx.want_fire {
-                fire_sample(ctx, hit_point_entry, ray.dir, n_entry, cos_i, transmittance)
+                fire_sample(ctx, entry, transmittance)
             } else {
                 None
             };
@@ -143,10 +198,7 @@ pub(super) fn classify_aperture_sample(
 /// any arithmetic the d-line counters depend on. `transmittance` is the d-line trace's.
 fn fire_sample(
     ctx: &ApertureSampleContext,
-    hit_point_entry: Vec3,
-    dir: Vec3,
-    n_entry: Vec3,
-    cos_i: f32,
+    entry: EntryRay,
     transmittance: f32,
 ) -> Option<(f32, f32)> {
     // Fire: replay the same entry point/direction at the hydrogen F-line and
@@ -158,8 +210,8 @@ fn fire_sample(
     // qualifying count (see fire_index below). Considered only if BOTH F-line
     // and C-line companion traces also exit upward -- a ray whose F or C image
     // is lost to TIR or pavilion leakage contributes no Fire sample.
-    let fate_f = trace_wavelength(hit_point_entry, dir, n_entry, cos_i, ctx.stone, ctx.n_f);
-    let fate_c = trace_wavelength(hit_point_entry, dir, n_entry, cos_i, ctx.stone, ctx.n_c);
+    let fate_f = trace_entry(entry, ctx.stone, ctx.n_f, None);
+    let fate_c = trace_entry(entry, ctx.stone, ctx.n_c, None);
     let (RayFate::ExitedUpward(exit_f), RayFate::ExitedUpward(exit_c)) = (fate_f, fate_c) else {
         return None;
     };
@@ -204,4 +256,106 @@ fn fire_sample(
     let radiance_weight = exit_cos_f.max(0.0) * exit_cos_c.max(0.0);
     let weight = energy_weight * radiance_weight;
     Some((angle_deg, weight))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        geometry::{cuts::StandardGemCuts, tool::StoneGeometry},
+        optics::{materials::GemMaterial, raytracer::LightingPreset},
+    };
+    fn signature(value: Option<&RayClassification>) -> (u8, Option<[u32; 4]>) {
+        match value {
+            None => (0, None),
+            Some(RayClassification::EntryBlocked) => (1, None),
+            Some(RayClassification::Windowed) => (2, None),
+            Some(RayClassification::Extinct) => (3, None),
+            Some(RayClassification::Invalid) => (5, None),
+            Some(RayClassification::Returned(r)) => (
+                4,
+                r.fire.map(|(a, w)| {
+                    [
+                        a.to_bits(),
+                        w.to_bits(),
+                        r.transmittance.to_bits(),
+                        r.path_len.to_bits(),
+                    ]
+                }),
+            ),
+        }
+    }
+    /// The legacy fan (`classify_aperture_sample`) judges the head-shadow cone around the
+    /// camera axis. Passing `-ctx.cam_forward` as the observer to the shared `classify_ray`
+    /// reproduces it bit for bit, under a studio rig and under lit models with the default
+    /// and a wide cone, so every metric score of the legacy callers is unchanged by the
+    /// per-pixel observer of the image path.
+    #[test]
+    fn identical_fan_rays_have_identical_class_and_fire_bits() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::diamond();
+        let camera = crate::optics::raytracer::Camera::new(0.6, 0.45, 2.4, 42.0);
+        let mut extinct = 0;
+        let mut returned = 0;
+        for (preset, head_shadow) in [
+            (LightingPreset::RingLights, 16.0),
+            (LightingPreset::LightTent, 16.0),
+            (LightingPreset::LightTent, 30.0),
+            (LightingPreset::IsoHemisphere, 0.0),
+        ] {
+            let prepared = super::super::prepared::PreparedEval::new(
+                StoneGeometry::planes_only(&planes),
+                &material,
+                preset.studio(1.0, 0.85, 0.95).with_head_shadow(head_shadow),
+            )
+            .unwrap();
+            let ctx = ApertureSampleContext {
+                stone: prepared.stone(),
+                nd: prepared.nd,
+                n_f: prepared.n_f,
+                n_c: prepared.n_c,
+                cam_forward: camera.forward,
+                cam_right: camera.right,
+                cam_up: camera.up,
+                fan: prepared.fan,
+                lighting: &prepared.lighting,
+                want_fire: true,
+            };
+            for u in [-0.7, 0.0, 0.4] {
+                for v in [-0.6, 0.0, 0.5] {
+                    for (sub_right, sub_up) in [(0.01, 0.02), (-0.03, 0.0), (0.0, -0.02)] {
+                        let ray = Ray {
+                            origin: ctx.fan.origin(
+                                ctx.cam_forward,
+                                ctx.cam_right,
+                                ctx.cam_up,
+                                u,
+                                v,
+                            ),
+                            dir: (ctx.cam_forward
+                                + sub_right * ctx.cam_right
+                                + sub_up * ctx.cam_up)
+                                .normalize(),
+                        };
+                        let mut detail = super::super::image_types::RayDetail::default();
+                        let legacy = classify_aperture_sample(&ctx, u, v, sub_right, sub_up);
+                        extinct += usize::from(matches!(legacy, Some(RayClassification::Extinct)));
+                        returned +=
+                            usize::from(matches!(legacy, Some(RayClassification::Returned(_))));
+                        assert_eq!(
+                            signature(legacy.as_ref()),
+                            signature(
+                                classify_ray(&ctx, ray, -ctx.cam_forward, Some(&mut detail))
+                                    .as_ref()
+                            )
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            extinct > 0 && returned > 0,
+            "{extinct} extinct, {returned} returned"
+        );
+    }
 }

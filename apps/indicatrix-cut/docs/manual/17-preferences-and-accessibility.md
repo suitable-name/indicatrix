@@ -45,7 +45,9 @@ In the two viewports and their dialogs, Simple mode hides the **Tilt Curve** and
 **Save Lighting** buttons; in the Parameters dock's Render & Output tab, Library
 Thumbnails (Preview Image Size and Preview Samples), Motion Preview Resolution, the
 Compute section (Live Compute with its live transfer, Local Compute), Max Ray Bounces
-and the Tilt Performance Curve panel (Chapter 2); in the Stone tab, the RI Override;
+and the Tilt Performance Curve panel (Chapter 2); the two Library Thumbnails sliders
+also appear as Picture Quality in the preview question, in both modes (Chapter 2); in
+the Stone tab, the RI Override;
 and in the tilt video export, Max Ray Bounces, Color Space, Transfer and the
 folder-name template (Chapter 14). A hidden setting keeps its value and still
 applies. When one of the hidden render settings is not at its default, the tab says
@@ -98,9 +100,18 @@ keeps working exactly as before.
 
 ## Denoise Live View
 
-Preferences has a **Denoise Live View** switch (on by default) that smooths the grain
-out of the live picture while it builds up; it is the same switch as **Denoise Merged
-Image** in the remote worker dialog (Chapter 10), so changing one changes the other.
+The Advanced **Render & Output** tab also has **Ray-Traced View** settings:
+Anti-Aliasing (Off, 4×, 8×, 16×) and Fire. They are saved independently from the
+Path-Traced target samples. Ray-Traced finishes after its fixed taps and bypasses
+the live denoiser. Its approximation note lists the omitted optical effects.
+The selected viewport mode is saved but startup still opens Solid in both viewports.
+
+The **Denoise Live View** switch (on by default) is not in the Preferences dialog: it
+sits in the Parameters dock's Render & Output tab. It smooths the grain out of the
+live picture while it builds up, and it is the same switch as **Denoise Merged Image**
+in the remote worker dialog (Chapter 10), so changing one changes the other. It is
+saved with your settings like the choices above (`denoise_enabled` in
+[settings.md](../settings.md)).
 
 ## Interface Scale
 

@@ -75,7 +75,9 @@ mod solid_sink;
 // Several of its items are used well beyond startup (e.g. by callbacks that need the
 // same index<->value mapping later), so this module re-exports them flatly below
 // rather than requiring every caller to spell out `gui::startup_settings::`.
+mod startup_ray;
 mod startup_settings;
+pub(crate) mod view_modes;
 // A design file named on the command line (an OS double-click association starts the
 // program with it as the argument) -- see the module's own doc comment.
 pub mod startup_file;

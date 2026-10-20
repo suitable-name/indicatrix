@@ -4,7 +4,7 @@
 
 use glam::Vec3;
 
-use super::lighting::ExitLighting;
+use super::{image_types::ExtinctionReason, lighting::ExitLighting};
 use crate::optics::raytracer::DEFAULT_HEAD_SHADOW_DEG;
 
 /// Cosine of the half-angle of the observer's head-shadow cone at the default size (16
@@ -45,6 +45,29 @@ pub(super) fn head_shadow_cone_cos(studio_rig: bool, head_shadow_deg: f32) -> f3
     (head_shadow_deg.clamp(1.0, 89.0).to_radians() + offset).cos()
 }
 
+/// Why a ray that exited the gem in direction `exit_dir` is not visibly returned to an
+/// observer whose eye lies in unit direction `observer` from the stone (the reverse of the
+/// viewing ray, as in the beauty render), or `Ok` when it is. Not returned means lost to
+/// the observer's own head-shadow cone around `observer`
+/// ([`ExtinctionReason::ObserverShadow`]) or not looking at a light source of `lighting`
+/// ([`ExtinctionReason::InsufficientIllumination`]). The single definition behind both the
+/// bucketing and the per-pixel reason, so the two cannot drift apart.
+pub(super) fn returned_or_reason(
+    exit_dir: Vec3,
+    observer: Vec3,
+    lighting: &ExitLighting<'_>,
+) -> Result<(), ExtinctionReason> {
+    // `exit_dir . observer` is bit for bit `(-exit_dir) . (-observer)`: negating every
+    // component flips the sign of each product and of their sum, exactly.
+    if exit_dir.dot(observer) > lighting.head_shadow_cos() {
+        Err(ExtinctionReason::ObserverShadow)
+    } else if lighting.is_illuminated(exit_dir) {
+        Ok(())
+    } else {
+        Err(ExtinctionReason::InsufficientIllumination)
+    }
+}
+
 /// Whether a ray that exited the gem in direction `exit_dir` is visibly returned to an
 /// observer at `cam_forward` -- not lost to the observer's own head-shadow, and looking at
 /// a light source of `lighting` (the radiance the tracer lights the image with, see
@@ -57,8 +80,7 @@ pub(super) fn ray_is_visibly_returned(
     cam_forward: Vec3,
     lighting: &ExitLighting<'_>,
 ) -> bool {
-    let is_head_shadow = (-exit_dir).dot(cam_forward) > lighting.head_shadow_cos();
-    !is_head_shadow && lighting.is_illuminated(exit_dir)
+    returned_or_reason(exit_dir, -cam_forward, lighting).is_ok()
 }
 
 #[cfg(test)]
@@ -99,6 +121,79 @@ mod tests {
         assert!((above - 0.96).abs() < 1e-4, "{above}");
         // Monotone: a larger size is a larger cone, a smaller cosine.
         assert!(above < below);
+    }
+
+    /// A lit model whose cone is 30 degrees: an exit pointing straight back at the eye is
+    /// shadowed, the same exit judged against an eye 60 degrees away is not.
+    #[test]
+    fn the_cone_is_centred_on_the_observer_passed_in() {
+        use crate::optics::raytracer::LightingPreset;
+        let lighting = ExitLighting::new(
+            LightingPreset::IsoHemisphere
+                .studio(1.0, 0.85, 0.95)
+                .with_head_shadow(30.0),
+        );
+        let exit_dir = Vec3::new(0.1, 0.9, 0.2).normalize();
+        // The eye lies straight along the exit direction; the viewing ray is its reverse.
+        let towards_eye = exit_dir;
+        assert_eq!(
+            returned_or_reason(exit_dir, towards_eye, &lighting),
+            Err(ExtinctionReason::ObserverShadow)
+        );
+        assert!(!ray_is_visibly_returned(exit_dir, -towards_eye, &lighting));
+        // Rotate the eye 60 degrees away from the exit direction (about an axis
+        // perpendicular to it): clearly outside the cone, whose edge sits just above 30.
+        let axis = exit_dir.cross(Vec3::X).normalize();
+        let far_observer = glam::Quat::from_axis_angle(axis, 60.0f32.to_radians()) * towards_eye;
+        assert_ne!(
+            returned_or_reason(exit_dir, far_observer, &lighting),
+            Err(ExtinctionReason::ObserverShadow)
+        );
+    }
+
+    /// The helper decides exactly as the pre-refactor expression did, for every direction
+    /// of a grid and every lighting family: the legacy callers' scores stay bit-identical.
+    #[test]
+    fn the_shared_helper_matches_the_original_predicate_bitwise() {
+        use crate::optics::raytracer::LightingPreset;
+        let observer = Vec3::new(0.2, -0.9, 0.35).normalize();
+        for preset in [
+            LightingPreset::RingLights,
+            LightingPreset::LightTent,
+            LightingPreset::IsoHemisphere,
+        ] {
+            for deg in [0.0, 16.0, 30.0] {
+                let lighting =
+                    ExitLighting::new(preset.studio(1.0, 0.85, 0.95).with_head_shadow(deg));
+                for i in 0..24 {
+                    for j in 0..12 {
+                        let azimuth = i as f32 * std::f32::consts::TAU / 24.0;
+                        let y = (j as f32 + 0.5) / 12.0;
+                        let r = y.mul_add(-y, 1.0).sqrt();
+                        let exit_dir = Vec3::new(r * azimuth.cos(), y, r * azimuth.sin());
+                        assert_eq!(
+                            exit_dir.dot(-observer).to_bits(),
+                            (-exit_dir).dot(observer).to_bits(),
+                            "the eye-side dot is bit for bit the legacy one"
+                        );
+                        // `!(a > b)`, written so that a NaN still counts as "not shadowed".
+                        let original = (-exit_dir)
+                            .dot(observer)
+                            .partial_cmp(&lighting.head_shadow_cos())
+                            != Some(std::cmp::Ordering::Greater)
+                            && lighting.is_illuminated(exit_dir);
+                        assert_eq!(
+                            ray_is_visibly_returned(exit_dir, observer, &lighting),
+                            original
+                        );
+                        assert_eq!(
+                            returned_or_reason(exit_dir, -observer, &lighting).is_ok(),
+                            original
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

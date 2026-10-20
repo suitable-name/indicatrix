@@ -121,13 +121,15 @@ export component LightTab inherits PageScroll {
 
     SettingBlock {
         title: "Backdrop";
-        info-body: "Backdrop: what the camera sees behind the stone. As Lit: the lighting's own ground. Grey: a neutral grey card, for like-for-like comparisons. White: a light box. The stone's optics never see the card, so light leaking out of the back stays dark.";
+        info-body: "Backdrop: the surface the stone lies on, lit by the lighting and seen both around the stone and through its windows. As Lit: the lighting's own ground (for the Grading Tray, nothing below the girdle, so windows look black). Black: velvet, 2% reflectance. Grey: an 18% grey card. White: paper, 90% reflectance. Under a ring light a white tray is very bright; lower the exposure or pick Black.";
 
+        // Shown as As Lit, Black, Grey, White; the stored indices stay 0 as lit, 1 grey,
+        // 2 white, 3 black, so the control's position maps to them here.
         Segmented {
-            options: ["As Lit", "Grey", "White"];
-            current: PropsModel.backdrop;
-            selected(index) => {
-                PropsModel.backdrop-picked(index);
+            options: ["As Lit", "Black", "Grey", "White"];
+            current: PropsModel.backdrop == 0 ? 0 : (PropsModel.backdrop == 3 ? 1 : (PropsModel.backdrop == 1 ? 2 : 3));
+            selected(position) => {
+                PropsModel.backdrop-picked(position == 0 ? 0 : (position == 1 ? 3 : (position == 2 ? 1 : 2)));
             }
         }
     }

@@ -47,6 +47,19 @@ pub struct Tree {
     pub slabs: Vec<Slab>,
 }
 
+impl Tree {
+    /// The number of pieces (leaves) of the whole tree: the stones of the layout built from it
+    /// when every piece holds one.
+    #[must_use]
+    pub fn leaf_count(&self) -> usize {
+        self.slabs
+            .iter()
+            .flat_map(|slab| &slab.bars)
+            .map(|bar| bar.leaves.len())
+            .sum()
+    }
+}
+
 /// Place `(stage 1, stage 2, stage 3)` values onto canonical `[x, y, z]`.
 pub const fn to_canonical(order: [usize; 3], v: [f64; 3]) -> [f64; 3] {
     let mut out = [0.0; 3];

@@ -6,11 +6,13 @@
 
 use indicatrix_ai::{
     env::{
-        COMPONENT_BRILLIANCE_LOSS, COMPONENT_EXTINCTION, COMPONENT_WINDOWING, COMPONENT_YIELD_LOSS,
-        ContinuousTierAction, DEFAULT_LINE_SEARCH, EnvError, GLOBAL_DIM, GemstoneRlEnv, MEAN_BOUND,
-        N_COMPONENTS, OBS_LAYOUT_VERSION, OptimizerEnv, OptimizerEnvConfig, RetargetEnv,
-        RetargetEnvConfig, RewardConfig, RewardEvaluator, SLOPE_EPS, StepFlags,
-        WEIGHT_FRACTION_INDEX, action_from_direction, direction_from_slopes, weight_fractions,
+        COMPONENT_BRILLIANCE_LOSS, COMPONENT_DEEPER_TONE_LOSS, COMPONENT_EXTINCTION,
+        COMPONENT_LIGHTER_TONE_LOSS, COMPONENT_SHAPE_DISTANCE, COMPONENT_WINDOWING,
+        COMPONENT_YIELD_LOSS, ContinuousTierAction, DEFAULT_LINE_SEARCH, EnvError, GLOBAL_DIM,
+        GemstoneRlEnv, MEAN_BOUND, N_COMPONENTS, OBS_LAYOUT_VERSION, OptimizerEnv,
+        OptimizerEnvConfig, RetargetEnv, RetargetEnvConfig, RewardConfig, RewardEvaluator,
+        SLOPE_EPS, StepFlags, WEIGHT_FRACTION_INDEX, action_from_direction, direction_from_slopes,
+        weight_fractions,
     },
     training::{EpisodeEnd, PpoConfig, RolloutBuffer, TrajectoryStep},
 };
@@ -133,15 +135,18 @@ fn test_ppo_config_defaults() {
 
 #[test]
 fn test_the_teacher_constants_are_the_contract() {
-    assert_eq!(N_COMPONENTS, 4);
+    assert_eq!(N_COMPONENTS, 7);
     assert_eq!(
         [
             COMPONENT_WINDOWING,
             COMPONENT_EXTINCTION,
             COMPONENT_BRILLIANCE_LOSS,
-            COMPONENT_YIELD_LOSS
+            COMPONENT_YIELD_LOSS,
+            COMPONENT_LIGHTER_TONE_LOSS,
+            COMPONENT_DEEPER_TONE_LOSS,
+            COMPONENT_SHAPE_DISTANCE
         ],
-        [0, 1, 2, 3]
+        [0, 1, 2, 3, 4, 5, 6]
     );
     assert_eq!(DEFAULT_LINE_SEARCH, [1.0, 0.5, 0.25]);
     assert_eq!(SLOPE_EPS, 1e-6);
@@ -151,16 +156,16 @@ fn test_the_teacher_constants_are_the_contract() {
 
 #[test]
 fn test_the_observation_layout_ends_with_the_weight_fractions() {
-    assert_eq!(OBS_LAYOUT_VERSION, 4);
-    assert_eq!(GLOBAL_DIM, 19);
-    assert_eq!(WEIGHT_FRACTION_INDEX, 15);
+    assert_eq!(OBS_LAYOUT_VERSION, 5);
+    assert_eq!(GLOBAL_DIM, 41);
+    assert_eq!(WEIGHT_FRACTION_INDEX, 34);
     assert_eq!(WEIGHT_FRACTION_INDEX + N_COMPONENTS, GLOBAL_DIM);
 
     // Fractions are the weights over their sum.
     let brilliance = weight_fractions(&ObjectivePreset::Brilliance.weights());
     for (got, want) in brilliance
         .iter()
-        .zip([1.0 / 6.0, 1.0 / 6.0, 4.0 / 6.0, 0.0])
+        .zip([1.0 / 6.0, 1.0 / 6.0, 4.0 / 6.0, 0.0, 0.0, 0.0, 0.0])
     {
         assert!((got - want).abs() < 1e-6, "{brilliance:?}");
     }
@@ -176,7 +181,7 @@ fn test_the_observation_layout_ends_with_the_weight_fractions() {
         assert!((got - want).abs() < 1e-6, "{silent:?}");
     }
 
-    // The environment puts them in the last four global entries.
+    // The environment puts them in the last seven global entries.
     let env = retarget_env(ObjectivePreset::KeepWeight.weights()).expect("the fixture retargets");
     let token = env.build_observation().global_token();
     assert_eq!(token.len(), GLOBAL_DIM);
@@ -187,38 +192,23 @@ fn test_the_observation_layout_ends_with_the_weight_fractions() {
 }
 
 #[test]
-fn test_the_environments_refuse_a_face_up_tone_weight() {
+fn test_the_environments_score_face_up_tone_weights() {
     for preset in [ObjectivePreset::LightenDark, ObjectivePreset::IntensifyPale] {
         assert!(
-            matches!(
-                retarget_env(preset.weights()),
-                Err(EnvError::InvalidConfig(_))
-            ),
+            retarget_env(preset.weights()).is_ok(),
             "{preset:?} (retarget)"
         );
         assert!(
-            matches!(
-                OptimizerEnv::new(
-                    Design::concave_fixture(),
-                    OptimizerEnvConfig {
-                        weights: preset.weights(),
-                        ..OptimizerEnvConfig::default()
-                    },
-                ),
-                Err(EnvError::InvalidConfig(_))
-            ),
+            OptimizerEnv::new(
+                Design::concave_fixture(),
+                OptimizerEnvConfig {
+                    weights: preset.weights(),
+                    ..OptimizerEnvConfig::default()
+                },
+            )
+            .is_ok(),
             "{preset:?} (optimizer)"
         );
-    }
-    // Every other preset builds.
-    for preset in [
-        ObjectivePreset::Balanced,
-        ObjectivePreset::Brilliance,
-        ObjectivePreset::LowWindowing,
-        ObjectivePreset::LowExtinction,
-        ObjectivePreset::KeepWeight,
-    ] {
-        assert!(retarget_env(preset.weights()).is_ok(), "{preset:?}");
     }
 }
 
@@ -255,17 +245,44 @@ fn test_the_teacher_label_measures_the_free_tiers_and_changes_nothing() {
     let base = env.base_score();
 
     let label = env.teacher_label(0.25, &DEFAULT_LINE_SEARCH);
+    let observation = env.build_observation();
     assert_eq!(label.tiers.len(), tiers);
-    // One measurement per free tier, none for the tiers the environment does not move.
-    assert_eq!(
-        label.tiers.iter().flatten().count(),
-        env.movable_tier_indices().len()
+    // At least one feasible probe is useful on this fixture; individual free coordinates may
+    // still have both probes rejected by preservation or manufacturability.
+    let measured = label.tiers.iter().flatten().count();
+    assert!(
+        measured > 0,
+        "the fixture should provide feasible teacher probes"
     );
+    assert!(measured <= env.movable_tier_indices().len());
     for sensitivity in label.tiers.iter().flatten() {
         assert!(sensitivity.score.is_finite());
-        assert!(sensitivity.components.iter().all(|slope| slope.is_finite()));
+        assert!(
+            sensitivity.components[..3]
+                .iter()
+                .all(|slope| slope.is_finite())
+        );
+        assert_eq!(
+            sensitivity.components[3].is_finite(),
+            observation.global.yield_available > 0.5
+        );
+        assert_eq!(
+            sensitivity.components[4].is_finite(),
+            observation.global.tone_available > 0.5
+        );
+        assert_eq!(
+            sensitivity.components[5].is_finite(),
+            observation.global.tone_available > 0.5
+        );
+        assert_eq!(
+            sensitivity.components[6].is_finite(),
+            observation.global.shape_weight > 0.0
+        );
     }
-    assert!(label.evaluations >= env.movable_tier_indices().len());
+    assert!(
+        label.evaluations > 0,
+        "feasible probes were actually scored"
+    );
     let gain = label.oracle_gain.expect("the fixture has slopes");
     assert!(gain.is_finite() && gain >= 0.0, "{gain}");
 

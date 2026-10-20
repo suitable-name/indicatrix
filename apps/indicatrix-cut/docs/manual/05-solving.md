@@ -37,11 +37,9 @@ numbers that might no longer be true.
 
 ## Auto-Solve: Skipping the Click on Small and Medium Designs
 
-The auto-solve control next to the Solve button (Off / 150ms / 300ms /
-1s / 3s) lets small and medium designs skip the manual Solve click
-entirely. It carries no caption of its own on screen -- only a hover hint
--- so if you have not read this section, it is easy to walk past without
-knowing what it does. After any edit, if this design's *last measured*
+The **Auto-Solve:** drop-down next to the Solve button (Off / 150 ms / 300 ms /
+1 s / 3 s) lets small and medium designs skip the manual Solve click
+entirely. Its hover hint explains it in one sentence. After any edit, if this design's *last measured*
 solve took less
 than the selected budget, a fresh solve is scheduled automatically — after
 a short pause (so a burst of keystrokes only triggers one solve, not one
@@ -181,7 +179,7 @@ only where a safe tool exists:
 | An index position sits between gear teeth. | **Snap to teeth** | Rounds each such position to the nearest tooth (positions that become the same tooth merge). |
 | Facets of a tier are cut away entirely by later tiers. | **Remove** | After a confirmation: removes only the cut-away facets from the tier, or the whole tier when all of them are gone. It first checks that the finished stone is unchanged. |
 | A tier meets a tier that is cut later. | **Move later** | Moves the tier to just after the last tier it meets, so the schedule is cut in a workable order. |
-| A pavilion facet is below the critical angle (windowing). | **Steepen** | Turns the facet about its girdle-side edge to the critical angle plus 2 degrees, so the girdle stays where it is. It is checked with the same gate Retarget uses and refused when the result would not be a valid stone. |
+| A pavilion facet is below the critical angle (windowing). | **Steepen** | Turns the facet about its girdle corners to the critical angle plus 2 degrees, so the girdle outline stays where it is. It is checked with the same gate Retarget uses and refused when the result would not be a valid stone. |
 | The crown has no table. | **Add a table** | Adds a flat top at 0 degrees, using the quick-add height when that keeps every crown facet, otherwise the nearest height that does. |
 
 A Fix is **one undo step**: a single Ctrl+Z puts everything back, and a
@@ -217,7 +215,7 @@ tighten once enough real stones have been compared.
 ## Abandon Solve
 
 While a solve is running in the background, the Solve button's row shows
-an **Abandon** button. Clicking it stops the solver within a sweep
+an **Abandon Solve** button. Clicking it stops the solver within a sweep
 or pipeline run — typically a few milliseconds, on the order of 1 ms —
 not just discard the eventual answer client-side: `dispatch_background_solve`
 threads a `SolveControl::with_cancel` through `Design::solve_with`, the

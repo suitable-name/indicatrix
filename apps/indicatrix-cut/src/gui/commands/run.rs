@@ -147,16 +147,18 @@ pub fn optimize(ui: &MainWindow) {
     );
 }
 
-/// Sets the Edit view's viewport mode (0 Solid, 1 Path-traced, 2 Both, 3 Diagram).
+/// Sets the Edit view's viewport mode (0 Solid, 1 Path-Traced, 2 Both, 3 Diagram, 4 Ray-Traced).
 pub fn set_solid_view_mode(ui: &MainWindow, mode: i32) {
     show_edit_view(ui);
-    ui.global::<SolidPreviewModel>().set_view_mode(mode);
+    ui.global::<SolidPreviewModel>()
+        .set_view_mode(crate::gui::view_modes::EditViewMode::from_raw(mode).raw());
 }
 
-/// Sets the Live Render view's mode (0 Solid, 1 Path-traced).
+/// Sets the Live Render view's mode (0 Solid, 1 Path-Traced, 2 Ray-Traced).
 pub fn set_live_view_mode(ui: &MainWindow, mode: i32) {
     show_live_render_view(ui);
-    ui.global::<ViewportModel>().set_live_view_mode(mode);
+    ui.global::<ViewportModel>()
+        .set_live_view_mode(crate::gui::view_modes::LiveViewMode::from_raw(mode).raw());
 }
 
 /// Turns the Solid viewport's Slice tool on or off, like its pill and the S key.

@@ -400,7 +400,16 @@ fn the_backdrop_and_the_rig_decide_which_sliders_apply() {
     let view = lighting_view(&state);
     assert_eq!(view.backdrop_index, 2);
     assert_eq!(backdrop_from_index(view.backdrop_index), Backdrop::White);
-    assert_eq!(backdrop_from_index(99), Backdrop::Grey);
+    assert_eq!(backdrop_from_index(99), Backdrop::White);
+    assert_eq!(backdrop_from_index(1), Backdrop::Grey);
+    for backdrop in [
+        Backdrop::AsLit,
+        Backdrop::Grey,
+        Backdrop::White,
+        Backdrop::Black,
+    ] {
+        assert_eq!(backdrop_from_index(backdrop_index(backdrop)), backdrop);
+    }
 
     assert!(view.uses_light_direction);
     assert!(view.uses_head_shadow, "the light tent is a lit model");

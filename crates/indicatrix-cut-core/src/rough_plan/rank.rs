@@ -9,6 +9,10 @@
 //! per-set limit of every ranked list (per cut order, per pass and final), so a
 //! selection that uses a single design shows at most three layouts however many
 //! stone counts are feasible.
+//!
+//! Every ranked list keeps only the layouts within the planner's [`LayoutCaps`] (the design
+//! cap and the stone cap): the `_within` functions take both, the `_capped` ones the design
+//! cap alone and the plain ones neither.
 
 use std::{
     borrow::Borrow,
@@ -18,7 +22,7 @@ use std::{
 
 use super::{
     SAME_SET_CAP,
-    types::{CandidateDesign, LayoutGroup, RoughLayout},
+    types::{CandidateDesign, LayoutCaps, LayoutGroup, RoughLayout},
 };
 
 /// Two volumes at most this far apart, relative to the larger, count as equal (2^-32).
@@ -65,32 +69,43 @@ pub fn as_layout<L: Borrow<RoughLayout>>(handle: &L) -> &RoughLayout {
 /// float noise below the tolerance. Volumes that straddle a group edge are ranked by volume.
 #[must_use]
 pub fn rank_indices<L: Borrow<RoughLayout>>(candidates: &[L], limit: usize) -> Vec<usize> {
-    rank_indices_capped(candidates, limit, usize::MAX)
+    rank_indices_within(candidates, limit, LayoutCaps::NONE)
 }
 
 /// [`rank_indices`] over the candidates that use at most `max_designs` different designs.
 ///
-/// This is the ONE place the planner's design cap is applied to a ranked list. Layouts above
-/// it are dropped before sorting, dedup and the per-set cap, so every slot goes to a
-/// qualifying layout. `usize::MAX` is exactly [`rank_indices`] (empty layouts are skipped
-/// either way).
+/// The design cap alone, any number of stones: [`rank_indices_within`] with
+/// [`LayoutCaps::designs_only`]. `usize::MAX` is exactly [`rank_indices`] (empty layouts are
+/// skipped either way).
 #[must_use]
 pub fn rank_indices_capped<L: Borrow<RoughLayout>>(
     candidates: &[L],
     limit: usize,
     max_designs: usize,
 ) -> Vec<usize> {
-    let max_designs = max_designs.max(1);
+    rank_indices_within(candidates, limit, LayoutCaps::designs_only(max_designs))
+}
+
+/// [`rank_indices`] over the candidates `caps` admits: at most `caps.max_designs` different
+/// designs and at most `caps.max_stones` stones.
+///
+/// This is the ONE place the planner's design cap and stone cap are applied to a ranked list.
+/// Layouts above either are dropped before sorting, dedup and the per-set cap, so every slot
+/// goes to a qualifying layout: it is the ranking over the capped candidate set.
+/// [`LayoutCaps::NONE`] is exactly [`rank_indices`] (empty layouts are skipped either way).
+#[must_use]
+pub fn rank_indices_within<L: Borrow<RoughLayout>>(
+    candidates: &[L],
+    limit: usize,
+    caps: LayoutCaps,
+) -> Vec<usize> {
     let comps: Vec<Vec<(i64, usize)>> = candidates
         .iter()
         .map(|c| as_layout(c).composition())
         .collect();
     let volume = |i: usize| as_layout(&candidates[i]).total_volume_mm3;
     let mut order: Vec<usize> = (0..candidates.len())
-        .filter(|&i| {
-            let layout = as_layout(&candidates[i]);
-            !layout.stones.is_empty() && layout.design_count() <= max_designs
-        })
+        .filter(|&i| caps.admits(as_layout(&candidates[i])))
         .collect();
     order.sort_by(|&i, &j| volume(j).total_cmp(&volume(i)).then(i.cmp(&j)));
     let mut start = 0;
@@ -141,7 +156,7 @@ pub fn rank_indices_capped<L: Borrow<RoughLayout>>(
 /// per-set cap drops the rest: a list that uses one design never has more than three.
 #[must_use]
 pub fn merge_and_rank(candidates: Vec<RoughLayout>, limit: usize) -> Vec<RoughLayout> {
-    merge_and_rank_capped(candidates, limit, usize::MAX)
+    merge_and_rank_within(candidates, limit, LayoutCaps::NONE)
 }
 
 /// [`merge_and_rank`] keeping only layouts of at most `max_designs` different designs (see
@@ -152,7 +167,18 @@ pub fn merge_and_rank_capped(
     limit: usize,
     max_designs: usize,
 ) -> Vec<RoughLayout> {
-    let keep = rank_indices_capped(&candidates, limit, max_designs);
+    merge_and_rank_within(candidates, limit, LayoutCaps::designs_only(max_designs))
+}
+
+/// [`merge_and_rank`] keeping only the layouts `caps` admits: its design cap and its stone
+/// cap (see [`rank_indices_within`]).
+#[must_use]
+pub fn merge_and_rank_within(
+    candidates: Vec<RoughLayout>,
+    limit: usize,
+    caps: LayoutCaps,
+) -> Vec<RoughLayout> {
+    let keep = rank_indices_within(&candidates, limit, caps);
     take_indices(candidates, &keep)
 }
 

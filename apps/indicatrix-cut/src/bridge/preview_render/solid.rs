@@ -5,11 +5,12 @@
 use super::{PREVIEW_DISTANCE, PREVIEW_YAW, PreviewView, encode_png};
 use glam::Vec3;
 use indicatrix::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::ToolPrimitive},
     optics::raytracer::{Camera, DEFAULT_FOV_DEG},
 };
 use indicatrix_solid::{
     mesh_cache::MeshCache,
+    preview::StoneGeometryBuf,
     raster::{SolidRasterizer, SolidStyle},
 };
 
@@ -19,22 +20,51 @@ use indicatrix_solid::{
 ///
 /// Uses the same camera as [`super::render_view`], so a solid picture and the traced one
 /// that replaces it frame the stone identically. CPU only; it never touches the GPU.
+///
+/// Production draws every solid stand-in through [`render_view_solid_with_tools`] (the batch
+/// preview passes the design's concave tools); this planar entry is the reference the tests
+/// compare it against, so it exists only in test builds.
+#[cfg(test)]
 #[must_use]
 pub fn render_view_solid(
     planes: &[GpuFacetPlane],
     size: u32,
     view: PreviewView,
 ) -> Option<Vec<u8>> {
+    render_view_solid_with_tools(planes, &[], size, view)
+}
+
+/// The solid picture of the stone `planes` minus the concave `tools` (the grooves and
+/// dimples the traced preview that replaces this picture shows). With no tools this is
+/// the planar picture.
+#[must_use]
+pub fn render_view_solid_with_tools(
+    planes: &[GpuFacetPlane],
+    tools: &[ToolPrimitive],
+    size: u32,
+    view: PreviewView,
+) -> Option<Vec<u8>> {
     if size == 0 {
         return None;
     }
-    // `GpuFacetPlane` is `n . x + d <= 0`; the mesh cache takes `n . x <= m`.
-    let half_spaces: Vec<(Vec3, f32)> = planes
-        .iter()
-        .map(|plane| (Vec3::from(plane.normal), -plane.d))
-        .collect();
     let mut cache = MeshCache::default();
-    let mesh = cache.get_or_build(&half_spaces)?;
+    let mesh = if tools.is_empty() {
+        // `GpuFacetPlane` is `n . x + d <= 0`; the mesh cache takes `n . x <= m`.
+        let half_spaces: Vec<(Vec3, f32)> = planes
+            .iter()
+            .map(|plane| (Vec3::from(plane.normal), -plane.d))
+            .collect();
+        cache.get_or_build(&half_spaces)?
+    } else {
+        cache.get_or_build_geometry(&StoneGeometryBuf {
+            planes: planes.to_vec(),
+            tools: tools.to_vec(),
+            // Bookkeeping for the facet map and the hover text; the picture needs neither.
+            placements: Vec::new(),
+            // The solid picture is flat shaded: no finish shows.
+            frosted: Vec::new(),
+        })?
+    };
     let camera = Camera::new(PREVIEW_YAW, view.pitch(), PREVIEW_DISTANCE, DEFAULT_FOV_DEG);
     let style = SolidStyle {
         background: [0, 0, 0, 255],
@@ -72,6 +102,15 @@ mod tests {
         assert!(
             decoded.pixels().any(|p| p.0[..3] != [0, 0, 0]),
             "something other than the background was painted"
+        );
+    }
+
+    /// With no tools the tool-aware entry is the planar picture, byte for byte.
+    #[test]
+    fn no_tools_draw_the_planar_picture() {
+        assert_eq!(
+            render_view_solid_with_tools(&cube(), &[], 40, PreviewView::Front),
+            render_view_solid(&cube(), 40, PreviewView::Front)
         );
     }
 

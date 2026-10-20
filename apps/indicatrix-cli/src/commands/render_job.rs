@@ -188,7 +188,24 @@ const fn failure_code(kind: FailureKind) -> i32 {
 pub fn run(args: &RenderJobArgs, progress: &mut dyn Write, terminal: bool) -> CommandResult {
     let text = std::fs::read_to_string(&args.job)
         .map_err(|e| CliError::io(format!("cannot read {}: {e}", args.job.display())))?;
-    let job = codec::from_text(&text).map_err(|e| CliError::design(e.to_string()))?;
+    let mut job = codec::from_text(&text).map_err(|e| CliError::design(e.to_string()))?;
+    if let Some(engine) = args.engine {
+        job.engine.engine = engine;
+        job.format = indicatrix_render_jobs::job::format_for_engine(job.engine);
+        job.scene.engine = job.engine;
+        if job.engine.is_ray() {
+            let taps = job.engine.target_samples(1);
+            match &mut job.kind {
+                JobKind::Still(still) => still.samples_per_pixel = taps,
+                JobKind::TiltVideo(video) => video.samples_per_pixel = taps,
+            }
+            if job.optical_diagnostics.is_some() {
+                return Err(CliError::design(
+                    "Optical diagnostics require --engine path.",
+                ));
+            }
+        }
+    }
     check_kind(args.kind, &job)?;
 
     let remote = match (&args.remote, &args.cert_dir) {
@@ -250,12 +267,13 @@ mod tests {
     use indicatrix_net::{SceneState, scene::SceneEnvironment};
     use indicatrix_render_jobs::{
         ComputeChoice, JobColorSpace, StillJob, TiltVideoJob, TransferChoice,
-        job::{DesignInfo, JOB_FORMAT_VERSION, JobCompute, OverlaySelection},
+        job::{DesignInfo, JobCompute, OverlaySelection},
     };
 
     /// The smallest scene a job accepts: a round brilliant, 16 by 16, four bounces.
     fn tiny_scene() -> SceneState {
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 16,
             height: 16,
             yaw: 0.4,
@@ -275,17 +293,21 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 
     fn job_with(output: &Path, kind: JobKind) -> RenderJobFile {
         RenderJobFile {
-            format: JOB_FORMAT_VERSION,
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
+            optical_diagnostics: None,
+            format: 1,
             token: "9f2c4a7d1e0b48c3a65d2f71c8e4b903".to_string(),
             label: "Test job".to_string(),
             created_at: 1_791_302_580,
             design: DesignInfo::default(),
             scene: tiny_scene(),
+            scene_backdrop_model: indicatrix_render_jobs::job::BACKDROP_MODEL_TRAY,
             hdr: None,
             compute: JobCompute {
                 target: ComputeChoice::Local,

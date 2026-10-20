@@ -32,7 +32,7 @@
         height: 100%;
       }
     </style>
-  <link rel="modulepreload" href="/indicatrix-web-a6e560cbf72e2bfd.js" crossorigin="anonymous"><link rel="preload" href="/indicatrix-web-a6e560cbf72e2bfd_bg.wasm" crossorigin="anonymous" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/indicatrix-web-cd78e66537c517d0.js" crossorigin="anonymous"><link rel="preload" href="/indicatrix-web-cd78e66537c517d0_bg.wasm" crossorigin="anonymous" as="fetch" type="application/wasm"></head>
   <body>
     <!--
       `id="canvas"` is REQUIRED and is not a convention of this page's own: Slint's winit
@@ -65,8 +65,8 @@
     -->
     
 <script type="module">
-import init, * as bindings from '/indicatrix-web-a6e560cbf72e2bfd.js';
-const wasm = await init({ module_or_path: '/indicatrix-web-a6e560cbf72e2bfd_bg.wasm' });
+import init, * as bindings from '/indicatrix-web-cd78e66537c517d0.js';
+const wasm = await init({ module_or_path: '/indicatrix-web-cd78e66537c517d0_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -93,6 +93,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       `[profile.indicatrix-web-release]` instead, and wasm-opt level `3`: the Worker is the
       compute-bound module, so speed wins over the last few percent of size.
     -->
+    
     
   </body>
 </html>

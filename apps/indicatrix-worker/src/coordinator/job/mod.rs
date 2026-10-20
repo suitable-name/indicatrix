@@ -473,7 +473,11 @@ pub fn serve_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
         write_error(
             stream,
             ErrorMsg {
-                code: error_codes::VALIDATION_FAILED,
+                code: if request.scene.engine.is_ray() {
+                    error_codes::UNSUPPORTED_REQUEST
+                } else {
+                    error_codes::VALIDATION_FAILED
+                },
                 message,
                 request_id: Some(request.request_id),
             },
@@ -536,7 +540,11 @@ pub fn serve_final_image<S: Read + Write + TimeoutRead + TimeoutWrite>(
         write_error(
             stream,
             ErrorMsg {
-                code: error_codes::VALIDATION_FAILED,
+                code: if request.scene.engine.is_ray() {
+                    error_codes::UNSUPPORTED_REQUEST
+                } else {
+                    error_codes::VALIDATION_FAILED
+                },
                 message,
                 request_id: Some(request.request_id),
             },

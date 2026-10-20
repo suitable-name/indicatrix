@@ -2,9 +2,9 @@
 //! of the pose on screen, as the desktop's HUD shows them.
 //!
 //! [`scene_changed`] is called by the live render sync (`crate::render`) with the scene it
-//! would render. Two scenes with equal `MetricsParams` (planes, material with its
-//! render-time overrides, camera yaw/pitch, light yaw/pitch, preset and HDR map id) need
-//! no new numbers, so exposure, size, bounces and finishes never recompute anything.
+//! would render and the concave tools cut out of it. Two scenes with equal `MetricsJob`s
+//! (`MetricsParams`: planes, material with its render-time overrides, camera yaw/pitch,
+//! light yaw/pitch, preset and HDR map id; plus the tools) need no new numbers, so exposure, size, bounces and finishes never recompute anything.
 //!
 //! # Under the HDR map
 //!
@@ -18,10 +18,11 @@
 
 use super::tilt;
 use crate::{MetricsModel, app::Ctx};
+use indicatrix::geometry::tool::ToolPrimitive;
 use indicatrix_web_core::{
     host::WorkerPool,
     scene::SceneSpec,
-    solve::{MetricsParams, MetricsResultData, SolveRequest, SolveResponse},
+    solve::{MetricsJob, MetricsResultData, SolveResponse},
     solve_error::SolveError,
 };
 use slint::{ComponentHandle, Timer, TimerMode};
@@ -36,11 +37,11 @@ pub const METRICS_DEBOUNCE: Duration = Duration::from_millis(250);
 struct Runtime {
     debounce: Timer,
     /// The inputs of the newest scene; what the HUD should end up showing.
-    target: Option<MetricsParams>,
+    target: Option<MetricsJob>,
     /// The inputs of the numbers on screen.
-    shown: Option<MetricsParams>,
+    shown: Option<MetricsJob>,
     /// The inputs of the job in the Worker.
-    in_flight: Option<MetricsParams>,
+    in_flight: Option<MetricsJob>,
     /// Bumped by every dispatch and reset; an answer of an older one is ignored.
     epoch: u64,
     /// A request was due while a tilt sweep held the Worker ([`resume`] sends it).
@@ -63,8 +64,8 @@ enum Next {
 
 /// The live sync has a scene to render: make sure the HUD shows (or will show) its
 /// metrics.
-pub fn scene_changed(ctx: &Ctx, spec: &SceneSpec) {
-    let params = MetricsParams::from_scene(spec);
+pub fn scene_changed(ctx: &Ctx, spec: &SceneSpec, tools: &[ToolPrimitive]) {
+    let params = MetricsJob::from_scene(spec, tools);
     let next = RUNTIME.with(|rt| {
         let mut rt = rt.borrow_mut();
         let next = if rt.in_flight.as_ref() == Some(&params) {
@@ -173,12 +174,7 @@ fn dispatch(ctx: &Ctx) {
             return;
         }
     };
-    let future = client.solve(
-        String::new(),
-        SolveRequest::Metrics {
-            params: params.clone(),
-        },
-    );
+    let future = client.solve(String::new(), params.request());
     let ctx = ctx.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let result = future.await;
@@ -187,12 +183,7 @@ fn dispatch(ctx: &Ctx) {
 }
 
 /// A job ended: show its numbers, or say why there are none.
-fn finish(
-    ctx: &Ctx,
-    epoch: u64,
-    params: &MetricsParams,
-    result: Result<SolveResponse, SolveError>,
-) {
+fn finish(ctx: &Ctx, epoch: u64, params: &MetricsJob, result: Result<SolveResponse, SolveError>) {
     if RUNTIME.with(|rt| rt.borrow().epoch) != epoch {
         // Superseded by a newer dispatch, or the design went away.
         return;
@@ -205,7 +196,9 @@ fn finish(
                 rt.shown = Some(params.clone());
                 rt.target.as_ref() == Some(params)
             });
-            let note = metrics.scored_under.hud_note(params.hdr_id.is_some());
+            let note = metrics
+                .scored_under
+                .hud_note(params.params.hdr_id.is_some());
             push_numbers(ctx, &metrics, !up_to_date, &note);
         }
         Ok(SolveResponse::AnalysisFailed { message, .. }) => {

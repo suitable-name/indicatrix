@@ -427,6 +427,7 @@ mod tests {
         let material = resolve_side_material(&design, &[]);
         let metrics_material = resolve_metrics_material(&design, &[]);
         SideInput {
+            ray_fluorescent: false,
             design,
             label: "side".to_string(),
             material,

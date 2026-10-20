@@ -22,11 +22,11 @@ use crate::support::{
 };
 use indicatrix_cut::{EditorModel, harness_support};
 use slint::ComponentHandle;
-use slint_harness::timing;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     time::Duration,
 };
+use uiprobe::timing;
 
 #[macro_use]
 mod table;

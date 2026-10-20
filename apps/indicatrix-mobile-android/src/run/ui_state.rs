@@ -48,3 +48,8 @@ pub(super) fn with_state<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
         Some(f(&mut state))
     })
 }
+
+/// Refresh after lifecycle mutation has released the state borrow.
+pub(super) fn refresh_editor() {
+    crate::design::render::refresh_editor();
+}

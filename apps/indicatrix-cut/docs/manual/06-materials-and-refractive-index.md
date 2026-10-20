@@ -79,6 +79,10 @@ cutting) -- are:
 | Glass (F2) | 1.620 | — | Isotropic | No |
 | Rutile | 2.616 | +0.287 | Uniaxial (+) | Yes |
 
+Several of these colors are not invented: Tanzanite, Aquamarine, Spessartine,
+Tsavorite, Demantoid and Peridot are fitted to measured absorption spectra, and
+Appendix C names the source of each.
+
 (Sphene/titanite is deliberately not included -- see the Troubleshooting
 chapter's Known Limitations.)
 
@@ -456,13 +460,14 @@ material's own refractive index reaches the exported `I` line and matches
 what you see on screen, with no separate "which RI did the export actually
 use" question.
 
-**Limitation.** The Solid-view facet-map overlay's windowing-risk hatch and
-one helper function do not resolve custom catalogue materials the way the
-tier list's MARGIN badge and Live Render view do. For a design whose Material
-is a custom catalogue material with no explicit RI override, the Solid view's
-hatch may briefly disagree with the MARGIN badge and Live Render view. Setting
-an explicit RI Override matching the custom material's own value keeps every
-view in agreement.
+**Limitation.** One small estimate does not resolve custom catalogue materials:
+the live margin bar that appears under an angle field while you type in it. It
+is measured against the built-in materials only. For a design whose Material is a custom catalogue material with no
+explicit RI Override, that bar can differ a little from the MARGIN badge until
+you commit the angle. The Solid-view windowing-risk hatch, the MARGIN badge,
+Live Render, the exports and the cutting sheet all use the custom material's
+own index. Setting an explicit RI Override matching the custom material's
+value keeps even the typing estimate in agreement.
 
 ## Inferred Material: A Guess, Never a Fact
 
@@ -764,6 +769,11 @@ change the settings so it is valid again:
   the thicker-girdle allowance above has had its two tries;
 - the table would sit below the top of the girdle, or the culet above the
   bottom of it;
+- an original corner of the stone would come apart, an original facet or edge
+  would vanish, or the outline would change by more than the facets' own turn
+  about the girdle accounts for (each facet may move only as far as its turn
+  implies, and the allowance is measured on the angles you asked for, not on
+  anything the check repaired afterwards);
 - a tier loses all or some of its facets;
 - facets become too small to cut;
 - a tier that follows a relation cannot follow it any more.
@@ -773,8 +783,8 @@ mode it is the verdict of the option you picked, and the options are always
 valid. **Compare...** keeps working on a change that is not valid, so you can look at
 what goes wrong; it only waits while the check is running. If the current
 design itself does not solve, the check cannot compare anything: the dialog
-says **Could not check this change**, and Apply stays available with the plain
-angle change, as it always did.
+says **Could not check this change**, and Apply stays dimmed: there is no
+checked stone to apply. Fix the design first, then retarget it.
 
 ### The Risk Column and Its Margin
 

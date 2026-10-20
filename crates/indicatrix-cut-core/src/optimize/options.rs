@@ -11,7 +11,8 @@
 //! fields into the second, would break those crates for no gain. So every new request
 //! lives here, every new answer lives in [`OptimizeResult`], and the old types, the
 //! old entry point ([`super::optimize_design`]) and the old apply function
-//! ([`super::apply_optimize_outcome`]) behave exactly as before.
+//! ([`super::apply_optimize_outcome`]) keep their signatures. Their behaviour follows
+//! the meet-preserving gate: an outcome is only applied when it carries provenance.
 
 use super::{
     objective::{ObjectiveComponents, ToneGoal},
@@ -23,7 +24,7 @@ use indicatrix::{
     color::metrics::FaceUpTone, geometry::meet_solver::MeetConstraint,
     optics::raytracer::LightingPreset,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What [`super::optimize_design_with`] may vary beyond the search knobs of
 /// [`super::OptimizeConfig`], and the guards it keeps while it does.
@@ -32,6 +33,14 @@ use std::collections::BTreeMap;
 /// same space [`super::optimize_design`] does and returns the same outcome.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptimizeOptions {
+    /// Independent angles the caller permits to move. Derived followers still follow
+    /// their relations; unselected meet constraints are never replaced with pins.
+    pub only_tiers: Option<BTreeSet<usize>>,
+    /// Immutable operation-start baseline, captured automatically when absent.
+    pub preservation_baseline:
+        Option<std::sync::Arc<crate::meet_preservation::MeetPreservationBaseline>>,
+    /// Hard operation-specific geometric motion limits.
+    pub preservation_policy: crate::meet_preservation::PreservationPolicy,
     /// Let `ScaleReference` tiers move too.
     ///
     /// Every imported design pins every tier to a `ScaleReference` mast, which the
@@ -79,8 +88,25 @@ pub struct OptimizeOptions {
     /// score, so scores stay comparable. `None` (the default) adds nothing and every
     /// result is bit-for-bit what it was before this field existed. The reported
     /// [`ObjectiveComponents`] stay the raw optical figures; the penalty is in the
-    /// score only.
+    /// score only. A target whose weight is not positive adds nothing either and counts as
+    /// `None` everywhere, the run's provenance included.
     pub shape_target: Option<ShapeTarget>,
+    /// The facet turn a projection is judged by, when it is not the proposal's own: one
+    /// slope-tangent change per tier ([`crate::meet_preservation::tangent_changes`] of the
+    /// request against the original).
+    ///
+    /// A policy whose bounds follow the turn
+    /// ([`crate::meet_preservation::PreservationPolicy::bounds_follow_turn`]) grants the
+    /// travel of the REQUEST, never more. A Retarget projects its anchored candidate and then
+    /// projects a refit built on that projected state; without this the refit's seed would
+    /// carry the first projection's repaired angles, and a repair that turned a tier further
+    /// than the request would enlarge the allowance the refit is judged by. The editor's
+    /// check sets it to the anchored candidate's turn for both projections. `None` (the
+    /// default) reads the turn from the projection's own seed, which for a plain proposal is
+    /// the request itself. A vector whose length is not the tier count is ignored like
+    /// `None`. It is not part of the scoring identity: it never reaches an Optimize search
+    /// (`optimize_design_with` leaves it `None`), and the policy it widens is in the identity.
+    pub turn_request: Option<std::sync::Arc<[f64]>>,
 }
 
 /// The table size and crown-to-pavilion ratio a search should stay near, and how hard.
@@ -102,6 +128,15 @@ pub struct ShapeTarget {
 }
 
 impl ShapeTarget {
+    /// Whether the weight is positive, so the penalty can be anything but zero.
+    ///
+    /// A target that is not active is the same request as no target at all, see
+    /// [`OptimizeOptions::shape_target`].
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.weight > 0.0
+    }
+
     /// The relative drift `d` of a stone with these figures from the target: `0.0` on the
     /// target, `0.1` when one figure is 10 % off and the other is on it.
     #[must_use]
@@ -127,7 +162,7 @@ impl ShapeTarget {
         reason = "the shape distance is a small non-negative figure; f32 is the score precision"
     )]
     pub fn penalty(&self, table_percent: Option<f64>, crown_to_pavilion: Option<f64>) -> f32 {
-        if self.weight.is_nan() || self.weight <= 0.0 {
+        if !self.is_active() {
             return 0.0;
         }
         self.weight * 100.0 * self.distance(table_percent, crown_to_pavilion) as f32
@@ -137,14 +172,18 @@ impl ShapeTarget {
 impl Default for OptimizeOptions {
     fn default() -> Self {
         Self {
+            only_tiers: None,
             vary_anchored: false,
             anchor_hinges: BTreeMap::new(),
+            preservation_baseline: None,
+            preservation_policy: crate::meet_preservation::PreservationPolicy::OPTIMIZE,
             angle_bounds: BTreeMap::new(),
             min_girdle_fraction: None,
             min_girdle_thinnest_fraction: None,
             keep_candidates: 1,
             candidate_separation_deg: None,
             shape_target: None,
+            turn_request: None,
         }
     }
 }
@@ -173,13 +212,20 @@ impl OptimizeOptions {
     pub(super) fn candidate_capacity(&self) -> usize {
         self.keep_candidates.max(1)
     }
+
+    /// [`Self::shape_target`] unless its weight is not positive.
+    ///
+    /// That switches the penalty off, so the request is `None` and the search, its scores
+    /// and its provenance treat it as `None`.
+    pub(super) fn active_shape_target(&self) -> Option<ShapeTarget> {
+        self.shape_target.filter(ShapeTarget::is_active)
+    }
 }
 
 /// One accepted mast change: tier `index`'s `ScaleReference` mast moves.
 ///
-/// The mast goes from `from_mast` to `to_mast`. It is always paired with an
-/// [`AngleChange`] of the same tier, because the search only changes a mast to keep a
-/// turning plane on its hinge.
+/// The mast goes from `from_mast` to `to_mast`. A coupled projection may change a mast
+/// without changing that tier's angle; callers must apply these independently.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MastChange {
     /// Tier position this refers to.
@@ -194,6 +240,11 @@ pub struct MastChange {
 /// what the design measures like after them, scored at full fidelity.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptimizeCandidate {
+    /// Portable source and score identity; complete depths and accepted authoring snapshot.
+    pub provenance: Option<super::OptimizationProvenance>,
+    /// Immutable original geometry and full authoring identity for stale-result rejection.
+    pub preservation_baseline:
+        Option<std::sync::Arc<crate::meet_preservation::MeetPreservationBaseline>>,
     /// The angle changes, one per modified tier, in tier order.
     pub changes: Vec<AngleChange>,
     /// The mast changes that go with them (empty unless anchored tiers were varied).

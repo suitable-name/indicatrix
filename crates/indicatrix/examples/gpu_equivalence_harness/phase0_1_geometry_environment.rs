@@ -6,13 +6,13 @@
 use indicatrix::renderer::{
     buffers::GpuGemMaterial,
     gpu::{
-        GpuContext, camera_check, determinism_check, environment_check, furnace_check,
-        layout_check, polyhedron_check, rng_check,
+        GpuContext, camera_check, determinism_check, environment_check, estimator_check,
+        furnace_check, layout_check, polyhedron_check, rng_check, tool_check,
     },
 };
 
 use crate::{
-    common::LayoutCheckFn,
+    common::{LayoutCheckFn, report_image_comparison_material},
     summary::{UlpComparison, UlpTier, record_ulp},
 };
 
@@ -262,6 +262,31 @@ fn report_polyhedron_check(ctx: &GpuContext) -> bool {
     false
 }
 
+/// Concave-tool check: the megakernel's tool carve, containment and shading-normal rule
+/// against the CPU, for every tool primitive (cylinder, cone, ball, disc) as a plunge and
+/// with both reciprocating sweeps -- see [`tool_check`]'s module doc comment.
+fn report_tool_check(ctx: &GpuContext) -> bool {
+    print!("[Tier 2] Concave tools: intersect / contains / shading normal vs CPU ... ");
+    let result = tool_check::run(ctx);
+    if result.passed() {
+        println!(
+            "PASS ({} comparisons, {} on tool surfaces, {} knife-edge excluded)",
+            result.compared, result.tool_hits, result.excluded_knife_edge
+        );
+        return true;
+    }
+    println!(
+        "FAIL ({} mismatch(es) out of {} comparisons, showing up to {})",
+        result.total_mismatches,
+        result.compared,
+        result.mismatches.len()
+    );
+    for line in &result.mismatches {
+        println!("  {line}");
+    }
+    false
+}
+
 /// Generic ULP-budget check reporter, shared by the four [`environment_check`]
 /// instances.
 fn report_ulp_check<Case: Clone + std::fmt::Debug>(
@@ -380,6 +405,11 @@ pub fn run_phase0_and_phase1_checks(ctx: &GpuContext) -> bool {
     let phase1_layout_passed = report_phase1_layout_checks(ctx);
     let camera_passed = report_camera_check(ctx);
     let polyhedron_passed = report_polyhedron_check(ctx);
+    let tool_passed = report_tool_check(ctx)
+        && report_image_comparison_material(
+            "Diamond, concave (table dimple + crown groove)",
+            &estimator_check::run_image_comparison_concave(ctx),
+        );
     let cmf_result = environment_check::run_cmf(ctx);
     let cmf_passed = report_ulp_check("cie_1931_cmf", &cmf_result);
     let blackbody_result = environment_check::run_blackbody(ctx);
@@ -399,6 +429,7 @@ pub fn run_phase0_and_phase1_checks(ctx: &GpuContext) -> bool {
         && phase1_layout_passed
         && camera_passed
         && polyhedron_passed
+        && tool_passed
         && cmf_passed
         && blackbody_passed
         && studio_env_passed

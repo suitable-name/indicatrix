@@ -1,7 +1,8 @@
 //! The first two stages of [`optimize_design_with`](super::optimize_design_with): measuring
 //! the starting point ([`baseline_report`]), the coordinate-descent stage ([`run_search`]) and
 //! the Nelder-Mead hand-off ([`run_polish_stage`]). Split from the parent module so the file
-//! stays readable; the three functions are unchanged.
+//! stays readable; the three functions were moved here, not rewritten. Their proposals go
+//! through the meet-preserving projection when the request carries one.
 
 use super::{
     Baseline, CoordinateStageOutcome, OptimizeConfig, PolishStageOutcome, SearchHooks, SearchStage,
@@ -12,12 +13,12 @@ use crate::{
     manufacturability::{DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability},
     optimize::{
         candidate::{
-            BaselineWarningCounts, CandidateOutcome, SearchContext, apply_free_angles,
+            BaselineWarningCounts, CandidateOutcome, ScoredStone, SearchContext,
             build_free_angle_candidate, evaluate_candidate_pair, evaluate_in_context,
             free_tier_indices_with, measure_with_tone, shape_penalty_for_planes, yield_loss_pct,
         },
         guard::ShapeGuard,
-        objective::{ObjectiveFidelity, to_gpu_planes},
+        objective::ObjectiveFidelity,
         options::OptimizeOptions,
         polish,
         pool::CandidatePool,
@@ -61,29 +62,55 @@ pub(super) fn baseline_report(
     options: &OptimizeOptions,
     hooks: &SearchHooks<'_>,
 ) -> Result<Baseline, DesignSolveError> {
+    let preservation = match &options.preservation_baseline {
+        Some(baseline) => baseline.clone(),
+        None => std::sync::Arc::new(
+            crate::meet_preservation::MeetPreservationBaseline::capture_with(design, hooks.cancel)
+                .map_err(DesignSolveError::Preservation)?,
+        ),
+    };
+    preservation
+        .validate_with(design, options.preservation_policy, hooks.cancel)
+        .map_err(DesignSolveError::Preservation)?;
     let weights = &config.weights;
     let lighting = config.lighting;
     hooks.report(0, SearchStage::BaselineFull);
-    let baseline_solved = design.solve()?;
+    let baseline_solved = {
+        let _solve = preservation.telemetry.phase(2);
+        design.solve_with(&hooks.cancel.map_or_else(
+            indicatrix::geometry::meet_solver::SolveControl::default,
+            indicatrix::geometry::meet_solver::SolveControl::with_cancel,
+        ))?
+    };
     let baseline_planes = design.planes_from_solved(&baseline_solved);
     let warnings = BaselineWarningCounts::count(&check_manufacturability(
         design,
         &baseline_solved,
         DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
     ));
+    // The stone with its concave tools (none for a flat design): every score of the run,
+    // the baseline's included, measures the stone the cutter holds.
+    let baseline_stone = ScoredStone::of(design, &baseline_planes);
+    let full_timer = preservation.telemetry.phase(5);
     let (before, tone_before, before_tone_loss) = measure_with_tone(
-        &to_gpu_planes(&baseline_planes),
+        baseline_stone.geometry(),
         material,
         weights,
         ObjectiveFidelity::Full,
         lighting,
     );
+    drop(full_timer);
     let baseline_metrics = measure_solid(&baseline_planes);
-    let before_yield_loss_pct = yield_loss_pct(design, baseline_metrics.as_ref());
+    let before_yield_loss_pct = yield_loss_pct(
+        design,
+        baseline_stone
+            .yield_metrics(&baseline_planes, baseline_metrics.as_ref())
+            .as_ref(),
+    );
     // The starting design pays the same shape penalty its candidates do (zero when the
     // target was read off it), so every score in the run stays comparable.
     let before_penalty = shape_penalty_for_planes(
-        options.shape_target,
+        options.active_shape_target(),
         baseline_metrics.as_ref(),
         &baseline_planes,
     );
@@ -93,13 +120,15 @@ pub(super) fn baseline_report(
     // has a same-fidelity baseline to compare its `Fast`-scored candidates
     // against (see `Baseline::before_score_fast`'s own doc comment). The tone is
     // measured here only when it is weighted, exactly like every candidate's.
+    let fast_timer = preservation.telemetry.phase(4);
     let (before_fast, _, before_fast_tone_loss) = measure_with_tone(
-        &to_gpu_planes(&baseline_planes),
+        baseline_stone.geometry(),
         material,
         weights,
         ObjectiveFidelity::Fast,
         lighting,
     );
+    drop(fast_timer);
     let before_score_fast =
         weights.score_with_tone(&before_fast, before_yield_loss_pct, before_fast_tone_loss)
             + before_penalty;
@@ -121,6 +150,7 @@ pub(super) fn baseline_report(
         )
     });
     Ok(Baseline {
+        preservation,
         before,
         before_score,
         before_score_fast,
@@ -166,7 +196,6 @@ pub(super) fn run_search(
     let mut current = design.clone();
     // Mirrors `current`'s free angles, in `free` order, so a pool entry can be built
     // without re-reading the design.
-    let mut free_angles: Vec<f64> = free.iter().map(|&i| current.tiers[i].angle_deg).collect();
     // Seeded from the `Fast`-fidelity baseline, not `baseline.before_score`
     // (`Full`) -- every candidate this loop compares against `current_score` is
     // itself scored at `Fast` (see `evaluate_candidate`), so mixing in a `Full`
@@ -187,6 +216,35 @@ pub(super) fn run_search(
         );
         sweep_index += 1;
         let mut improved_this_sweep = false;
+
+        // A global feasible family is tried within the same attempted-candidate budget.
+        // In particular, a multi-way meet need not wait for one coordinate to cross an
+        // infeasible region. Identity is the already-scored current state.
+        for sign in [1.0_f64, -1.0] {
+            if hooks.is_cancelled() {
+                cancelled = true;
+                break 'search;
+            }
+            if evaluations >= start.max_evaluations {
+                break;
+            }
+            let factor = (sign * step_deg.to_radians()).exp();
+            evaluations += 1;
+            if let Some(preference) = crate::optimize::families::axial_preference(&current, factor)
+                && let CandidateOutcome::Accepted { design, score } =
+                    evaluate_in_context(&preference, ctx)
+            {
+                if score < baseline.before_score_fast {
+                    pool.offer_design((*design).clone(), free, score);
+                }
+                if score < current_score {
+                    current = *design;
+                    current_score = score;
+                    improved_this_sweep = true;
+                }
+            }
+            hooks.report(evaluations, SearchStage::Coordinate);
+        }
 
         for &free_slot in &order {
             if hooks.is_cancelled() {
@@ -210,22 +268,13 @@ pub(super) fn run_search(
             evaluations += pair.evaluations;
             hooks.report(evaluations, SearchStage::Coordinate);
 
-            // Offered relative to the state BEFORE this tier's move is adopted: every
-            // accepted direction is a neighbour of it, whether or not it won.
-            if pool.is_enabled() {
-                for &(candidate_deg, score) in &pair.accepted {
-                    if score < baseline.before_score_fast {
-                        let mut angles = free_angles.clone();
-                        angles[free_slot] = candidate_deg;
-                        pool.offer(angles, score);
-                    }
+            for (candidate, score) in pair.accepted {
+                if score < baseline.before_score_fast {
+                    pool.offer_design(candidate, free, score);
                 }
             }
-
-            if let Some((new_deg, new_score)) = pair.best {
-                let written = ctx.space.write_angle(&mut current, tier_index, new_deg);
-                debug_assert!(written, "an accepted candidate already had a usable mast");
-                free_angles[free_slot] = new_deg;
+            if let Some((new_design, new_score)) = pair.best {
+                current = new_design;
                 current_score = new_score;
                 improved_this_sweep = true;
             }
@@ -277,7 +326,7 @@ pub(super) fn run_search(
 /// called with `coord.cancelled == false` -- see [`optimize_design`]'s own call
 /// site.
 pub(super) fn run_polish_stage(
-    design: &Design,
+    _design: &Design,
     baseline: &Baseline,
     config: &OptimizeConfig,
     ctx: &SearchContext,
@@ -292,7 +341,10 @@ pub(super) fn run_polish_stage(
         cancelled: _,
         mut pool,
     } = coord;
-    let Some(start_step) = config.polish_start_step_deg.filter(|&step| step > 0.0) else {
+    let Some(start_step) = config
+        .polish_start_step_deg
+        .filter(|&step| step > 0.0 && !free.is_empty())
+    else {
         return PolishStageOutcome {
             current,
             evaluations: 0,
@@ -309,17 +361,25 @@ pub(super) fn run_polish_stage(
     let min_spread = config.min_step_deg / 2.0;
 
     let mut polish_evaluations_done = 0usize;
+    let mut best_polished: Option<(Design, f32)> = None;
     let evaluate = |angles: &[f64]| -> f32 {
-        let score = build_free_angle_candidate(design, free, &starting_point, angles, ctx.space)
+        let score = build_free_angle_candidate(&current, free, &starting_point, angles, ctx.space)
             .map_or(f32::INFINITY, |candidate| {
                 match evaluate_in_context(&candidate, ctx) {
                     CandidateOutcome::Rejected => f32::INFINITY,
-                    CandidateOutcome::Accepted { score } => score,
+                    CandidateOutcome::Accepted { score, design } => {
+                        if score < baseline.before_score_fast {
+                            pool.offer_design((*design).clone(), free, score);
+                        }
+                        if score < current_score
+                            && best_polished.as_ref().is_none_or(|(_, best)| score < *best)
+                        {
+                            best_polished = Some((*design, score));
+                        }
+                        score
+                    }
                 }
             });
-        if pool.is_enabled() && score < baseline.before_score_fast {
-            pool.offer(angles.to_vec(), score);
-        }
         polish_evaluations_done += 1;
         hooks.report(
             coord_evaluations + polish_evaluations_done,
@@ -338,13 +398,10 @@ pub(super) fn run_polish_stage(
         evaluate,
     );
 
-    let adopted = if result.score < current_score {
-        apply_free_angles(&current, free, &result.point, ctx.space)
-    } else {
-        None
-    };
-    let (current, improvement) = adopted.map_or((current, 0.0), |improved| {
-        (improved, current_score - result.score)
+    debug_assert_eq!(result.point.len(), free.len());
+    debug_assert!(result.score <= current_score || !current_score.is_finite());
+    let (current, improvement) = best_polished.map_or((current, 0.0), |(improved, score)| {
+        (improved, current_score - score)
     });
     PolishStageOutcome {
         current,

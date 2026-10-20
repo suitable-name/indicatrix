@@ -1,4 +1,6 @@
-import { ComboBox, LineEdit, SpinBox, Slider } from "std-widgets.slint";
+import { OutputRendererPicker } from "../export_dialog/renderer_picker.slint";
+import { OpticalModel } from "../../models/optical.slint";
+import { ComboBox, LineEdit, SpinBox, Slider, CheckBox } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { TiltModel, TiltVideoExportModel } from "../../models/tilt.slint";
 import { ExportRunModel } from "../../models/export_run.slint";
@@ -126,6 +128,7 @@ export component TiltVideoExportSection inherits Rectangle {
         }
 
         if root.video_export_expanded: video_content := VerticalLayout {
+            CheckBox { enabled: TiltVideoExportModel.engine_index == 0; text: "Include Optical Diagnostics (4 Samples/Pixel)"; accessible-description: "Adds the optical diagnostics and a model caption to every frame of the video."; checked <=> OpticalModel.include_video; }
             padding: 12px;
             spacing: 12px;
 
@@ -289,13 +292,18 @@ export component TiltVideoExportSection inherits Rectangle {
             // `TiltVideoExportModel`'s own doc comment on why).
             VerticalLayout {
                 spacing: 6px;
+                OutputRendererPicker {
+                    engine_index <=> TiltVideoExportModel.engine_index;
+                    ray_taps <=> TiltVideoExportModel.ray_taps;
+                    ray_fire <=> TiltVideoExportModel.ray_fire;
+                }
                 Text { text: "Quality"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                 HorizontalLayout {
                     alignment: space-between;
-                    Text { text: "Samples per Pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    Text { text: Math.round(Math.pow(2.0, Math.round(TiltVideoExportModel.sample_exponent_raw))); font-size: 12px; font-weight: 700; color: Theme.accent-cyan; }
+                    Text { text: TiltVideoExportModel.engine_index == 1 ? "Anti-Aliasing:" : "Samples per Pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: TiltVideoExportModel.engine_index == 1 ? TiltVideoExportModel.ray_taps : Math.round(Math.pow(2.0, Math.round(TiltVideoExportModel.sample_exponent_raw))); font-size: 12px; font-weight: 700; color: Theme.accent-cyan; }
                 }
-                Slider {
+                if TiltVideoExportModel.engine_index == 0: Slider {
                     minimum: SettingsModel.export_samples_min_exponent;
                     maximum: SettingsModel.export_samples_max_exponent;
                     step: 1;

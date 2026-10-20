@@ -302,3 +302,31 @@ fn the_debug_output_does_not_print_texels() {
     let text = format!("{:?}", state.hdr);
     assert!(text.len() < 400, "{text}");
 }
+
+/// The stored `current.envmap` and the asset a remote endpoint receives are the same
+/// bytes: one versioned float format, so what the phone renders with is exactly what is
+/// uploaded, and the scene's content hash names the stored file's content.
+#[test]
+fn the_stored_map_and_the_remote_asset_are_the_same_bytes() {
+    use indicatrix_net::messages::{content_hash, envmap_asset};
+    let dir = crate::platform_mock::unique_temp_dir("hdr-asset");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("current.envmap");
+    let texels = synthetic_texels(24, 12);
+    file::write(&path, 24, 12, &texels).expect("writes");
+    let stored = std::fs::read(&path).expect("reads");
+    let asset = envmap_asset::encode_envmap_asset(24, 12, &texels).expect("encodes");
+    assert_eq!(stored, asset);
+    assert_eq!(
+        envmap_asset::envmap_asset_hash(24, 12, &texels).expect("hashes"),
+        content_hash(&stored)
+    );
+    // The server's decoder returns the phone's texels bit for bit.
+    let (width, height, back) = envmap_asset::decode_envmap_asset(&stored).expect("decodes");
+    assert_eq!((width, height), (24, 12));
+    let bits = |texels: &[[f32; 3]]| -> Vec<u32> {
+        texels.iter().flatten().map(|v| v.to_bits()).collect()
+    };
+    assert_eq!(bits(&back), bits(&texels));
+    let _ = std::fs::remove_dir_all(&dir);
+}

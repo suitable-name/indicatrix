@@ -7,7 +7,6 @@
 
 use super::state::EditorState;
 use crate::{DeepSolveTierRow, OptimizeChangeRow, gui::editor::deep_solve::TierMastDelta};
-use indicatrix::geometry::meet_solver::{MeetConstraint, VerifiedSolveReport};
 use indicatrix_cut_core::{Design, OptimizeOutcome};
 use indicatrix_editor::optimize_view::tier_name_for_row;
 
@@ -30,80 +29,14 @@ pub(in crate::gui::editor) use indicatrix_editor::optimize_view::facet_count_fro
 /// `pub(super)`, not private: `panel_stale.rs` (a sibling file) calls this from
 /// its own availability push.
 pub(super) fn deep_solve_hint(state: &EditorState) -> (bool, String) {
-    if state.printed_proportions.is_none() {
-        return (
-            false,
-            "Deep Solve needs this design's printed proportions (Vol/W^3, L/W, C/W, P/W, \
-             H/W) from the catalogue to verify against -- unavailable for a new or \
-             placeholder-reconstructed design."
-                .to_string(),
-        );
-    }
-    let has_repairable = state
-        .design
-        .tiers
-        .iter()
-        .any(|t| !matches!(t.constraint, MeetConstraint::ScaleReference(_)));
-    if has_repairable {
-        (
-            true,
-            "Slow (a mean of ~68 solves per design on the corpus -- minutes on a large \
-             design); runs off the UI thread and can be cancelled."
-                .to_string(),
-        )
-    } else {
-        // An all-`ScaleReference` design cannot be repaired --
-        // every tier is already pinned to its recorded mast, so a run here would
-        // spend minutes unable to change the verdict either way. Disabled, not
-        // merely enabled-with-a-caveat like the branch above -- the command bar's
-        // Deep Solve button already gates its `enabled` on this same flag
-        // (`editor_command_bar.slint`), so no markup change is needed here.
-        (
-            false,
-            "Every tier is currently pinned to its recorded mast, exactly as imported -- \
-             Deep Solve has nothing to repair until you convert a tier to a meet \
-             constraint (the tier list's Adopt action)."
-                .to_string(),
-        )
-    }
+    indicatrix_editor::deep_solve::availability(&state.design, state.printed_proportions.as_ref())
 }
 
-/// Renders a completed Deep Solve's [`VerifiedSolveReport`] as the status banner
+/// Renders a completed Deep Solve's
+/// [`VerifiedSolveReport`](indicatrix::geometry::meet_solver::VerifiedSolveReport) as the status banner
 /// text -- honestly: always shows the actual score movement and run count, never
 /// just a pass/fail badge, and never claims `accepted` proves the geometry is right.
-pub(in crate::gui::editor) fn format_deep_solve_report(
-    report: &VerifiedSolveReport,
-    stale: bool,
-) -> String {
-    let verdict = if report.accepted {
-        "ACCEPTED -- reproduces the printed figures to verification accuracy (not a \
-         correctness proof, only a strong external signal)"
-    } else {
-        "not accepted -- still deviates from the printed figures"
-    };
-    let scores = if report.initial_score.is_finite() {
-        format!(
-            "combined deviation {:.4} -> {:.4} ({} vertex-level repair(s), {} anchor \
-             calibration move(s), {} pipeline run(s))",
-            report.initial_score,
-            report.final_score,
-            report.overrides_applied,
-            report.anchor_moves_applied,
-            report.pipeline_runs
-        )
-    } else {
-        "none of this design's printed figures overlapped what could be measured -- \
-         unverifiable"
-            .to_string()
-    };
-    let stale_note = if stale {
-        " NOTE: the design changed while this ran -- re-run Deep Solve for a result that \
-         reflects the current schedule."
-    } else {
-        ""
-    };
-    format!("Deep Solve: {verdict}. {scores}.{stale_note}")
-}
+pub(in crate::gui::editor) use indicatrix_editor::deep_solve::format_deep_solve_report;
 
 /// Builds one [`DeepSolveTierRow`] per [`TierMastDelta`] -- the per-tier table
 /// behind Deep Solve's aggregate verdict,
@@ -173,6 +106,7 @@ pub(super) fn optimize_hint(state: &EditorState, max_evaluations: usize) -> (boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indicatrix::geometry::meet_solver::MeetConstraint;
     use indicatrix_cut_core::ConstraintTier;
 
     fn some_proportions() -> indicatrix::geometry::stone_metrics::ExternalProportions {

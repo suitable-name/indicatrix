@@ -58,7 +58,7 @@ SAVED = ('[{ id: 1, name: "Quartz block 18 x 11", summary: "10 layouts, best 3.7
 COMMON = {
     "materials": '["Quartz (SG 2.65)", "Beryl (SG 2.72)", "Tourmaline (SG 3.06)"]',
     "rough_x": '"18.4"', "rough_y": '"11.0"', "rough_z": '"9.6"', "weighed_ct": '"9.00"',
-    "count": "6", "min_count": "2", "filter_count": "1234", "library_count": "3299",
+    "max_designs": "3", "max_stones": "8", "filter_count": "1234", "library_count": "3299",
     "filter_count_text": '"1,234"', "library_count_text": '"3,299"',
     "model_text": '"Model 1,944 mm³ · 25.76 ct (Quartz, SG 2.65)"',
     "weight_check_text": '"Weighed 9.00 ct vs model 25.76 ct: the model is far too big"', "weight_check_level": "3",

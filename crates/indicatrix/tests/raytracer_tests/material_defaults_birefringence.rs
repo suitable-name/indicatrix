@@ -1,5 +1,5 @@
 //! `GemMaterial` default-orientation checks and birefringence rendering tests: the
-//! `c_axis` default (with Tourmaline's documented override), Zircon's measurable
+//! `c_axis` default (with the documented Tourmaline and Aquamarine overrides), Zircon's measurable
 //! ordinary/extraordinary split versus a flattened clone, cubic materials' bit-exact
 //! indifference to `birefringence_delta`, and non-dispersive custom materials under
 //! spectral MIS.
@@ -20,7 +20,7 @@ fn test_gem_materials_default_c_axis_to_y() {
     // so behaviour stays consistent across materials -- EXCEPT a material with a
     // documented, deliberate cut-orientation override.
     //
-    // Tourmaline is that one documented exception (see its entry's comment in
+    // Tourmaline is the first documented exception (see its entry's comment in
     // `GemMaterial::all_materials`): real tourmaline cutters orient the table
     // perpendicular to the c-axis specifically because face-up down the closed
     // (e-ray/"dark ray") axis is tourmaline's worst viewing direction -- with the
@@ -28,7 +28,13 @@ fn test_gem_materials_default_c_axis_to_y() {
     // (the every-other-material default) would point the face-up hero shot straight
     // down that dark ray, backwards from how the stone is actually cut and worn. So
     // Tourmaline's `c_axis` is `Vec3::X` (into the table plane) instead.
-    const CUT_ORIENTATION_OVERRIDES: &[&str] = &["Tourmaline"];
+    //
+    // Aquamarine is the second (owner decision 2026-10-19, measured Caltech GRR 1488
+    // fit): its blue is the e-ray (E parallel to c) and the o-ray is nearly colorless,
+    // so with `c_axis = Vec3::Y` the face-up view would see the o-ray only, practically
+    // colorless; cutters orient aquamarine with c in the table plane so that the blue
+    // ray shows face-up. Its `c_axis` is `Vec3::X` as well.
+    const CUT_ORIENTATION_OVERRIDES: &[&str] = &["Tourmaline", "Aquamarine"];
 
     for m in GemMaterial::all_materials() {
         if CUT_ORIENTATION_OVERRIDES.contains(&m.name.as_str()) {

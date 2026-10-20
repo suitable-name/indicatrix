@@ -9,8 +9,8 @@
 use indicatrix_net::{
     library::{
         AngleSettingWire, AttachedFileMeta, AttributeRangesWire, DesignRecord, DesignSummary,
-        LibraryResponse, PerformanceAggregateWire, PerformanceBoundWire, PerformanceFilterWire,
-        PerformanceMetricWire, RangeFilterWire,
+        FrostedTierWire, LibraryResponse, PerformanceAggregateWire, PerformanceBoundWire,
+        PerformanceFilterWire, PerformanceMetricWire, RangeFilterWire,
     },
     messages::ErrorMsg,
 };
@@ -19,6 +19,7 @@ use indicatrix_vault::{
     model::{
         entry::{DiagramListItem, FullDiagramMeta},
         filter::{AttributeRanges, RangeFilter},
+        frosting::StoredTierFrosting,
         performance::{
             PerformanceAggregate, PerformanceBound, PerformanceFilter, PerformanceMetric,
         },
@@ -213,5 +214,18 @@ pub(super) fn to_record(
         gem_file: meta.gem_file.clone(),
         shape_category: meta.shape_category.clone(),
         version: revision_token(&meta.url, revision),
+        frosting: to_frosting_wire(&meta.frosting),
     }
+}
+
+/// The wire form of a design's stored frosting (tier position and facet slots; see
+/// [`FrostedTierWire`]).
+pub(super) fn to_frosting_wire(frosting: &[StoredTierFrosting]) -> Vec<FrostedTierWire> {
+    frosting
+        .iter()
+        .map(|row| FrostedTierWire {
+            tier: row.tier,
+            facets: row.facets.clone(),
+        })
+        .collect()
 }

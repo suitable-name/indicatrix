@@ -2,8 +2,10 @@
 //!
 //! Provides the once-per-plan model geometry ([`ctx`]), unit grid sizing ([`grid`]), spatial
 //! piece classification and LP-based scaling ([`clip`], [`rows`]), positional 3-stage
-//! guillotine DP ([`dp`]), tree placement ([`tree`]) with empty-piece merging ([`compact`]),
-//! shaped uniform grids ([`uniform`]), and continuous position refinement ([`refine`]).
+//! guillotine DP ([`dp`], with its stone-capped twin `dp_capped` for a binding
+//! `PlanSettings::max_stones`), tree placement ([`tree`]) with empty-piece merging
+//! ([`compact`]), shaped uniform grids ([`uniform`]), and continuous position refinement
+//! ([`refine`]).
 //! The stages that split their work over threads share one runner (`parallel`), which
 //! returns results in job order so no result depends on the thread count. The plain
 //! block planner's `_lanes` twins (piece table, alternatives, uniform pass, refinement)
@@ -13,6 +15,7 @@ pub mod clip;
 pub mod compact;
 pub mod ctx;
 pub mod dp;
+mod dp_capped;
 pub mod grid;
 pub(crate) mod parallel;
 pub mod refine;
@@ -38,6 +41,8 @@ mod tests_mesh_perf;
 mod tests_min_width;
 #[cfg(test)]
 mod tests_plan;
+#[cfg(test)]
+mod tests_stone_cap;
 
 pub use clip::{
     BuildClipParams, CLASS_EXTERIOR, CLASS_INTERIOR, CLASS_PARTIAL, CLIP_SHORTLIST,

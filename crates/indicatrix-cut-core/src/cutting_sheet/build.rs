@@ -102,6 +102,8 @@ fn concave_row(tier: &ConcaveTier, code: &str, sequence: usize) -> CutSheetRow {
             tool_angle_deg: tier.tool_angle_deg,
             motion: tier.motion,
         }),
+        // A concave tier cannot be frosted.
+        frosting: None,
     }
 }
 
@@ -277,6 +279,7 @@ impl Design {
                 angle_of_elevation_deg: tier.angle_deg.abs(),
                 depth_mm: mm_per_unit.map(|scale| solved_tier.mast * scale),
                 concave: None,
+                frosting: self.tier_frosting(i).cloned(),
             }
         };
         // Every design -- planar or not -- is printed in `cutting_order`: the pavilion

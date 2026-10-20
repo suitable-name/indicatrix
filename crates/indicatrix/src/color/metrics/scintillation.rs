@@ -5,7 +5,7 @@ use super::{
     camera::camera_view_basis,
     fan::FanGeometry,
     lighting::ExitLighting,
-    ray_trace::{RayFate, StoneArena, trace_wavelength},
+    ray_trace::{EntryRay, RayFate, StoneArena, trace_entry},
     visibility::ray_is_visibly_returned,
 };
 use crate::optics::raytracer::Ray;
@@ -17,7 +17,7 @@ use glam::Vec3;
 /// contrast measured at a single fixed pose. Five poses (odd count -- see
 /// `cell_returned_at_yaw_offset`'s doc for why), spanning +/-3 deg, comparable in scale
 /// to a hand gently tilting a stone for inspection, not a full turn.
-const SCINT_TEMPORAL_YAW_OFFSETS_DEG: [f32; 5] = [-3.0, -1.5, 0.0, 1.5, 3.0];
+pub(super) const SCINT_TEMPORAL_YAW_OFFSETS_DEG: [f32; 5] = [-3.0, -1.5, 0.0, 1.5, 3.0];
 
 /// Weight of the spatial (per-pose, per-grid-cell contrast) term in the combined
 /// `scintillation_pct`. See `combine_scintillation_pct` for the full weighting rationale.
@@ -100,7 +100,14 @@ fn cell_returned_at_yaw_offset(
     let n_entry = hit_rec.normal;
     let cos_i = (-ray.dir).dot(n_entry).clamp(0.0, 1.0);
 
-    match trace_wavelength(hit_point, ray.dir, n_entry, cos_i, ctx.stone, ctx.nd) {
+    let entry = EntryRay {
+        point: hit_point,
+        dir: ray.dir,
+        normal: n_entry,
+        cos_i,
+        facet: hit_rec.facet_idx,
+    };
+    match trace_entry(entry, ctx.stone, ctx.nd, None) {
         RayFate::ExitedUpward(exit) => ray_is_visibly_returned(exit.dir, forward, ctx.lighting),
         RayFate::EntryBlocked | RayFate::Leaked | RayFate::Absorbed => false,
     }

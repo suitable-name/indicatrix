@@ -17,7 +17,7 @@ things:
 2. It is a **spectral renderer**: it can show a physically based 3D render of
    any design in the library, in a chosen gem material and lighting, and
    report optical performance figures such as brilliance and fire.
-3. It is a **cutting-design editor**: on the standard build (see below) it
+3. It is a **cutting-design editor**: in every build it
    also lets you build a new design from scratch, edit an existing one facet
    tier by facet tier, solve it (work out the actual cutting depths), and
    check or improve its optical performance before you ever touch a lap.
@@ -28,13 +28,17 @@ carries the same "Indicatrix Cut" name next to a small gem icon.
 
 ## The Main Window
 
-A **menu bar** (File / Edit / Library / Help) runs above everything else. File
-mirrors the editor's New / Open / Save / Save As / Export Edited .asc,
+A **menu bar** (File / Edit / View / Library / Help) runs above everything else. File
+mirrors the editor's New Design... / Open... / Save / Save As... / Export Edited .asc,
 plus an **Open Recent** submenu of design files you have saved or opened
-(Chapters 3 and 11; greyed out on a build without the editor — see the
-Limitation note below); Edit mirrors Undo/Redo, each says what it
+(Chapters 3 and 11; greyed out while the list is empty) and **Render Jobs...**
+(Chapter 23); Edit mirrors Undo/Redo, each says what it
 will actually do once there is something to act on, and also opens
-**Preferences...** (Chapter 17); Library runs the whole-catalogue
+**Edit as Text...** and **Angle Sweep...** (Advanced interface only),
+**Cutting Mode...** (Chapter 20), **Preferences...** (Chapter 17) and the
+**Command Palette...** (Chapter 19); View opens the Parameters dock on its
+**Stone Properties...**, **Lighting & Environment...** and **Render & Output...**
+tabs (Ctrl+Alt+1, 2 and 3) and shows or folds the panel away; Library runs the whole-catalogue
 batches (regenerate preview images and tilt curves; Advanced interface only),
 has a **Selected Design** submenu with the card actions for the design you
 selected (Chapter 2), and opens the Rough
@@ -65,7 +69,7 @@ Below the menu bar, the window is divided into three areas:
   This area has its own header (title, designer, shape, and a menu of
   per-design actions), and below it three tabs:
   - **3D Spectral Preview** — the render viewport, described in Chapter 2.
-    On the standard build, this tab has its own inner pair of sub-tabs,
+    This tab has its own inner pair of sub-tabs,
     **Live Render** and **Edit**.
     The Edit sub-tab is the cutting-design editor covered in Chapters 3–8.
     The app always starts on the Edit sub-tab in its Solid view; click
@@ -94,8 +98,8 @@ relative to wherever you launched the program.
 ## Starting from Nothing: The Empty State
 
 Opening the Edit sub-tab (Chapter 3) before any design has been created,
-loaded or opened shows a card grid instead of a blank viewport, with four ways
-in. Once a design exists the grid is gone for good -- a brand-new design with
+loaded or opened shows a card grid titled "Nothing to Show Yet" instead of a
+blank viewport, with five ways in and a link to the tutorials. Once a design exists the grid is gone for good -- a brand-new design with
 no tiers yet shows its preform with a small "no tiers yet" hint and a
 **+ Add Tier** button instead. Every card can be reached with Tab and pressed
 with Space or Enter, and the **?** in the corner opens this section:
@@ -110,6 +114,10 @@ with Space or Enter, and the **?** in the corner opens this section:
   ready). Picking a stone lets you choose the material, the index gear and
   the stone's width in millimetres before you create it; Chapter 7 describes
   the options. Every card is selectable.
+- **Start from a Library Design** takes you to the library list and puts the
+  cursor in the search box; a hint line under the cards tells you to type a name,
+  click a design in the list and then click **Load Selected** on the command bar
+  (Chapter 3). It is greyed out while a guide step has file actions locked.
 - **Open the Worked Example** opens the in-app guide panel at its first step,
   which walks you through building Chapter 7's stone yourself: an Empty design
   from the New Design dialog, then the girdle, pavilion, crown and table tier
@@ -124,6 +132,8 @@ with Space or Enter, and the **?** in the corner opens this section:
   Subfolders are not included from this card; use the Import button's panel and
   turn on "Include Subfolders" first if you want them. It is greyed out while a
   guide step has file actions locked.
+
+Under the cards, **Browse All Tutorials...** opens the tutorial browser (Chapter 22).
 
 ## The Worked-Example Guide and the Keyboard-Shortcuts Overlay
 
@@ -197,7 +207,8 @@ plus the gear, symmetry, refractive index, headings and footnotes) and turns
 it into `.asc` cutting instructions, exactly as if you had exported a `.asc`
 from GemCAD. The design is stored with that generated `.asc` (named after the
 file, e.g. `round.asc` for `round.gem`) *and* the original `.gem`, both
-visible on the Attachments tab. A `.gem` that also carries a CAM preform
+visible on the
+Files & Downloads tab. A `.gem` that also carries a CAM preform
 imports without the preform; the summary says so.
 
 **Gem Cut Studio `.gcs` files.** A `.gcs` is converted the same way: one

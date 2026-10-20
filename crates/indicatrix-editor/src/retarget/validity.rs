@@ -1,38 +1,11 @@
-//! The validity gate: is the retargeted stone still a stone worth cutting?
-//!
-//! A retarget moves facet angles, and a faceter will not accept a result that has lost its
-//! girdle, its table or a whole tier of facets. [`analyze`] measures a solved design into a
-//! [`StoneAnalysis`]; [`judge`] compares the candidate's analysis with the original's and
-//! returns every [`InvalidReason`] it finds, each with a plain-English sentence. Both are
-//! pure, so they are tested on constructed cases without a window.
-//!
-//! The gate asks, in this order:
-//!
-//! 1. The candidate must solve and close into a finite solid.
-//! 2. The girdle must still be live and not thinner than half of the original.
-//! 3. The girdle must also keep its THINNEST point: the band at the corners between two
-//!    walls must stay at least half as thick as it was, and never run to a knife edge.
-//! 4. A table or culet that had its own facet must still sit on its side of the girdle.
-//! 5. No tier that had facets may lose them (all of them, or some).
-//! 6. No tier may become too small to cut where it was not before.
-//!
-//! Step 3 exists because step 2 is blind to it. The girdle figure is the height of the highest
-//! wall vertex above the lowest, and a retarget turns every facet about exactly those vertices
-//! ([`indicatrix_cut_core::design::hinge`]), so the figure never changes while the band between
-//! the walls can pinch out. [`indicatrix_cut_core::design::girdle_band`] measures the thinnest
-//! gap, and [`StoneAnalysis::girdle_thinnest_percent`] carries it.
-//!
-//! The table check reads the table tier's OWN facet ring, never the stone's `table_percent`:
-//! that figure also matches a preform top that was never cut away.
-//!
-//! The silhouette figures ([`StoneAnalysis::crown_to_pavilion`], [`StoneAnalysis::depth_percent`])
-//! are reported, not gated: a lower-index material makes the pavilion deeper whatever the
-//! cutter does, so the headline and the detail lines show the change instead of refusing it.
+//! Retarget analysis and manufacturing checks, with a mandatory original-meet gate.
+//! Geometry is captured before Shift and retained independently of mutable analyses.
 
 use glam::DVec3;
 use indicatrix::geometry::{
     meet_solver::SolvedTier,
     stone_metrics::{SolidMesh, SolidStatus, StoneProportions, build_solid_mesh, measure_solid},
+    tool::ToolPrimitive,
 };
 use indicatrix_cut_core::{
     DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, Design, ManufacturabilityWarning,
@@ -91,6 +64,11 @@ pub struct FlatRing {
 /// Everything the gate needs to know about one solved stone.
 #[derive(Debug, Clone)]
 pub struct StoneAnalysis {
+    /// Immutable original network, captured before any geometric adjustment.
+    pub preservation:
+        Option<std::sync::Arc<indicatrix_cut_core::meet_preservation::MeetPreservationBaseline>>,
+    /// Authored state that produced this analysis; never reconstructed from summary figures.
+    pub authored: Option<std::sync::Arc<Design>>,
     /// The solved masts the figures below come from.
     pub solved: Vec<SolvedTier>,
     /// The stone's planes (`planes_from_solved`), as `(normal, offset)`.
@@ -125,11 +103,27 @@ pub struct StoneAnalysis {
     pub girdle_band: Option<(f64, f64)>,
     /// Tiers whose facets are already too small to cut.
     pub undersized: BTreeSet<usize>,
-    /// The girdle-side edge of every flat crown or pavilion tier (empty unless asked for).
+    /// The girdle corners (hinge) of every flat crown or pavilion tier (empty unless asked for).
     pub hinges: BTreeMap<usize, TierHinge>,
 }
 
 impl StoneAnalysis {
+    /// The concave tools cut out of this stone's [`Self::planes`]: the design this analysis
+    /// measured ([`Self::authored`]) resolves its concave tiers against them
+    /// ([`Design::tools_for_scoring`], the placement the Compare window draws). Empty for a
+    /// design without concave tiers, for tiers that do not resolve, and for an analysis built
+    /// without its design.
+    ///
+    /// What Retarget measures its optical columns on, so the figures describe the stone with
+    /// its tools and not its flat shell.
+    #[must_use]
+    pub fn tools(&self) -> Vec<ToolPrimitive> {
+        self.authored
+            .as_ref()
+            .map(|design| design.tools_for_scoring(&self.planes))
+            .unwrap_or_default()
+    }
+
     /// This stone with its girdle band thickened by `delta` (in the stone's own units): the
     /// crown half is translated up by `delta / 2` and the pavilion half down by `delta / 2`.
     ///
@@ -197,6 +191,8 @@ const MIN_VERTICAL_NORMAL: f64 = 1e-9;
 /// Why a retargeted design is not acceptable.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InvalidReason {
+    /// A hard original-meet or shape-preservation failure.
+    Preservation(String),
     /// The design does not solve.
     DoesNotSolve(String),
     /// The facets no longer enclose a finite stone.
@@ -252,6 +248,7 @@ impl InvalidReason {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
+            Self::Preservation(why) => why.clone(),
             Self::DoesNotSolve(why) => {
                 format!("The retargeted design cannot be solved ({why}).")
             }
@@ -302,13 +299,13 @@ pub enum RetargetStrategy {
     /// Only angles changed: nothing in the design was a pinned mast that could be
     /// re-anchored (every moving facet re-solves from its meets).
     AnglesOnly,
-    /// Every pinned facet turns about its girdle-side edge, so the girdle keeps its outline
+    /// Every pinned facet turns about its girdle corners, so the girdle keeps its outline
     /// and height.
     Anchored,
     /// As [`Self::Anchored`], and the table and culet heights are refitted to keep their size.
     AnchoredRefit,
     /// The Optimize search: every crown and pavilion facet may take any angle within the
-    /// range, and turns about its girdle edge, so the girdle stays; the table and culet
+    /// range, and turns about its girdle corners, so the girdle stays; the table and culet
     /// heights are refitted to keep their size.
     Optimized,
 }
@@ -337,8 +334,9 @@ pub enum ValidityStatus {
     Valid,
     /// At least one check fails: Apply is disabled.
     Invalid,
-    /// The current design itself does not solve, so nothing could be compared. Apply stays
-    /// available (the retarget is no worse than it always was).
+    /// The current design itself does not solve, so nothing could be compared. Apply is
+    /// disabled too: an unchecked check has no candidate stone and no baseline, so there is
+    /// no change that could be applied ([`RetargetValidity::allows_apply`] is `Valid` only).
     Unchecked,
 }
 
@@ -455,10 +453,11 @@ impl RetargetValidity {
         self
     }
 
-    /// `true` when Apply may go ahead: valid, or unchecked.
+    /// `true` when Apply may go ahead: only a valid verdict. An invalid one fails a check, and
+    /// an unchecked one has no candidate stone to apply.
     #[must_use]
     pub fn allows_apply(&self) -> bool {
-        self.status != ValidityStatus::Invalid
+        self.status == ValidityStatus::Valid
     }
 
     /// The thinnest-point clause of the headline, `, thinnest point 0.40 % (was 0.25 %)`, or
@@ -556,133 +555,12 @@ impl RetargetValidity {
     }
 }
 
-/// The area of a planar polygon ring.
-#[must_use]
-pub fn polygon_area(ring: &[DVec3]) -> f64 {
-    let Some(&origin) = ring.first() else {
-        return 0.0;
-    };
-    let mut sum = DVec3::ZERO;
-    for pair in ring.windows(2).skip(1) {
-        sum += (pair[0] - origin).cross(pair[1] - origin);
-    }
-    0.5 * sum.length()
-}
+mod geometry;
+pub use geometry::polygon_area;
+use geometry::{mean_height, rings_by_plane};
 
-fn rings_by_plane(mesh: &SolidMesh) -> BTreeMap<usize, &Vec<DVec3>> {
-    mesh.rings
-        .iter()
-        .filter(|(_, ring)| ring.len() >= 3)
-        .map(|(plane, ring)| (*plane, ring))
-        .collect()
-}
-
-fn mean_height(ring: &[DVec3]) -> f64 {
-    ring.iter().map(|v| v.y).sum::<f64>() / ring.len().max(1) as f64
-}
-
-/// Solves `design` and measures the stone -- [`analyze_solved`] after [`Design::solve`].
-///
-/// `with_hinges` also reads the girdle-side edge of every flat crown or pavilion tier
-/// (needed for the ORIGINAL stone only).
-///
-/// # Errors
-///
-/// [`InvalidReason::DoesNotSolve`] when the design does not solve, [`InvalidReason::NotClosed`]
-/// when its planes do not bound a finite solid.
-pub fn analyze(design: &Design, with_hinges: bool) -> Result<StoneAnalysis, InvalidReason> {
-    let solved = design
-        .solve()
-        .map_err(|err| InvalidReason::DoesNotSolve(err.to_string()))?;
-    analyze_solved(design, solved, with_hinges)
-}
-
-/// Measures the stone `solved` describes for `design`.
-///
-/// # Errors
-///
-/// [`InvalidReason::NotClosed`] when the planes do not bound a finite solid.
-pub fn analyze_solved(
-    design: &Design,
-    solved: Vec<SolvedTier>,
-    with_hinges: bool,
-) -> Result<StoneAnalysis, InvalidReason> {
-    let planes = design.planes_from_solved(&solved);
-    let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) else {
-        return Err(InvalidReason::NotClosed);
-    };
-    let metrics = measure_solid(&planes).ok_or(InvalidReason::NotClosed)?;
-    let proportions = StoneProportions::from_solid(&metrics, &mesh, &planes);
-    let facets = solid_facets_in(design, &solved, &planes, &mesh);
-    let ranges = tier_plane_ranges(design, &solved);
-    let girdle_thinnest_percent = girdle_band_in(design, &ranges, &planes, &mesh)
-        .filter(|_| metrics.width_axis > MIN_WIDTH)
-        .map(|band| 100.0 * band.min_thickness / metrics.width_axis);
-    let rings = rings_by_plane(&mesh);
-
-    let mut flats = Vec::new();
-    let mut band: Option<(f64, f64)> = None;
-    for (tier_index, (tier, range)) in design.tiers.iter().zip(&ranges).enumerate() {
-        if is_horizontal_angle_deg(tier.angle_deg) {
-            let ring = range.clone().find_map(|plane| rings.get(&plane));
-            if let Some(ring) = ring {
-                flats.push(FlatRing {
-                    tier_index,
-                    side: FacetSide::of_angle_deg(tier.angle_deg),
-                    area: polygon_area(ring),
-                    height: mean_height(ring),
-                });
-            }
-        } else if tier.angle_deg.abs().to_radians().cos().abs() <= GIRDLE_COS_EPS {
-            for plane in range.clone() {
-                if let Some(&ring) = rings.get(&plane) {
-                    for vertex in ring {
-                        band = Some(band.map_or((vertex.y, vertex.y), |(lo, hi)| {
-                            (lo.min(vertex.y), hi.max(vertex.y))
-                        }));
-                    }
-                }
-            }
-        }
-    }
-
-    let undersized =
-        check_manufacturability(design, &solved, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2)
-            .into_iter()
-            .filter_map(|warning| match warning {
-                ManufacturabilityWarning::UndersizedFacet { tier_index, .. } => Some(tier_index),
-                _ => None,
-            })
-            .collect();
-    let hinges = if with_hinges {
-        tier_hinges_in(design, &solved, &planes, &mesh)
-    } else {
-        BTreeMap::new()
-    };
-    let crown_to_pavilion = match (proportions.crown_height, proportions.pavilion_depth) {
-        (Some(crown), Some(pavilion)) if pavilion > MIN_WIDTH => Some(crown / pavilion),
-        _ => None,
-    };
-    let depth_percent = (metrics.width_axis > MIN_WIDTH)
-        .then(|| 100.0 * proportions.total_depth / metrics.width_axis);
-    Ok(StoneAnalysis {
-        girdle_percent: proportions.girdle_to_width_percent,
-        girdle_thinnest_percent,
-        table_percent: proportions.table_percent,
-        crown_height: proportions.crown_height,
-        pavilion_depth: proportions.pavilion_depth,
-        crown_to_pavilion,
-        depth_percent,
-        facets,
-        flats,
-        girdle_band: band,
-        undersized,
-        hinges,
-        ranges,
-        solved,
-        planes,
-    })
-}
+mod analysis;
+pub use analysis::{analyze, analyze_controlled, analyze_solved};
 
 /// Whether a girdle whose thinnest point was `was_percent` of the width and is now `now_percent`
 /// has thinned out at its corners: it runs to a knife edge, or it is under
@@ -707,6 +585,49 @@ pub fn judge(
         Ok(analysis) => analysis,
         Err(reason) => return vec![reason.clone()],
     };
+    let mut reasons = Vec::new();
+    match (&original.preservation, &candidate.authored) {
+        (Some(baseline), Some(authored)) => {
+            if let Err(error) = baseline.validate(
+                authored,
+                indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET,
+            ) {
+                reasons.push(InvalidReason::Preservation(error.to_string()));
+            }
+        }
+        _ => reasons.push(InvalidReason::Preservation(
+            "Original meet validation is missing; recompute this candidate.".into(),
+        )),
+    }
+    reasons.extend(stone_reasons(design, original, candidate));
+    reasons
+}
+
+/// [`judge`] without the meet-preservation check: every reason the finished STONE is not
+/// acceptable (girdle, flats, lost or partly lost tiers, undersized facets).
+///
+/// For a change that is not a retarget and cannot keep the original meet network by its
+/// nature, such as the verdict's "Add a table", which cuts the crown's apex away and adds a
+/// facet. Those fixes judge the stone alone; a retarget or an optimizer result must go
+/// through [`judge`].
+#[must_use]
+pub fn judge_stone(
+    design: &Design,
+    original: &StoneAnalysis,
+    candidate: &Result<StoneAnalysis, InvalidReason>,
+) -> Vec<InvalidReason> {
+    match candidate {
+        Ok(analysis) => stone_reasons(design, original, analysis),
+        Err(reason) => vec![reason.clone()],
+    }
+}
+
+/// The stone checks of [`judge_stone`] for a candidate that did analyse.
+fn stone_reasons(
+    design: &Design,
+    original: &StoneAnalysis,
+    candidate: &StoneAnalysis,
+) -> Vec<InvalidReason> {
     let name_of = |index: usize| {
         design
             .tiers

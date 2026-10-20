@@ -20,7 +20,10 @@ mod commands;
 mod cut;
 mod design;
 mod library;
+mod navigation;
 mod push;
+mod remote;
+mod remote_jobs;
 pub mod run;
 
 slint::include_modules!();

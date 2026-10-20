@@ -8,7 +8,7 @@
 //! this module only turns them into Slint rows and saves the result through the settings
 //! persister.
 
-use super::{build_design, launch, perform, progress, runtime};
+use super::{build_design, launch, perform, progress, runtime, stage_nav};
 use crate::{
     EditorModel, GuideModel, MainWindow, PreferencesModel, TutorialRowData, TutorialsModel,
     gui::editor::state::EditorState,
@@ -124,6 +124,13 @@ fn setup_guide_callbacks(ui: &MainWindow) {
         }
     });
 
+    let ui_weak = ui.as_weak();
+    guide.on_show_me_where(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            stage_nav::apply_stage(&ui);
+        }
+    });
+
     // Every time a step is entered going forward its goal is checked straight away against
     // the current design, so a goal that is already met (auto-solve finished before the user
     // got there, say) completes without waiting for another edit. Events belong to the step
@@ -135,6 +142,7 @@ fn setup_guide_callbacks(ui: &MainWindow) {
             runtime::clear_events();
             build_design::step_entered(&ui);
             progress::check_now(&ui);
+            stage_nav::check_stage_alignment(&ui);
         }
     });
 

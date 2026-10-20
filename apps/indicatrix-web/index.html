@@ -100,5 +100,16 @@
       data-cargo-profile-dev="indicatrix-web-compute"
       data-cargo-profile-release="indicatrix-web-release"
     />
+    <link
+      data-trunk
+      rel="rust"
+      href="../indicatrix-web-gpu/Cargo.toml"
+      data-type="worker"
+      data-loader-shim
+      data-wasm-opt="s"
+      data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue"
+      data-cargo-profile-dev="indicatrix-web-compute"
+      data-cargo-profile-release="indicatrix-web-release"
+    />
   </body>
 </html>

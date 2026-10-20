@@ -12,7 +12,7 @@ use indicatrix_cut::{
     TiltModel, ViewportModel,
 };
 use slint::{ComponentHandle, Model};
-use slint_harness::{AccessibleRole, screenshot::Shot};
+use uiprobe::{AccessibleRole, screenshot::Shot};
 
 /// What the Export dialog's Output Location shows instead of the real folder.
 const NEUTRAL_FOLDER: &str = "D:\\Renders";
@@ -190,7 +190,7 @@ pub fn emerald_export_settings_4k(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
 }
 
 /// One Parameters dock tab, cropped to the dock.
-fn parameters(sc: &mut Sc<'_, '_>, tab: i32) -> Result<Shot, String> {
+fn parameters(sc: &Sc<'_, '_>, tab: i32) -> Result<Shot, String> {
     sc.select_design(STUDIO)?;
     sc.show_live_view();
     let ui = sc.ui();
@@ -335,7 +335,7 @@ pub fn tutorial_from_design(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
 }
 
 /// Starts the lesson for the design and waits for the guide to open.
-fn start_lesson(sc: &mut Sc<'_, '_>) -> Result<(), String> {
+fn start_lesson(sc: &Sc<'_, '_>) -> Result<(), String> {
     let design = sc.select_design(FVS)?;
     sc.show_live_view();
     let ui = sc.ui();

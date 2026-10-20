@@ -3,10 +3,14 @@
 //! Every change is atomic: when the environments cannot be rebuilt for the new setting, the
 //! setting, the model and the statistics are all as they were.
 
-use indicatrix_ai::model::{ModelTier, TrainingMode};
+use indicatrix_ai::{
+    model::{GemstoneSetAttentionNetwork, ModelTier, TrainingMode},
+    training::BurnTrainer,
+};
 
 use super::{
-    Algorithm, DeviceChoice, GPU_LABEL, Hyperparams, RunnerError, TrainingRunner, build_trainer,
+    Algorithm, BuildArgs, DeviceChoice, Hyperparams, RunnerError, TrainingRunner, build_trainer,
+    device_of_label,
 };
 use crate::dataset::{find_spectrum_entry, resolve_material};
 
@@ -43,58 +47,92 @@ impl TrainingRunner {
     /// [`RunnerError`] when the trainer cannot be built or no environment can be built; the model,
     /// backend and statistics are then all as they were.
     pub fn set_tier(&mut self, tier: ModelTier) -> Result<(), RunnerError> {
-        let choice = self.current_device_choice();
-        let (mut trainer, label, warning) = build_trainer(
-            &self.cfg.ppo,
-            tier,
-            self.split.max_tiers,
-            choice,
-            self.cfg.seed,
-        )?;
+        self.sync_update()?;
+        let choice = device_of_label(self.device_label);
         let net = tier.init_network(self.cfg.seed);
-        trainer.load_weights(&net)?;
+        // The update thread builds the replacement trainer and holds it; the old one serves until
+        // the commit below.
+        let built = self.updater.stage(BuildArgs {
+            ppo: self.cfg.ppo.clone(),
+            tier,
+            max_tiers: self.split.max_tiers,
+            device: choice,
+            seed: self.cfg.seed,
+            net: net.clone(),
+        })?;
+        let rollout_trainer = match self.build_rollout_trainer(tier, &net, built.label) {
+            Ok(trainer) => trainer,
+            Err(error) => {
+                self.updater.discard();
+                return Err(error);
+            }
+        };
         // Environments do not depend on the model, so restart on the old model first: a failure
         // there leaves everything untouched, and nothing can fail after the swap.
-        self.restart_run()?;
-        self.trainer = trainer;
+        if let Err(error) = self.restart_run() {
+            self.updater.discard();
+            return Err(error);
+        }
+        self.updater.commit();
+        self.rollout_trainer = rollout_trainer;
         self.net = net;
-        self.refresh_rollout_model();
+        self.rollout_model = self.rollout_trainer.rollout_model();
         self.cfg.tier = tier;
-        self.device_label = label;
-        self.warnings.extend(warning);
+        self.device_label = built.label;
+        self.warnings.extend(built.warning);
         Ok(())
     }
 
-    fn current_device_choice(&self) -> DeviceChoice {
-        if self.device_label == GPU_LABEL {
-            DeviceChoice::Gpu
-        } else {
-            DeviceChoice::Cpu
-        }
+    /// A rollout trainer of model size `tier` on the device `label` names, loaded with `net`.
+    fn build_rollout_trainer(
+        &self,
+        tier: ModelTier,
+        net: &GemstoneSetAttentionNetwork,
+        label: &str,
+    ) -> Result<BurnTrainer, RunnerError> {
+        let (mut trainer, _, _) = build_trainer(
+            &self.cfg.ppo,
+            tier,
+            self.split.max_tiers,
+            device_of_label(label),
+            self.cfg.seed,
+        )?;
+        trainer.load_weights(net)?;
+        Ok(trainer)
     }
 
     /// Moves the model to another backend, keeping the trained weights (the Adam moments start
-    /// over). Returns the new backend label. An explicit `Gpu` that cannot start is an error and
-    /// leaves the current backend in place.
+    /// over). Returns the new backend label. An explicit WGPU or CUDA backend that cannot start
+    /// is an error and leaves the current backend in place.
     ///
     /// # Errors
     ///
     /// [`RunnerError`] when the trainer cannot be built or the weights cannot be loaded.
     pub fn set_device(&mut self, device: DeviceChoice) -> Result<&'static str, RunnerError> {
-        let (mut trainer, label, warning) = build_trainer(
-            &self.cfg.ppo,
-            self.cfg.tier,
-            self.split.max_tiers,
+        self.sync_update()?;
+        let built = self.updater.stage(BuildArgs {
+            ppo: self.cfg.ppo.clone(),
+            tier: self.cfg.tier,
+            max_tiers: self.split.max_tiers,
             device,
-            self.cfg.seed,
-        )?;
-        trainer.load_weights(&self.net)?;
-        self.trainer = trainer;
-        self.refresh_rollout_model();
-        self.device_label = label;
+            seed: self.cfg.seed,
+            net: self.net.clone(),
+        })?;
+        let rollout_trainer =
+            match self.build_rollout_trainer(self.cfg.tier, &self.net, built.label) {
+                Ok(trainer) => trainer,
+                Err(error) => {
+                    self.updater.discard();
+                    return Err(error);
+                }
+            };
+        self.updater.commit();
+        self.rollout_trainer = rollout_trainer;
+        self.rollout_model = self.rollout_trainer.rollout_model();
+        self.device_label = built.label;
         self.cfg.device = device;
-        self.warnings.extend(warning);
-        Ok(label)
+        self.warnings.extend(built.warning);
+        Ok(built.label)
     }
 
     /// Cycle the train split across workers, or train on the focus stone only.
@@ -176,6 +214,23 @@ impl TrainingRunner {
     ///
     /// [`RunnerError`] naming the offending value; nothing changes then.
     pub fn set_hyperparams(&mut self, h: &Hyperparams) -> Result<(), RunnerError> {
+        self.set_hyperparams_with_updates(h, None)
+    }
+
+    /// [`Self::set_hyperparams`] plus, in imitation mode, the mini-batches trained per round
+    /// (`imitation.updates_per_round`; `Some(0)` selects the full-epoch mode, `None` keeps the
+    /// current value). A PPO run ignores it. One atomic change: when validation refuses any value,
+    /// nothing changes. The next imitation update takes it with its job; one in flight keeps the
+    /// value it started with.
+    ///
+    /// # Errors
+    ///
+    /// [`RunnerError`] naming the offending value; nothing changes then.
+    pub fn set_hyperparams_with_updates(
+        &mut self,
+        h: &Hyperparams,
+        updates_per_round: Option<usize>,
+    ) -> Result<(), RunnerError> {
         let mut candidate = self.cfg.clone();
         candidate.workers = h.workers;
         candidate.rollout_size = h.rollout_size;
@@ -189,6 +244,9 @@ impl TrainingRunner {
                 candidate.imitation.mini_batch_size = h.mini_batch;
                 candidate.imitation.epochs_per_round = h.ppo_epochs;
                 candidate.imitation.learning_rate = h.learning_rate;
+                if let Some(updates) = updates_per_round {
+                    candidate.imitation.updates_per_round = updates;
+                }
             }
         }
         candidate.ppo.clip_epsilon = h.clip_epsilon;
@@ -201,7 +259,9 @@ impl TrainingRunner {
             self.cfg = previous;
             return Err(e);
         }
-        self.trainer.config = ppo;
+        // Queued behind any update in flight, which keeps the configuration it started with. An
+        // imitation update takes its settings with the job; the PPO one reads the trainer's.
+        self.updater.set_ppo_config(ppo);
         Ok(())
     }
 }

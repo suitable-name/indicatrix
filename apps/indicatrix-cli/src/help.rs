@@ -9,10 +9,11 @@ const ROOT: &str = "\
 indicatrix-cli: solve, check, optimize, retarget, sweep and export faceting designs without a window.
 
 Usage:
-  indicatrix-cli <command> <design> [options]
+  indicatrix-cli <command> <design>... [options]
   indicatrix-cli <command> --help
 
-A <design> is a .isdd (or an older .indicatrix), .asc, .gem or .gcs file.
+A <design> is a .isdd (or an older .indicatrix), .asc, .gem or .gcs file. Every command that
+takes a design takes several (the shell expands globs as usual): see Several designs below.
 
 Commands:
   info      Name, gear, symmetry, tier list and material of a design.
@@ -23,6 +24,7 @@ Commands:
   retarget  Adapt the angles to another material with the dialog's validity gate.
   sweep     Score one tier over a range of angles.
   export    Write .asc, .isdd, .gcs or the cutting sheet (.html).
+  census    Measure the meet-preserving gate over templates, files and a library (read-only).
   render      Render a still picture from a render job file (*.job.json).
   tilt-video  Render a tilt video from a render job file; resumes from its frames.
 
@@ -45,6 +47,21 @@ Material and lighting:
                     tray, the default), tent, dome (sky, no sun), sun (sky plus direct sun),
                     tray (white tray), shop, window, illuminant-a or aset.
 
+Several designs:
+  indicatrix-cli metrics *.isdd --csv
+  Each design runs as the command would run on it alone, in the order given.
+  - Text reports follow one another, each under a \"==> FILE <==\" line and a blank line between.
+    JSON reports follow one another as complete documents. metrics --csv prints its header
+    line once and a row for each design.
+  - --out FILE (for sweep, --csv FILE) names one file, so it is refused with several designs.
+    --out-dir DIR writes one file for each design instead, named after the design without its
+    extension: DIR/<name>.<extension of that output> (.isdd for solve, optimize and retarget;
+    .txt, .json or .csv for a report; the chosen format for export, which then needs --format).
+    DIR must exist. Two designs that would get the same file name are refused before anything runs.
+  - A design that fails prints its error under its name and the others still run. The exit code
+    is the first failure's code (else 4 when a validate verdict is Problem, else 0), and the
+    files of the designs that worked are written. The last line says how many failed.
+
 Exit codes:
   0  Done.
   1  The command line is wrong.
@@ -62,7 +79,7 @@ signed convention instead, the one the design files use: a pavilion angle is neg
 ";
 
 const INFO: &str = "\
-Usage: indicatrix-cli info <design> [--json] [--out FILE] [--db FILE]
+Usage: indicatrix-cli info <design>... [--json] [--out FILE | --out-dir DIR] [--db FILE]
 
 Prints the design's name, gear, symmetry, preform (shape, size and offset), material and the
 tier list (standard code, the tier's own name, block, angle as a positive number, index
@@ -70,24 +87,29 @@ positions, what each tier meets or follows). Does not solve.
 
   --json       Print JSON instead of text.
   --out FILE   Write the report to FILE instead of printing it.
+  --out-dir DIR
+               With several designs: write each report to DIR/<name>.txt (.json with --json).
   --db FILE    A design library, for custom materials.
 ";
 
 const SOLVE: &str = "\
-Usage: indicatrix-cli solve <design> [--out FILE.isdd] [--json] [--db FILE]
+Usage: indicatrix-cli solve <design>... [--out FILE.isdd | --out-dir DIR] [--json] [--db FILE]
 
 Solves every tier, checks that the facets enclose a stone and lists the manufacturability
 warnings. Exit code 2 when the design does not solve or does not close.
 
   --out FILE   Save the design as a .isdd file (also converts .asc, .gem and .gcs).
                Nothing is written when the design does not solve and close.
+  --out-dir DIR
+               With several designs: save each as DIR/<name>.isdd.
   --json       Print JSON instead of text.
   --db FILE    A design library, for custom materials.
 ";
 
 const METRICS: &str = "\
-Usage: indicatrix-cli metrics <design> [--material NAME | --ri N] [--tilt]
-                              [--json | --csv] [--lighting NAME] [--out FILE] [--db FILE]
+Usage: indicatrix-cli metrics <design>... [--material NAME | --ri N] [--tilt]
+                              [--json | --csv] [--lighting NAME] [--out FILE | --out-dir DIR]
+                              [--db FILE]
 
 Table-up windowing, brilliance, extinction, fire and scintillation, the proportions of the
 stone and its yield. With --tilt the tilt performance is averaged over four axes and 181
@@ -102,29 +124,32 @@ with its refractive index as a flat material, and the report says so.
   --json | --csv    Print JSON, or a header line and one row, instead of text.
   --lighting NAME   The light the score is taken under (default grading, the grading tray).
   --out FILE        Write the report to FILE instead of printing it.
+  --out-dir DIR     With several designs: write each report to DIR/<name>.txt (.json, .csv).
   --db FILE         A design library, for custom materials.
 ";
 
 const VALIDATE: &str = "\
-Usage: indicatrix-cli validate <design> [--json] [--material NAME | --ri N]
-                               [--lighting NAME] [--out FILE] [--db FILE]
+Usage: indicatrix-cli validate <design>... [--json] [--material NAME | --ri N]
+                               [--lighting NAME] [--out FILE | --out-dir DIR] [--db FILE]
 
 Lists the manufacturability warnings and the overall verdict of the desktop editor's status
 strip: Good, Check or Problem, with the reasons. Exit code 4 when the verdict is Problem,
-2 when the design cannot be read.
+2 when the design cannot be read. With several designs the exit code is 4 when none failed
+and at least one is a Problem.
 
   --json            Print JSON instead of text.
   --material NAME   Judge the optics in this material instead of the design's own.
   --ri N            Judge the optics in a material of this refractive index.
   --lighting NAME   The light the optics are measured under (default grading, the grading tray).
   --out FILE        Write the report to FILE instead of printing it.
+  --out-dir DIR     With several designs: write each report to DIR/<name>.txt (.json).
   --db FILE         A design library, for custom materials.
 ";
 
 const OPTIMIZE: &str = "\
-Usage: indicatrix-cli optimize <design> [--preset NAME] [--budget N] [--starts N] [--seed N]
+Usage: indicatrix-cli optimize <design>... [--preset NAME] [--budget N] [--starts N] [--seed N]
                                [--vary-anchored] [--candidates N] [--lighting NAME]
-                               [--json] [--out FILE.isdd] [--db FILE]
+                               [--json] [--out FILE.isdd | --out-dir DIR] [--db FILE]
 
 Runs the Optimize tab's search on the design's own material and lists the ranked candidates.
 The best one is saved with --out. When the search finds nothing better, nothing is written.
@@ -145,22 +170,25 @@ The best one is saved with --out. When the search finds nothing better, nothing 
                      preset: a run without --lighting is scored under the grading tray).
   --json             Print JSON instead of text.
   --out FILE         Save the best candidate as a .isdd file.
+  --out-dir DIR      With several designs: save each best candidate as DIR/<name>.isdd.
   --db FILE          A design library, for custom materials.
 ";
 
 const RETARGET: &str = "\
-Usage: indicatrix-cli retarget <design> (--material NAME | --ri N) [--mode shift|optimize]
+Usage: indicatrix-cli retarget <design>... (--material NAME | --ri N) [--mode shift|optimize]
                                [--crown-follow | --crown-fraction F | --crown-ratio]
                                [--preset NAME]
                                [--range DEG] [--budget N] [--seed N] [--no-keep-look]
-                               [--lighting NAME]
-                               [--json] [--out FILE.isdd] [--db FILE]
+                               [--girdle-allowance] [--lighting NAME]
+                               [--json] [--out FILE.isdd | --out-dir DIR] [--db FILE]
 
 Adapts the facet angles to another material with the Retarget dialog's engine and validity
-gate: every facet turns about its girdle-side edge, and the result is checked for a closed
+gate: every facet turns about its girdle corners, and the result is checked for a closed
 stone, a girdle that survives, a table that stays flat and facets that do not vanish.
 A result the gate refuses is never written: the reasons are printed and the exit code is 2.
-The design's material is set to the target in the saved file.
+Only a Valid verdict applies, as in the dialog's Apply: a change that could not be checked (the
+current design does not solve or close) is refused with the same verdict line, so there is no
+option to let one through. The design's material is set to the target in the saved file.
 
   --material NAME      The material to retarget for.
   --ri N               A bare refractive index instead.
@@ -179,15 +207,22 @@ The design's material is set to the target in the saved file.
   --no-keep-look       Do not penalise options that drift from the design's table size and
                        crown-to-pavilion ratio (optimize mode; by default every option is
                        scored with that penalty).
+  --girdle-allowance   Allow a thicker girdle, as the dialog's \"Allow a Thicker Girdle (up to
+                       +10 %)\": when the new angles would pinch the girdle at its corners, thicken
+                       the band by 5 % and then 10 % (never thinner) before giving up. Plan view,
+                       table and culet size and the crown-to-pavilion ratio are kept exactly; the
+                       result text says which step was used. On in the dialog; off here unless
+                       given, so a result that is refused without it may be valid with it.
   --lighting NAME      The light everything is scored under (default grading, the grading tray).
   --json               Print JSON instead of text.
   --out FILE           Save the retargeted design as a .isdd file.
+  --out-dir DIR        With several designs: save each as DIR/<name>.isdd.
   --db FILE            A design library, for custom materials.
 ";
 
 const SWEEP: &str = "\
-Usage: indicatrix-cli sweep <design> --tier NAME --from A --to B --step S [--tilt]
-                            [--csv FILE] [--json] [--material NAME | --ri N]
+Usage: indicatrix-cli sweep <design>... --tier NAME --from A --to B --step S [--tilt]
+                            [--csv FILE | --out-dir DIR] [--json] [--material NAME | --ri N]
                             [--lighting NAME] [--db FILE]
 
 Sets one tier to every angle from A to B in steps of S, solves and scores each one, and
@@ -202,6 +237,7 @@ JSON keeps the stored signed ones (a pavilion angle is negative).
   --step S          The distance between angles; at most 200 angles in all.
   --tilt            Also average the tilt performance of every row (about 1.4 s a row).
   --csv FILE        Write the rows as CSV to FILE.
+  --out-dir DIR     With several designs: write each one's rows to DIR/<name>.csv.
   --json            Print JSON instead of text.
   --material NAME   Score in this material instead of the design's own.
   --ri N            Score in a material of this refractive index.
@@ -210,8 +246,8 @@ JSON keeps the stored signed ones (a pavilion angle is negative).
 ";
 
 const EXPORT: &str = "\
-Usage: indicatrix-cli export <design> --format asc|isdd|gcs|html --out FILE [--db FILE]
-                             [--date TEXT]
+Usage: indicatrix-cli export <design>... --format asc|isdd|gcs|html (--out FILE | --out-dir DIR)
+                             [--db FILE] [--date TEXT]
 
 Writes the solved design in another form. The format may be left out when FILE ends in
 .asc, .isdd, .gcs or .html. The design must solve and close; nothing is written
@@ -221,14 +257,58 @@ otherwise.
                        (CRLF line ends).
   --format isdd        A self-contained .isdd design file (the older name indicatrix is
                        accepted too).
-  --format gcs         A Gem Cut Studio file (experimental).
+  --format gcs         A Gem Cut Studio file (experimental: written to the published
+                       Gem Cut Studio 1.1 file description and read back by this program, but
+                       not yet opened in Gem Cut Studio itself; check a design whose facet
+                       positions are not mirrored about index 0 before relying on it).
   --format html        The cutting instructions as a web page, headed by the design's
                        title, designer and notes.
   --out FILE           Where to write it.
+  --out-dir DIR        With several designs: write each as DIR/<name>.<extension of the format>.
+                       --format is then required.
   --db FILE            A design library, for custom materials.
   --date TEXT          The date the html page prints under its title, for example
                        'October 2026'. Without it no date is printed, so the page is the
                        same every time.
+";
+
+const CENSUS: &str = "Usage: indicatrix-cli census [DESIGN...] [--templates] [--fixtures]
+                             [--db FILE (--all | --ids LIST) [--limit N] [--offset M]]
+                             [--targets LIST] [--modes shift[,optimize]]
+                             [--crown follow|fixed|ratio|fraction=F] [--budget N] [--timings]
+                             [--out FILE] [--out-dir DIR] [--json]
+
+Measures what the meet-preserving gate does to many designs and writes one row for each
+design, target material and mode: the verdict under the Retarget bounds, the raw shape changes
+under bounds no stone reaches, the travel the turn is granted, and for a refused shift whether
+the refusal is a branch mismatch (the ideal masts reproduce the meets, the authored constraints
+pick another vertex) or a real infeasibility. It changes no design and no library: the library
+is opened read-only. A design that cannot be read or captured is a row, never an error.
+
+  DESIGN...         Design files to measure.
+  --templates       The nine built-in templates.
+  --fixtures        The concave fixture and the 1.72 brilliant.
+  --db FILE         A design library (facet_diagrams.sqlite), opened read-only.
+  --all             Every design of the library, in ascending entry id order.
+  --ids LIST        Only these entry ids (comma separated).
+  --limit N         At most N library designs, after --offset (for sharding a long run).
+  --offset M        Skip the first M library designs.
+  --targets LIST    Materials to retarget to (default diamond,sapphire,quartz,cz,tourmaline;
+                    cz is Cubic Zirconia; a number is a bare refractive index). A target within
+                    0.005 of a design's own index gets no row.
+  --modes LIST      shift (default), optimize or both.
+  --crown RULE      follow (default), fixed, ratio or fraction=F, as retarget.
+  --budget N        Evaluations of the optimize mode (default 100).
+  --timings         Add the timing columns; they differ from run to run, the rest does not.
+  --out FILE        Write the report (CSV, or JSON with --json) to FILE; the percentile summary
+                    is printed. Without it the report is printed.
+  --out-dir DIR     Write the retargeted .isdd of every Valid row to DIR/<key>__<target>__<mode>.isdd
+                    (DIR must exist).
+  --json            JSON instead of CSV.
+
+The CSV starts with a comment line carrying census_version, and ends with comment lines (#)
+holding the percentile tables. A whole library at five targets takes hours: start with
+--targets sapphire --limit 200. Exit code 0 when the census ran.
 ";
 
 const RENDER: &str = "\
@@ -242,6 +322,8 @@ app's render queue (File > Render Jobs...), which also exports scripts that call
 It renders with the app's own engine, so the picture is the one the app would have made.
 
   --out FILE.png          Write the picture here instead of where the job says.
+  --engine path|ray      Replace the job renderer: spectral Path Traced or deterministic Ray Traced.
+                          Ray uses the job AA tap count and its approximate RGB base glass.
   --local ENGINES         The engines of this computer: cpu, gpu or cpu+gpu (default cpu+gpu).
                           gpu needs a build with the gpu feature; without it everything renders
                           on the processor and a note says so.
@@ -282,6 +364,8 @@ frames first and starts at frame one. A folder that holds another job's frames i
 
   --out-dir FOLDER        The frame folder, instead of the one the job names.
   --restart               Start again from the first frame.
+  --engine path|ray      Replace the job renderer: spectral Path Traced or deterministic Ray Traced.
+                          Ray uses the job AA tap count and its approximate RGB base glass.
   --local ENGINES         The engines of this computer: cpu, gpu or cpu+gpu (default cpu+gpu).
                           gpu needs a build with the gpu feature; without it everything renders
                           on the processor and a note says so.
@@ -322,6 +406,7 @@ pub fn text(topic: Topic) -> String {
         Topic::Retarget => RETARGET,
         Topic::Sweep => SWEEP,
         Topic::Export => EXPORT,
+        Topic::Census => CENSUS,
         Topic::Render => RENDER,
         Topic::TiltVideo => TILT_VIDEO,
     };
@@ -339,7 +424,7 @@ pub fn text(topic: Topic) -> String {
 mod tests {
     use super::*;
 
-    const EVERY_TOPIC: [Topic; 11] = [
+    const EVERY_TOPIC: [Topic; 12] = [
         Topic::Render,
         Topic::TiltVideo,
         Topic::Root,
@@ -351,6 +436,7 @@ mod tests {
         Topic::Retarget,
         Topic::Sweep,
         Topic::Export,
+        Topic::Census,
     ];
 
     #[test]
@@ -373,6 +459,7 @@ mod tests {
             (Topic::Retarget, "retarget"),
             (Topic::Sweep, "sweep"),
             (Topic::Export, "export"),
+            (Topic::Census, "census"),
             (Topic::Render, "render"),
             (Topic::TiltVideo, "tilt-video"),
         ] {
@@ -397,6 +484,7 @@ mod tests {
             "retarget",
             "sweep",
             "export",
+            "census",
             "render",
             "tilt-video",
         ] {
@@ -405,6 +493,51 @@ mod tests {
         for code in ["  0  ", "  1  ", "  2  ", "  3  ", "  4  ", "  5  "] {
             assert!(page.contains(code), "{code:?}");
         }
+    }
+
+    #[test]
+    fn the_root_page_explains_several_designs_and_the_command_pages_take_them() {
+        let root = text(Topic::Root);
+        for phrase in [
+            "Several designs:",
+            "==> FILE <==",
+            "--out-dir DIR",
+            "refused before anything runs",
+            "the others still run",
+        ] {
+            assert!(root.contains(phrase), "the root page lacks {phrase:?}");
+        }
+        for (topic, word) in [
+            (Topic::Info, "info"),
+            (Topic::Solve, "solve"),
+            (Topic::Metrics, "metrics"),
+            (Topic::Validate, "validate"),
+            (Topic::Optimize, "optimize"),
+            (Topic::Retarget, "retarget"),
+            (Topic::Sweep, "sweep"),
+            (Topic::Export, "export"),
+        ] {
+            let page = text(topic);
+            assert!(
+                page.starts_with(&format!("Usage: indicatrix-cli {word} <design>... ")),
+                "{word}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_retarget_page_says_only_valid_applies_and_the_gcs_label_says_why() {
+        let retarget = text(Topic::Retarget);
+        assert!(
+            retarget.contains("Only a Valid verdict applies"),
+            "{retarget}"
+        );
+        assert!(retarget.contains("same verdict line"), "{retarget}");
+        let export = text(Topic::Export);
+        assert!(
+            export.contains("not yet opened in Gem Cut Studio"),
+            "{export}"
+        );
     }
 
     #[test]
@@ -433,8 +566,9 @@ mod tests {
     }
 
     #[test]
-    fn each_page_names_the_flags_its_command_takes() {
+    fn each_render_page_names_the_engine_flags() {
         let engine_flags: &[&str] = &[
+            "--engine",
             "--local",
             "--remote",
             "--cert-dir",
@@ -455,9 +589,13 @@ mod tests {
             }
             assert!(page.contains("gpu feature"), "{topic:?}");
         }
-        let flags: [(Topic, &[&str]); 8] = [
-            (Topic::Info, &["--json", "--out", "--db"]),
-            (Topic::Solve, &["--out", "--json", "--db"]),
+    }
+
+    #[test]
+    fn each_page_names_the_flags_its_command_takes() {
+        let flags: [(Topic, &[&str]); 9] = [
+            (Topic::Info, &["--json", "--out", "--out-dir", "--db"]),
+            (Topic::Solve, &["--out", "--out-dir", "--json", "--db"]),
             (
                 Topic::Metrics,
                 &[
@@ -468,11 +606,19 @@ mod tests {
                     "--csv",
                     "--lighting",
                     "--out",
+                    "--out-dir",
                 ],
             ),
             (
                 Topic::Validate,
-                &["--json", "--material", "--ri", "--lighting", "--out"],
+                &[
+                    "--json",
+                    "--material",
+                    "--ri",
+                    "--lighting",
+                    "--out",
+                    "--out-dir",
+                ],
             ),
             (
                 Topic::Optimize,
@@ -484,6 +630,7 @@ mod tests {
                     "--vary-anchored",
                     "--candidates",
                     "--out",
+                    "--out-dir",
                 ],
             ),
             (
@@ -497,14 +644,44 @@ mod tests {
                     "--crown-ratio",
                     "--range",
                     "--no-keep-look",
+                    "--girdle-allowance",
                     "--out",
+                    "--out-dir",
                 ],
             ),
             (
                 Topic::Sweep,
-                &["--tier", "--from", "--to", "--step", "--tilt", "--csv"],
+                &[
+                    "--tier",
+                    "--from",
+                    "--to",
+                    "--step",
+                    "--tilt",
+                    "--csv",
+                    "--out-dir",
+                ],
             ),
-            (Topic::Export, &["--format", "--out"]),
+            (Topic::Export, &["--format", "--out", "--out-dir"]),
+            (
+                Topic::Census,
+                &[
+                    "--templates",
+                    "--fixtures",
+                    "--db",
+                    "--all",
+                    "--ids",
+                    "--limit",
+                    "--offset",
+                    "--targets",
+                    "--modes",
+                    "--crown",
+                    "--budget",
+                    "--timings",
+                    "--out",
+                    "--out-dir",
+                    "--json",
+                ],
+            ),
         ];
         for (topic, names) in flags {
             let page = text(topic);

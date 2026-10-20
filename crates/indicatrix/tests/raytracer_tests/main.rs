@@ -3,6 +3,7 @@
 //! `fixtures` holds helpers shared across more than one topic module.
 
 mod absorption_bands;
+mod backdrop_tray;
 mod colorimetry;
 mod dispersion_fire;
 mod fixtures;

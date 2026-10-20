@@ -200,6 +200,8 @@ struct ReadySession {
     /// The samples per pixel each side's last traced frame used; below [`TRACED_SPP`]
     /// only for a slow concave side.
     traced_spp: [u32; 2],
+    /// A current Ray-Traced preparation refusal, never hidden by a late solid frame.
+    trace_refusal: Option<String>,
     /// The optical figures of both sides and the tilt run (see [`metrics`]).
     metrics: SessionMetrics,
 }
@@ -220,6 +222,10 @@ fn current_status(live: &LiveSession) -> String {
     {
         status.push_str("  ·  ");
         status.push_str(&note);
+    }
+    if let Some(reason) = ready.and_then(|ready| ready.trace_refusal.as_ref()) {
+        status.push_str("  ·  ");
+        status.push_str(reason);
     }
     status
 }
@@ -564,17 +570,23 @@ fn accept_frame(live: &mut LiveSession, msg: FrameMsg) -> Option<FrameUpdate> {
             }
         }
         FrameEvent::TracedProgress { side } => {
-            if current && renderer == Renderer::Traced {
+            if current && renderer.is_traced() {
                 ready.traced_progress = TracedProgress::Rendering { side };
             }
         }
-        FrameEvent::Traced { before, after, spp } => {
+        FrameEvent::Traced {
+            before,
+            after,
+            spp,
+            refusal,
+        } => {
             if ready
                 .frames
                 .accept(FrameKind::Traced, msg.generation, renderer)
             {
                 ready.traced_progress = TracedProgress::Done;
                 ready.traced_spp = spp;
+                ready.trace_refusal = refusal;
                 update.images = Some((before, after));
             }
         }
@@ -620,13 +632,15 @@ pub(super) fn request_frames(traced_delay: Duration) {
             && size.1 > 0
         {
             let generation = ready.frames.bump();
+            ready.trace_refusal = None;
             ready.latest.store(generation, Ordering::Release);
             ready.solid.submit(ViewRequest {
                 generation,
                 pose: ready.session.pose,
                 size,
+                renderer,
             });
-            if renderer == Renderer::Traced {
+            if renderer.is_traced() {
                 ready.traced_progress = TracedProgress::Waiting;
                 ready
                     .traced_timer
@@ -648,7 +662,7 @@ pub(super) fn request_frames(traced_delay: Duration) {
 fn submit_traced() {
     let status = with_live(|live| {
         let size = live.size_px;
-        if live.renderer == Renderer::Traced
+        if live.renderer.is_traced()
             && session::traced_waits_for_layout(live.size_settling, live.settle_polls)
             && let Some(ready) = live.ready.as_mut()
         {
@@ -660,7 +674,7 @@ fn submit_traced() {
                 session::SIZE_SETTLE_POLL,
                 submit_traced,
             );
-        } else if live.renderer == Renderer::Traced
+        } else if live.renderer.is_traced()
             && session::traced_may_start(live.drag_held)
             && let Some(ready) = live.ready.as_mut()
         {
@@ -669,6 +683,7 @@ fn submit_traced() {
                 generation: ready.frames.generation(),
                 pose: ready.session.pose,
                 size,
+                renderer: live.renderer,
             });
             ready.traced_progress = TracedProgress::Rendering { side: 1 };
         }
@@ -686,7 +701,7 @@ pub(super) fn set_drag(surface: Surface, held: bool) {
         live.drag_held = held;
         let renderer = live.renderer;
         if !held
-            && renderer == Renderer::Traced
+            && renderer.is_traced()
             && let Some(ready) = live.ready.as_mut()
             && ready.traced_progress == TracedProgress::Waiting
         {
@@ -738,6 +753,7 @@ pub(super) fn on_session_built(id: u64, session: CompareSession, metrics: Sessio
             traced_timer: Timer::default(),
             traced_progress: TracedProgress::Done,
             traced_spp: [TRACED_SPP; 2],
+            trace_refusal: None,
             metrics,
         });
         true
@@ -754,93 +770,7 @@ pub(super) fn on_session_built(id: u64, session: CompareSession, metrics: Sessio
     request_frames(Duration::ZERO);
 }
 
-/// "Tilt average": starts the tilt run of `surface`'s live session on a worker thread.
-/// Does nothing unless both sides were measured and no run is going or finished.
-pub(super) fn start_tilt(surface: Surface) {
-    let started = with_live_on(surface, |live| {
-        let id = live.id;
-        let ready = live.ready.as_mut()?;
-        let request = ready.metrics.begin_tilt(&ready.session)?;
-        Some((id, request, ready.metrics.strip()))
-    });
-    let Some((handle, Some((id, request, strip)))) = started else {
-        return;
-    };
-    let run = request.run;
-    handle.with_model(|model| push_strip(&model, &strip));
-    if let Err(reason) = metrics::spawn_tilt(id, request, post_tilt) {
-        warn!("{reason}");
-        let failed = with_live(|live| {
-            let ready = live.ready.as_mut().filter(|_| live.id == id)?;
-            ready
-                .metrics
-                .tilt_failed_to_start(run, reason)
-                .then(|| ready.metrics.strip())
-        });
-        if let Some((handle, Some(strip))) = failed {
-            handle.with_model(|model| push_strip(&model, &strip));
-        }
-    }
-}
-
-/// "Cancel" on the running tilt average of `surface`'s live session: the thread stops and
-/// its late reports are ignored.
-pub(super) fn cancel_tilt(surface: Surface) {
-    let cancelled = with_live_on(surface, |live| {
-        let ready = live.ready.as_mut()?;
-        ready.metrics.cancel_tilt().then(|| ready.metrics.strip())
-    });
-    if let Some((handle, Some(strip))) = cancelled {
-        handle.with_model(|model| push_strip(&model, &strip));
-    }
-}
-
-/// Hands a tilt thread's report to the UI thread -- the `post` every tilt thread is
-/// spawned with. Fails silently only once the event loop has already quit.
-fn post_tilt(report: TiltReport) {
-    let _ = slint::invoke_from_event_loop(move || deliver_tilt(report));
-}
-
-/// What one accepted tilt report changes on screen.
-enum TiltUpdate {
-    /// The progress bar moved.
-    Progress(f32),
-    /// The run ended: the whole strip changes.
-    Strip(Box<StripText>),
-}
-
-/// Shows a tilt report iff it belongs to the live session's running tilt run -- a
-/// cancelled run's or a replaced session's late reports change nothing.
-fn deliver_tilt(report: TiltReport) {
-    let TiltReport {
-        session_id,
-        run,
-        event,
-    } = report;
-    let update = with_live(|live| {
-        if live.id != session_id {
-            return None;
-        }
-        let ready = live.ready.as_mut()?;
-        match event {
-            TiltEvent::Progress { done } => ready
-                .metrics
-                .tilt_progress(run, done)
-                .then(|| TiltUpdate::Progress(ready.metrics.progress_fraction())),
-            TiltEvent::Finished(outcome) => ready
-                .metrics
-                .tilt_finished(run, &outcome)
-                .then(|| TiltUpdate::Strip(Box::new(ready.metrics.strip()))),
-        }
-    });
-    let Some((handle, Some(update))) = update else {
-        return;
-    };
-    handle.with_model(|model| match update {
-        TiltUpdate::Progress(fraction) => model.set_tilt_progress(fraction),
-        TiltUpdate::Strip(strip) => push_strip(&model, &strip),
-    });
-}
+include!("host_tilt.rs");
 
 #[cfg(test)]
 mod tests {

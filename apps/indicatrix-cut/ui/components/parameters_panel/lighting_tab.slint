@@ -38,6 +38,8 @@ export component LightingTab inherits VerticalLayout {
     property <string> new_view_name: "";
 
     spacing: 14px;
+    // Rows keep their own height when the tab is shorter than the panel (see `StoneTab`).
+    alignment: start;
 
     // --- Lighting rig ------------------------------------------------------------------
     GroupHeader { text: "Lighting Rig"; }
@@ -136,19 +138,26 @@ export component LightingTab inherits VerticalLayout {
     // environment in place of the lighting rig, superseded while a map is loaded.
     EnvironmentMapSection { }
 
-    // Backdrop -- the card behind the stone. Only the camera sees it; the stone's optics never
-    // do, so leakage stays dark whatever is picked here.
+    // Backdrop -- the tray the stone lies on, lit by the lighting rig. Every ray that leaves the
+    // stone sees it (the camera around the stone, and light leaving through the pavilion
+    // windows), so a window shows the tray. Indices: 0 as lit, 1 grey, 2 white (default),
+    // 3 black; the pills run As Lit, Black, Grey, White. An HDR map is the whole world, so the
+    // row is dimmed while one is loaded.
     VerticalLayout {
         spacing: 4px;
         SettingLabel {
             text: "Backdrop";
-            hint: "Backdrop: what the camera sees behind the stone. As lit: the lighting's own ground. Grey: a neutral grey card (about sRGB 160), for like-for-like comparisons. White: a light box. The stone's optics never see the card, so light leaking out of the back stays dark.";
+            note: SettingsModel.env_map_loaded ? "(not used with an HDR map)" : "";
+            hint: "Backdrop: the surface the stone lies on, lit by the lighting rig and seen both around the stone and through its windows. White paper, a grey card, black velvet, or the lighting's own ground. An HDR map is the whole world, so it ignores the backdrop.";
         }
         HorizontalLayout {
             spacing: 4px;
             SegmentPill {
                 text: "As Lit";
-                hint: "Show the ground of the chosen lighting behind the stone.";
+                hint: SettingsModel.env_map_loaded
+                    ? "Not used while an HDR map is loaded: the map is the world."
+                    : "The lighting's own ground. For the Grading tray that is nothing below the girdle (the ISO/GemRay convention): windows look black.";
+                enabled: !SettingsModel.env_map_loaded;
                 selected: SettingsModel.backdrop_index == 0;
                 picked => {
                     SettingsModel.backdrop_index = 0;
@@ -156,8 +165,23 @@ export component LightingTab inherits VerticalLayout {
                 }
             }
             SegmentPill {
+                text: "Black";
+                hint: SettingsModel.env_map_loaded
+                    ? "Not used while an HDR map is loaded: the map is the world."
+                    : "Black velvet (2 % reflectance).";
+                enabled: !SettingsModel.env_map_loaded;
+                selected: SettingsModel.backdrop_index == 3;
+                picked => {
+                    SettingsModel.backdrop_index = 3;
+                    SettingsModel.backdrop_changed(3);
+                }
+            }
+            SegmentPill {
                 text: "Grey";
-                hint: "Show a neutral grey card behind the stone, the same for every design.";
+                hint: SettingsModel.env_map_loaded
+                    ? "Not used while an HDR map is loaded: the map is the world."
+                    : "An 18 % grey card.";
+                enabled: !SettingsModel.env_map_loaded;
                 selected: SettingsModel.backdrop_index == 1;
                 picked => {
                     SettingsModel.backdrop_index = 1;
@@ -166,7 +190,10 @@ export component LightingTab inherits VerticalLayout {
             }
             SegmentPill {
                 text: "White";
-                hint: "Show a white light box behind the stone.";
+                hint: SettingsModel.env_map_loaded
+                    ? "Not used while an HDR map is loaded: the map is the world."
+                    : "White paper (90 % reflectance). Under the Studio rigs' ring lights a white tray is very bright; lower the exposure or pick Black for the dark-room look.";
+                enabled: !SettingsModel.env_map_loaded;
                 selected: SettingsModel.backdrop_index == 2;
                 picked => {
                     SettingsModel.backdrop_index = 2;

@@ -1,0 +1,45 @@
+import { CheckBox } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { SegmentPill } from "../pill_button.slint";
+import { WrappedNote } from "wrapped_note.slint";
+
+// Shared output controls; each host binds its own persisted model properties.
+export component OutputRendererPicker inherits VerticalLayout {
+    in-out property <int> engine_index: 0;
+    in-out property <int> ray_taps: 16;
+    in-out property <bool> ray_fire: true;
+    in property <bool> enabled: true;
+    spacing: 6px;
+    Text { text: "Renderer"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+    HorizontalLayout {
+        spacing: 4px;
+        for label[index] in ["Path-Traced", "Ray-Traced"]: SegmentPill {
+            text: label;
+            hint: index == 0 ? "Spectral path tracing, with progressive samples." : "Deterministic, noise-free ray tracing with approximate color and frost.";
+            selected: root.engine_index == index;
+            enabled: root.enabled;
+            picked => { root.engine_index = index; }
+        }
+    }
+    if root.engine_index == 1: VerticalLayout {
+        spacing: 6px;
+        Text { text: "Anti-Aliasing"; font-size: 11px; color: Theme.text-secondary; }
+        HorizontalLayout {
+            spacing: 4px;
+            for taps in [1, 4, 8, 16]: SegmentPill {
+                text: taps == 1 ? "Off" : taps + "×";
+                hint: "Trace " + taps + " fixed taps per pixel.";
+                selected: root.ray_taps == taps;
+                enabled: root.enabled;
+                picked => { root.ray_taps = taps; }
+            }
+        }
+        CheckBox { text: "Fire"; checked <=> root.ray_fire; enabled: root.enabled; }
+        WrappedNote {
+            text: "Ray-Traced uses one index per color chain and averaged color, approximate frost and a bounce limit. It omits polarization, doubling, haze, zoning and edge rounding. Metrics use their own analytic tracer.";
+            font-size: 10px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+}

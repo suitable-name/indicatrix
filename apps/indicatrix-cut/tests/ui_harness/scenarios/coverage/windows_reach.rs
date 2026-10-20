@@ -29,8 +29,8 @@ use crate::support::{
 };
 use indicatrix_cut::{LibraryModel, RoughPlanModel, harness_support};
 use slint::{ComponentHandle, Model};
-use slint_harness::{backend::wait_until_labeled, report::Report};
 use std::time::Duration;
+use uiprobe::{backend::wait_until_labeled, report::Report};
 
 /// The pieces of this file: one `window:reach-*:<state>` piece per state.
 pub fn pieces() -> Vec<Piece> {

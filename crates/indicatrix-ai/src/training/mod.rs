@@ -12,8 +12,10 @@
 
 pub mod buffer;
 pub mod burn_model;
+mod burn_model_export;
 pub mod burn_model_host;
 pub mod burn_ppo;
+mod burn_ppo_backend;
 pub mod error;
 pub mod imitation;
 pub mod ppo;

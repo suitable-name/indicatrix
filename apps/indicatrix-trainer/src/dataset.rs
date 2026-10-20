@@ -8,9 +8,14 @@
 
 use std::{collections::BTreeMap, fmt, path::PathBuf};
 
-use indicatrix_ai::{model::Prng, training::MAX_TIERS_LIMIT};
-use indicatrix_cut_core::{
-    BuiltinMaterials, Design, MaterialLookup, MaterialSelection, PreformSpec, ResolvedMaterial,
+use indicatrix::geometry::meet_solver::MeetConstraint;
+use indicatrix_ai::training::MAX_TIERS_LIMIT;
+use indicatrix_cut_core::{Design, PreformSpec};
+
+#[path = "dataset_spectrum.rs"]
+mod spectrum;
+pub use spectrum::{
+    MINERAL_SPECTRUM, find_spectrum_entry, resolve_entry, resolve_material, sample_target,
 };
 
 /// Largest tier count a design may have by default; larger designs are skipped at load time
@@ -131,9 +136,8 @@ pub fn load_design(record: &DbDesignRecord, max_tiers: usize) -> Result<Design, 
     Ok(design)
 }
 
-/// The data set split: designs are grouped by library entry id and each group goes to exactly one
-/// of train (75 %), validation (15 %) or test (10 %), so attachments of one entry never straddle
-/// the split (except in a corpus too small for the hash to fill every part).
+/// The data set split: designs sharing an entry id or normalized geometry are connected into one
+/// group, and every group goes to a single split.
 #[derive(Clone, Debug)]
 pub struct DatasetSplit {
     /// All loadable designs, in record order.
@@ -184,6 +188,7 @@ impl DatasetSplit {
         }
         let cap = max_tiers_cap.clamp(1, MAX_TIERS_LIMIT);
         let mut entries = Vec::new();
+        let mut normalized_contents = Vec::new();
         let mut by_record = Vec::with_capacity(records.len());
         let mut skipped = Vec::new();
         for record in records {
@@ -196,6 +201,9 @@ impl DatasetSplit {
                         filename: record.filename.clone(),
                         design,
                     });
+                    normalized_contents.push(normalized_geometry_key(
+                        &entries.last().expect("just inserted").design,
+                    ));
                 }
                 Err(reason) => {
                     by_record.push(None);
@@ -216,33 +224,30 @@ impl DatasetSplit {
             });
         }
 
-        let mut groups: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
-        for (index, entry) in entries.iter().enumerate() {
-            groups.entry(entry.id).or_default().push(index);
-        }
+        let groups = connected_design_groups(&entries, &normalized_contents);
+        let group_count = groups.len();
         let (mut train, mut val, mut test) = (Vec::new(), Vec::new(), Vec::new());
-        for (id, members) in groups {
-            let bucket = split_bucket(id, split_seed);
+        let mut group_counts = [0usize; 3];
+        let mut assignments = Vec::with_capacity(group_count);
+        for (key, members) in groups {
+            let bucket = split_bucket(key, split_seed);
             let target = if bucket < SPLIT_TRAIN_PERCENT {
-                &mut train
+                0
             } else if bucket < SPLIT_TRAIN_PERCENT + SPLIT_VAL_PERCENT {
-                &mut val
+                1
             } else {
-                &mut test
+                2
             };
-            target.extend(members);
+            group_counts[target] += 1;
+            assignments.push((target, members));
         }
-        // A corpus too small for the hash to fill every part still gets one design in each.
-        if train.is_empty()
-            && let Some(i) = val.pop().or_else(|| test.pop())
-        {
-            train.push(i);
-        }
-        if val.is_empty() && train.len() > 1 {
-            val.extend(train.pop());
-        }
-        if test.is_empty() && train.len() > 1 {
-            test.extend(train.pop());
+        rebalance_splits(&mut assignments, &mut group_counts, group_count);
+        for (part, members) in assignments {
+            match part {
+                0 => train.extend(members),
+                1 => val.extend(members),
+                _ => test.extend(members),
+            }
         }
 
         let max_tiers = entries
@@ -253,9 +258,18 @@ impl DatasetSplit {
             .max(1);
         Ok(Self {
             entries,
-            train,
-            val,
-            test,
+            train: {
+                train.sort_unstable();
+                train
+            },
+            val: {
+                val.sort_unstable();
+                val
+            },
+            test: {
+                test.sort_unstable();
+                test
+            },
             by_record,
             skipped,
             max_tiers,
@@ -285,6 +299,187 @@ impl DatasetSplit {
             max_tiers,
             split_seed: DEFAULT_SPLIT_SEED,
         }
+    }
+}
+
+/// Canonical geometry identity, independent of entry id, title, material, comments and tier
+/// labels. Named meet references are encoded by their resolved tier positions, not their text.
+/// Keeps at least one complete group for training. Held-out splits remain empty when there
+/// are too few independent groups; validation/test never borrow sibling records.
+fn rebalance_splits(
+    assignments: &mut [(usize, Vec<usize>)],
+    group_counts: &mut [usize; 3],
+    group_count: usize,
+) {
+    if group_counts[0] == 0 {
+        let donor = (1..=2)
+            .filter(|&part| group_counts[part] > 0)
+            .max_by_key(|&part| group_counts[part]);
+        if let Some(donor) = donor {
+            let candidate = assignments
+                .iter()
+                .enumerate()
+                .filter(|(_, (part, _))| *part == donor)
+                .min_by_key(|(_, (_, members))| members.len())
+                .map(|(index, _)| index)
+                .expect("a donor split contains a group");
+            assignments[candidate].0 = 0;
+            group_counts[donor] -= 1;
+            group_counts[0] += 1;
+        }
+    }
+    if group_count >= 3 {
+        for target in 0..3 {
+            if group_counts[target] == 0 {
+                let donor = (0..3)
+                    .filter(|&part| group_counts[part] > 1)
+                    .max_by_key(|&part| group_counts[part])
+                    .expect("three groups leave one donor for each missing split");
+                let candidate = assignments
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (part, _))| *part == donor)
+                    .min_by_key(|(_, (_, members))| members.len())
+                    .map(|(index, _)| index)
+                    .expect("a donor split contains a group");
+                assignments[candidate].0 = target;
+                group_counts[donor] -= 1;
+                group_counts[target] += 1;
+            }
+        }
+    }
+}
+
+fn normalized_geometry_key(design: &Design) -> Vec<u8> {
+    let tiers = design
+        .tiers
+        .iter()
+        .map(|tier| {
+            let mut indices: Vec<_> = tier.indices.iter().map(|&v| normalized_bits(v)).collect();
+            indices.sort_unstable();
+            let mut detached: Vec<_> = tier.detached.iter().map(|&v| normalized_bits(v)).collect();
+            detached.sort_unstable();
+            let constraint = normalized_constraint(&tier.constraint, design);
+            let imported = tier
+                .imported_meet
+                .as_ref()
+                .map(|c| normalized_constraint(c, design));
+            (
+                normalized_bits(tier.angle_deg),
+                indices,
+                detached,
+                constraint,
+                imported,
+            )
+        })
+        .collect::<Vec<_>>();
+    let cheaters: Vec<_> = design
+        .cheater_offsets_deg
+        .iter()
+        .map(|(&i, &value)| (i, normalized_bits(value)))
+        .collect();
+    format!(
+        "{:?}|{}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        design.preform,
+        normalized_bits(design.preform_y_offset),
+        (
+            design.meta.gear_teeth,
+            normalized_bits(design.meta.gear_reference_angle),
+            design.meta.symmetry_order,
+            design.meta.mirror
+        ),
+        cheaters,
+        tiers,
+        design.girdle_diameter_mm.map(normalized_bits),
+        design.tiers.len(),
+    )
+    .into_bytes()
+}
+
+fn normalized_bits(value: f64) -> u64 {
+    if value == 0.0 { 0 } else { value.to_bits() }
+}
+
+fn normalized_constraint(constraint: &MeetConstraint, design: &Design) -> String {
+    match constraint {
+        MeetConstraint::MeetExisting => "E".to_owned(),
+        MeetConstraint::ScaleReference(value) => format!("S:{}", value.to_bits()),
+        MeetConstraint::MeetNamed(names) => {
+            let mut targets = names
+                .iter()
+                .map(|name| {
+                    design
+                        .tiers
+                        .iter()
+                        .position(|tier| tier.names().contains(&name.as_str()))
+                        .or_else(|| {
+                            design.tiers.iter().position(|tier| {
+                                tier.names()
+                                    .iter()
+                                    .any(|candidate| candidate.eq_ignore_ascii_case(name))
+                            })
+                        })
+                        .map_or_else(
+                            || format!("?{}", name.trim().to_ascii_lowercase()),
+                            |index| index.to_string(),
+                        )
+                })
+                .collect::<Vec<_>>();
+            targets.sort_unstable();
+            format!("M:{}", targets.join(","))
+        }
+    }
+}
+
+/// Transitive closure of shared entry ids and normalized geometry keys.
+fn connected_design_groups(
+    entries: &[DesignEntry],
+    contents: &[Vec<u8>],
+) -> BTreeMap<i64, Vec<usize>> {
+    let mut parent: Vec<usize> = (0..entries.len()).collect();
+    let mut by_id = BTreeMap::<i64, usize>::new();
+    let mut by_content = BTreeMap::<Vec<u8>, usize>::new();
+    for (index, entry) in entries.iter().enumerate() {
+        for previous in [
+            by_id.insert(entry.id, index),
+            by_content.insert(contents[index].clone(), index),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            union(&mut parent, index, previous);
+        }
+    }
+    let mut members = BTreeMap::<usize, Vec<usize>>::new();
+    for index in 0..entries.len() {
+        let root = find_root(&mut parent, index);
+        members.entry(root).or_default().push(index);
+    }
+    members
+        .into_values()
+        .map(|indices| {
+            let key = indices
+                .iter()
+                .map(|&i| entries[i].id)
+                .min()
+                .unwrap_or_default();
+            (key, indices)
+        })
+        .collect()
+}
+
+fn find_root(parent: &mut [usize], index: usize) -> usize {
+    if parent[index] != index {
+        parent[index] = find_root(parent, parent[index]);
+    }
+    parent[index]
+}
+
+fn union(parent: &mut [usize], left: usize, right: usize) {
+    let left_root = find_root(parent, left);
+    let right_root = find_root(parent, right);
+    if left_root != right_root {
+        parent[right_root] = left_root;
     }
 }
 
@@ -389,157 +584,9 @@ pub fn load_db_designs_from(path: &std::path::Path) -> Result<Vec<DbDesignRecord
     Ok(records)
 }
 
-/// Entry in the mineral optical spectrum table with nominal refractive index.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MineralSpectrumEntry {
-    /// Species name.
-    pub name: &'static str,
-    /// Name of the built-in material preset that stands for the species, or `None` when the
-    /// library has no preset: the species is then a neutral stone of exactly `refractive_index`.
-    pub preset: Option<&'static str>,
-    /// Nominal refractive index (sodium D).
-    pub refractive_index: f32,
-    /// Critical angle in degrees, `asin(1 / n)`.
-    pub critical_angle_deg: f32,
-}
-
-const fn entry(
-    name: &'static str,
-    preset: Option<&'static str>,
-    refractive_index: f32,
-    critical_angle_deg: f32,
-) -> MineralSpectrumEntry {
-    MineralSpectrumEntry {
-        name,
-        preset,
-        refractive_index,
-        critical_angle_deg,
-    }
-}
-
-/// Gemstone species across the optical refraction spectrum (n from 1.43 to 2.90).
-pub const MINERAL_SPECTRUM: &[MineralSpectrumEntry] = &[
-    entry("Fluorite", None, 1.434, 44.22),
-    entry("Quartz", Some("Quartz"), 1.544, 40.36),
-    entry("Beryl", None, 1.577, 39.35),
-    entry("Topaz", Some("Topaz"), 1.619, 38.14),
-    entry("Tourmaline", Some("Tourmaline"), 1.624, 38.01),
-    entry("Spinel", Some("Spinel"), 1.718, 35.60),
-    entry("Sapphire", Some("Sapphire"), 1.768, 34.45),
-    entry("Garnet", None, 1.830, 33.12),
-    entry("Zircon", Some("Zircon"), 1.950, 30.85),
-    entry("Cubic Zirconia", Some("Cubic Zirconia"), 2.150, 27.72),
-    entry("Diamond", Some("Diamond"), 2.417, 24.44),
-    entry(
-        "Synthetic Moissanite",
-        Some("Synthetic Moissanite"),
-        2.650,
-        22.17,
-    ),
-    entry("Rutile", Some("Rutile"), 2.903, 20.15),
-];
-
-/// Finds the spectrum entry for `name`. Accepts the UI labels (`Sapphire (n=1.77)`), is case
-/// insensitive, and knows the aliases `Corundum`, `Moissanite` and `CZ`.
-///
-/// # Errors
-///
-/// [`DatasetError::UnknownMaterial`] when nothing matches; there is no fallback to diamond.
-pub fn find_spectrum_entry(name: &str) -> Result<MineralSpectrumEntry, DatasetError> {
-    let base = name.split(" (").next().unwrap_or(name).trim();
-    let canonical = match base.to_ascii_lowercase().as_str() {
-        "corundum" => "sapphire".to_owned(),
-        "moissanite" => "synthetic moissanite".to_owned(),
-        "cz" => "cubic zirconia".to_owned(),
-        other => other.to_owned(),
-    };
-    MINERAL_SPECTRUM
-        .iter()
-        .find(|e| e.name.eq_ignore_ascii_case(&canonical))
-        .copied()
-        .ok_or_else(|| DatasetError::UnknownMaterial(name.to_owned()))
-}
-
-/// Resolves a spectrum entry into a material: its preset, or a neutral stone of the entry's
-/// refractive index when the library has no preset for the species.
-///
-/// # Errors
-///
-/// [`DatasetError::UnknownMaterial`] when the entry names a preset the library lacks (the
-/// resolver would otherwise silently substitute diamond).
-pub fn resolve_entry(entry: &MineralSpectrumEntry) -> Result<ResolvedMaterial, DatasetError> {
-    let selection = match entry.preset {
-        Some(preset) => {
-            if BuiltinMaterials.lookup(preset).is_none() {
-                return Err(DatasetError::UnknownMaterial(preset.to_owned()));
-            }
-            MaterialSelection {
-                name: Some(preset.to_owned()),
-                ..MaterialSelection::none()
-            }
-        }
-        None => MaterialSelection {
-            refractive_index_override: Some(f64::from(entry.refractive_index)),
-            ..MaterialSelection::none()
-        },
-    };
-    Ok(selection.resolve(&BuiltinMaterials))
-}
-
-/// Resolves a material name (see [`find_spectrum_entry`]) into a material.
-///
-/// # Errors
-///
-/// As [`find_spectrum_entry`] and [`resolve_entry`].
-pub fn resolve_material(name: &str) -> Result<ResolvedMaterial, DatasetError> {
-    resolve_entry(&find_spectrum_entry(name)?)
-}
-
-/// Deterministically draws a target material from the spectrum.
-#[must_use]
-pub fn sample_target(seed: u64) -> MineralSpectrumEntry {
-    let index = Prng::from_stream(seed, 0x7A12_0001).next_index(MINERAL_SPECTRUM.len());
-    MINERAL_SPECTRUM[index]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn spectrum_critical_angles_match_the_refractive_indices() {
-        for e in MINERAL_SPECTRUM {
-            let exact = indicatrix_cut_core::critical_angle_deg(f64::from(e.refractive_index));
-            assert!(
-                (exact - f64::from(e.critical_angle_deg)).abs() < 0.02,
-                "{}: table {} vs exact {exact}",
-                e.name,
-                e.critical_angle_deg
-            );
-        }
-    }
-
-    #[test]
-    fn every_entry_resolves_and_presetless_species_use_their_index() {
-        for e in MINERAL_SPECTRUM {
-            let material = resolve_entry(e).expect("resolves");
-            if e.preset.is_none() {
-                assert!((material.n_d - f64::from(e.refractive_index)).abs() < 1e-6);
-            }
-        }
-        let fluorite = resolve_material("Fluorite (n=1.43)").unwrap();
-        let diamond = resolve_material("Diamond").unwrap();
-        assert!(fluorite.n_d < 1.5 && diamond.n_d > 2.3);
-    }
-
-    #[test]
-    fn unknown_material_is_an_error_not_diamond() {
-        assert!(matches!(
-            resolve_material("Unobtainium"),
-            Err(DatasetError::UnknownMaterial(_))
-        ));
-        assert_eq!(find_spectrum_entry("corundum").unwrap().name, "Sapphire");
-    }
 
     #[test]
     fn the_split_hash_is_deterministic_and_salted() {
@@ -548,6 +595,75 @@ mod tests {
         assert_ne!(
             (0..50).map(|i| split_bucket(i, 0)).collect::<Vec<_>>(),
             (0..50).map(|i| split_bucket(i, 1)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn normalized_content_connects_same_cut_across_ids_and_material_metadata() {
+        let design = Design::concave_fixture();
+        let mut duplicate = design.clone();
+        duplicate.material.name = Some("Quartz".to_owned());
+        let entries = vec![
+            DesignEntry {
+                id: 11,
+                title: "first".into(),
+                filename: "a.asc".into(),
+                design,
+            },
+            DesignEntry {
+                id: 99,
+                title: "renamed".into(),
+                filename: "b.asc".into(),
+                design: duplicate,
+            },
+        ];
+        let contents: Vec<_> = entries
+            .iter()
+            .map(|e| normalized_geometry_key(&e.design))
+            .collect();
+        let groups = connected_design_groups(&entries, &contents);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.values().next().unwrap(), &vec![0, 1]);
+    }
+
+    #[test]
+    fn shared_entry_ids_connect_changed_attachments_transitively() {
+        let design = Design::concave_fixture();
+        let mut changed = design.clone();
+        changed.tiers[0].angle_deg += 1.0;
+        let entries = vec![
+            DesignEntry {
+                id: 7,
+                title: "original".into(),
+                filename: "a.asc".into(),
+                design,
+            },
+            DesignEntry {
+                id: 7,
+                title: "attachment".into(),
+                filename: "b.asc".into(),
+                design: changed,
+            },
+        ];
+        let contents: Vec<_> = entries
+            .iter()
+            .map(|e| normalized_geometry_key(&e.design))
+            .collect();
+        assert_ne!(contents[0], contents[1]);
+        assert_eq!(connected_design_groups(&entries, &contents).len(), 1);
+    }
+
+    #[test]
+    fn facet_index_order_and_signed_zero_do_not_change_geometry_identity() {
+        let design = Design::concave_fixture();
+        let mut reordered = design.clone();
+        reordered.tiers[0].indices.reverse();
+        reordered.tiers[0].angle_deg = -0.0;
+        let mut zero = design;
+        zero.tiers[0].angle_deg = 0.0;
+        assert_eq!(
+            normalized_geometry_key(&zero),
+            normalized_geometry_key(&reordered)
         );
     }
 
@@ -574,10 +690,5 @@ mod tests {
             DatasetSplit::from_records(&[bad], 0, 32),
             Err(DatasetError::NoLoadableDesigns { skipped: 1, .. })
         ));
-    }
-
-    #[test]
-    fn sampling_a_target_is_deterministic() {
-        assert_eq!(sample_target(5), sample_target(5));
     }
 }

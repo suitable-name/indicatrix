@@ -9,28 +9,40 @@
 //! # What it does
 //!
 //! 1. Analyses the original stone once (solve, mesh, girdle and table figures, which facets
-//!    are alive, the girdle-side edge of every flat crown or pavilion tier).
-//! 2. Builds the candidate with every moving, pinned tier re-anchored to its edge
-//!    ([`anchored_candidate`]) and judges it with [`judge`].
+//!    are alive, the girdle corners of every flat crown or pavilion tier) and captures its
+//!    meet network ([`MeetPreservationBaseline`]).
+//! 2. Seeds the candidate with every moving, pinned tier re-anchored to its edge
+//!    ([`anchored_candidate_for`]), PROJECTS that seed against the original network (the
+//!    masts and angles are adjusted until every original junction is met again, within the
+//!    Retarget policy) and judges the projected stone with [`judge`]. A seed that cannot be
+//!    projected is a refusal, not a silently angle-only candidate. The anchored seed is the
+//!    retarget's REQUEST: the gate's turn allowance is measured on it, not on anything the
+//!    projection repairs ([`Attempt::requested`]).
 //! 3. If the original had a table or culet of its own whose size changed, builds a second
-//!    candidate with their heights refitted ([`refit_flats`]) and prefers it when it is valid.
+//!    candidate with their heights refitted ([`refit_flats`]), projects it the same way
+//!    (judged by the same request, not by the projected state it is built on), and prefers
+//!    it when it is valid.
 //! 4. Measures the three optical columns ([`RetargetMetrics`]) and reports the silhouette
 //!    figures (total depth, crown-to-pavilion ratio) next to the verdict.
 //!
+//! [`MeetPreservationBaseline`]: indicatrix_cut_core::meet_preservation::MeetPreservationBaseline
+//!
 //! If the ORIGINAL design cannot be analysed (it does not solve, or does not close), nothing
-//! can be compared: the check reports [`ValidityStatus::Unchecked`] with no anchors, and the
-//! caller applies the plain angle edit, as it always did.
+//! can be compared: the check reports [`ValidityStatus::Unchecked`] with no anchors,
+//! and Apply remains blocked until a valid candidate is available.
 
+#[cfg(test)]
+use super::validity::analyze;
 use super::{
     anchors::{
         AnchorChange, anchored_candidate_for, anchored_candidate_split, scale_reference_mast,
     },
-    metrics::{MetricColumn, RetargetMetrics, measure_column},
+    metrics::{MetricColumn, RetargetMetrics, measure_analysis_column},
     plan::RetargetPlan,
     refit::refit_flats,
     validity::{
         InvalidReason, MIN_GIRDLE_FRACTION, RetargetStrategy, RetargetValidity, StoneAnalysis,
-        analyze, judge,
+        judge,
     },
 };
 use indicatrix::{
@@ -93,6 +105,10 @@ pub struct CheckInputs<'a> {
 /// The result of one check.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetargetCheck {
+    /// Exact projected authored state, shared by preview and Apply.
+    pub candidate: Option<Design>,
+    /// The operation-start network and source identity.
+    pub baseline: Option<Arc<indicatrix_cut_core::meet_preservation::MeetPreservationBaseline>>,
     /// The verdict and its reasons.
     pub validity: RetargetValidity,
     /// The `ScaleReference` masts the retarget changes (re-anchored and refitted). Apply
@@ -107,6 +123,48 @@ pub struct RetargetCheck {
 }
 
 impl RetargetCheck {
+    /// Revalidate the exact delivered state and return its atomic History edit.
+    ///
+    /// # Errors
+    ///
+    /// A message when no baseline or candidate is available, the design changed, the
+    /// verdict forbids Apply, or the geometry gate refuses the candidate.
+    pub fn validated_edit(&self, original: &Design) -> Result<indicatrix_cut_core::Edit, String> {
+        let baseline = self
+            .baseline
+            .as_ref()
+            .ok_or("No original meet validation; recompute the candidate.")?;
+        if baseline.original() != original || !baseline.original().tier_ids_eq(original) {
+            return Err("The design changed; recompute the candidate.".into());
+        }
+        let candidate = self
+            .candidate
+            .as_ref()
+            .ok_or("No validated geometry is available.")?;
+        if !self.allows_apply() {
+            return Err(self.validity.headline());
+        }
+        baseline
+            .validate(
+                candidate,
+                indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(indicatrix_cut_core::Edit::Batch(
+            candidate
+                .tiers
+                .iter()
+                .zip(&original.tiers)
+                .enumerate()
+                .filter(|(_, (now, before))| now != before)
+                .map(|(index, (tier, _))| indicatrix_cut_core::Edit::ModifyTier {
+                    index,
+                    tier: tier.clone(),
+                })
+                .collect(),
+        ))
+    }
+
     /// `true` when Apply may go ahead.
     #[must_use]
     pub fn allows_apply(&self) -> bool {
@@ -118,6 +176,11 @@ impl RetargetCheck {
 pub(super) struct Attempt {
     /// The candidate design: the new angles and masts, relations followed.
     pub(super) design: Design,
+    /// The anchored candidate before any projection: the retarget's REQUEST, whose facet
+    /// turn the gate measures its allowance by (`PreservationPolicy::bounds_follow_turn`).
+    /// A refit inherits it from the attempt it is built on, so the first projection's repair
+    /// cannot enlarge the allowance the second is judged by (`OptimizeOptions::turn_request`).
+    pub(super) requested: Design,
     /// The masts that differ from the live design.
     pub(super) anchors: Vec<AnchorChange>,
     /// How the masts were chosen.
@@ -130,18 +193,92 @@ pub(super) struct Attempt {
     pub(super) girdle_step: Option<f64>,
 }
 
+/// What an [`Attempt`] is built from.
+pub(super) struct Proposal {
+    /// The candidate to project.
+    pub(super) design: Design,
+    /// The masts that differ from the live design.
+    pub(super) anchors: Vec<AnchorChange>,
+    /// How the masts were chosen.
+    pub(super) strategy: RetargetStrategy,
+    /// The request the candidate is judged by (see [`Attempt::requested`]): the candidate
+    /// itself for an anchored seed, the base attempt's request for a refit.
+    pub(super) requested: Design,
+}
+
+/// The options a Retarget attempt projects its anchored seed with.
+///
+/// Shared with the CLI census so the two cannot drift. `requested` is the anchored candidate
+/// before projection; `moves` lists the tiers the Shift policy lets move.
+#[must_use]
+pub fn retarget_projection_options(
+    original_design: &Design,
+    original: &StoneAnalysis,
+    requested: &Design,
+    moves: &[(usize, f64)],
+) -> indicatrix_cut_core::OptimizeOptions {
+    indicatrix_cut_core::OptimizeOptions {
+        preservation_baseline: original.preservation.clone(),
+        preservation_policy: indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET,
+        vary_anchored: true,
+        anchor_hinges: original.hinges.iter().map(|(&i, h)| (i, h.point)).collect(),
+        // Projection may couple the requested moves, but must not unlock a
+        // crown angle the Shift policy explicitly held fixed.
+        angle_bounds: original_design
+            .tiers
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !moves.iter().any(|(moving, _)| moving == i))
+            .map(|(i, tier)| (i, (tier.angle_deg, tier.angle_deg)))
+            .collect(),
+        // The turn allowance is the REQUEST's (owner decision 2026-10-19): the anchored
+        // candidate's, for this projection and for the refit projected after it, so
+        // neither projection is judged by angles a repair turned further.
+        turn_request: Some(
+            indicatrix_cut_core::meet_preservation::tangent_changes(original_design, requested)
+                .into(),
+        ),
+        ..Default::default()
+    }
+}
+
 impl Attempt {
     fn new(
         original_design: &Design,
         original: &StoneAnalysis,
-        design: Design,
-        anchors: Vec<AnchorChange>,
-        strategy: RetargetStrategy,
+        proposal: Proposal,
+        moves: &[(usize, f64)],
+        should_stop: &dyn Fn() -> bool,
     ) -> Self {
-        let analysis = analyze(&design, false);
+        let Proposal {
+            mut design,
+            mut anchors,
+            strategy,
+            requested,
+        } = proposal;
+        let options = retarget_projection_options(original_design, original, &requested, moves);
+        let projected = indicatrix_cut_core::optimize::project_preserved_design_controlled(
+            original_design,
+            &design,
+            &options,
+            &indicatrix::geometry::meet_solver::SolveControl::with_stop(should_stop),
+        );
+        let analysis = match projected {
+            Ok(preserved) => {
+                design = preserved;
+                anchors = super::anchors::mast_differences(original_design, &design);
+                super::validity::analyze_controlled(
+                    &design,
+                    false,
+                    &indicatrix::geometry::meet_solver::SolveControl::with_stop(should_stop),
+                )
+            }
+            Err(error) => Err(InvalidReason::Preservation(error.to_string())),
+        };
         let reasons = judge(original_design, original, &analysis);
         Self {
             design,
+            requested,
             anchors,
             strategy,
             analysis,
@@ -154,6 +291,7 @@ impl Attempt {
     pub(super) fn unchanged(design: &Design, original: &StoneAnalysis) -> Self {
         Self {
             design: design.clone(),
+            requested: design.clone(),
             anchors: Vec::new(),
             strategy: RetargetStrategy::AnglesOnly,
             analysis: Ok(original.clone()),
@@ -164,15 +302,27 @@ impl Attempt {
 }
 
 /// The refitted attempt built on `base`, if any flat needed refitting. `live` is the live
-/// design the retarget starts from.
+/// design the retarget starts from. A failed projection must not prevent repairing a
+/// flat that the raw angle shift swallowed: geometry analysis can seed that repair,
+/// but the repaired proposal must still pass projection and the full validity gate.
 fn refit_attempt(
     live: &Design,
     original: &StoneAnalysis,
     base: &Attempt,
+    moves: &[(usize, f64)],
     should_stop: &dyn Fn() -> bool,
 ) -> Option<Attempt> {
-    let Ok(candidate) = &base.analysis else {
-        return None;
+    let raw_analysis;
+    let candidate = if let Ok(candidate) = &base.analysis {
+        candidate
+    } else {
+        raw_analysis = super::validity::analyze_controlled(
+            &base.design,
+            false,
+            &indicatrix::geometry::meet_solver::SolveControl::with_stop(should_stop),
+        )
+        .ok()?;
+        &raw_analysis
     };
     let refits = refit_flats(
         &base.design,
@@ -201,14 +351,21 @@ fn refit_attempt(
     Some(Attempt::new(
         live,
         original,
-        design,
-        anchors,
-        RetargetStrategy::AnchoredRefit,
+        Proposal {
+            design,
+            anchors,
+            strategy: RetargetStrategy::AnchoredRefit,
+            // The refit is judged by the retarget's request, not by the projected state it
+            // is built on.
+            requested: base.requested.clone(),
+        },
+        moves,
+        should_stop,
     ))
 }
 
 /// The best candidate for `moves` (`(tier_index, new_angle)` of every tier that moves on its
-/// own): every moving pinned tier turns about its girdle-side edge, the tiers that follow a
+/// own): every moving pinned tier turns about its girdle corners, the tiers that follow a
 /// relation follow it, and the table and culet heights are refitted when that gives a valid
 /// stone.
 ///
@@ -316,12 +473,23 @@ fn attempt_at(
     } else {
         RetargetStrategy::Anchored
     };
-    let mut best = Attempt::new(live, original, hinge_design, hinge_anchors, base_strategy);
+    let mut best = Attempt::new(
+        live,
+        original,
+        Proposal {
+            design: hinge_design.clone(),
+            anchors: hinge_anchors,
+            strategy: base_strategy,
+            requested: hinge_design,
+        },
+        moves,
+        should_stop,
+    );
     if should_stop() {
         return Ok(None);
     }
     if !original.flats.is_empty() {
-        if let Some(refitted) = refit_attempt(live, original, &best, should_stop) {
+        if let Some(refitted) = refit_attempt(live, original, &best, moves, should_stop) {
             // The refit is the intended result; keep the plain one only when the refit is
             // invalid and the plain one is not.
             if refitted.reasons.is_empty() || !best.reasons.is_empty() {
@@ -342,16 +510,17 @@ fn measure(
     candidate: &AnalysisResult,
 ) -> RetargetMetrics {
     let target = &inputs.plan.target.gem;
-    let column = |planes: &[(glam::DVec3, f64)], gem: &GemMaterial| -> MetricColumn {
-        measure_column(planes, gem, inputs.lighting)
+    // Each column measures the stone with its concave tools, as the Compare window does.
+    let column = |analysis: &StoneAnalysis, gem: &GemMaterial| -> MetricColumn {
+        measure_analysis_column(analysis, gem, inputs.lighting)
     };
     RetargetMetrics {
-        current_in_current: inputs.current_gem.map(|gem| column(&original.planes, gem)),
-        current_in_target: Some(column(&original.planes, target)),
+        current_in_current: inputs.current_gem.map(|gem| column(original, gem)),
+        current_in_target: Some(column(original, target)),
         retargeted_in_target: candidate
             .as_ref()
             .ok()
-            .map(|analysis| column(&analysis.planes, target)),
+            .map(|analysis| column(analysis, target)),
     }
 }
 
@@ -369,6 +538,8 @@ fn check_against(
     let validity = RetargetValidity::judged(original, &best.analysis, best.reasons, best.strategy)
         .with_girdle_thickened(best.girdle_step);
     Some(RetargetCheck {
+        candidate: Some(best.design.clone()),
+        baseline: original.preservation.clone(),
         validity,
         anchors: best.anchors,
         metrics: measure(inputs, original, &best.analysis),
@@ -384,6 +555,8 @@ fn relation_failure(
     let reason = InvalidReason::RelationFails(error.to_string());
     let none: AnalysisResult = Err(reason.clone());
     RetargetCheck {
+        candidate: None,
+        baseline: None,
         validity: RetargetValidity::judged(
             original,
             &none,
@@ -398,6 +571,8 @@ fn relation_failure(
 /// The check for a design whose original stone could not be analysed.
 fn unchecked(reason: &InvalidReason) -> RetargetCheck {
     RetargetCheck {
+        candidate: None,
+        baseline: None,
         validity: RetargetValidity::unchecked(reason),
         anchors: Vec::new(),
         metrics: RetargetMetrics::default(),
@@ -416,7 +591,13 @@ pub fn run_check(
     cached: Option<Arc<AnalysisResult>>,
     should_stop: &dyn Fn() -> bool,
 ) -> Option<(Arc<AnalysisResult>, RetargetCheck)> {
-    let original = cached.unwrap_or_else(|| Arc::new(analyze(inputs.design, true)));
+    let original = cached.unwrap_or_else(|| {
+        Arc::new(super::validity::analyze_controlled(
+            inputs.design,
+            true,
+            &indicatrix::geometry::meet_solver::SolveControl::with_stop(should_stop),
+        ))
+    });
     if should_stop() {
         return None;
     }
@@ -436,3 +617,6 @@ pub fn check_retarget(inputs: &CheckInputs<'_>) -> RetargetCheck {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod refit_projection_tests;

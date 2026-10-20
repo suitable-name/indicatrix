@@ -36,14 +36,24 @@ pub const MAX_DEVICE_PIXEL_RATIO: f32 = 1.5;
 /// aspect, so it frames the stone the way the view shows it.
 pub const MIN_RENDER_ASPECT: f32 = 1.6;
 
+/// A rounded, non-negative size in pixels as a `u32`; the cast saturates, and NaN is 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers pass a rounded size floored at zero, and an f32 `as u32` cast saturates"
+)]
+const fn to_pixels(value: f32) -> u32 {
+    value as u32
+}
+
 /// The render view's logical size and the window's scale factor, as a physical
 /// render-target size clamped to `MIN_RENDER_DIM..=MAX_RENDER_DIM`, and no narrower than
 /// [`MIN_RENDER_ASPECT`]. A negative or NaN size saturates to the minimum.
 #[must_use]
 pub fn clamp_render_dims(logical_width: f32, logical_height: f32, scale_factor: f32) -> (u32, u32) {
     let dpr = scale_factor.clamp(1.0, MAX_DEVICE_PIXEL_RATIO);
-    let physical_width = (logical_width.max(0.0) * dpr).round() as u32;
-    let physical_height = (logical_height.max(0.0) * dpr).round() as u32;
+    let physical_width = to_pixels((logical_width.max(0.0) * dpr).round());
+    let physical_height = to_pixels((logical_height.max(0.0) * dpr).round());
     with_min_aspect(
         (
             physical_width.clamp(MIN_RENDER_DIM, MAX_RENDER_DIM),
@@ -87,6 +97,10 @@ impl ViewState {
 /// The browser viewport in CSS pixels: `documentElement.client*` first (it
 /// excludes scrollbar gutters), `window.inner*` second, 1100 x 700 when both read
 /// zero (before the first layout, or in an offscreen embedding).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "CSS pixel sizes are far inside the f32 range"
+)]
 fn viewport_logical_size() -> slint::LogicalSize {
     let (mut w, mut h) = (1100.0_f64, 700.0_f64);
     if let Some(win) = web_sys::window() {

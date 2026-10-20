@@ -132,12 +132,12 @@ export component SolveGroup inherits HorizontalLayout {
         GuideLockTip { locked: !GuideModel.allows_solve(); }
     }
 
-    // Shown only while a solve is actually running. "Abandon" rather than "Cancel"
-    // on purpose: `Design::solve` has no mid-run checkpoint, so the worker finishes
-    // in the background -- what this stops is its result being applied.
+    // Shown only while a solve is actually running. The click cancels the worker at its
+    // next cancel point (`gui::editor::auto_solve::dispatch::cancel_in_flight_solve`,
+    // typically a few milliseconds) and discards its result.
     if EditorModel.solve_running: Button {
         text: "Abandon Solve";
-        accessible-description: "Stop waiting for the running solve and ignore its result. The calculation itself finishes in the background.";
+        accessible-description: "Cancel the running solve and discard its result. The calculation stops within a moment.";
         clicked => { EditorModel.solve_cancel(); }
     }
 

@@ -80,8 +80,10 @@ pub(super) struct ImportOutcome {
 /// the new geometry rather than describing the old one. `file_name` is used only for
 /// the cache-invalidation warning logs.
 ///
-/// A design file's tags, ignored mark and Rough Planner exclusion are written with
-/// `local::apply_imported_extras` right after the row, fresh or replaced.
+/// A design file's tags, ignored mark and Rough Planner exclusion, and the frosting a
+/// `.gcs` or a design file states, are written with `local::apply_imported_extras` right
+/// after the row, fresh or replaced (a replaced row's frosting is replaced with the new
+/// file's, so a re-import that no longer states any clears it).
 ///
 /// On a fresh (non-collision) row, stamps
 /// `diagram_entries.derived_from_entry_id` from `parsed`'s own recovered
@@ -286,9 +288,13 @@ fn parse_foreign_import(
             return Err(format!("{file_name} (internal error: {panic_msg})"));
         }
     };
+    // `.asc` has no notation for frosting, so what the `.gcs` states travels beside the text
+    // and is stored with the row (`local::apply_imported_extras`), where the editor, the
+    // previews and the remote library read it back.
     let mut parsed = parse_guarded(file_name, || {
         local::import_asc(file_name, &converted.asc_text, None)
-    })?;
+    })?
+    .with_frosting(&converted.frosting);
     let asc_name = converted_asc_file_name(file_name);
     if let Some(generated) = parsed.detail.attached_files.first_mut() {
         generated.name.clone_from(&asc_name);

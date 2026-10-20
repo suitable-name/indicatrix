@@ -15,7 +15,7 @@
 //! duplicate is [`VALIDATION_FAILED`] == [`NO_RENDER_CAPACITY`] (historical); every
 //! other value is unique (pinned by this module's test).
 
-/// The `HELLO` was refused: protocol-version, `build_hash` or `source_hash` mismatch.
+/// The `HELLO` was refused: protocol-version or `build_hash` mismatch.
 ///
 /// Sent in place of `WELCOME`; the message names both sides' values.
 pub const BUILD_MISMATCH: u32 = 1;
@@ -89,6 +89,18 @@ pub const LIBRARY_REQUEST_INVALID: u32 = 10;
 /// and falls back (it is a plain `u32`, never decoded into an enum).
 pub const PRODUCER_STALLED: u32 = 11;
 
+/// v25: a durable job request named a job that does not exist for the requesting owner
+/// (never made, expired, deleted, or someone else's -- deliberately indistinguishable).
+pub const JOB_UNKNOWN: u32 = 12;
+
+/// v25: a durable job could not be accepted because the server is full: too many unfinished
+/// jobs for this owner, or too many stored in total.
+pub const JOB_LIMIT: u32 = 13;
+
+/// v25: a durable job request does not fit the job's state, for example fetching the result
+/// of a job that is not `Done`, or cancelling one that already ended.
+pub const JOB_STATE: u32 = 14;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +122,9 @@ mod tests {
             ("LIBRARY_FAILED", LIBRARY_FAILED),
             ("LIBRARY_REQUEST_INVALID", LIBRARY_REQUEST_INVALID),
             ("PRODUCER_STALLED", PRODUCER_STALLED),
+            ("JOB_UNKNOWN", JOB_UNKNOWN),
+            ("JOB_LIMIT", JOB_LIMIT),
+            ("JOB_STATE", JOB_STATE),
         ];
         for (i, (name_a, a)) in codes.iter().enumerate() {
             for (name_b, b) in &codes[i + 1..] {

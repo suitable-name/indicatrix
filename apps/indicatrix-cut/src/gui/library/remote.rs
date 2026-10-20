@@ -451,6 +451,11 @@ pub struct RemoteDesignSource {
     /// `EditorState::original_asc_text` (so a later "Export .asc" can round-trip the
     /// exact bytes, not a re-serialization).
     pub asc_text: String,
+    /// What the remote design states as frosted, by tier position and facet slot of the
+    /// schedule `asc_text` describes (`.asc` has no notation for it, so it travels beside
+    /// the text). Apply it with `Design::apply_imported_frosting` after the design is
+    /// built from `asc_text`; empty for a design without frosting.
+    pub frosting: Vec<(usize, indicatrix_formats::gcs::GcsTierFrosting)>,
 }
 
 /// Fetches `entry_id`'s original `.asc` text from `worker` via
@@ -499,10 +504,14 @@ fn map_design_source_response(
         Ok(LibraryResponse::DesignSource {
             file_name,
             asc_text,
+            frosting,
             ..
         }) => Ok(RemoteDesignSource {
             file_name,
             asc_text,
+            frosting: indicatrix_vault::model::frosting::StoredTierFrosting::to_gcs(
+                &crate::bridge::library::frosting_from_wire(&frosting),
+            ),
         }),
         Ok(LibraryResponse::NotFound) => {
             Err("That design no longer exists on the remote library.".to_string())
@@ -529,13 +538,50 @@ mod remote_design_source_tests {
             entry_id: 7,
             file_name: "round-brilliant.asc".to_string(),
             asc_text: "GemCad 5.0\n".to_string(),
+            frosting: Vec::new(),
         }));
         let RemoteDesignSource {
             file_name,
             asc_text,
+            frosting,
         } = result.expect("DesignSource must map to Ok");
         assert_eq!(file_name, "round-brilliant.asc");
         assert_eq!(asc_text, "GemCad 5.0\n");
+        assert_eq!(
+            frosting,
+            [] as [(usize, indicatrix_formats::gcs::GcsTierFrosting); 0]
+        );
+    }
+
+    /// The frosting the worker sends beside the text reaches the editor in the form
+    /// `Design::apply_imported_frosting` takes: tier positions and facet slots, ascending.
+    #[test]
+    fn a_design_source_reply_carries_its_frosting_to_the_editor() {
+        use indicatrix_formats::gcs::GcsTierFrosting;
+        use indicatrix_net::library::FrostedTierWire;
+        let result = map_design_source_response(Ok(LibraryResponse::DesignSource {
+            entry_id: 7,
+            file_name: "frosted.asc".to_string(),
+            asc_text: "GemCad 5.0\n".to_string(),
+            frosting: vec![
+                FrostedTierWire {
+                    tier: 3,
+                    facets: vec![1, 3],
+                },
+                FrostedTierWire {
+                    tier: 1,
+                    facets: Vec::new(),
+                },
+            ],
+        }));
+        let frosting = result.expect("DesignSource must map to Ok").frosting;
+        assert_eq!(
+            frosting,
+            vec![
+                (1, GcsTierFrosting::Whole),
+                (3, GcsTierFrosting::Facets(vec![1, 3])),
+            ]
+        );
     }
 
     #[test]

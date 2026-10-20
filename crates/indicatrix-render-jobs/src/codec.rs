@@ -93,8 +93,11 @@ pub fn from_text(text: &str) -> Result<RenderJobFile, JobFileError> {
             supported: JOB_FORMAT_VERSION,
         });
     }
-    let job: RenderJobFile = serde_json::from_value(value)
+    let mut job: RenderJobFile = serde_json::from_value(value)
         .map_err(|error| JobFileError::Malformed(error.to_string()))?;
+    // A file written before the lit tray holds a card level; convert it once, under the
+    // file's own preset and light pose, so every reader sees a tray radiance.
+    job.upgrade_backdrop_model();
     job.validate()?;
     Ok(job)
 }
@@ -154,18 +157,61 @@ mod tests {
     }
 
     #[test]
+    fn legacy_path_jobs_omit_the_engine_and_ray_jobs_use_format_two() {
+        use indicatrix::renderer::engine::{EngineSpec, RayOptions, RenderEngine};
+        let legacy = still_job();
+        let text = to_text(&legacy).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(value.get("engine").is_none());
+        assert_eq!(value["format"], 1);
+        assert_eq!(from_text(&text).unwrap().engine, EngineSpec::default());
+        for taps in [1, 4, 8, 16] {
+            let mut ray = legacy.clone();
+            ray.engine = EngineSpec {
+                engine: RenderEngine::RayTraced,
+                ray: RayOptions {
+                    aa_taps: taps,
+                    fire: false,
+                },
+            };
+            ray.scene.engine = ray.engine;
+            ray.format = 2;
+            let JobKind::Still(still) = &mut ray.kind else {
+                unreachable!()
+            };
+            still.samples_per_pixel = u32::from(taps);
+            assert_eq!(round_trip(&ray), ray);
+            ray.format = 1;
+            assert!(matches!(to_text(&ray), Err(JobFileError::Invalid(_))));
+            ray.format = 2;
+            if let JobKind::Still(still) = &mut ray.kind {
+                still.samples_per_pixel = 32;
+            }
+            assert!(matches!(to_text(&ray), Err(JobFileError::Invalid(_))));
+        }
+        let mut ray_video = video_job();
+        ray_video.engine.engine = RenderEngine::RayTraced;
+        ray_video.scene.engine = ray_video.engine;
+        ray_video.format = 2;
+        if let JobKind::TiltVideo(video) = &mut ray_video.kind {
+            video.samples_per_pixel = 8;
+        }
+        assert_eq!(round_trip(&ray_video), ray_video);
+    }
+
+    #[test]
     fn a_newer_format_is_refused_with_the_exact_sentence() {
-        let error = from_text(r#"{"format": 2}"#).unwrap_err();
+        let error = from_text(r#"{"format": 3}"#).unwrap_err();
         assert_eq!(
             error,
             JobFileError::NewerFormat {
-                found: 2,
-                supported: 1
+                found: 3,
+                supported: 2
             }
         );
         assert_eq!(
             error.to_string(),
-            "This job file was made by a newer version of Indicatrix (format 2); this version reads format 1."
+            "This job file was made by a newer version of Indicatrix (format 3); this version reads format 2."
         );
     }
 

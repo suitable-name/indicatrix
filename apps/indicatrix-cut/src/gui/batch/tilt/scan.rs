@@ -20,15 +20,22 @@ use std::{
 /// state (name, stone size and source: `FingerprintMaterial::from_state`), exactly as the
 /// preview scan builds it.
 fn scan_missing_tilt_curve_ids(db: &Mutex<Database>) -> Vec<i64> {
-    db.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry_ids_missing_tilt_curves(|state| {
+    let guard = db.lock().unwrap_or_else(PoisonError::into_inner);
+    // A frosted design's curves are stored under a fingerprint naming its frosting:
+    // `gui::batch::frosting_scan` judges each design by its own, as the preview scan does.
+    let outdated = crate::gui::batch::frosting_scan::outdated_ids(
+        &guard,
+        |state, frosting| {
             crate::bridge::preview_render::cache_fingerprint(
                 crate::bridge::preview_render::CacheKind::TiltCurves,
-                crate::bridge::preview_render::FingerprintMaterial::from_state(state),
+                crate::bridge::preview_render::FingerprintMaterial::from_state(state)
+                    .with_frosting(frosting),
             )
-        })
-        .unwrap_or_default()
+        },
+        |db, fingerprint| db.entry_ids_missing_tilt_curves(fingerprint),
+    );
+    drop(guard);
+    outdated
 }
 
 /// Runs [`scan_missing_tilt_curve_ids`] on its own worker thread and reports the result

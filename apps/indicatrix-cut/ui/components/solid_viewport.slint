@@ -25,6 +25,7 @@ import { GuideModel } from "../models/guide.slint";
 // current design's solid, shown as a static image after Solve. Reads
 // `SolidPreviewModel` directly rather than taking its state as local properties.
 //
+// Ray-Traced (4) shares the traced image, picking, camera and gesture layers.
 // `view_mode` picks among the images this component accepts: `0` (Solid) shows
 // `image` alone, `1` (Path-traced) shows `render_image` alone -- the same image
 // `GemViewportView` draws in the Live Render tab, forwarded here so a user can compare
@@ -514,6 +515,7 @@ export component SolidViewportView inherits Rectangle {
     // card grid (`EditorViewportOverlay`) starts below the toolbar, so none of the pictures is
     // drawn: the placeholder's render would otherwise show through around the toolbar's pills.
     property <bool> placeholder_only: EditorModel.enabled && !EditorModel.has_design;
+    property <bool> ray_refused: !root.placeholder_only && SolidPreviewModel.view_mode == 4 && ViewportModel.trace_refusal != "";
 
     if !root.placeholder_only && SolidPreviewModel.view_mode == 0 && SolidPreviewModel.has_solid: Image {
         width: 100%;
@@ -522,11 +524,44 @@ export component SolidViewportView inherits Rectangle {
         image-fit: contain;
     }
 
-    if !root.placeholder_only && SolidPreviewModel.view_mode == 1 && ViewportModel.has_render: Image {
+    if !root.placeholder_only && (SolidPreviewModel.view_mode == 1 || SolidPreviewModel.view_mode == 4) && ViewportModel.has_render: Image {
         width: 100%;
         height: 100%;
         source: ViewportModel.render_image;
         image-fit: contain;
+        opacity: root.ray_refused ? 0.15 : 1.0;
+    }
+
+    if root.ray_refused: Rectangle {
+        width: 100%;
+        height: 100%;
+        VerticalLayout {
+            alignment: center;
+            padding: 32px;
+            Rectangle {
+                border-radius: Theme.radius-md;
+                background: Theme.accent-amber;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 6px;
+                    Text {
+                        text: "Cannot Trace This Design";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.bg-darkest;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: ViewportModel.trace_refusal;
+                        font-size: 12px;
+                        color: Theme.bg-darkest;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
     }
 
     // "Both" mode: the path-traced image as a base layer, with the solid's
@@ -603,7 +638,7 @@ export component SolidViewportView inherits Rectangle {
 
     // Placeholder: nothing solved yet in Solid mode, nothing rendered yet in
     // Path-traced/Both mode, or nothing solved yet in Diagram mode.
-    if (SolidPreviewModel.view_mode == 0 && !SolidPreviewModel.has_solid) || (SolidPreviewModel.view_mode == 3 && !SolidPreviewModel.has_diagram) || (SolidPreviewModel.view_mode != 0 && SolidPreviewModel.view_mode != 3 && !ViewportModel.has_render): VerticalLayout {
+    if !root.ray_refused && ((SolidPreviewModel.view_mode == 0 && !SolidPreviewModel.has_solid) || (SolidPreviewModel.view_mode == 3 && !SolidPreviewModel.has_diagram) || (SolidPreviewModel.view_mode != 0 && SolidPreviewModel.view_mode != 3 && !ViewportModel.has_render)): VerticalLayout {
         alignment: center;
         spacing: 12px;
 

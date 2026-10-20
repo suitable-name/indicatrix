@@ -144,8 +144,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
         context: Context::Global,
     },
     Shortcut {
-        keys: "1 / 2 / 3 / 4",
-        action: "Solid / Path-Traced / Both / Diagram view of the Edit tab's viewport. Only while that viewport is on screen and no text field has focus.",
+        keys: "1 / 2 / 3 / 4 / 5",
+        action: "Solid / Path-Traced / Both / Diagram / Ray-Traced view of the Edit tab's viewport. Only while that viewport is on screen and no text field has focus.",
         context: Context::Global,
     },
     Shortcut {
@@ -490,7 +490,10 @@ mod tests {
         assert_eq!(key_combinations("Up / Down"), ["Up", "Down"]);
         assert_eq!(key_combinations("Ctrl+Y (or Ctrl+Shift+Z)"), ["Ctrl+Y"]);
         assert_eq!(key_combinations("Ctrl+, (Ctrl+Comma)"), ["Ctrl+,"]);
-        assert_eq!(key_combinations("1 / 2 / 3 / 4"), ["1", "2", "3", "4"]);
+        assert_eq!(
+            key_combinations("1 / 2 / 3 / 4 / 5"),
+            ["1", "2", "3", "4", "5"]
+        );
         assert_eq!(key_combinations("?"), ["?"]);
     }
 

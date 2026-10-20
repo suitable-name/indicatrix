@@ -23,14 +23,14 @@ use crate::{
 };
 
 /// A library in a temporary folder, removed when the fixture drops.
-struct Fixture {
+pub(super) struct Fixture {
     root: PathBuf,
     state: LibraryState,
     handle: Option<LibraryHandle>,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = unique_temp_dir("library");
         let dirs = AppDirs {
             files: root.join("files"),
@@ -45,7 +45,7 @@ impl Fixture {
         }
     }
 
-    fn h(&self) -> &LibraryHandle {
+    pub(super) fn h(&self) -> &LibraryHandle {
         self.handle.as_ref().expect("the handle is open")
     }
 
@@ -57,7 +57,7 @@ impl Fixture {
         )
     }
 
-    fn all(&self) -> Vec<LibraryCard> {
+    pub(super) fn all(&self) -> Vec<LibraryCard> {
         self.h()
             .search(&LibraryQuery::default(), 0, 5_000)
             .expect("searches")
@@ -73,7 +73,7 @@ impl Drop for Fixture {
     }
 }
 
-fn picked(name: &str, bytes: &[u8]) -> PickedFile {
+pub(super) fn picked(name: &str, bytes: &[u8]) -> PickedFile {
     PickedFile {
         display_name: name.to_owned(),
         bytes: bytes.to_vec(),

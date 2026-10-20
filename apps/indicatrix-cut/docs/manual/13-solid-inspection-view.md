@@ -4,7 +4,7 @@
 
 This chapter covers the Edit tab's Solid viewport: a second, independent
 view of your design's actual solved shape, shown alongside the ordinary
-spectral render. You will learn the four view modes, how to orbit, zoom,
+spectral render. You will learn the five view modes, how to orbit, zoom,
 and pick facets, how the Cut slider shows the stone step by step, what hover
 and click do, the hatched and outlined
 overlays, and what the "Not solved" banner means here versus in Chapter 5
@@ -20,11 +20,11 @@ flat-shaded rendering of the same solved geometry, built for one job:
 letting you see and pick individual facets while you edit, updated after
 almost every change — not just after Solve.
 
-## The Four View Modes
+## The Five View Modes
 
 ![The Solid view mode of the inspection viewport.](../../../../assets/solid_rendering.png)
 
-Four buttons sit above the Solid viewport:
+Five buttons sit above the Solid viewport:
 
 - **Solid** — the flat-shaded software render, independent of the spectral
   path tracer.
@@ -37,9 +37,19 @@ Four buttons sit above the Solid viewport:
   which highlights in the rendered image.
 - **Diagram** — a GemCAD-style flat 2D faceting diagram (crown, pavilion, and
   profile panels with the index wheel), covered in its own section below.
+- **Ray-Traced** — a deterministic lightweight image with fixed anti-aliasing taps
+  and optional Fire. It uses the same geometry and camera, supports picking, and
+  finishes without denoising. Tint and frost are approximate; polarization,
+  birefringent doubling, haze, zoning and edge rounding are omitted.
+  Metrics keep their own analytic tracer.
 
-Your chosen mode is remembered across restarts (Chapter 1 covers where
-settings are stored generally).
+Keys **1–4** keep Solid, Path-Traced, Both and Diagram; **5** selects Ray-Traced.
+Live Render also offers Solid, Path-Traced and Ray-Traced. In the Advanced interface,
+**Render & Output → Ray-Traced View** sets Anti-Aliasing (Off, 4×, 8× or 16×) and Fire.
+
+The mode you pick is saved with your settings (Chapter 1 covers where settings
+are stored generally), but it is not restored: the app always starts in Solid,
+on the Live Render tab as well as in this viewport.
 
 **The toolbar and the hint strip.** Every button above the viewport has a hover note
 that says what it does, and you can reach each one with the Tab key and press it with
@@ -51,7 +61,7 @@ small buttons, each with a hover note too.
 
 ## Orbiting
 
-Drag inside the Solid viewport (in Solid, Path-Traced, or Both mode) to
+Drag inside the Solid viewport (in Solid, Path-Traced, Both, or Ray-Traced mode) to
 orbit, and scroll to zoom. Both are shared with the Live Render viewport —
 orbiting or zooming in one moves the other, so the two views always show
 the stone from the same pose. **Front** and **Top** buttons above the
@@ -68,7 +78,7 @@ Diagram mode to snap both back to their defaults.
 ## The Cut slider
 
 The small slider in the toolbar, with a short label beside it, lets you
-watch the stone being cut. It works in **Solid**, **Path-Traced** and **Both**
+watch the stone being cut. It works in **Solid**, **Path-Traced**, **Both** and **Ray-Traced**
 mode, and appears as soon as the design has at least one tier.
 
 - **All the way left is the rough.** The label reads **Rough** and the
@@ -156,6 +166,10 @@ The crown and pavilion panels are ringed by the **index wheel**: one tick
 per gear tooth, with a longer tick and the tooth number every 8th tooth (or
 every 4th on a small gear of 64 teeth or fewer). Index 0 always sits at the
 top of the wheel.
+
+To read one panel at full size, press the **Crown**, **Pavilion** or **Profile**
+button in the toolbar (or double-click a panel). Press the same button again,
+double-click, or press Escape to return to all three panels.
 
 Large enough facets are labeled with their tier name directly on the
 diagram, and the same overlays as the Solid view apply here too — a

@@ -15,4 +15,5 @@ mod emit_tick;
 mod fixtures;
 mod liveness;
 mod pending_delta;
+mod ray_failures;
 mod stall;

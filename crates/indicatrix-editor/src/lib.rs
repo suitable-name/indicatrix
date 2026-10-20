@@ -64,6 +64,7 @@
 
 pub mod cut_sheet;
 pub mod cutting_mode;
+pub mod deep_solve;
 pub mod edit_intent;
 pub mod files;
 pub mod guide;
@@ -86,6 +87,7 @@ pub mod stale;
 pub mod sweep;
 pub mod templates;
 pub mod tier_save;
+pub mod variants;
 pub mod verdict;
 pub mod view_model;
 

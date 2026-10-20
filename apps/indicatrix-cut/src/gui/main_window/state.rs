@@ -363,6 +363,7 @@ pub(super) fn spawn_viewport_render_thread(
     render_ctx: &Arc<Mutex<RenderContext>>,
     solid: &SolidView,
 ) {
+    crate::bridge::optical_overlay::setup(ui, render_ctx);
     // Spawn Background Multi-Threaded Physically Based Spectral Raytracer
     let ui_weak_render = ui.as_weak();
     let render_ctx_frame_push = render_ctx.clone();
@@ -371,7 +372,21 @@ pub(super) fn spawn_viewport_render_thread(
     spawn_render_thread(
         ui_weak_render,
         render_ctx.clone(),
-        move |ui: &MainWindow, img: slint::SharedPixelBuffer<slint::Rgba8Pixel>| {
+        move |ui: &MainWindow,
+              img: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+              scene_generation: u64| {
+            // Every frame is shown, even one whose scene generation has moved on while it
+            // was in flight: during an orbit, light or slider drag the generation changes
+            // faster than a frame is traced, and dropping the stale ones froze the
+            // viewport until the pointer paused. The overlay keeps its own staleness
+            // gate -- `displayed` records this frame's stamp and the overlay stays hidden
+            // until a frame of the current generation arrives.
+            crate::bridge::optical_overlay::displayed(
+                ui,
+                scene_generation,
+                img.width(),
+                img.height(),
+            );
             ui.global::<ViewportModel>()
                 .set_render_image(crate::bridge::pixel_buffer::rgba_image(img));
             ui.global::<ViewportModel>().set_has_render(true);

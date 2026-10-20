@@ -115,9 +115,10 @@ component CandidateRowView inherits Rectangle {
         ResultCell { width: 38px; text: root.item.yield_loss; dir: root.item.yield_dir; }
         // The predicted face-up colour dot, then the lightness L*.
         HorizontalLayout {
-            width: 44px;
+            width: 72px;
+            padding-left: 6px;
             spacing: 2px;
-            alignment: end;
+            alignment: start;
             if root.item.has_tone: Rectangle {
                 width: 10px;
                 Rectangle {
@@ -128,7 +129,7 @@ component CandidateRowView inherits Rectangle {
                     background: root.item.tone_swatch;
                 }
             }
-            ResultCell { width: 32px; text: root.item.tone; dir: root.item.tone_dir; }
+            ResultCell { width: 54px; text: root.item.tone; dir: root.item.tone_dir; horizontal-alignment: left; }
         }
         ResultCell { horizontal-stretch: 1; text: root.item.changed; }
     }
@@ -570,12 +571,16 @@ export component OptimizeTab inherits VerticalLayout {
             padding-right: 4px;
             spacing: 3px;
             ColumnHead { width: 34px; text: "#"; align_left: true; tip: "The candidate's rank: 1 is the best score. Start is the stone as it is now."; }
-            ColumnHead { width: 38px; text: "Score"; tip: "One number combining all the measurements below, using your objective. Higher is better."; }
+            ColumnHead { width: 38px; text: "Score"; tip: "One number combining all the measurements below, using your objective. Lower is better."; }
             ColumnHead { width: 38px; text: "Wind."; tip: "Windowing: the share of the stone that looks see-through. Lower is better. See the glossary."; }
             ColumnHead { width: 40px; text: "Bril."; tip: "Tilt brilliance: the light the stone returns to the eye as it is tilted. Higher is better. See the glossary."; }
             ColumnHead { width: 38px; text: "Ext."; tip: "Extinction: the share of the stone that looks dead dark. Lower is better. See the glossary."; }
             ColumnHead { width: 38px; text: "Yield"; tip: "Yield loss: how much more of the rough this candidate throws away. Lower is better. See the glossary."; }
-            ColumnHead { width: 44px; text: "Tone"; tip: "Face-up lightness L* of the light the stone returns, with its predicted color. 100 is colorless. Green follows the objective: lighter for Lighten Dark Rough, stronger color for Intensify Pale Rough. See the glossary."; }
+            HorizontalLayout {
+                width: 72px;
+                padding-left: 6px;
+                ColumnHead { text: "Tone"; align_left: true; tip: "Face-up lightness L* of the light the stone returns, with its predicted color. 100 is colorless. Green follows the objective: lighter for Lighten Dark Rough, stronger color for Intensify Pale Rough. See the glossary."; }
+            }
             ColumnHead { horizontal-stretch: 1; text: "Tiers"; tip: "How many tiers this candidate changes."; }
         }
         // The list is one Tab stop; Up and Down pick the row above or below, like a click.

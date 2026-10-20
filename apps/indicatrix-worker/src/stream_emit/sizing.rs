@@ -103,6 +103,7 @@ mod cache_tests {
     /// meaningful.
     fn tiny_scene() -> SceneState {
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 8,
             height: 8,
             yaw: 0.4,
@@ -122,6 +123,7 @@ mod cache_tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 

@@ -9,7 +9,13 @@
 //! file the other readers use).
 
 use super::{ImportedAsc, ImportedExtras, catalogue_rows};
-use crate::{db::sqlite::Database, model::file::AttachedFile};
+use crate::{
+    db::sqlite::Database,
+    model::{
+        file::AttachedFile,
+        frosting::{StoredTierFrosting, normalised},
+    },
+};
 use indicatrix_formats::{
     asc::{AscLineEnding, AscSchedule, AscTier},
     native::design::{
@@ -124,6 +130,8 @@ fn apply_meta(imported: &mut ImportedAsc, meta: &DesignMetadata) {
         tags,
         ignored: meta.ignored,
         planner_excluded: meta.planner_excluded,
+        // Set from the tiers, not the metadata: see `apply_design_file_meta`.
+        frosting: Vec::new(),
     };
 }
 
@@ -170,15 +178,54 @@ fn apply_attachments(imported: &mut ImportedAsc, blobs: Vec<AttachmentBlob>) {
 pub fn apply_design_file_meta(imported: &mut ImportedAsc, file: &DesignFile) -> Result<(), String> {
     let blobs = attachment_blobs(&file.attachments).map_err(|e| e.to_string())?;
     apply_meta(imported, &file.meta);
+    imported.extras.frosting = frosting_of(file);
     apply_attachments(imported, blobs);
     Ok(())
 }
 
+/// Two index-wheel positions this close are the same facet (the editor's own tolerance for
+/// naming a frosted facet).
+const SAME_INDEX_EPSILON: f64 = 1e-6;
+
+/// The frosting `file`'s tiers state (`frosted` for a whole tier, `frosted_facets` for single
+/// facets), by tier position and by facet slot in the tier's `indices`: the form the library
+/// stores. A frosted facet position that is none of the tier's `indices` names nothing and is
+/// dropped.
+fn frosting_of(file: &DesignFile) -> Vec<StoredTierFrosting> {
+    let rows = file
+        .tiers
+        .iter()
+        .enumerate()
+        .filter_map(|(position, tier)| {
+            let tier_position = u32::try_from(position).ok()?;
+            if tier.frosted {
+                return Some(StoredTierFrosting::whole(tier_position));
+            }
+            let indices = tier.indices.as_deref()?;
+            let facets: Vec<u32> = indices
+                .iter()
+                .enumerate()
+                .filter(|&(_, &index)| {
+                    tier.frosted_facets
+                        .iter()
+                        .any(|&frosted| (frosted - index).abs() < SAME_INDEX_EPSILON)
+                })
+                .filter_map(|(slot, _)| u32::try_from(slot).ok())
+                .collect();
+            (!facets.is_empty()).then_some(StoredTierFrosting {
+                tier: tier_position,
+                facets,
+            })
+        });
+    normalised(rows.collect())
+}
+
 /// Writes the row state in `extras` onto the saved row `entry_id`.
 ///
-/// That is the tags, the ignored mark and the Rough Planner exclusion. Only sets: an
-/// unset mark never clears one the row already has, and a tag the row already carries
-/// is a no-op.
+/// That is the tags, the ignored mark, the Rough Planner exclusion and the frosting. The
+/// marks only set: an unset mark never clears one the row already has, and a tag the row
+/// already carries is a no-op. The frosting REPLACES the row's (an import that no longer
+/// states frosting clears it), since it describes the geometry the import just wrote.
 ///
 /// # Errors
 ///
@@ -188,6 +235,7 @@ pub fn apply_imported_extras(
     entry_id: i64,
     extras: &ImportedExtras,
 ) -> anyhow::Result<()> {
+    db.set_diagram_frosting(entry_id, &extras.frosting)?;
     for tag in &extras.tags {
         db.add_tag_to_entry(entry_id, tag)?;
     }
@@ -263,13 +311,21 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn sample_design_file() -> DesignFile {
+        design_file_of(vec![sample_tier("P1", -41.0)])
+    }
+
+    fn sample_tier(name: &str, angle_deg: f64) -> TierTable {
         let mut tier = TierTable::new(
-            "P1",
+            name,
             NativeMeetConstraint::ScaleReference { mast: 0.5 },
             Vec::new(),
         );
-        tier.angle_deg = Some(-41.0);
+        tier.angle_deg = Some(angle_deg);
         tier.indices = Some(vec![0.0, 24.0, 48.0, 72.0]);
+        tier
+    }
+
+    fn design_file_of(tiers: Vec<TierTable>) -> DesignFile {
         let schedule = ScheduleTable {
             gemcad_version: "5.0".to_string(),
             gear_teeth: 96,
@@ -286,7 +342,7 @@ mod tests {
             MaterialTable::new(None, None, None),
             schedule,
             None,
-            vec![tier],
+            tiers,
         )
     }
 
@@ -472,6 +528,85 @@ mod tests {
             .map(|t| t.name)
             .collect();
         assert_eq!(tags, ["a-tag", "b-tag"]);
+    }
+
+    /// Three tiers: the first frosted as a whole, the second at two of its four facets
+    /// (and at a position the tier does not have), the third polished.
+    fn frosted_design_file() -> DesignFile {
+        design_file_of(vec![
+            sample_tier("C1", 35.0).with_frosting(true, Vec::new()),
+            sample_tier("C2", 41.0).with_frosting(false, vec![24.0, 72.0, 13.0]),
+            sample_tier("C3", 45.0),
+        ])
+    }
+
+    #[test]
+    fn a_design_files_frosted_tiers_and_facets_are_read_by_tier_position_and_slot() {
+        let text = design::to_string(&frosted_design_file()).expect("serializes");
+        let imported = import_native_design("frosted.isdd", text.as_bytes()).expect("imports");
+        assert_eq!(
+            imported.extras.frosting,
+            vec![
+                StoredTierFrosting::whole(0),
+                StoredTierFrosting {
+                    tier: 1,
+                    facets: vec![1, 3]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gcs_import_records_its_frosting_through_with_frosting() {
+        use indicatrix_formats::gcs::GcsTierFrosting;
+        let text = sample_file_text();
+        let imported = import_native_design("plain.isdd", text.as_bytes())
+            .expect("imports")
+            .with_frosting(&[
+                (2, GcsTierFrosting::Facets(vec![0, 2])),
+                (0, GcsTierFrosting::Whole),
+            ]);
+        assert_eq!(
+            imported.extras.frosting,
+            vec![
+                StoredTierFrosting::whole(0),
+                StoredTierFrosting {
+                    tier: 2,
+                    facets: vec![0, 2]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_frosting_is_stored_with_the_row_and_a_reimport_without_it_clears_it() {
+        let text = design::to_string(&frosted_design_file()).expect("serializes");
+        let imported = import_native_design("frosted.isdd", text.as_bytes()).expect("imports");
+        let db = Database::new(Some(":memory:")).expect("in-memory db");
+        let id = db
+            .save_design(
+                &imported.entry,
+                &imported.detail,
+                super::super::LOCAL_SOURCE_ID,
+            )
+            .expect("saves");
+        apply_imported_extras(&db, id, &imported.extras).expect("applies");
+        assert_eq!(
+            db.diagram_frosting(id).expect("reads"),
+            imported.extras.frosting
+        );
+        assert_eq!(
+            db.get_diagram_full(id)
+                .expect("reads")
+                .expect("a row")
+                .frosting,
+            imported.extras.frosting
+        );
+
+        // The same design re-imported from a file that states no frosting: the row's
+        // frosting is replaced, not kept.
+        apply_imported_extras(&db, id, &ImportedExtras::default()).expect("applies");
+        assert_eq!(db.diagram_frosting(id).expect("reads").len(), 0);
     }
 
     #[test]

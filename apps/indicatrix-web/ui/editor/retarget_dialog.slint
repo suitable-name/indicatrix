@@ -137,7 +137,11 @@ export component RetargetDialog inherits Rectangle {
                         enabled: !RetargetModel.is-busy;
                         model: RetargetModel.material-options;
                         current-index <=> RetargetModel.target-material-index;
-                        selected => { RetargetModel.proposal-changed(); }
+                        // Picking a material drops a custom n_D (the field is an override).
+                        selected => {
+                            RetargetModel.target-ri-override-text = "";
+                            RetargetModel.proposal-changed();
+                        }
                     }
                 }
                 VerticalLayout {

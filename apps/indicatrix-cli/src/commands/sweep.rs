@@ -5,7 +5,9 @@
 //! scored with Optimize's quick table-up score (and with `--tilt` the tilt averages, about a
 //! second and a half a row), and the figures come back as a table. The rows run from the
 //! flattest angle to the steepest and do not depend on how many threads ran them. The design's
-//! own angle is always a row.
+//! own angle is always a row. A design with concave tiers is scored as the stone with its tools
+//! (the engine's `evaluate_step` places them on every swept stone), and its yield is the carved
+//! volume's; a design without them is scored on its planes alone, as before.
 //!
 //! Angles are degrees from flat, as positive numbers: `--from 39 --to 43` for a pavilion tier
 //! (a sign typed in front is ignored, and the side of the girdle comes from the tier). The text
@@ -540,6 +542,53 @@ mod tests {
         assert_eq!(unsigned, run_with(&format!("-{low}"), &format!("-{high}")));
         assert_eq!(unsigned, run_with(&high, &low));
         assert!(unsigned.contains(&angle_text(angle - 1.0)), "{unsigned}");
+    }
+
+    /// The figures of the one row of a sweep over the concave fixture's -42 degree pavilion
+    /// tier (row 2) at its own angle, as JSON.
+    fn fixture_row(design: Design, tilt: bool) -> Value {
+        let sweep_args = SweepArgs {
+            design: PathBuf::new(),
+            tier: "#2".to_string(),
+            from_deg: 42.0,
+            to_deg: 42.0,
+            step_deg: 1.0,
+            tilt,
+            csv: None,
+            json: true,
+            material: None,
+            lighting: CANONICAL_LIGHTING_PRESET,
+            db: None,
+        };
+        let loaded = Loaded::in_memory(design, "fixture.isdd");
+        let result = execute(&loaded, &Catalogue::default(), &sweep_args).expect("sweeps");
+        let value: Value = serde_json::from_str(&result.stdout).expect("valid JSON");
+        let rows = value["rows"].as_array().expect("rows");
+        assert_eq!(rows.len(), 1, "{}", result.stdout);
+        rows[0].clone()
+    }
+
+    /// The sweep scores the stone with its concave tools, as the editor's Angle Sweep does: the
+    /// fixture's row differs from the same design without its concave tiers (the figures, and
+    /// the yield, which reads the carved volume).
+    #[test]
+    fn a_concave_design_is_swept_with_its_tools() {
+        let carved = fixture_row(testing::concave(), false);
+        let shell = fixture_row(testing::concave_shell(), false);
+        assert_eq!(carved["valid"], true, "{carved}");
+        assert_ne!(
+            carved["figures"], shell["figures"],
+            "{carved} against {shell}"
+        );
+        let yield_pct = |row: &Value| row["figures"]["yield_pct"].as_f64();
+        let (Some(carved_yield), Some(shell_yield)) = (yield_pct(&carved), yield_pct(&shell))
+        else {
+            panic!("the rows report a yield: {carved} {shell}");
+        };
+        assert!(
+            carved_yield < shell_yield,
+            "{carved_yield} against {shell_yield}"
+        );
     }
 
     #[test]

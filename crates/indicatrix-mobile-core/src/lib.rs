@@ -13,16 +13,29 @@
 
 pub mod analysis;
 pub mod app_state;
+pub mod compute_policy;
+pub mod concave;
+#[cfg(test)]
+mod concave_scoring_tests;
 pub mod cutting;
+pub mod deep_solve;
 pub mod design_props;
 pub mod design_state;
 pub mod document;
 pub mod hdr;
+pub mod history;
 pub mod layout;
 pub mod library;
+mod operation_material;
+pub mod operations;
+pub mod optimization;
 pub mod platform;
 pub mod platform_mock;
+pub mod recipe_steps;
+pub mod remote;
 pub mod render;
+pub mod retarget;
 pub mod settings;
 pub mod tasks;
+pub mod variants;
 pub mod viewport;

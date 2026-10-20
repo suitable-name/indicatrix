@@ -125,7 +125,8 @@ export component CutPage inherits Rectangle {
     VerticalLayout {
         TopBar {
             title: "Cut";
-            show-overflow: root.ready;
+            // The menu also holds "Delete All Cutting Progress", which needs no solved design.
+            show-overflow: true;
             actions: [
                 { icon: Icons.share, label: "Share Cutting Sheet", enabled: root.ready },
                 { icon: CutIcons.print, label: "Print Cutting Sheet", enabled: root.ready }
@@ -171,7 +172,7 @@ export component CutPage inherits Rectangle {
     }
 
     // The overflow menu: a scrim and a card under the top bar.
-    if root.menu-open && root.ready: Rectangle {
+    if root.menu-open: Rectangle {
         TouchArea {
             clicked => {
                 root.menu-open = false;
@@ -181,7 +182,7 @@ export component CutPage inherits Rectangle {
         Rectangle {
             x: parent.width - self.width - Theme.space-sm;
             y: Theme.top-bar-height - Theme.space-sm;
-            width: min(parent.width - 2 * Theme.space-sm, 280px);
+            width: min(parent.width - 2 * Theme.space-sm, 320px);
             height: menu-rows.preferred-height;
             background: Theme.surface-high;
             border-radius: Theme.radius-md;
@@ -195,18 +196,32 @@ export component CutPage inherits Rectangle {
             menu-rows := VerticalLayout {
                 ListRow {
                     title: "Share Diagram";
+                    enabled: root.ready;
                     clicked => {
                         root.menu-open = false;
                         CutModel.share-diagram();
                     }
                 }
 
+                // Always enabled: any stored mark can be reset, a changed one (its step was
+                // edited since) as well as a done one, and Rust needs no solve to find them.
+                // It says "Nothing is marked yet" when there is none.
                 ListRow {
                     title: "Reset Progress";
-                    enabled: CutModel.done-count > 0;
+                    supporting: "This design";
                     clicked => {
                         root.menu-open = false;
                         CutModel.reset-progress();
+                    }
+                }
+
+                ListRow {
+                    title: "Delete All Cutting Progress";
+                    supporting: "Every design on this device";
+                    clicked => {
+                        root.menu-open = false;
+                        // The answer arrives as dialog 2002 (`src/cut.rs`, `DIALOG_DELETE_ALL`).
+                        Shell.show-dialog(2002, "Delete All Cutting Progress?", "The done marks of every design on this device will be deleted, not only those of the open design. This cannot be undone.", "Delete", "Cancel");
                     }
                 }
             }

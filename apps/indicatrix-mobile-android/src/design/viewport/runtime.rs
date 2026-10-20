@@ -20,6 +20,7 @@ use indicatrix_mobile_core::{
     viewport::{
         FrameKey, JobInputs,
         frame::{RasterFrame, RasterJob, RasterWorker},
+        render_view,
     },
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer};
@@ -112,9 +113,11 @@ impl Runtime {
             // The viewport has not been laid out yet; its first size triggers a push.
             return;
         }
-        if state.viewport.mode.is_render() {
+        if state.viewport.mode.is_render() && !render_view::live_solid(state) {
             // The Render mode shows the ray-traced picture; the raster is not on show.
-            // Leaving the mode compares the frame key again and draws if it moved.
+            // Leaving the mode compares the frame key again and draws if it moved. While
+            // the camera is dragged the raster is on show at the live pose (it shares the
+            // Solid view's path, so it is as smooth), until the new pose's trace lands.
             return;
         }
         let session = &state.session;

@@ -20,11 +20,10 @@
 //!
 //! Angles are signed degrees (crown positive, pavilion negative).
 //!
-//! The last four global entries ([`WEIGHT_FRACTION_INDEX`]) are the objective's weight
-//! fractions ([`weight_fractions`]): the network composes the policy direction from its
-//! per-tier component sensitivities with them, so one model serves every weighting.
+//! The last seven global entries ([`WEIGHT_FRACTION_INDEX`]) are coefficients for the
+//! objective components in sensitivity-label order.
 
-use indicatrix_cut_core::ObjectiveWeights;
+use indicatrix_cut_core::{ObjectiveWeights, optimize::MAX_SAFE_CANDIDATE_ANGLE_DEG};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -38,40 +37,50 @@ use std::fmt;
 ///   base score added. The tier token grows from 10 to 13 entries, the global token from 14
 ///   to 15. Two tiers with the same angle in the same block are now told apart by their
 ///   position and azimuth, and the policy sees how far a tier has already moved.
-/// - `4`: the objective's weight fractions are appended to the global token (entries 15 to
-///   18: windowing, extinction, tilt brilliance, yield, each over the sum of the four). The
-///   global token grows from 15 to 19 entries. The model no longer has to guess which
-///   weighting a stone is judged under; a checkpoint of layout 3 does not know the entries.
-pub const OBS_LAYOUT_VERSION: u32 = 4;
+/// - `4` (historical layout): four objective weight fractions were appended to the global token
+///   (entries 15 to 18: windowing, extinction, tilt brilliance and yield, each over their sum).
+///   The global token grew from 15 to 19 entries; layout 5 below has seven fractions.
+/// - `5`: seven objective coefficients and measured material, lighting, geometry, mobility,
+///   constraint and action-context features were added; the global and tier widths are 41 and 26.
+pub const OBS_LAYOUT_VERSION: u32 = 5;
 
 /// Width of the global token.
 pub const GLOBAL_DIM: usize = GlobalFeature::FEATURE_DIM;
 /// Width of one tier token.
 pub const TIER_DIM: usize = TierFeature::FEATURE_DIM;
 
-/// Index of the first of the four weight fractions in the global token (they are its last
-/// four entries: windowing, extinction, tilt brilliance, yield).
-pub const WEIGHT_FRACTION_INDEX: usize = 15;
+/// Index of the first of seven global objective coefficients (the last seven entries).
+pub const WEIGHT_FRACTION_INDEX: usize = 34;
+/// Tier-token index of mobility (`1.0` movable, `0.0` otherwise).
+pub const MOBILITY_INDEX: usize = 13;
+/// Backwards-readable alias for the same token position; `0.0` means immobile.
+pub const IMMOBILE_INDEX: usize = MOBILITY_INDEX;
+/// Global-token index of task kind (`0` optimizer, `1` retarget).
+pub const TASK_KIND_INDEX: usize = 15;
 
 const _: () = assert!(
-    WEIGHT_FRACTION_INDEX + 4 == GlobalFeature::FEATURE_DIM,
-    "the weight fractions are the last four global entries"
+    WEIGHT_FRACTION_INDEX + 7 == GlobalFeature::FEATURE_DIM,
+    "the objective coefficients are the last seven global entries"
 );
 
 /// What a non-positive weight sum falls back to: the three optical terms equally, no yield
 /// (the fallback `ObjectiveWeights::score_with_yield` applies).
-const EQUAL_OPTICAL_FRACTIONS: [f32; 4] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0];
-
-/// The four objective weights as fractions of their sum: `[windowing, extinction, tilt
-/// brilliance, yield] / sum` (the face-up tone term is not part of the observation: the
-/// environments refuse it).
 ///
-/// Mirrors `ObjectiveWeights::score_with_yield`: when the sum is not above `1e-6` (or not
-/// finite) the fractions are `[1/3, 1/3, 1/3, 0]`. A negative weight is clamped to zero and a
-/// weight that is not finite counts as zero before the sum is taken, so the result always
-/// holds four finite fractions in `0..=1` that add up to one (up to rounding).
+/// Seven objective coefficients in sensitivity order. Yield is omitted from normalization when
+/// unavailable; tone goals are separate and shape remains additive, matching the shared scorer.
 #[must_use]
-pub fn weight_fractions(weights: &ObjectiveWeights) -> [f32; 4] {
+pub fn weight_fractions(weights: &ObjectiveWeights) -> [f32; 7] {
+    objective_coefficients(weights, true, 0.0)
+}
+
+/// Seven coefficients matching score composition for measured yield availability and shape.
+/// Yield is removed from the denominator when it cannot be measured; shape stays additive.
+#[must_use]
+pub fn objective_coefficients(
+    weights: &ObjectiveWeights,
+    yield_available: bool,
+    shape_weight: f32,
+) -> [f32; 7] {
     let clean = |weight: f32| {
         if weight.is_finite() {
             weight.max(0.0)
@@ -83,14 +92,44 @@ pub fn weight_fractions(weights: &ObjectiveWeights) -> [f32; 4] {
         weights.windowing,
         weights.extinction,
         weights.tilt_brilliance,
-        weights.yield_weight,
+        if yield_available {
+            weights.yield_weight
+        } else {
+            0.0
+        },
+        if weights.tone_goal == indicatrix_cut_core::ToneGoal::Lighter {
+            weights.tone_weight
+        } else {
+            0.0
+        },
+        if weights.tone_goal == indicatrix_cut_core::ToneGoal::Deeper {
+            weights.tone_weight
+        } else {
+            0.0
+        },
     ]
     .map(clean);
     let sum: f32 = raw.iter().sum();
     if sum.is_finite() && sum > 1e-6 {
-        raw.map(|weight| weight / sum)
+        [
+            raw[0] / sum,
+            raw[1] / sum,
+            raw[2] / sum,
+            raw[3] / sum,
+            raw[4] / sum,
+            raw[5] / sum,
+            clean(shape_weight),
+        ]
     } else {
-        EQUAL_OPTICAL_FRACTIONS
+        [
+            1.0 / 3.0,
+            1.0 / 3.0,
+            1.0 / 3.0,
+            0.0,
+            0.0,
+            0.0,
+            clean(shape_weight),
+        ]
     }
 }
 
@@ -98,24 +137,21 @@ pub fn weight_fractions(weights: &ObjectiveWeights) -> [f32; 4] {
 /// projection.
 pub const PAVILION_CRITICAL_MARGIN_DEG: f32 = 1.0;
 /// Steepest pavilion magnitude (degrees) the policy projection allows.
-pub const PAVILION_MAX_ANGLE_DEG: f32 = 85.0;
+pub const PAVILION_MAX_ANGLE_DEG: f32 = MAX_SAFE_CANDIDATE_ANGLE_DEG as f32;
 /// Shallowest crown magnitude (degrees) the policy projection allows.
-pub const CROWN_MIN_ANGLE_DEG: f32 = 15.0;
+pub const CROWN_MIN_ANGLE_DEG: f32 = 1.0;
 /// Steepest crown magnitude (degrees) the policy projection allows.
-pub const CROWN_MAX_ANGLE_DEG: f32 = 80.0;
+pub const CROWN_MAX_ANGLE_DEG: f32 = MAX_SAFE_CANDIDATE_ANGLE_DEG as f32;
 
 /// The signed `(min, max)` angle envelope the policy projection keeps a tier in.
 ///
 /// `block_type` is `TierFeature::block_type` (crown `+1`, pavilion `-1`, girdle `0`);
-/// `critical_angle_deg` is the critical angle of the material the stone is judged in.
-/// Pavilion: `(-85, -(crit + 1))`. Crown: `(15, 80)`. Anything else: `(0, 0)`.
+/// The critical angle is retained as context but does not autonomously alter a coordinate.
+/// Crown: `(1, MAX_SAFE)`. Pavilion: `(-MAX_SAFE, -1)`. Anything else: `(0, 0)`.
 #[must_use]
-pub const fn angle_envelope(block_type: f32, critical_angle_deg: f32) -> (f32, f32) {
+pub const fn angle_envelope(block_type: f32, _critical_angle_deg: f32) -> (f32, f32) {
     if block_type < -0.5 {
-        (
-            -PAVILION_MAX_ANGLE_DEG,
-            -(critical_angle_deg + PAVILION_CRITICAL_MARGIN_DEG),
-        )
+        (-PAVILION_MAX_ANGLE_DEG, -1.0)
     } else if block_type > 0.5 {
         (CROWN_MIN_ANGLE_DEG, CROWN_MAX_ANGLE_DEG)
     } else {
@@ -126,8 +162,9 @@ pub const fn angle_envelope(block_type: f32, critical_angle_deg: f32) -> (f32, f
 /// The `(lo, hi)` bounds on the angle MAGNITUDE the policy projection keeps a tier in, or `None`
 /// when the block has no envelope (girdle: only the step limit applies).
 ///
-/// Derived from [`angle_envelope`]: pavilion `(-85, -(crit + 1))` becomes `[crit + 1, 85]`,
-/// crown `(15, 80)` is kept. `lo > hi` means the critical angle leaves no admissible window.
+/// Free coordinates stay within the shared sign-preserving candidate safety interval, then
+/// intersect that interval with caller bounds. Critical margin is observed but never enforced.
+/// `lo > hi` means no candidate is reachable.
 /// The projection ([`GemstoneSetAttentionNetwork::project_actions`]) and
 /// [`GemstoneObservation::free_tier_mask`] both read the window from here.
 ///
@@ -198,18 +235,49 @@ pub struct TierFeature {
     pub azimuth_sin: f32,
     /// Cosine of the same azimuth; `1.0` for a tier without an index.
     pub azimuth_cos: f32,
+    /// Whether this coordinate can move (`1.0`) or is immobile (`0.0`).
+    pub is_mobile: f32,
+    /// Orbit harmonics from authored index positions and cheater offsets: mean over the
+    /// tier's facets of the sine of twice the facet azimuth.
+    pub orbit_sin_2: f32,
+    /// Mean cosine of twice the facet azimuth (see [`Self::orbit_sin_2`]).
+    pub orbit_cos_2: f32,
+    /// Mean sine of four times the facet azimuth (see [`Self::orbit_sin_2`]).
+    pub orbit_sin_4: f32,
+    /// Mean cosine of four times the facet azimuth (see [`Self::orbit_sin_2`]).
+    pub orbit_cos_4: f32,
+    /// Live surface area fraction of the closed solid.
+    pub live_area_fraction: f32,
+    /// Live facet area-weighted centroid normalized by original width.
+    pub live_centroid_x: f32,
+    /// Y component of the live centroid (see [`Self::live_centroid_x`]).
+    pub live_centroid_y: f32,
+    /// Z component of the live centroid (see [`Self::live_centroid_x`]).
+    pub live_centroid_z: f32,
+    /// `1.0` if a live facet area/centroid was measured.
+    pub geometry_available: f32,
+    /// Constraint category: MeetExisting=0, MeetNamed=0.5, ScaleReference=1.
+    pub constraint_kind: f32,
+    /// Whether a relation drives this tier's angle.
+    pub relation_driven: f32,
+    /// Whether the tier has a dimensional target.
+    pub target_driven: f32,
 }
 
 impl TierFeature {
-    /// Dimension of the standardized per-tier feature representation (13 features).
-    pub const FEATURE_DIM: usize = 13;
+    /// Whether this coordinate has a non-empty, reachable signed-angle interval.
+    #[must_use]
+    pub fn is_mobile(&self) -> bool {
+        self.is_mobile > 0.5
+    }
+
+    /// Dimension of the standardized per-tier feature representation.
+    pub const FEATURE_DIM: usize = 26;
 
     /// Return standardized per-tier feature vector for set attention token embedding.
     ///
-    /// Order (a contract with the network, which reads entry 3 as the block type):
-    /// `[angle / 90, base angle / 90, orbit count / 32, block type, pinned, flat,
-    /// critical margin / 45, mast, envelope min / 90, envelope max / 90, index fraction,
-    /// azimuth sin, azimuth cos]`.
+    /// Order (a contract with the network, which reads entry 3 as the block type): geometry,
+    /// mobility at [`MOBILITY_INDEX`], orbit harmonics, live mesh descriptors and constraints.
     #[must_use]
     pub fn to_feature_vector(&self) -> Vec<f32> {
         vec![
@@ -226,6 +294,19 @@ impl TierFeature {
             self.index_frac,
             self.azimuth_sin,
             self.azimuth_cos,
+            self.is_mobile,
+            self.orbit_sin_2,
+            self.orbit_cos_2,
+            self.orbit_sin_4,
+            self.orbit_cos_4,
+            self.live_area_fraction,
+            self.live_centroid_x,
+            self.live_centroid_y,
+            self.live_centroid_z,
+            self.geometry_available,
+            self.constraint_kind,
+            self.relation_driven,
+            self.target_driven,
         ]
     }
 }
@@ -290,23 +371,56 @@ pub struct GlobalFeature {
     /// lower is better). With [`Self::best_score_so_far`] it tells the policy how far the
     /// episode has come and how much room is left; scores differ widely between designs.
     pub base_score: f32,
-    /// The objective's weights as fractions of their sum, in the order windowing, extinction,
-    /// tilt brilliance, yield (see [`weight_fractions`]; token entries 15 to 18, unscaled).
-    /// The network weights its per-tier component sensitivities with them.
-    pub weight_fractions: [f32; 4],
+    /// Task kind (`0` optimizer, `1` retarget).
+    pub task_kind: f32,
+    /// Current lighter-tone loss (0 to 100).
+    pub tone_lighter_loss_pct: f32,
+    /// Current deeper-tone loss (0 to 100).
+    pub tone_deeper_loss_pct: f32,
+    /// Shape distance from the target or baseline, times 100.
+    pub shape_distance_pct: f32,
+    /// Configured table target, or zero when absent.
+    pub shape_target_table_pct: f32,
+    /// Configured crown to pavilion target, or zero when absent.
+    pub shape_target_ratio: f32,
+    /// Shape penalty weight, or zero when disabled.
+    pub shape_weight: f32,
+    /// Probe displacement in degrees.
+    pub probe_scale_deg: f32,
+    /// Maximum action displacement in degrees.
+    pub action_step_deg: f32,
+    /// Scoring fidelity (`0` Fast, `1` Full).
+    pub fidelity: f32,
+    /// Whether yield is measurable.
+    pub yield_available: f32,
+    /// Whether an explicit shape target is configured.
+    pub shape_target_available: f32,
+    /// Measured target-material absorption at 450 nm (mean principal-channel coefficient).
+    pub absorption_450: f32,
+    /// Measured target-material absorption at 550 nm.
+    pub absorption_550: f32,
+    /// Measured target-material absorption at 650 nm.
+    pub absorption_650: f32,
+    /// Target material's model-unit absorption scale multiplied by measured stone width.
+    pub absorption_path_scale: f32,
+    /// Target material scattering coefficient.
+    pub scattering_sigma_s: f32,
+    /// Stable normalized lighting preset index.
+    pub lighting_index: f32,
+    /// Whether tone was measured for this observation.
+    pub tone_available: f32,
+    /// Seven objective coefficients in sensitivity-label order.
+    pub weight_fractions: [f32; 7],
 }
 
 impl GlobalFeature {
-    /// Dimension of the standardized global feature representation (19 features).
-    pub const FEATURE_DIM: usize = 19;
+    /// Dimension of the standardized global feature representation.
+    pub const FEATURE_DIM: usize = 41;
 
     /// Return standardized global feature vector for context token embedding.
     ///
-    /// Order: `[source index, target index, source critical angle / 90, target critical angle
-    /// / 90, dispersion * 50, windowing / 100, extinction / 100, tilt brilliance / 100, yield /
-    /// 100, table / 100, crown-to-pavilion, girdle ratio, best score / 100, progress, base
-    /// score / 100, weight fractions (4)]`; the fractions start at
-    /// [`WEIGHT_FRACTION_INDEX`].
+    /// Measured optical, material, task and search context followed by seven objective
+    /// coefficients starting at [`WEIGHT_FRACTION_INDEX`].
     #[must_use]
     pub fn to_feature_vector(&self) -> Vec<f32> {
         vec![
@@ -325,10 +439,32 @@ impl GlobalFeature {
             self.best_score_so_far / 100.0,
             self.progress_ratio,
             self.base_score / 100.0,
+            self.task_kind,
+            self.tone_lighter_loss_pct / 100.0,
+            self.tone_deeper_loss_pct / 100.0,
+            self.shape_distance_pct / 100.0,
+            self.shape_target_table_pct / 100.0,
+            self.shape_target_ratio,
+            self.shape_weight,
+            self.probe_scale_deg / 90.0,
+            self.action_step_deg / 90.0,
+            self.fidelity,
+            self.yield_available,
+            self.shape_target_available,
+            self.absorption_450,
+            self.absorption_550,
+            self.absorption_650,
+            self.absorption_path_scale,
+            self.scattering_sigma_s,
+            self.lighting_index,
+            self.tone_available,
             self.weight_fractions[0],
             self.weight_fractions[1],
             self.weight_fractions[2],
             self.weight_fractions[3],
+            self.weight_fractions[4],
+            self.weight_fractions[5],
+            self.weight_fractions[6],
         ]
     }
 }
@@ -449,349 +585,5 @@ impl GemstoneObservation {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use indicatrix_cut_core::ObjectivePreset;
-
-    fn sample(tiers: usize) -> GemstoneObservation {
-        GemstoneObservation {
-            tiers: (0..tiers)
-                .map(|i| TierFeature {
-                    angle_normalized: i as f32 / 90.0,
-                    angle_deg: i as f32,
-                    base_angle_deg: i as f32 - 1.0,
-                    orbit_count: 8,
-                    block_type: if i.is_multiple_of(2) { 1.0 } else { -1.0 },
-                    is_pinned: 0.0,
-                    is_flat: 0.0,
-                    critical_margin_deg: 3.0,
-                    mast: 0.5,
-                    min_angle_deg: -85.0,
-                    max_angle_deg: 80.0,
-                    index_frac: i as f32 / tiers as f32,
-                    azimuth_sin: 0.0,
-                    azimuth_cos: 1.0,
-                })
-                .collect(),
-            global: GlobalFeature {
-                refractive_index: 1.54,
-                target_refractive_index: 1.77,
-                critical_angle_deg: 40.5,
-                target_critical_angle_deg: 34.4,
-                dispersion: 0.02,
-                windowing_pct: 10.0,
-                extinction_pct: 20.0,
-                tilt_brilliance_pct: 70.0,
-                yield_pct: 40.0,
-                table_pct: 55.0,
-                crown_to_pavilion_ratio: 0.4,
-                min_girdle_ratio: 1.0,
-                best_score_so_far: 30.0,
-                progress_ratio: 0.25,
-                base_score: 35.0,
-                weight_fractions: [0.5, 0.25, 0.125, 0.125],
-            },
-        }
-    }
-
-    #[test]
-    fn flatten_is_global_token_then_tier_tokens_then_zeros() {
-        // The widths of layout 4: a 19-entry global token and 13-entry tier tokens.
-        assert_eq!(OBS_LAYOUT_VERSION, 4);
-        assert_eq!((GLOBAL_DIM, TIER_DIM), (19, 13));
-        let obs = sample(3);
-        assert_eq!(obs.global_token().len(), 19);
-        assert!(obs.tier_tokens().iter().all(|token| token.len() == 13));
-        let flat = obs.flatten(5);
-        let mut expected = obs.global_token();
-        expected.extend(obs.tier_tokens().concat());
-        expected.resize(flat_len(5), 0.0);
-        assert_eq!(flat, expected);
-        assert_eq!(flat.len(), flat_len(5));
-        assert_eq!(flat.len(), 19 + 5 * 13);
-        // Two padded tier slots, all zero.
-        assert!(flat[19 + 3 * 13..].iter().all(|&v| v == 0.0));
-    }
-
-    #[test]
-    fn the_weight_fractions_are_the_last_four_global_entries_unscaled() {
-        assert_eq!(WEIGHT_FRACTION_INDEX, 15);
-        assert_eq!(WEIGHT_FRACTION_INDEX + 4, GLOBAL_DIM);
-        let obs = sample(2);
-        let token = obs.global_token();
-        assert_eq!(token[WEIGHT_FRACTION_INDEX..], [0.5, 0.25, 0.125, 0.125]);
-        // The flat vector carries them at the same place, ahead of the tier tokens.
-        let flat = obs.flatten(3);
-        assert_eq!(
-            flat[WEIGHT_FRACTION_INDEX..GLOBAL_DIM],
-            obs.global.weight_fractions
-        );
-        assert_eq!(
-            flat[GLOBAL_DIM..GLOBAL_DIM + TIER_DIM],
-            obs.tier_tokens()[0]
-        );
-    }
-
-    #[test]
-    fn the_preset_weights_give_their_fractions() {
-        let fractions = |preset: ObjectivePreset| weight_fractions(&preset.weights());
-        let close = |actual: [f32; 4], expected: [f32; 4]| {
-            actual
-                .iter()
-                .zip(expected)
-                .all(|(a, e)| (a - e).abs() < 1e-6)
-        };
-        let sixth = 1.0 / 6.0;
-        let third = 1.0 / 3.0;
-        assert!(close(
-            fractions(ObjectivePreset::Balanced),
-            [third, third, third, 0.0]
-        ));
-        assert!(close(
-            fractions(ObjectivePreset::Brilliance),
-            [sixth, sixth, 4.0 * sixth, 0.0]
-        ));
-        assert!(close(
-            fractions(ObjectivePreset::LowWindowing),
-            [4.0 * sixth, sixth, sixth, 0.0]
-        ));
-        assert!(close(
-            fractions(ObjectivePreset::LowExtinction),
-            [sixth, 4.0 * sixth, sixth, 0.0]
-        ));
-        assert!(close(
-            fractions(ObjectivePreset::KeepWeight),
-            [sixth, sixth, sixth, 3.0 * sixth]
-        ));
-        // Balanced is exactly a third each: the fraction is the weight over the sum.
-        assert_eq!(
-            fractions(ObjectivePreset::Balanced),
-            [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0]
-        );
-    }
-
-    #[test]
-    fn the_weight_fractions_add_up_to_one_and_scale_free() {
-        let weights = ObjectiveWeights {
-            windowing: 2.0,
-            extinction: 0.5,
-            tilt_brilliance: 3.5,
-            yield_weight: 1.0,
-            ..ObjectiveWeights::default()
-        };
-        let fractions = weight_fractions(&weights);
-        assert!((fractions.iter().sum::<f32>() - 1.0).abs() < 1e-6);
-        assert!(
-            fractions
-                .iter()
-                .all(|fraction| (0.0..=1.0).contains(fraction))
-        );
-        assert!((fractions[0] - 2.0 / 7.0).abs() < 1e-6);
-        // Scaling every weight by the same factor changes nothing.
-        let doubled = ObjectiveWeights {
-            windowing: 4.0,
-            extinction: 1.0,
-            tilt_brilliance: 7.0,
-            yield_weight: 2.0,
-            ..weights
-        };
-        let again = weight_fractions(&doubled);
-        assert!(
-            fractions
-                .iter()
-                .zip(again)
-                .all(|(a, b)| (a - b).abs() < 1e-6)
-        );
-    }
-
-    #[test]
-    fn weights_without_a_positive_sum_fall_back_to_the_optical_thirds() {
-        let fallback = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0];
-        let zero = ObjectiveWeights {
-            windowing: 0.0,
-            extinction: 0.0,
-            tilt_brilliance: 0.0,
-            yield_weight: 0.0,
-            ..ObjectiveWeights::default()
-        };
-        assert_eq!(weight_fractions(&zero), fallback);
-        // Negative weights are clamped to zero before the sum: nothing positive is left.
-        let negative = ObjectiveWeights {
-            windowing: -1.0,
-            extinction: -2.0,
-            tilt_brilliance: -3.0,
-            yield_weight: -4.0,
-            ..zero
-        };
-        assert_eq!(weight_fractions(&negative), fallback);
-        // A non-finite weight counts as zero; the other weights keep their share.
-        let broken = ObjectiveWeights {
-            windowing: f32::NAN,
-            extinction: f32::INFINITY,
-            tilt_brilliance: 3.0,
-            yield_weight: 1.0,
-            ..zero
-        };
-        let fractions = weight_fractions(&broken);
-        assert!(fractions.iter().all(|fraction| fraction.is_finite()));
-        assert_eq!(fractions, [0.0, 0.0, 0.75, 0.25]);
-        // One negative weight among positive ones is dropped, not subtracted.
-        let mixed = ObjectiveWeights {
-            windowing: -5.0,
-            extinction: 1.0,
-            tilt_brilliance: 1.0,
-            yield_weight: 0.0,
-            ..zero
-        };
-        assert_eq!(weight_fractions(&mixed), [0.0, 0.5, 0.5, 0.0]);
-    }
-
-    #[test]
-    fn the_token_orders_are_the_contract_with_the_network() {
-        let tier = TierFeature {
-            angle_normalized: 0.5,
-            angle_deg: 45.0,
-            base_angle_deg: 36.0,
-            orbit_count: 16,
-            block_type: 1.0,
-            is_pinned: 0.0,
-            is_flat: 1.0,
-            critical_margin_deg: 9.0,
-            mast: 0.25,
-            min_angle_deg: 18.0,
-            max_angle_deg: 72.0,
-            index_frac: 0.4,
-            azimuth_sin: 0.6,
-            azimuth_cos: 0.8,
-        };
-        // Hand values: 36 / 90, 16 / 32, 9 / 45, 18 / 90, 72 / 90; entry 3 is the block type.
-        assert_eq!(
-            tier.to_feature_vector(),
-            [
-                0.5, 0.4, 0.5, 1.0, 0.0, 1.0, 0.2, 0.25, 0.2, 0.8, 0.4, 0.6, 0.8
-            ]
-        );
-        let global = sample(1).global.to_feature_vector();
-        // best score 30 / 100, progress 0.25, the base score 35 / 100, then the four weight
-        // fractions last (unscaled).
-        assert_eq!(global[12..15], [0.3, 0.25, 0.35]);
-        assert_eq!(global[15..], [0.5, 0.25, 0.125, 0.125]);
-    }
-
-    #[test]
-    fn azimuth_of_index_zero_is_sin_0_cos_1_and_of_a_quarter_turn_is_sin_1_cos_0() {
-        assert_eq!(azimuth_sin_cos(Some(0.0), 96), (0.0, 1.0));
-        // A quarter turn of a 96-tooth wheel is position 24.
-        let (sin, cos) = azimuth_sin_cos(Some(24.0), 96);
-        assert!((sin - 1.0).abs() < 1e-6 && cos.abs() < 1e-6, "{sin} {cos}");
-        // Half a turn: position 48 is (0, -1); an eighth (12) is (sqrt(1/2), sqrt(1/2)).
-        let (sin, cos) = azimuth_sin_cos(Some(48.0), 96);
-        assert!(sin.abs() < 1e-6 && (cos + 1.0).abs() < 1e-6, "{sin} {cos}");
-        let (sin, cos) = azimuth_sin_cos(Some(12.0), 96);
-        let eighth = std::f32::consts::FRAC_1_SQRT_2;
-        assert!((sin - eighth).abs() < 1e-6 && (cos - eighth).abs() < 1e-6);
-        // The wheel is a ring: the closing position is the same azimuth as position 0.
-        let (sin, cos) = azimuth_sin_cos(Some(96.0), 96);
-        assert!(sin.abs() < 1e-6 && (cos - 1.0).abs() < 1e-6, "{sin} {cos}");
-        // No index, no gear teeth or a negative count, or a non-finite index: azimuth zero.
-        assert_eq!(azimuth_sin_cos(None, 96), (0.0, 1.0));
-        assert_eq!(azimuth_sin_cos(Some(5.0), 0), (0.0, 1.0));
-        assert_eq!(azimuth_sin_cos(Some(5.0), -96), (0.0, 1.0));
-        assert_eq!(azimuth_sin_cos(Some(f64::NAN), 96), (0.0, 1.0));
-    }
-
-    #[test]
-    fn split_flat_inverts_flatten() {
-        let obs = sample(2);
-        let flat = obs.flatten(4);
-        let (global, tiers) = split_flat(&flat, 4).expect("length matches");
-        assert_eq!(global, obs.global_token().as_slice());
-        assert_eq!(tiers.len(), 4 * TIER_DIM);
-        assert!(tiers[2 * TIER_DIM..].iter().all(|&v| v == 0.0));
-        assert!(split_flat(&flat, 3).is_none());
-    }
-
-    #[test]
-    fn try_flatten_rejects_overflow_instead_of_truncating() {
-        let obs = sample(6);
-        assert_eq!(
-            obs.try_flatten(4),
-            Err(ObservationError {
-                tiers: 6,
-                max_tiers: 4
-            })
-        );
-        assert!(obs.try_flatten(6).is_ok());
-    }
-
-    fn tier_at(angle_deg: f32, block_type: f32) -> TierFeature {
-        TierFeature {
-            angle_normalized: angle_deg / 90.0,
-            angle_deg,
-            base_angle_deg: angle_deg,
-            orbit_count: 8,
-            block_type,
-            is_pinned: 0.0,
-            is_flat: 0.0,
-            critical_margin_deg: 0.0,
-            mast: 0.5,
-            min_angle_deg: 0.0,
-            max_angle_deg: 0.0,
-            index_frac: 0.0,
-            azimuth_sin: 0.0,
-            azimuth_cos: 1.0,
-        }
-    }
-
-    #[test]
-    fn free_tier_mask_excludes_tiers_the_projection_forces() {
-        let mut obs = sample(0);
-        obs.global.target_critical_angle_deg = 40.0; // pavilion window [41, 85]
-        let mut pinned = tier_at(-60.0, -1.0);
-        pinned.is_pinned = 1.0;
-        let mut flat = tier_at(0.0, 1.0);
-        flat.is_flat = 1.0;
-        obs.tiers = vec![
-            tier_at(-60.0, -1.0), // pavilion inside the window: free
-            tier_at(-38.0, -1.0), // pavilion below the critical-angle bound: forced
-            tier_at(-88.0, -1.0), // pavilion steeper than 85: forced
-            tier_at(50.0, 1.0),   // crown inside [15, 80]: free
-            tier_at(10.0, 1.0),   // crown shallower than 15: forced
-            tier_at(85.0, 1.0),   // crown steeper than 80: forced
-            tier_at(0.0, 0.0),    // girdle: no envelope, free
-            pinned,
-            flat,
-        ];
-        assert_eq!(
-            obs.free_tier_mask(),
-            [true, false, false, true, false, false, true, false, false]
-        );
-
-        // The mask and the projection agree: a masked tier is exactly one the projection moves
-        // regardless of the sample (here a zero delta still yields a step).
-        for (tier, free) in obs.tiers.iter().zip(obs.free_tier_mask()) {
-            if tier.is_pinned > 0.5 || tier.is_flat > 0.5 || tier.block_type.abs() < 0.5 {
-                continue;
-            }
-            let mut action = crate::env::ContinuousTierAction::new(vec![0.0]);
-            crate::model::GemstoneSetAttentionNetwork::project_actions(
-                &mut action,
-                std::slice::from_ref(tier),
-                40.0,
-                0.75,
-            );
-            assert_eq!(action.deltas_deg[0] != 0.0, !free, "{}", tier.angle_deg);
-        }
-
-        // A smaller critical angle moves the pavilion bound: -38 is inside [36, 85] at crit 35.
-        obs.global.target_critical_angle_deg = 35.0;
-        assert!(obs.free_tier_mask()[1]);
-    }
-
-    #[test]
-    fn envelope_follows_the_block() {
-        assert_eq!(angle_envelope(1.0, 40.0), (15.0, 80.0));
-        assert_eq!(angle_envelope(-1.0, 40.0), (-85.0, -41.0));
-        assert_eq!(angle_envelope(0.0, 40.0), (0.0, 0.0));
-    }
-}
+#[path = "observation_tests.rs"]
+mod tests;

@@ -15,10 +15,13 @@
 //!
 //! # Decoding
 //!
-//! Only through `indicatrix::renderer::env_map::environment_from_hdr_bytes` with
-//! `HdrLimits::DEFAULT` -- the viewer's own builder, so both sides hold the identical map
-//! -- and one decode at a time per process ([`DECODE_LOCK`]), bounding peak memory to one
-//! map's decode however many connections ask at once.
+//! A Radiance asset only through `indicatrix::renderer::env_map::environment_from_hdr_bytes`
+//! with `HdrLimits::DEFAULT` -- the viewer's own builder, so both sides hold the identical
+//! map. An `IXENVMAP` float asset (v25; `indicatrix_net::messages::envmap_asset`) is rebuilt
+//! with `EnvironmentMap::from_rgb` from its exact texels, the constructor the phone built
+//! its map with, so those too are bit-identical. One decode at a time per process
+//! ([`DECODE_LOCK`]), bounding peak memory to one map's decode however many connections ask
+//! at once.
 
 use indicatrix::{
     optics::raytracer::EnvironmentSource,
@@ -26,7 +29,7 @@ use indicatrix::{
 };
 use indicatrix_net::{
     SceneState,
-    messages::{ContentHash, hash_hex},
+    messages::{ContentHash, envmap_asset, hash_hex},
     scene::HdrEnvironment,
 };
 use std::{
@@ -62,6 +65,20 @@ pub fn lookup(hash: &ContentHash) -> Option<Arc<EnvironmentMap>> {
     found
 }
 
+/// Builds the map one asset holds: an `IXENVMAP` float asset (v25, told apart by its
+/// magic) is rebuilt from its texels with `EnvironmentMap::from_rgb`; anything else goes
+/// through the shared Radiance builder. Both routes are bounded before the pixel buffer
+/// exists (the asset's exact length, `HdrLimits::DEFAULT`'s header check).
+fn build_map(bytes: &[u8]) -> Result<EnvironmentMap, String> {
+    if envmap_asset::is_envmap_asset(bytes) {
+        let (width, height, texels) =
+            envmap_asset::decode_envmap_asset(bytes).map_err(|e| e.to_string())?;
+        return EnvironmentMap::from_rgb(width as usize, height as usize, texels)
+            .map_err(|e| e.to_string());
+    }
+    environment_from_hdr_bytes(bytes, HdrLimits::DEFAULT).map_err(|e| e.to_string())
+}
+
 /// Decodes `bytes` (the asset `expected` names) with the shared builder and registers
 /// the result. The decoded dimensions must equal `expected`'s.
 ///
@@ -75,7 +92,7 @@ pub fn decode_and_register(
 ) -> Result<Arc<EnvironmentMap>, String> {
     let map = {
         let _one_at_a_time = DECODE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-        environment_from_hdr_bytes(bytes, HdrLimits::DEFAULT).map_err(|e| e.to_string())?
+        build_map(bytes)?
     };
     if (map.width(), map.height()) != (expected.width as usize, expected.height as usize) {
         return Err(format!(
@@ -151,7 +168,9 @@ pub fn resolved_hdr_map(scene: &SceneState) -> Option<Arc<EnvironmentMap>> {
 /// The studio rig from the scene's lighting fields, or `hdr_map` (from
 /// [`resolved_hdr_map`]) exactly as the viewer lights an HDR scene
 /// (`EnvironmentSource::HdrMap`, no backdrop, no surface glare). The studio rig carries
-/// the scene's backdrop and `surface_glare`.
+/// the scene's backdrop and `surface_glare`. `scene.backdrop` is the sender's resolved tray
+/// radiance at exposure 1 (`Backdrop::resolve`, protocol v29), passed through unchanged:
+/// the worker never recomputes it, so every peer lights the same tray.
 #[must_use]
 pub fn environment_source<'a>(
     scene: &SceneState,

@@ -11,8 +11,8 @@ use crate::{
             optimize_solve::OptimizeRunOutcome,
             state::EditorState,
             view::{
-                SolidLastSolved, build_optimize_preview_design, refresh_all_now,
-                submit_design_ghost_preview, submit_preview_replan,
+                SolidLastSolved, refresh_all_now, submit_design_ghost_preview,
+                submit_preview_replan, try_build_optimize_preview_design,
             },
         },
         show_toast,
@@ -480,7 +480,13 @@ fn run_optimize_preview(preview: &Rc<OptimizePreview>, retries_left: u8) {
     // file, so re-checked here rather than shared).
     let current_generation = st.generation.load(AtomicOrdering::Relaxed);
     if let Some(outcome) = preview_candidate(enabled, pending, current_generation) {
-        let candidate = build_optimize_preview_design(&st.design, &outcome);
+        let candidate = match try_build_optimize_preview_design(&st.design, &outcome) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                crate::gui::show_toast(&ui, &error, "error");
+                return;
+            }
+        };
         if submit_design_ghost_preview(&ui, &preview.render_ctx, &preview.preview_state, &candidate)
         {
             return;

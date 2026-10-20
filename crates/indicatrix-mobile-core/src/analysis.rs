@@ -330,7 +330,14 @@ impl AnalysisState {
     }
 
     /// Queues `params` as the newest job of `kind`, superseding the one in flight.
-    fn enqueue(&mut self, kind: Kind, params: worker::Params, key: Key) -> Result<(), String> {
+    fn enqueue(
+        &mut self,
+        kind: Kind,
+        params: worker::Params,
+        key: Key,
+        tools: Vec<indicatrix::geometry::tool::ToolPrimitive>,
+        policy: Arc<crate::compute_policy::ComputePolicy>,
+    ) -> Result<(), String> {
         let shared = Arc::clone(&self.shared);
         let sender = self.sender()?.clone();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -359,6 +366,8 @@ impl AnalysisState {
             generation
         };
         let job = Job {
+            tools,
+            policy,
             kind,
             generation,
             cancel,
@@ -388,13 +397,18 @@ impl Drop for AnalysisState {
 /// A sentence when there is nothing to measure (no current solve, no facets) or the worker
 /// thread cannot run.
 pub fn request_metrics(state: &mut AppState) -> Result<(), String> {
-    let Inputs { spec, hdr } = scene_inputs(state)?;
+    let Inputs { spec, hdr, tools } = scene_inputs(state)?;
     let key = Key::new(state, Kind::Metrics)
         .ok_or_else(|| "Solve the design to measure it.".to_owned())?;
     let params = MetricsParams::from_scene(&spec);
-    state
-        .analysis
-        .enqueue(Kind::Metrics, worker::Params::metrics(params, hdr), key)
+    let policy = state.render.compute_policy();
+    state.analysis.enqueue(
+        Kind::Metrics,
+        worker::Params::metrics(params, hdr),
+        key,
+        tools,
+        policy,
+    )
 }
 
 /// Queues the tilt sweep for the design, material and lighting as they are now.
@@ -403,13 +417,14 @@ pub fn request_metrics(state: &mut AppState) -> Result<(), String> {
 ///
 /// As [`request_metrics`].
 pub fn request_tilt(state: &mut AppState) -> Result<(), String> {
-    let Inputs { spec, .. } = scene_inputs(state)?;
+    let Inputs { spec, tools, .. } = scene_inputs(state)?;
     let key =
         Key::new(state, Kind::Tilt).ok_or_else(|| "Solve the design to measure it.".to_owned())?;
     let params = TiltParams::from_scene(&spec);
+    let policy = state.render.compute_policy();
     state
         .analysis
-        .enqueue(Kind::Tilt, worker::Params::tilt(params), key)
+        .enqueue(Kind::Tilt, worker::Params::tilt(params), key, tools, policy)
 }
 
 /// Cancels a running job whose inputs no longer match the app (the design or the lighting

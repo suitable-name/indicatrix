@@ -22,7 +22,7 @@ pub struct LabelledSample {
     state: Vec<f32>,
     /// Which real tiers the environment moves; its length is the tier count.
     free: Vec<bool>,
-    /// Per real tier, the four component slopes; all NaN for a tier without a label.
+    /// Per real tier, the seven component slopes; all NaN for a tier without a label.
     sensitivities: Vec<[f32; N_COMPONENTS]>,
     /// Per real tier, the score slope; NaN for a tier without a label.
     score_slopes: Vec<f32>,
@@ -181,7 +181,15 @@ mod tests {
 
     fn sensitivity(base: f32) -> TierSensitivity {
         TierSensitivity {
-            components: [base, base + 1.0, base + 2.0, base + 3.0],
+            components: [
+                base,
+                base + 1.0,
+                base + 2.0,
+                base + 3.0,
+                base + 4.0,
+                base + 5.0,
+                base + 6.0,
+            ],
             score: base * 10.0,
             forward_probe: true,
         }
@@ -211,12 +219,12 @@ mod tests {
         let s = LabelledSample::new(vec![0.5; 4], vec![true, false, true], &label(tiers, None));
         assert_eq!(s.sensitivities.len(), 3);
         assert_eq!(s.score_slopes.len(), 3);
-        assert_eq!(s.sensitivities[0], [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(s.sensitivities[0], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
         assert_eq!(s.score_slopes[0], 10.0);
         // A tier without a label is all NaN, with a NaN score slope.
         assert!(s.sensitivities[1].iter().all(|v| v.is_nan()));
         assert!(s.score_slopes[1].is_nan());
-        assert_eq!(s.sensitivities[2], [3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(s.sensitivities[2], [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         // No oracle gain is NaN as well.
         assert!(s.oracle_gain.is_nan());
         assert_eq!(s.free, [true, false, true]);

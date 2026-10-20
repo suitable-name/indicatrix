@@ -130,7 +130,8 @@ USAGE:
     --out <path>      Output PNG path. Parent directories are created if missing.
     --width <px>      Output image width, in pixels.
     --height <px>     Output image height, in pixels.
-    --samples <n>     Total samples per pixel to trace.
+    --engine <path|ray> Optional engine override (default: preserve scene).
+    --samples <n>     Total samples per pixel; Ray-Traced uses 1, 4, 8 or 16 AA taps.
     --threads <n>     CPU threads to use (default: all available cores). Only governs
                        the CPU tracer -- ignored by the GPU path itself (a single
                        compute-pipeline dispatch, not thread-parallel), so it still

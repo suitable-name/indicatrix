@@ -8,16 +8,20 @@
 //! - slab along B: `S[gb] = max over g of S[gb - g] + Bar[gA][g]`;
 //! - root along A: `Rt[ga] = max over g of Rt[ga - g] + Slab[g]`.
 //!
-//! The number of pieces is free: the DP places as many stones as the rough, the losses and
-//! the minimum width allow, and `Rt[G_A]` is the best total. The design cap is applied
-//! outside the DP (see [`plan_design_cap`]). All argmax choices are stored, so
-//! reconstruction is a plain walk. Iteration order is fixed (`g` descending) and a later
-//! choice replaces only on a strictly greater value, which makes the result deterministic and
-//! keeps the longest run on a tie: of two splits worth the same, the one with fewer pieces
-//! (fewer stones, fewer cuts) wins, as in the ranking.
+//! The number of pieces is free unless [`PlanSettings::max_stones`](super::PlanSettings) caps
+//! it: the DP places as many stones as the rough, the losses and the minimum width allow, and
+//! `Rt[G_A]` is the best total. A stone cap that the free optimum already respects changes
+//! nothing; one that binds is solved by the count DP of `dp_capped`, which adds a stone budget
+//! to every table, so the layout is the best one of at most that many stones and not a larger
+//! layout cut down. The design cap is applied outside the DP (see [`plan_design_cap`]). All
+//! argmax choices are stored, so reconstruction is a plain walk. Iteration order is fixed
+//! (`g` descending) and a later choice replaces only on a strictly greater value, which makes
+//! the result deterministic and keeps the longest run on a tie: of two splits worth the same,
+//! the one with fewer pieces (fewer stones, fewer cuts) wins, as in the ranking.
 
 use super::{
     NEG,
+    dp_capped::run_order_dp_capped,
     pareto::pareto_front,
     piece::{Grid, PieceTable},
     rank::{best_layout, least_contributing_design, most_used_design, pool_without},
@@ -172,18 +176,7 @@ impl OrderDp {
         let runs = Self::chain(self.cells[2], |gc| usize::from(self.bar_arg[block + gc]));
         let leaves = runs
             .into_iter()
-            .map(|g_c| {
-                let mut cell = [0; 3];
-                cell[self.order[0]] = cross[0];
-                cell[self.order[1]] = cross[1];
-                cell[self.order[2]] = g_c;
-                let index = table.index(cell);
-                Leaf {
-                    len: grid.run_mm(self.order[2], g_c),
-                    design: table.design[index] as usize,
-                    orient: usize::from(table.orient[index]),
-                }
-            })
+            .map(|g_c| leaf_of(grid, table, self.order, cross, g_c))
             .collect();
         Bar {
             width: grid.run_mm(self.order[1], cross[1]),
@@ -202,13 +195,44 @@ impl OrderDp {
         if self.value() <= NEG {
             return Vec::new();
         }
-        let tree = self.reconstruct(grid, table);
-        let layout = layout_from_tree(&grid.rough, &grid.settings, order, &tree, front);
-        if layout.stones.is_empty() {
-            Vec::new()
-        } else {
-            vec![layout]
-        }
+        candidate_of_tree(grid, front, order, &self.reconstruct(grid, table))
+    }
+}
+
+/// The piece of `g_c` units along stage C in the bar of cross-section `cross` (`[gA, gB]`):
+/// its length, and the design and assignment the piece table picked for it.
+pub(super) fn leaf_of(
+    grid: &Grid,
+    table: &PieceTable,
+    order: [usize; 3],
+    cross: [usize; 2],
+    g_c: usize,
+) -> Leaf {
+    let mut cell = [0; 3];
+    cell[order[0]] = cross[0];
+    cell[order[1]] = cross[1];
+    cell[order[2]] = g_c;
+    let index = table.index(cell);
+    Leaf {
+        len: grid.run_mm(order[2], g_c),
+        design: table.design[index] as usize,
+        orient: usize::from(table.orient[index]),
+    }
+}
+
+/// The candidate of a cut order built from its best `tree`: the one layout, or none when it
+/// holds no stone.
+pub(super) fn candidate_of_tree(
+    grid: &Grid,
+    front: &[CandidateDesign],
+    order: CutOrder,
+    tree: &Tree,
+) -> Vec<RoughLayout> {
+    let layout = layout_from_tree(&grid.rough, &grid.settings, order, tree, front);
+    if layout.stones.is_empty() {
+        Vec::new()
+    } else {
+        vec![layout]
     }
 }
 
@@ -218,7 +242,15 @@ impl OrderDp {
 /// [`PlanProgress::Dp`] once per `gA` iteration.
 ///
 /// Returns `None` when `on_progress` cancels; otherwise the order's best layout (as many
-/// stones as fit), or an empty vector when nothing is feasible for this order.
+/// stones as fit, or as many as the grid's stone cap allows), or an empty vector when nothing
+/// is feasible for this order.
+///
+/// The stone cap is the grid's `settings.max_stones`. Without one this is exactly the free DP.
+/// With one, the free DP runs first and its layout is the answer whenever it already has at
+/// most that many pieces (no layout of at most N pieces is worth more than the free optimum,
+/// so it IS the capped optimum). Otherwise the count DP of the cap runs on the same table (a
+/// second pass, which reports another `gA` events), so the answer is the best layout of at
+/// most that many stones, not a larger one cut down.
 pub fn plan_rough_for_order(
     grid: &Grid,
     table: &PieceTable,
@@ -234,13 +266,25 @@ pub fn plan_rough_for_order(
         "the piece table picks a design outside the front passed alongside it"
     );
     let index = order.index();
-    let dp = run_order_dp(grid, table, order.axes(), &mut || {
+    let mut tick = || {
         on_progress(PlanProgress::Dp {
             order: index,
             of: CutOrder::ALL.len(),
         })
-    })?;
-    Some(dp.candidates(grid, table, front, order))
+    };
+    let dp = run_order_dp(grid, table, order.axes(), &mut tick)?;
+    let Some(cap) = grid.settings.stone_cap() else {
+        return Some(dp.candidates(grid, table, front, order));
+    };
+    if dp.value() <= NEG {
+        return Some(Vec::new());
+    }
+    let free = dp.reconstruct(grid, table);
+    if free.leaf_count() <= cap {
+        return Some(candidate_of_tree(grid, front, order, &free));
+    }
+    let capped = run_order_dp_capped(grid, table, order.axes(), cap, &mut tick)?;
+    Some(capped.candidates(grid, table, front, order))
 }
 
 /// The leave-one-out mixed alternatives.

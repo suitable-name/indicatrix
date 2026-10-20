@@ -51,6 +51,10 @@ fn design_path_mm(ctx: &Ctx) -> f64 {
 }
 
 /// Sets the sliders to `lch` and solves it.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the sliders are f32 properties; tone, chroma and hue are small values"
+)]
 fn set_sliders_and_solve(ctx: &Ctx, last: &LastSolve, lch: [f64; 3]) {
     let Some(ui) = ctx.ui.upgrade() else {
         return;
@@ -154,11 +158,13 @@ fn open(ctx: &Ctx, last: &LastSolve) {
             .as_ref()
             .and_then(|design| lch_from_material(&design.session.design.material, path))
     });
-    let lch = seeded.unwrap_or([
-        f64::from(model.get_lch_tone()),
-        f64::from(model.get_lch_chroma()),
-        f64::from(model.get_lch_hue()),
-    ]);
+    let lch = seeded.unwrap_or_else(|| {
+        [
+            f64::from(model.get_lch_tone()),
+            f64::from(model.get_lch_chroma()),
+            f64::from(model.get_lch_hue()),
+        ]
+    });
     set_sliders_and_solve(ctx, last, lch);
 }
 

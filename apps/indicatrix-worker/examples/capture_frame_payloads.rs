@@ -57,6 +57,7 @@ const SIZES: [(u32, u32); 2] = [(1920, 1080), (3840, 2160)];
 /// Builds the scene the GUI would send for its default camera and light pose.
 fn scene(preset: LightingPreset, material: &GemMaterial, width: u32, height: u32) -> SceneState {
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width,
         height,
         yaw: 0.60,
@@ -70,12 +71,16 @@ fn scene(preset: LightingPreset, material: &GemMaterial, width: u32, height: u32
         material: material.clone(),
         planes: StandardGemCuts::standard_round_brilliant(),
         girdle_frosted: false,
+        // Since protocol v29 the field is a tray radiance seen by every escape; the old Grey
+        // card level 0.23 is kept as a literal (a 0.23 tray). The owner regenerates PGO
+        // profiles on the owner's schedule.
         backdrop: BACKDROP_GREY,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 

@@ -196,8 +196,11 @@ fn parse_foreign(job: &Job) -> Result<ImportedAsc, String> {
     let name = &job.file.display_name;
     let converted = convert_foreign_design(name, job.kind, &job.file.bytes)
         .map_err(|error| format!("This file cannot be converted: {error}"))?;
+    // `.asc` has no notation for frosting: what a `.gcs` states is stored with the row
+    // (`local::apply_imported_extras`) and applied when the entry is read back.
     let mut parsed = local::import_asc(name, &converted.asc_text, None)
-        .map_err(|error| format!("The converted schedule cannot be read: {error}"))?;
+        .map_err(|error| format!("The converted schedule cannot be read: {error}"))?
+        .with_frosting(&converted.frosting);
     let asc_name = converted.asc_file_name;
     // `import_asc` names its one attachment after the picked file but holds the
     // generated `.asc` text: rename it, and keep the original file beside it.

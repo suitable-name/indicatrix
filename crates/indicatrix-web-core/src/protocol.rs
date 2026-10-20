@@ -17,7 +17,9 @@
 //!
 //! # Render Workers
 //!
-//! [`ToWorker::HdrMap`] and [`ToWorker::SetScene`] are cached by the Worker;
+//! [`ToWorker::HdrMap`] and [`ToWorker::SetScene`] (or [`ToWorker::SetGeometryScene`], the
+//! same scene with concave tools; build either with [`ToWorker::scene`]) are cached by the
+//! Worker;
 //! [`ToWorker::TraceChunk`] traces against the cached scene and answers
 //! [`FromWorker::ChunkResult`], or [`FromWorker::ChunkDropped`] when the Worker has no
 //! scene with that id (so the host never waits for a chunk that will not come). The
@@ -59,6 +61,7 @@
 //! told apart from a revoked URL: the job then simply runs on, and is ended by the
 //! host's own deadline.
 
+use indicatrix::geometry::tool::ToolPrimitive;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -121,9 +124,48 @@ use crate::{
 /// `FromWorker::GpuCompiled`, `FromWorker::GpuCompileFailed`, `FromWorker::FullPassResult`,
 /// and `FromWorker::GpuLost`.
 ///
+/// 19: meet-preserving retarget. `RetargetResultData` gains `anchors` (the checked masts,
+/// `Vec<AnchorChangeData>`) and `validity_headline` (a `String`), because a Shift retarget of a
+/// design with pinned meets now runs the Worker-side check and the page applies the angles
+/// together with the masts; and `OptimizationProvenance::diagnostics` is no longer serialised
+/// (`#[serde(skip)]`), which shortens every `OptimizeResultData` that carries a provenance.
+/// Postcard has no field defaults, so both are wire changes.
+///
+/// 20: concave stones in the browser. `ToWorker::SetGeometryScene` (a scene with its cutting
+/// tools, appended last) and `SolveRequest::{MetricsWithTools, TiltWithTools}` (the analysis
+/// Worker's metrics and tilt jobs scored with the tools, appended last). All three are new
+/// variants, so no existing message's bytes moved: a planar stone still sends `SetScene`,
+/// `Metrics` and `Tilt` exactly as under 19 (see `ToWorker::scene`, `SolveRequest::metrics`,
+/// `SolveRequest::tilt`). The bump makes a stale cached worker script fail the `Init`
+/// handshake instead of failing to decode a new message.
+///
+/// 21: frosted tilt curves. `TiltParams` gains `finishes` (a `FinishSpec`, appended last; one
+/// byte for `AllPolished`, postcard has no field defaults, so it is a wire change for `Tilt`
+/// and `TiltWithTools`): the tilt sweep scores the stone with its frosted facets, as the
+/// desktop's Tilt Performance dialog does (owner decision 2026-10-19; a frosted facet scatters
+/// light, so a frosted design's curves are not its polished ones). A Worker on 20 would sweep
+/// every stone polished.
+///
+/// 22: turn-aware Retarget bounds. `indicatrix_cut_core::meet_preservation::PreservationPolicy`
+/// (inside `OptimizationProvenance::policy`, carried by `OptimizeResultData::provenance`)
+/// gained `bounds_follow_turn` (a `bool`, one byte, declared last; postcard has no field
+/// defaults, so every provenance on the wire is one byte longer), and the policy's meaning
+/// changed with it: a Retarget's depth, girdle and junction bounds now grow by the travel the
+/// REQUESTED facet turn implies (owner decisions 2026-10-19), and a provenance is re-validated
+/// under its policy on Apply. A Worker on 21 would misalign the provenance and refuse a valid
+/// turn as a shape limit.
+///
 /// A change to any message's bytes must bump this and update the pinned bytes in this
-/// module's `wire_format_is_pinned` test.
-pub const PROTOCOL_VERSION: u32 = 18;
+/// module's `wire_format_is_pinned_to_worker` and `wire_format_is_pinned_from_worker` tests.
+/// 23: `SetEngine` appends renderer selection beside the unchanged scene payload.
+///
+/// 24: the backdrop is a lit tray. No shape change (`LightingSpec::backdrop_index` is still an
+/// `i32`, now 0 as lit, 1 grey, 2 white, 3 black), but the meaning moved: the backdrop is a
+/// matte surface of that albedo under the stone, lit by the preset at the light pose and seen by
+/// every ray that escapes the stone, not a card only the camera ray sees. A Worker on 23 would
+/// render dark windows beside a white surround and merge nothing consistent with the page's
+/// other peers. The net protocol's `SceneState::backdrop` moved with it (net 29).
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// What [`ToWorker::Picture`] makes of a sum (see `crate::display`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,10 +300,58 @@ pub enum ToWorker {
         /// Samples per pixel.
         spp: u32,
     },
+    /// [`Self::SetScene`] for a concave stone: the scene is `spec`'s planes minus `tools`.
+    ///
+    /// Sent instead of `SetScene` only when there are tools, so a planar scene's bytes are
+    /// what they were before concave stones reached the browser's Render tab (build one with
+    /// [`Self::scene`]). Appended as the last variant, which leaves every other message's
+    /// bytes unchanged. A render Worker builds it with
+    /// [`GeometrySceneSpec::build`](crate::scene::GeometrySceneSpec::build), which refuses
+    /// an invalid tool or more than `MAX_TOOL_PRIMITIVES`; the GPU Worker additionally
+    /// declines more than `GPU_MAX_TOOL_PRIMITIVES` for itself.
+    SetGeometryScene {
+        /// The scene's id; results carry it back.
+        scene_id: u64,
+        /// The scene's planes, material, camera, lighting and frame.
+        spec: SceneSpec,
+        /// The resolved cutting tools, in cutting order (never empty on the wire).
+        tools: Vec<ToolPrimitive>,
+    },
+    /// Selects the renderer of the cached scene without changing `SceneSpec`'s bytes.
+    SetEngine {
+        /// The scene the renderer choice belongs to.
+        scene_id: u64,
+        /// Renderer and deterministic AA options.
+        engine: indicatrix::renderer::engine::EngineSpec,
+    },
+}
+
+impl ToWorker {
+    /// The message that gives a Worker the scene `spec` minus `tools`: [`Self::SetScene`] when
+    /// there are no tools (byte-identical to before concave stones), else
+    /// [`Self::SetGeometryScene`].
+    #[must_use]
+    pub fn scene(scene_id: u64, spec: SceneSpec, tools: &[ToolPrimitive]) -> Self {
+        if tools.is_empty() {
+            Self::SetScene { scene_id, spec }
+        } else {
+            Self::SetGeometryScene {
+                scene_id,
+                spec,
+                tools: tools.to_vec(),
+            }
+        }
+    }
 }
 
 /// Worker to page.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the postcard wire format pins variant order and payload layout (protocol/tests.rs); \
+              `SolveResult` carries one finished answer by value and a message is built once per \
+              job, so boxing it would only move the allocation and change every consumer"
+)]
 pub enum FromWorker {
     /// The Worker's handler is installed; send `Init`.
     Loaded {
@@ -486,3 +576,6 @@ pub fn decode_from_worker(bytes: &[u8]) -> Result<FromWorker, String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod geometry_tests;

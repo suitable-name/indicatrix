@@ -30,11 +30,12 @@ use crate::support::{
     smoke::{DenyMatch, DenyRule},
 };
 use indicatrix_cut::{
-    ConcaveFormData, EditorModel, EditorTierItem, ExportModel, LibraryModel, SolidPreviewModel,
+    ConcaveFormData, EditorModel, EditorTierItem, ExportModel, LibraryModel, OpticalModel,
+    SolidPreviewModel,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel, platform::WindowEvent};
-use slint_harness::AccessibleRole;
 use std::time::Duration;
+use uiprobe::AccessibleRole;
 
 /// The pieces of this file: one `overlay:editor-*:<state>` piece per state, and the Exporting
 /// button check.
@@ -55,6 +56,11 @@ pub fn pieces() -> Vec<Piece> {
         "coverage_editor_exporting_button",
         existing_install,
         exporting_button,
+    ));
+    all.push(Piece::new(
+        "coverage_optical_scintillation_checkbox",
+        existing_install,
+        optical_scintillation_checkbox,
     ));
     all
 }
@@ -137,8 +143,8 @@ fn hover_first_row(app: &HarnessApp) -> Option<String> {
         window.size().to_logical(window.scale_factor()),
         elements_at(
             &app.main_view().root,
-            origin.x + size.width * 0.5,
-            origin.y + size.height * 0.5
+            size.width.mul_add(0.5, origin.x),
+            size.height.mul_add(0.5, origin.y)
         )
     );
     Some(title)
@@ -147,7 +153,7 @@ fn hover_first_row(app: &HarnessApp) -> Option<String> {
 /// The elements of `root` whose rectangle holds the point `(x, y)` and that can take the pointer
 /// or hold a popup (type name `#id`), front-most last: what a failed hover reports, so the next
 /// run names whatever sits over the row.
-fn elements_at(root: &slint_harness::ElementHandle, x: f32, y: f32) -> Vec<String> {
+fn elements_at(root: &uiprobe::ElementHandle, x: f32, y: f32) -> Vec<String> {
     let mut found = Vec::new();
     let _: Option<()> = root.visit_descendants(|element| {
         let p = element.absolute_position();
@@ -278,6 +284,48 @@ fn exporting_button(ctx: &mut Ctx<'_>) {
         }
     }
     ctx.check_health("exporting button");
+}
+
+/// The Optical Diagnostics panel's Scintillation check box: it is a control of the Live Render
+/// view's panel, found by its accessible label, and each press flips `OpticalModel.scintillation`
+/// (the layer the overlay controller reads to trace the five yaw poses).
+fn optical_scintillation_checkbox(ctx: &mut Ctx<'_>) {
+    if let Err(message) = overlays::launch_base(&mut *ctx.app, ctx.profile, &ctx.seed, Base::Design)
+    {
+        ctx.report.add_simple(
+            "-",
+            "launch",
+            format!("optical scintillation checkbox: cannot start: {message}"),
+        );
+        return;
+    }
+    live_tab(ctx.app);
+    ctx.app.ui().global::<OpticalModel>().set_panel_open(true);
+    pump(300);
+    // The global handle borrows the app, so each read takes a fresh one and drops it before
+    // `ctx.expect` borrows `ctx` mutably.
+    let scintillation = |ctx: &Ctx<'_>| ctx.app.ui().global::<OpticalModel>().get_scintillation();
+    let pressed = press(ctx.app, "Scintillation layer", None);
+    if ctx.expect(
+        pressed,
+        "optical-scintillation-checkbox",
+        "the Optical Diagnostics panel shows no \"Scintillation layer\" check box",
+    ) {
+        let on = scintillation(ctx);
+        ctx.expect(
+            on,
+            "optical-scintillation-on",
+            "pressing the Scintillation check box did not switch the layer on",
+        );
+        press(ctx.app, "Scintillation layer", None);
+        let on = scintillation(ctx);
+        ctx.expect(
+            !on,
+            "optical-scintillation-off",
+            "pressing the Scintillation check box again did not switch the layer off",
+        );
+    }
+    ctx.check_health("optical scintillation checkbox");
 }
 
 // ---------------------------------------------------------------------------------------------

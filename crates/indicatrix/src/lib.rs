@@ -54,13 +54,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Covers `src/**/*.rs`, `src/**/*.wgsl` and `Cargo.toml`; 16 lowercase hex chars,
 /// stable across OS, toolchain, line endings and `.git` state for byte-identical
-/// source. Catches a physics-affecting edit that didn't bump [`VERSION`] (which
+/// source. Reveals a physics-affecting edit that didn't bump [`VERSION`] (which
 /// [`BUILD_ID`] is keyed on, and [`BUILD_ID`] disagreeing is always a hard handshake
-/// refusal): `indicatrix_net::handshake::verify_compatible` sends this value on both
-/// sides and, when BOTH sides could establish their own hash, a disagreement is
-/// ALSO a hard refusal (`Incompatible::SourceHash`) -- not a diagnostic-only field.
-/// When either side's hash is unknown (e.g. a build that skipped this crate's
-/// `build.rs` hashing step), that side's check is skipped and logged at `warn!`
-/// instead, since an unknown hash is not itself evidence of a mismatch; see that
-/// module's own doc comment for the full two-tier rationale.
+/// refusal). `indicatrix_net::handshake` sends this value in the `HELLO`/`WELCOME`, but
+/// `verify_compatible` compares only the protocol version and [`BUILD_ID`]: a
+/// `SOURCE_HASH` mismatch does not refuse the connection, so the value is
+/// diagnostic only. See that module's own doc comment.
 pub const SOURCE_HASH: &str = env!("INDICATRIX_SOURCE_HASH");

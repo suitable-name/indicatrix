@@ -28,6 +28,7 @@
 //! few known-good stones are at hand, not measured limits.
 
 mod fix;
+mod fix_text;
 mod gather;
 #[cfg(test)]
 mod tests;
@@ -165,50 +166,13 @@ pub enum FixAction {
         after: usize,
     },
     /// Steepen the pavilion tier to the critical angle plus [`SAFE_MARGIN_DEG`], turning it
-    /// about its girdle edge so the girdle stays.
+    /// about its girdle corners so the girdle outline stays.
     SteepenPavilion {
         /// The tier's position in `design.tiers`.
         tier: usize,
     },
     /// Add a flat table facet to the crown.
     AddTable,
-}
-
-impl FixAction {
-    /// The button's label.
-    #[must_use]
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::SnapToTeeth { .. } => "Snap to Teeth",
-            Self::RemoveVanished { .. } => "Remove",
-            Self::MoveAfter { .. } => "Move Later",
-            Self::SteepenPavilion { .. } => "Steepen",
-            Self::AddTable => "Add a Table",
-        }
-    }
-
-    /// What the button does, for its tooltip.
-    #[must_use]
-    pub const fn hint(&self) -> &'static str {
-        match self {
-            Self::SnapToTeeth { .. } => {
-                "Moves each index position of this tier to the nearest gear tooth."
-            }
-            Self::RemoveVanished { .. } => {
-                "Removes the facets that are cut away. One undo brings them back."
-            }
-            Self::MoveAfter { .. } => {
-                "Moves this tier to just after the tier it meets, so that tier is cut first."
-            }
-            Self::SteepenPavilion { .. } => {
-                "Raises this facet to the critical angle plus 2 degrees. It turns about its \
-                 girdle edge, so the girdle stays where it is."
-            }
-            Self::AddTable => {
-                "Adds a flat table facet at a height that keeps all the crown facets."
-            }
-        }
-    }
 }
 
 /// One thing the verdict found.

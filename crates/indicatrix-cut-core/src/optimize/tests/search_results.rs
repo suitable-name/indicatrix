@@ -91,17 +91,25 @@ fn state_of(design: &Design, free: &[usize], candidate: &OptimizeCandidate) -> V
 // --- nothing free: both entry points agree ---
 
 #[test]
-fn the_default_request_is_optimize_design_and_vary_anchored_needs_hinges() {
+fn default_request_matches_plain_search_and_flat_depths_can_be_unlocked() {
     let imported = imported_rbc();
     let material = GemMaterial::diamond();
-    let config = OptimizeConfig::default();
-    let plain = optimize_design(&imported, &material, &config, &SearchHooks::default())
-        .expect("imported design must solve");
-    // vary_anchored without a single hinge frees nothing, so nothing is searched.
+    let config = small_config(4);
+    let plain = optimize_design(&imported, &material, &config, &SearchHooks::default()).unwrap();
+    let default = optimize_design_with(
+        &imported,
+        &material,
+        &config,
+        &OptimizeOptions::default(),
+        &SearchHooks::default(),
+    )
+    .unwrap();
+    assert_eq!(default.outcome, plain);
+    assert_eq!(plain.evaluations, 0);
+    // No hinge is needed for a flat depth; all independent angles remain locked.
     let options = OptimizeOptions {
         vary_anchored: true,
-        keep_candidates: 5,
-        ..OptimizeOptions::default()
+        ..Default::default()
     };
     let result = optimize_design_with(
         &imported,
@@ -110,12 +118,23 @@ fn the_default_request_is_optimize_design_and_vary_anchored_needs_hinges() {
         &options,
         &SearchHooks::default(),
     )
-    .expect("imported design must solve");
-    assert_eq!(result.outcome, plain);
-    assert_eq!(result.outcome.evaluations, 0);
-    assert_eq!(result.mast_changes.len(), 0);
-    assert_eq!(result.candidates.len(), 0);
-    assert!(result.best_candidate().is_none());
+    .unwrap();
+    assert!(result.outcome.evaluations > 0);
+    assert_eq!(result.outcome.changes.len(), 0);
+    for candidate in result.candidates {
+        assert_eq!(candidate.changes.len(), 0);
+        assert_ne!(candidate.mast_changes.len(), 0);
+        let accepted = crate::optimize::materialize_candidate(&imported, &candidate)
+            .unwrap()
+            .0;
+        crate::meet_preservation::MeetPreservationBaseline::capture(&imported)
+            .unwrap()
+            .validate(
+                &accepted,
+                crate::meet_preservation::PreservationPolicy::OPTIMIZE,
+            )
+            .unwrap();
+    }
 }
 
 // --- one anchored run, checked from several sides ---
@@ -225,7 +244,7 @@ fn candidates_are_ranked_bounded_and_distinct() {
     }
     for candidate in candidates {
         assert!(candidate.score <= run.result.outcome.before_score);
-        assert_ne!(candidate.changes.len(), 0);
+        assert!(!candidate.changes.is_empty() || !candidate.mast_changes.is_empty());
     }
 
     let free = free_tier_indices_with(&run.design, &run.options);
@@ -234,10 +253,20 @@ fn candidates_are_ranked_bounded_and_distinct() {
         .map(|c| state_of(&run.design, &free, c))
         .collect();
     for (i, a) in states.iter().enumerate() {
-        for b in &states[i + 1..] {
+        for (j, b) in states.iter().enumerate().skip(i + 1) {
             let apart = a.iter().zip(b).any(|(x, y)| (x - y).abs() >= 0.5 - 1e-9);
+            let depth_apart = (0..run.design.tiers.len()).any(|tier| {
+                let mast = |candidate: &OptimizeCandidate| {
+                    candidate
+                        .mast_changes
+                        .iter()
+                        .find(|m| m.index == tier)
+                        .map_or_else(|| pinned_mast(&run.design, tier), |m| m.to_mast)
+                };
+                (mast(&candidates[i]) - mast(&candidates[j])).abs() > 1e-9
+            });
             assert!(
-                apart,
+                apart || depth_apart,
                 "two candidates differ by less than the separation: {a:?} {b:?}"
             );
         }
@@ -298,14 +327,22 @@ fn only_movable_free_tiers_change_and_bounds_hold() {
     }
 }
 
+/// Angles and depths are independent variables of the projection: a flat pinned tier (the
+/// table) is a depth variable with no angle, and a projected tier may keep its angle while
+/// its depth moves. So the old "every turned tier has a mast change and only those" is not
+/// an invariant any more; the invariant is that a depth only ever moves on a tier the
+/// projection was allowed to move, from the mast the design pinned.
 #[test]
-fn every_turned_tier_has_its_mast_change_and_only_those() {
+fn every_mast_change_is_on_a_movable_tier_and_starts_from_the_pinned_mast() {
     let run = anchored_run();
+    let movable = crate::optimize::constrained::movable_masts(&run.design, &run.options);
     for candidate in &run.result.candidates {
-        let angle_tiers: Vec<usize> = candidate.changes.iter().map(|c| c.index).collect();
-        let mast_tiers: Vec<usize> = candidate.mast_changes.iter().map(|m| m.index).collect();
-        assert_eq!(angle_tiers, mast_tiers);
         for mast in &candidate.mast_changes {
+            assert!(
+                movable.contains(&mast.index),
+                "tier {} has a mast change but its depth is locked",
+                mast.index
+            );
             assert_eq!(
                 mast.from_mast.to_bits(),
                 pinned_mast(&run.design, mast.index).to_bits()
@@ -315,30 +352,36 @@ fn every_turned_tier_has_its_mast_change_and_only_those() {
     }
 }
 
-/// The numeric heart of the feature: after a candidate is applied, each tier it turned
-/// still has its first facet through the hinge it turns about.
+/// What an applied candidate guarantees is the projection's contract, not a hinge
+/// incidence: the whole original meet network survives within the policy. The hinge only
+/// seeds the proposal; the projection moves every variable (the junction that was the
+/// hinge may travel up to `max_junction_displacement`), so "the first facet still passes
+/// through its hinge" is no longer an invariant.
 #[test]
-fn applied_candidates_keep_every_changed_facet_on_its_hinge() {
+fn applied_candidates_keep_the_original_meets_within_the_policy() {
     let run = anchored_run();
+    let baseline = crate::meet_preservation::MeetPreservationBaseline::capture(&run.design)
+        .expect("the fixture's network is captured");
+    let policy = run.options.preservation_policy;
     for candidate in &run.result.candidates {
         let mut design = run.design.clone();
         let mut history = History::new();
         apply_optimize_candidate(&mut history, &mut design, candidate)
             .expect("a candidate applies to the design it was computed from");
-        let solved = design.solve().expect("the applied design solves");
-        let planes = design.planes_from_solved(&solved);
-        let ranges = tier_plane_ranges(&design, &solved);
-        for mast in &candidate.mast_changes {
-            let hinge = run.options.anchor_hinges[&mast.index];
-            assert!(!ranges[mast.index].is_empty());
-            let (normal, offset) = planes[ranges[mast.index].start];
-            assert!(
-                (normal.dot(hinge) - offset).abs() < 1e-5,
-                "tier {}: n.hinge {} vs offset {offset}",
-                mast.index,
-                normal.dot(hinge)
-            );
-        }
+        let facts = baseline
+            .validate(&design, policy)
+            .expect("an applied candidate keeps every original meet");
+        assert!(
+            facts.shape_distance <= policy.max_junction_displacement,
+            "junctions travelled {} of the stone, limit {}",
+            facts.shape_distance,
+            policy.max_junction_displacement
+        );
+        assert!(
+            facts.max_normalized_residual <= 2e-6,
+            "meet residual {}",
+            facts.max_normalized_residual
+        );
         assert!(design.is_closed(), "an applied candidate closes");
     }
 }
@@ -350,7 +393,28 @@ fn applying_the_result_is_one_exact_undo_step() {
     let mut history = History::new();
     let touched = apply_optimize_result(&mut history, &mut design, &run.result)
         .expect("the result applies to the design it was computed from");
-    assert_eq!(touched, run.result.outcome.changes.len());
+    // The count is of tiers, not of angle changes: a tier whose depth moves while its angle
+    // stays (the table, which the turned facets drag along) is one more modified tier, and a
+    // tier with both an angle and a depth change is one.
+    let listed: std::collections::BTreeSet<usize> = run
+        .result
+        .outcome
+        .changes
+        .iter()
+        .map(|change| change.index)
+        .chain(run.result.mast_changes.iter().map(|mast| mast.index))
+        .collect();
+    assert_eq!(touched, listed.len());
+    let differing = design
+        .tiers
+        .iter()
+        .zip(&run.design.tiers)
+        .filter(|(now, before)| now != before)
+        .count();
+    assert_eq!(
+        touched, differing,
+        "exactly the tiers that differ from the original were touched"
+    );
     assert_ne!(design, run.design);
     for change in &run.result.outcome.changes {
         assert_eq!(design.tiers[change.index].angle_deg, change.to_deg);
@@ -376,6 +440,45 @@ fn the_same_inputs_give_the_same_result_candidates_and_masts_included() {
     let run = anchored_run();
     let (again, _) = run_anchored(&run.design, &run.options, &run.config);
     assert_eq!(again, run.result);
+}
+
+#[test]
+fn a_candidate_that_no_longer_validates_is_dropped_not_fatal() {
+    let run = anchored_run();
+    assert!(
+        !run.result.candidates.is_empty(),
+        "the fixture run must keep candidates"
+    );
+    let baseline =
+        crate::meet_preservation::MeetPreservationBaseline::capture(&run.design).unwrap();
+    // No junction may travel at all: every changed candidate fails its re-validation,
+    // while the unchanged design still validates.
+    let mut options = run.options.clone();
+    options.preservation_policy = crate::meet_preservation::PreservationPolicy {
+        max_junction_displacement: 0.0,
+        ..crate::meet_preservation::PreservationPolicy::OPTIMIZE
+    };
+    let mut result = run.result.clone();
+    crate::optimize::provenance::stamp_result(
+        &run.design,
+        &GemMaterial::diamond(),
+        &run.config,
+        &options,
+        &baseline,
+        &mut result,
+    )
+    .expect("a failing rival must not become a solver error");
+    assert_eq!(result.candidates.len(), 0);
+    assert_eq!(result.outcome.changes.len(), 0);
+    assert_eq!(result.mast_changes.len(), 0);
+    assert_eq!(
+        result.outcome.after_score.to_bits(),
+        result.outcome.before_score.to_bits()
+    );
+    assert!(
+        result.outcome.provenance.is_some(),
+        "the unchanged design is still stamped"
+    );
 }
 
 // --- the girdle guard, end to end ---
@@ -421,7 +524,7 @@ fn a_guarded_run_returns_only_candidates_that_keep_the_girdle_and_the_table() {
 // --- cancelling ---
 
 #[test]
-fn a_cancelled_run_scores_its_end_point_only_and_proposes_nothing_it_did_not_reach() {
+fn cancellation_before_baseline_capture_returns_an_explicit_cancelled_error() {
     let design = imported_rbc();
     let options = bounded_anchored_options(&design, 3);
     let material = GemMaterial::diamond();
@@ -431,12 +534,13 @@ fn a_cancelled_run_scores_its_end_point_only_and_proposes_nothing_it_did_not_rea
         on_progress: None,
         on_start: None,
     };
-    let result = optimize_design_with(&design, &material, &small_config(30), &options, &hooks)
-        .expect("fixture must solve");
-    assert!(result.outcome.cancelled);
-    assert_eq!(result.outcome.evaluations, 0);
-    assert_eq!(result.outcome.changes.len(), 0);
-    assert_eq!(result.candidates.len(), 0);
+    let result = optimize_design_with(&design, &material, &small_config(30), &options, &hooks);
+    assert!(matches!(
+        result,
+        Err(crate::DesignSolveError::Preservation(
+            crate::meet_preservation::PreservationViolation::Cancelled
+        ))
+    ));
 }
 
 // --- applying results and candidates (no search) ---
@@ -448,6 +552,7 @@ fn dummy_outcome(changes: Vec<AngleChange>) -> OptimizeOutcome {
         tilt_brilliance_pct: 80.0,
     };
     OptimizeOutcome {
+        provenance: None,
         before: components,
         before_score: 10.0,
         before_yield_loss_pct: 0.0,
@@ -486,28 +591,23 @@ fn result_for(design: &Design, index: usize, delta_deg: f64, mast_delta: f64) ->
 }
 
 #[test]
-fn apply_optimize_result_moves_the_angle_and_the_mast_in_one_undo_step() {
+fn an_uncertified_angle_and_depth_result_is_rejected() {
     let original = imported_rbc();
     let result = result_for(&original, 0, 1.25, 0.015);
     let mut design = original.clone();
     let mut history = History::new();
-    let touched = apply_optimize_result(&mut history, &mut design, &result).expect("applies");
-    assert_eq!(touched, 1, "angle and mast of one tier are one edit");
-    assert_eq!(
-        design.tiers[0].angle_deg,
-        original.tiers[0].angle_deg + 1.25
-    );
-    assert_eq!(pinned_mast(&design, 0), pinned_mast(&original, 0) + 0.015);
-    assert!(history.undo(&mut design).expect("undo"));
+    assert!(apply_optimize_result(&mut history, &mut design, &result).is_err());
     assert_eq!(design, original);
-    assert!(!history.undo(&mut design).expect("undo"));
+    assert!(!history.can_undo());
 }
 
 #[test]
-fn apply_optimize_candidate_applies_a_ranked_alternative() {
+fn an_uncertified_ranked_alternative_is_rejected() {
     let original = imported_rbc();
     let result = result_for(&original, 8, -0.75, -0.01);
     let candidate = OptimizeCandidate {
+        provenance: None,
+        preservation_baseline: None,
         changes: result.outcome.changes.clone(),
         mast_changes: result.mast_changes.clone(),
         after: result.outcome.after,
@@ -517,31 +617,21 @@ fn apply_optimize_candidate_applies_a_ranked_alternative() {
     };
     let mut design = original.clone();
     let mut history = History::new();
-    assert_eq!(
-        apply_optimize_candidate(&mut history, &mut design, &candidate).expect("applies"),
-        1
-    );
-    assert_eq!(
-        design.tiers[8].angle_deg,
-        original.tiers[8].angle_deg - 0.75
-    );
-    assert!(history.undo(&mut design).expect("undo"));
+    assert!(apply_optimize_candidate(&mut history, &mut design, &candidate).is_err());
     assert_eq!(design, original);
+    assert!(!history.can_undo());
 }
 
 #[test]
-fn a_mast_change_alone_applies() {
+fn an_uncertified_mast_only_result_is_rejected() {
     let original = imported_rbc();
     let mut result = result_for(&original, 0, 0.0, 0.02);
     result.outcome.changes.clear();
     let mut design = original.clone();
     let mut history = History::new();
-    assert_eq!(
-        apply_optimize_result(&mut history, &mut design, &result).expect("applies"),
-        1
-    );
-    assert_eq!(design.tiers[0].angle_deg, original.tiers[0].angle_deg);
-    assert_eq!(pinned_mast(&design, 0), pinned_mast(&original, 0) + 0.02);
+    assert!(apply_optimize_result(&mut history, &mut design, &result).is_err());
+    assert_eq!(design, original);
+    assert!(!history.can_undo());
 }
 
 #[test]
@@ -615,34 +705,59 @@ fn a_mast_change_past_the_last_tier_is_rejected() {
 #[test]
 fn an_empty_result_applies_nothing_and_records_no_edit() {
     let mut design = imported_rbc();
-    let result = OptimizeResult {
-        outcome: dummy_outcome(Vec::new()),
-        mast_changes: Vec::new(),
-        candidates: Vec::new(),
-        tone_before: None,
-        tone_goal: None,
-        lighting: crate::optimize::CANONICAL_LIGHTING_PRESET,
-        starts_run: 1,
-        best_start: 0,
-    };
+    let original = design.clone();
+    let result = optimize_design_with(
+        &design,
+        &GemMaterial::diamond(),
+        &small_config(0),
+        &OptimizeOptions::default(),
+        &SearchHooks::default(),
+    )
+    .expect("a fully pinned source returns a certified unchanged result");
+    assert_eq!(result.outcome.changes.len(), 0);
+    assert_eq!(result.mast_changes.len(), 0);
     let mut history = History::new();
     assert_eq!(
         apply_optimize_result(&mut history, &mut design, &result).expect("applies"),
         0
     );
+    assert_eq!(design, original);
     assert!(!history.undo(&mut design).expect("undo"));
 }
 
-/// `apply_optimize_outcome` keeps applying angles only, as before.
 #[test]
-fn apply_optimize_outcome_still_leaves_masts_alone() {
+fn an_uncertified_outcome_cannot_apply_only_the_angles() {
     let original = imported_rbc();
     let result = result_for(&original, 0, 1.0, 0.05);
     let mut design = original.clone();
     let mut history = History::new();
-    apply_optimize_outcome(&mut history, &mut design, &result.outcome).expect("applies");
-    assert_eq!(design.tiers[0].angle_deg, original.tiers[0].angle_deg + 1.0);
-    assert_eq!(pinned_mast(&design, 0), pinned_mast(&original, 0));
+    assert!(apply_optimize_outcome(&mut history, &mut design, &result.outcome).is_err());
+    assert_eq!(design, original);
+    assert!(!history.can_undo());
+}
+
+#[test]
+fn a_certified_outcome_applies_the_same_masts_as_the_rich_result() {
+    let run = anchored_run();
+    assert!(
+        !run.result.mast_changes.is_empty(),
+        "the regression must exercise depth changes"
+    );
+    let mut rich = run.design.clone();
+    let mut legacy = run.design.clone();
+    let mut rich_history = History::new();
+    let mut legacy_history = History::new();
+    let rich_count = apply_optimize_result(&mut rich_history, &mut rich, &run.result)
+        .expect("certified rich result");
+    let legacy_count =
+        apply_optimize_outcome(&mut legacy_history, &mut legacy, &run.result.outcome)
+            .expect("certified portable outcome");
+    assert_eq!(legacy_count, rich_count);
+    assert_eq!(legacy, rich);
+    assert!(legacy_count > 0);
+    assert!(legacy_history.undo(&mut legacy).unwrap());
+    assert_eq!(legacy, run.design);
+    assert!(!legacy_history.can_undo());
 }
 
 // --- the hinge helper agrees with the search space about what is free ---

@@ -4,6 +4,7 @@
 //! sweep ([`evaluate_full_axis_profile_at_azimuth`]).
 
 use super::{
+    finished::FinishedStone,
     pose_batch::{AxisCurves, run_poses, sweep_axes, sweep_axes_gated},
     prepared::PreparedEval,
     types::PROFILE_ANGLES_DEG,
@@ -238,6 +239,9 @@ pub fn evaluate_full_axis_profile_at_azimuth_geom(
 /// batch tilt curves) passes its share so lanes x threads stays within the core count.
 /// Every pose writes the curve slot it owns, so the result is bit-identical for any
 /// thread count (and to the pre-parallel serial sweep). `wasm32` always runs serially.
+///
+/// The stone is swept polished; [`evaluate_full_axis_profile_at_azimuth_finished_threaded`]
+/// is the same sweep for a stone with frosted facets.
 #[must_use]
 pub fn evaluate_full_axis_profile_at_azimuth_geom_threaded(
     geom: StoneGeometry<'_>,
@@ -246,8 +250,35 @@ pub fn evaluate_full_axis_profile_at_azimuth_geom_threaded(
     environment: EnvironmentSource<'_>,
     max_threads: Option<usize>,
 ) -> ([f32; 181], [f32; 181], [f32; 181]) {
+    evaluate_full_axis_profile_at_azimuth_finished_threaded(
+        FinishedStone::polished(geom),
+        material,
+        positive_azimuth_deg,
+        environment,
+        max_threads,
+    )
+}
+
+/// [`evaluate_full_axis_profile_at_azimuth_geom_threaded`] for a stone with facet finishes.
+///
+/// A frosted facet scatters light diffusely instead of reflecting and refracting it specularly,
+/// the way the render tracer's frosted bounce does (see the private `frosted` module), so the
+/// tilt curves of a frosted design differ from its polished ones.
+///
+/// With no frosted facet in `stone.finishes` (including an empty list) this IS the polished
+/// sweep, bit for bit. A frosted stone's curves are a Monte Carlo estimate over the fan's
+/// rays, reproducible: the draws are a pure function of each ray, so they do not depend on
+/// the thread count.
+#[must_use]
+pub fn evaluate_full_axis_profile_at_azimuth_finished_threaded(
+    stone: FinishedStone<'_>,
+    material: &GemMaterial,
+    positive_azimuth_deg: f32,
+    environment: EnvironmentSource<'_>,
+    max_threads: Option<usize>,
+) -> ([f32; 181], [f32; 181], [f32; 181]) {
     let [curves]: [AxisCurves; 1] = sweep_axes(
-        geom,
+        stone,
         material,
         environment,
         &[positive_azimuth_deg],
@@ -322,7 +353,7 @@ pub fn evaluate_full_axis_profile_at_azimuth_stepped_geom_threaded(
     step: &mut dyn FnMut() -> bool,
 ) -> Option<([f32; 181], [f32; 181], [f32; 181])> {
     let axes = sweep_axes_gated(
-        geom,
+        FinishedStone::polished(geom),
         material,
         environment,
         &[positive_azimuth_deg],

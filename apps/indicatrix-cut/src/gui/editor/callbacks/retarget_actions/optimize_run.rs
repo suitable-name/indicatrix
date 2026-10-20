@@ -19,7 +19,7 @@
 
 use super::{
     RETARGET_ASYNC,
-    check_run::{current_gem, reset_check, set_external_check},
+    check_run::{PrevalidatedEdit, current_gem, reset_check, set_external_check},
     material::{resolve_target_selection, resolved_material_from_selection},
     proposal_view::{
         candidate_row_views, plan_view, push_candidates, push_retarget_view, push_target_error,
@@ -60,6 +60,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod pick;
+
 /// How often the progress line is refreshed while a search runs.
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
@@ -83,6 +85,9 @@ struct FinishedSearch {
     design: Design,
     /// The design generation it ran against.
     generation: u64,
+    /// Each option's edit, validated on the search's worker (`None`: Apply would refuse it,
+    /// or it could not be built), in the report's order.
+    edits: Vec<Option<indicatrix_cut_core::Edit>>,
 }
 
 thread_local! {
@@ -558,6 +563,16 @@ fn spawn_worker(job: SearchJob, ui_weak: slint::Weak<MainWindow>) {
                 "the search stopped unexpectedly".to_string(),
             ))
         });
+        // Validate every option's edit here, once, so picking it and applying it never solve on
+        // the UI thread.
+        // A panic here only costs the head start: the first Apply validates itself.
+        let edits = catch_unwind(AssertUnwindSafe(|| {
+            outcome
+                .as_ref()
+                .map(|report| pick::prevalidated_edits(report, &design))
+                .unwrap_or_default()
+        }))
+        .unwrap_or_default();
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             finish_search(
                 &ui,
@@ -566,6 +581,7 @@ fn spawn_worker(job: SearchJob, ui_weak: slint::Weak<MainWindow>) {
                     plan,
                     design,
                     generation,
+                    edits,
                 },
                 outcome,
             );
@@ -578,6 +594,7 @@ struct FinishedInputs {
     plan: RetargetPlan,
     design: Design,
     generation: u64,
+    edits: Vec<Option<indicatrix_cut_core::Edit>>,
 }
 
 /// A search's result, back on the UI thread. Dropped when a newer request has superseded the
@@ -629,6 +646,7 @@ fn finish_search(
             plan: inputs.plan,
             design: inputs.design,
             generation: inputs.generation,
+            edits: inputs.edits,
         });
     });
     if found {
@@ -645,6 +663,8 @@ struct Pick {
     proposal: indicatrix_editor::retarget::RetargetProposal,
     view: indicatrix_editor::retarget::view::RetargetView,
     check: RetargetCheck,
+    /// The option's edit, validated already, with the design it was validated against.
+    edit: Option<PrevalidatedEdit>,
     generation: u64,
 }
 
@@ -664,11 +684,15 @@ pub(super) fn select_candidate(ui: &MainWindow, index: usize) {
         Some(Pick {
             proposal: plan.proposal(),
             view: plan_view(&plan).with_tier_names(&finished.design),
-            check: RetargetCheck {
-                validity: candidate.validity.clone(),
-                anchors: candidate.anchors.clone(),
-                metrics: candidate.metrics,
-            },
+            // The search's own baseline (no solve here); a report without one blocks Apply
+            // with a verdict that says so.
+            check: pick::candidate_check(&finished.report, index)?,
+            edit: finished
+                .edits
+                .get(index)
+                .cloned()
+                .flatten()
+                .map(|edit| (finished.design.clone(), edit)),
             generation: finished.generation,
         })
     });
@@ -680,7 +704,7 @@ pub(super) fn select_candidate(ui: &MainWindow, index: usize) {
     });
     stale::stamp(ResultKind::Retarget, pick.generation);
     push_retarget_view(ui, pick.view);
-    set_external_check(ui, pick.generation, pick.check);
+    set_external_check(ui, pick.generation, pick.check, pick.edit);
     ui.global::<RetargetModel>()
         .set_selected_candidate(i32::try_from(index).unwrap_or(0));
     sync_embedded_comparison(ui, true);

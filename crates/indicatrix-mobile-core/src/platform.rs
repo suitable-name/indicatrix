@@ -17,7 +17,9 @@ use std::{fmt, path::PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppDirs {
     /// Persistent private storage (Android `Context.getFilesDir()`): settings, the
-    /// library database, the autosaved design, the remote certificate bundle.
+    /// library database and the autosaved design. The remote credentials are not kept here:
+    /// the platform stores them encrypted (`Platform::store_remote_credentials`, wrapped by
+    /// an Android Keystore key on the phone).
     pub files: PathBuf,
     /// Disposable private storage (Android `Context.getCacheDir()`): share-sheet
     /// copies, thumbnails, downscaled HDR maps. The system may clear it.
@@ -168,6 +170,60 @@ pub trait Platform: Send + Sync {
     /// Callers poll at most once every ten seconds.
     fn thermal_headroom(&self) -> Option<f32>;
 
+    /// System power saver, independently of the app preference. `None` is unknown.
+    fn system_power_save(&self) -> Option<bool> {
+        None
+    }
+
+    /// Whether the active network is metered (Android `ConnectivityManager.isActiveNetworkMetered`).
+    /// `None` is unknown or no network; the desktop preview and tests report `None`, which
+    /// the remote policy treats as unmetered so a missing signal never blocks a render.
+    fn network_metered(&self) -> Option<bool> {
+        None
+    }
+
+    /// Stores an exportable credential bundle using platform-protected encryption.
+    /// Implementations must not put plaintext secrets in settings, backups or logs.
+    ///
+    /// # Errors
+    ///
+    /// When the platform has no encrypted vault, or the write fails.
+    fn store_remote_credentials(&self, _bundle: &str) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "This platform has no encrypted credential vault.",
+        ))
+    }
+
+    /// Decrypts the bundle for one worker-owned authenticated connection.
+    ///
+    /// # Errors
+    ///
+    /// When the platform has no encrypted vault, or the bundle cannot be decrypted.
+    fn load_remote_credentials(&self) -> Result<Option<String>, PlatformError> {
+        Err(PlatformError::new(
+            "This platform has no encrypted credential vault.",
+        ))
+    }
+
+    /// Deletes the stored credential bundle and the platform key that wraps it ("Forget
+    /// Server"). Succeeds when nothing is stored, and is safe to repeat. Once it has
+    /// succeeded, [`Self::load_remote_credentials`] reports no bundle and a later
+    /// [`Self::store_remote_credentials`] starts from a fresh key.
+    ///
+    /// # Errors
+    ///
+    /// When the platform has no encrypted vault, or the bundle or its key could not be
+    /// erased completely. The caller then keeps the enrolled state so the user can try
+    /// again.
+    fn forget_remote_credentials(&self) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "This platform has no encrypted credential vault.",
+        ))
+    }
+
+    /// Mirrors the versioned app Back target to a platform dispatcher, if present.
+    fn update_back_target(&self, _target: i32, _version: i32) {}
+
     /// Opens a web address in the browser.
     ///
     /// # Errors
@@ -192,4 +248,105 @@ pub mod mime {
     pub const PNG: &str = "image/png";
     /// Anything else (`.gem`, `.gcs`, `.hdr`) when picking.
     pub const OCTET_STREAM: &str = "application/octet-stream";
+}
+
+/// A platform that implements only the methods the trait requires, so every optional
+/// service (the credential vault among them) is the trait's own default. For tests of what
+/// the defaults promise; [`MockPlatform`](crate::platform_mock::MockPlatform) overrides them.
+#[cfg(test)]
+pub(crate) mod bare {
+    use std::path::PathBuf;
+
+    use super::{
+        AppDirs, DocumentsCallback, IncomingCallback, OpenRequest, OutgoingFile, Platform,
+        PlatformError, SaveCallback, SaveOutcome,
+    };
+
+    /// See the module docs.
+    pub struct BarePlatform {
+        dirs: AppDirs,
+    }
+
+    impl BarePlatform {
+        pub fn new() -> Self {
+            Self {
+                dirs: AppDirs {
+                    files: PathBuf::default(),
+                    cache: PathBuf::default(),
+                },
+            }
+        }
+    }
+
+    impl Platform for BarePlatform {
+        fn app_dirs(&self) -> &AppDirs {
+            &self.dirs
+        }
+
+        fn open_documents(&self, _request: OpenRequest, done: DocumentsCallback) {
+            done(Ok(Vec::new()));
+        }
+
+        fn create_document(&self, _file: OutgoingFile, done: SaveCallback) {
+            done(Ok(SaveOutcome::Cancelled));
+        }
+
+        fn share(&self, _file: OutgoingFile) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn print_html(&self, _title: &str, _html: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn set_clipboard_text(&self, _text: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn keep_screen_on(&self, _on: bool) {}
+
+        fn thermal_headroom(&self) -> Option<f32> {
+            None
+        }
+
+        fn open_url(&self, _url: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn set_incoming_handler(&self, _handler: IncomingCallback) {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Platform, bare::BarePlatform};
+
+    #[test]
+    fn a_platform_without_a_vault_fails_every_credential_call() {
+        let platform = BarePlatform::new();
+        let message = "This platform has no encrypted credential vault.";
+        assert_eq!(
+            platform
+                .store_remote_credentials("bundle")
+                .expect_err("nothing can be stored")
+                .message,
+            message
+        );
+        assert_eq!(
+            platform
+                .load_remote_credentials()
+                .expect_err("nothing can be loaded")
+                .message,
+            message
+        );
+        // Forgetting must not claim success: nothing was erased, so the caller keeps the
+        // enrolled state.
+        assert_eq!(
+            platform
+                .forget_remote_credentials()
+                .expect_err("nothing can be erased")
+                .message,
+            message
+        );
+    }
 }

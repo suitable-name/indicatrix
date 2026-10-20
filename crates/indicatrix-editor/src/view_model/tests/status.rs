@@ -163,3 +163,35 @@ fn design_to_gpu_geometry_has_empty_tools_for_a_planar_design() {
     assert_eq!(tools.len(), design.concave_placement_count());
     assert_eq!(placements.len(), tools.len());
 }
+
+/// The banner quotes the CARVED volume of a design with concave tiers (the cut sheet's and the
+/// CLI's), through both entry points; a design without them keeps the flat volume.
+#[test]
+fn the_banner_volume_of_a_concave_design_is_the_carved_volume() {
+    let design = indicatrix_cut_core::Design::concave_fixture();
+    let solved = design.solve().expect("the fixture pins every mast");
+    let flat =
+        indicatrix::geometry::stone_metrics::measure_solid(&design.planes_from_solved(&solved))
+            .expect("the flat stone measures");
+    let carved = design
+        .measure_from_solved_geom(&solved)
+        .expect("the tiers resolve")
+        .expect("a carved stone remains");
+    assert!(carved.volume < flat.volume, "the tools remove material");
+
+    let shows = |text: &str, volume: f64| text.contains(&format!("volume {volume:.4} "));
+    let (solving, _) = status_text_and_is_problem(&design);
+    let (from_solved, _) = status_text_and_is_problem_from_solved(&design, &solved);
+    assert!(shows(&solving, carved.volume), "{solving}");
+    assert!(shows(&from_solved, carved.volume), "{from_solved}");
+    assert!(!shows(&solving, flat.volume), "{solving}");
+
+    // Without its concave tiers the same design reads the flat volume, as before.
+    let mut shell = design;
+    shell.concave_tiers.clear();
+    shell.concave_tier_ids.clear();
+    let (text, _) = status_text_and_is_problem(&shell);
+    let (text_from_solved, _) = status_text_and_is_problem_from_solved(&shell, &solved);
+    assert!(shows(&text, flat.volume), "{text}");
+    assert!(shows(&text_from_solved, flat.volume), "{text_from_solved}");
+}

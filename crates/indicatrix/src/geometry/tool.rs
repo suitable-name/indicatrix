@@ -27,8 +27,13 @@ use crate::{geometry::plane::GpuFacetPlane, optics::raytracer::camera::Ray};
 use glam::Vec3;
 
 mod interval;
+mod pack;
 
 use interval::{ball_interval, frustum_interval, wedge_interval};
+pub use pack::{
+    GPU_MAX_TOOL_PRIMITIVES, TOOL_RECORD_VECS, pack_planes_and_tools, pack_tool_record,
+    packed_entry_count,
+};
 
 /// Upper bound on tool primitives in one stone.
 ///
@@ -713,5 +718,7 @@ impl ToolPrimitive {
     }
 }
 
+#[cfg(test)]
+mod gpu_twin_tests;
 #[cfg(test)]
 mod tests;

@@ -31,15 +31,18 @@
 //! `renderer::buffers::X` paths elsewhere in the workspace keep compiling.
 
 mod camera;
+mod event_wavefront;
 mod girdle_finish;
 mod material;
 #[cfg(test)]
 mod tests;
 mod transport;
 mod wavefront;
+pub mod whitted;
 mod zoning;
 
 pub use camera::{CameraUniform, GpuCameraParams, GpuHitRecord, GpuRay};
+pub use event_wavefront::*;
 pub use girdle_finish::{encode_facet_finishes, facet_finish};
 pub use material::{
     DispersionParams, GpuAbsorptionBand, GpuGemMaterial, MAX_ABSORPTION_BANDS, band_shape,

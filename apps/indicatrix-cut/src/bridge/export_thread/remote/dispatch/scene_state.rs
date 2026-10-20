@@ -24,7 +24,11 @@ pub(in crate::bridge::export_thread) fn scene_state_from_snapshot(
     cam_yaw: f32,
     cam_pitch: f32,
 ) -> SceneState {
+    // The girdle toggle and the design's frosted planes, in the form the wire carries them.
+    let (girdle_frosted, frosted_planes) =
+        indicatrix::geometry::finishes_wire_form(&snapshot.active_planes, &snapshot.facet_finishes);
     SceneState {
+        engine: snapshot.engine,
         width,
         height,
         yaw: cam_yaw,
@@ -37,7 +41,7 @@ pub(in crate::bridge::export_thread) fn scene_state_from_snapshot(
         lighting_preset: snapshot.lighting_preset,
         material: snapshot.material.clone(),
         planes: snapshot.active_planes.clone(),
-        girdle_frosted: !snapshot.facet_finishes.is_empty(),
+        girdle_frosted,
         backdrop: snapshot.backdrop,
         surface_glare: snapshot.surface_glare,
         // The concave tools, so the worker traces the same stone as the local tracer; empty
@@ -48,6 +52,7 @@ pub(in crate::bridge::export_thread) fn scene_state_from_snapshot(
         // The material's emitters, so the worker traces the same glow as the local tracer.
         fluorescence: snapshot.fluorescence.as_ref().clone(),
         head_shadow_deg: snapshot.head_shadow_deg,
+        frosted_planes,
     }
 }
 
@@ -71,6 +76,47 @@ mod tests {
     fn a_remote_scene_carries_the_designs_concave_tools_so_the_worker_traces_the_same_stone() {
         let tools = vec![ToolPrimitive::ball(glam::Vec3::new(0.0, 0.3, 0.0), 0.1)];
         assert_eq!(state_for(tools.clone()).tools, tools);
+    }
+
+    /// A design's frosted planes travel in the scene as indices, and a design without frosting
+    /// sends the scene it always did.
+    #[test]
+    fn a_remote_scene_carries_the_designs_frosted_planes_and_a_plain_one_carries_none() {
+        let plain = Mutex::new(RenderContext::default());
+        let snapshot = SceneSnapshot::capture(&plain).expect("the default material resolves");
+        let state = scene_state_from_snapshot(&snapshot, 32, 24, snapshot.yaw, snapshot.pitch);
+        assert_eq!(state.frosted_planes, [] as [u32; 0]);
+        assert!(!state.girdle_frosted);
+
+        let frosted = Mutex::new(RenderContext {
+            active_frosted: Arc::new(vec![3, 9]),
+            ..RenderContext::default()
+        });
+        let snapshot = SceneSnapshot::capture(&frosted).expect("the default material resolves");
+        let state = scene_state_from_snapshot(&snapshot, 32, 24, snapshot.yaw, snapshot.pitch);
+        assert_eq!(state.frosted_planes, vec![3, 9]);
+        assert!(
+            !state.girdle_frosted,
+            "authored frosting is not the girdle toggle"
+        );
+
+        let both = Mutex::new(RenderContext {
+            active_frosted: Arc::new(vec![3, 9]),
+            girdle_frosted: true,
+            ..RenderContext::default()
+        });
+        let snapshot = SceneSnapshot::capture(&both).expect("the default material resolves");
+        let state = scene_state_from_snapshot(&snapshot, 32, 24, snapshot.yaw, snapshot.pitch);
+        // The girdle band and the authored planes together are not the plain girdle list, so
+        // the wire carries them as the frosted planes; the worker rebuilds the same finishes.
+        assert_eq!(
+            indicatrix::geometry::facet_finishes_with_frosted(
+                &state.planes,
+                state.girdle_frosted,
+                &state.frosted_planes
+            ),
+            snapshot.facet_finishes
+        );
     }
 
     #[test]

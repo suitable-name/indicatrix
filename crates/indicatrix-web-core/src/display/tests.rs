@@ -4,7 +4,9 @@ use super::*;
 use indicatrix::{
     geometry::cuts::StandardGemCuts,
     optics::raytracer::{Camera, intersect_polyhedron, xyz_to_srgb_gamma},
-    renderer::tonemap::tonemap_to_rgba_with_threads,
+    renderer::{
+        guide_pass::generate_guide_buffers_with_index, tonemap::tonemap_to_rgba_with_threads,
+    },
 };
 
 /// Diamond's reference index: the fixtures' path signature is built with it.
@@ -103,6 +105,7 @@ fn a_denoised_srgb_export_matches_the_settled_live_view() {
         height,
         camera: &camera,
         planes: &planes,
+        tools: &[],
         n_d: FIXTURE_N_D,
         sample_count: 3,
         sum: &sum,
@@ -152,6 +155,7 @@ fn a_changed_reference_index_rebuilds_the_guides() {
         height,
         camera: &camera,
         planes: &planes,
+        tools: &[],
         n_d,
         sample_count: 3,
         sum: &sum,

@@ -1,0 +1,61 @@
+import { LineEdit } from "std-widgets.slint";
+import { Shell } from "../models.slint";
+import { Theme } from "../theme.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { ListRow } from "../shell/list_row.slint";
+import { PrimaryButton, TextButton } from "../shell/buttons.slint";
+import { HistoryModel } from "history.slint";
+
+export global VariantsModel {
+    in-out property <bool> open: false;
+    in property <bool> busy: false;
+    in property <[string]> rows;
+    in property <int> selected: -1;
+    in property <string> status;
+    in-out property <string> name;
+    in-out property <string> note;
+    in property <bool> confirm-open: false;
+    in-out property <bool> confirm-delete: false;
+    callback show(); callback close(); callback select(int);
+    callback save(bool); callback open-selected(); callback rename(); callback update-note(); callback remove();
+}
+
+export component VariantsScreen inherits Rectangle {
+    background: Theme.surface;
+    TouchArea { }
+    VerticalLayout {
+        TopBar { title: "Saved Variants"; show-back: true; back-clicked => { Shell.request-back(); } }
+        PageScroll {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: Theme.space-md;
+                spacing: Theme.space-sm;
+                Text { text: "Variants survive restarts. Opening one is a single reversible edit."; wrap: word-wrap; color: Theme.on-surface-variant; }
+                for row[index] in VariantsModel.rows: ListRow {
+                    title: (VariantsModel.selected == index ? "Selected · " : "") + row;
+                    clicked => { if (!VariantsModel.busy) { VariantsModel.select(index); } }
+                }
+                Text { text: "Name"; color: Theme.on-surface-variant; }
+                LineEdit { text <=> VariantsModel.name; enabled: !VariantsModel.busy; }
+                Text { text: "Notes"; color: Theme.on-surface-variant; }
+                LineEdit { text <=> VariantsModel.note; enabled: !VariantsModel.busy; }
+                PrimaryButton { text: "Save Current As New Variant"; enabled: !VariantsModel.busy; clicked => { VariantsModel.save(false); } }
+                TextButton { text: "Save Selected Historical Step As New Variant"; enabled: !VariantsModel.busy && HistoryModel.selected >= 0; clicked => { VariantsModel.save(true); } }
+                PrimaryButton {
+                    text: VariantsModel.confirm-open ? "Confirm replace working copy" : "Open selected variant";
+                    enabled: !VariantsModel.busy && VariantsModel.selected >= 0;
+                    clicked => { VariantsModel.open-selected(); }
+                }
+                TextButton { text: "Rename Selected"; enabled: !VariantsModel.busy && VariantsModel.selected >= 0; clicked => { VariantsModel.rename(); } }
+                TextButton { text: "Update Selected Notes"; enabled: !VariantsModel.busy && VariantsModel.selected >= 0; clicked => { VariantsModel.update-note(); } }
+                TextButton {
+                    text: VariantsModel.confirm-delete ? "Confirm delete saved variant" : "Delete selected…";
+                    enabled: !VariantsModel.busy && VariantsModel.selected >= 0;
+                    clicked => { if (VariantsModel.confirm-delete) { VariantsModel.remove(); } else { VariantsModel.confirm-delete = true; } }
+                }
+                Text { text: VariantsModel.busy ? "Working…" : VariantsModel.status; wrap: word-wrap; color: Theme.on-surface; }
+            }
+        }
+    }
+}

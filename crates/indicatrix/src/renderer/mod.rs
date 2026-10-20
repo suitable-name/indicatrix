@@ -1,16 +1,27 @@
+/// Per-pixel attribution of the spectral renderer's own samples.
+///
+/// See the module's own doc comment.
+pub mod attribution_map;
 pub mod buffers;
 /// Wasm-safe, thread-free per-pixel CPU tracer.
 ///
 /// See the module's own doc comment.
 pub mod cpu_frame;
 pub mod denoise;
+pub mod engine;
 pub mod frame_denoise;
 /// The backend-independent frame-scene bundle.
 ///
 /// See the module's own doc comment.
 pub mod frame_scene;
 pub mod guide_pass;
+pub mod optical_overlay;
+/// The attribution map as an overlay layer, in the analytical overlay's palette.
+///
+/// See the module's own doc comment.
+pub mod optical_overlay_spectral;
 pub mod tonemap;
+pub mod whitted;
 
 // Parses and validates every WGSL shader with `naga` (a dev-dependency available
 // regardless of the `gpu` feature) so a shader syntax/type error is a `cargo test`
@@ -22,6 +33,9 @@ pub mod tonemap;
 #[cfg(test)]
 #[path = "gpu/shader_validation_tests.rs"]
 mod shader_validation_tests;
+#[cfg(test)]
+#[path = "gpu/shader_validation_whitted_tests.rs"]
+mod shader_validation_whitted_tests;
 
 /// CPU-side HDR environment-map loading and importance sampling.
 ///

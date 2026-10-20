@@ -124,6 +124,18 @@ impl DisplayDenoiser {
         let (jobs, job_rx) = mpsc::channel::<Job>();
         let (picture_tx, pictures) = mpsc::channel::<DisplayPicture>();
         let cancel = Arc::new(AtomicBool::new(false));
+        if !scene.engine.denoises() {
+            // The normal plain tone-map path handles cadence and final pictures.
+            // No guides or denoise thread are created for deterministic AA taps.
+            return Self {
+                jobs,
+                pictures,
+                cancel,
+                in_flight: false,
+                dirty: false,
+                gone: true,
+            };
+        }
         let inputs = GuideInputs {
             width: scene.width,
             height: scene.height,
@@ -340,6 +352,7 @@ mod tests {
 
     fn scene() -> SceneState {
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 12,
             height: 9,
             yaw: 0.4,
@@ -359,6 +372,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 
@@ -467,5 +481,21 @@ mod tests {
             DisplayUpdate::Nothing
         ));
         assert!(!denoiser.in_flight, "no picture of zero samples");
+    }
+
+    #[test]
+    fn ray_display_only_uses_plain_frames_without_starting_a_denoiser() {
+        let mut scene = scene();
+        scene.engine.engine = indicatrix::renderer::engine::RenderEngine::RayTraced;
+        let mut display = DisplayDenoiser::spawn(&scene);
+        assert!(display.gone);
+        let sum = sum((scene.width * scene.height) as usize, 1.0);
+        assert!(matches!(display.tick(true, 4, &sum), DisplayUpdate::Plain));
+        assert_eq!(
+            display
+                .finish(4, &sum, Duration::from_millis(1), || Ok::<(), ()>(()))
+                .unwrap(),
+            None
+        );
     }
 }

@@ -33,11 +33,14 @@ pub(in crate::gui::editor) use crate::gui::solid_preview::preview_state::SolidLa
 
 pub(in crate::gui::editor) use inspector::{push_selected_tier_chips, sync_viewport_material_link};
 pub(in crate::gui::editor) use optimize_apply::{
-    build_optimize_preview_design, optimize_result_rows, result_row, submit_design_ghost_preview,
+    optimize_result_rows, result_row, submit_design_ghost_preview,
+    try_build_optimize_preview_design,
 };
 // Only the identity pins read these two at their old path now.
 #[cfg(test)]
-pub(in crate::gui::editor) use optimize_apply::{optimize_status_text, parse_optimize_weights};
+pub(in crate::gui::editor) use optimize_apply::{
+    build_optimize_preview_design, optimize_status_text, parse_optimize_weights,
+};
 pub(in crate::gui::editor) use panel::{
     girdle_and_ratio_texts_from_solved, preform_mm_texts_from_solved,
     proportions_texts_from_solved, push_proportion_verdicts_from_solved, refresh_editor_panel,

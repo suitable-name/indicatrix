@@ -1,8 +1,9 @@
 //! The provisional `v0` frame for concave tools (plan §4.4 and §11a).
 //!
-//! **Every convention that is still pending confirmation by Arya Akhavan lives in
-//! this one file** and is read only by [`super::Design::concave_tools_from_solved`]
-//! (and its siblings). Changing a decision therefore means editing this file plus
+//! **Every convention of the frame lives in this one file** (the width rule,
+//! [`stone_width`], was settled on 2026-10-19; the rest is still pending
+//! confirmation by Arya Akhavan) and is read only by
+//! [`super::Design::concave_tools_from_solved`] (and its siblings). Changing a decision therefore means editing this file plus
 //! a reader shim keyed on [`CONCAVE_FRAME_VERSION`], which the native file records
 //! next to its concave tiers. Each item below names the §11a row it implements.
 //!
@@ -21,7 +22,7 @@ use glam::{DVec3, Vec3};
 use indicatrix::geometry::{
     cuts::StandardGemCuts,
     plane::tier_is_crown_side,
-    stone_metrics::measure_solid_with_vertices,
+    stone_metrics::{SolidMetrics, measure_solid_with_vertices},
     tool::{ToolPrimitive, ToolSweep},
 };
 
@@ -58,6 +59,24 @@ pub const CIR_RIM_WIDTH_RATIO: f64 = 0.1;
 /// cylinder span the stone, so a plunged cylinder is a straight groove with no
 /// stroke.
 pub const CYL_HALF_LENGTH_RATIO: f64 = 1.0;
+
+/// The stone width `W` every concave ratio is taken of (§11a Q3, settled 2026-10-19).
+///
+/// `W` is the FINISHED flat stone's `SolidMetrics::width_axis`: the smaller axis-aligned
+/// girdle extent, the same `W` as the sheet's `L/W`, `C/W`, `P/W` and `Vol/W³`
+/// (`ExternalProportions`, corpus-verified) and the denominator of `mm_per_unit`, so a
+/// tool's diameter in millimetres is `D/W` times the design's Stone Width. One `W` per
+/// design: the same for every concave tier, whatever stage the stone is at when the tier
+/// is cut, because a printed sheet has one `W` and a cutter sizes every ratio from the
+/// width they are cutting to. Rejected alternatives: the width of the stone cut so far
+/// (not on the sheet; for a pavilion tier with no girdle facet before it, it is the
+/// rough's width, which the design does not determine), `width_caliper` (differs from
+/// the printed `W` for stones turned off the axes) and `girdle_diameter_mm` (optional,
+/// in millimetres, not in `.asc`).
+#[must_use]
+pub const fn stone_width(metrics: &SolidMetrics) -> f64 {
+    metrics.width_axis
+}
 
 /// Included angle assumed for a `CON` or `DSC` whose angle is absent. Validation
 /// rejects that case, so this only keeps the resolver total (§11a, Q2 cone/disc
@@ -149,7 +168,7 @@ pub fn support_vertex(vertices: &[DVec3], n: DVec3, width: f64) -> Option<DVec3>
 #[must_use]
 pub fn contact_point(planes: &[(DVec3, f64)], n: DVec3) -> Option<DVec3> {
     let (metrics, vertices) = measure_solid_with_vertices(planes)?;
-    support_vertex(&vertices, n, metrics.width_axis)
+    support_vertex(&vertices, n, stone_width(&metrics))
 }
 
 /// Tool centre: `c0 + W·(X·u + Y·v − Z·n)` (§11a, Q1 frame axes: `Z > 0` moves

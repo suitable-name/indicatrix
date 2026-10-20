@@ -20,7 +20,9 @@ use crate::{
     settings::{ExportTransfer, LocalComputeTarget, WorkerSettings},
 };
 use indicatrix::{
-    color::ColorSpace, geometry::girdle_facet_finishes, renderer::env_map::EnvironmentMap,
+    color::ColorSpace,
+    geometry::{facet_finishes_with_frosted, girdle_facet_finishes},
+    renderer::env_map::EnvironmentMap,
 };
 use indicatrix_net::{
     SceneState,
@@ -29,10 +31,7 @@ use indicatrix_net::{
 use indicatrix_render_jobs::{
     ComputeChoice, FailureKind, JobColorSpace, JobKind, LocalEngines, RenderJobFile, StillJob,
     TiltVideoJob, TransferChoice,
-    job::{
-        DesignInfo, HdrSource, JOB_FORMAT_VERSION, JobCompute, MetricCurvesData, OverlaySelection,
-        new_job_token,
-    },
+    job::{DesignInfo, HdrSource, JobCompute, MetricCurvesData, OverlaySelection, new_job_token},
 };
 use std::{
     path::{Path, PathBuf},
@@ -155,13 +154,19 @@ pub fn snapshot_from_scene(
 ) -> SceneSnapshot {
     let active_planes = scene.planes.clone();
     // The same derivation `capture_finished` uses: a frosted girdle is the classification
-    // of the planes, and an empty list means every facet is polished.
-    let facet_finishes = if scene.girdle_frosted {
+    // of the planes, the design's frosted planes are marked on top, and an empty list means
+    // every facet is polished. A job without frosted planes (every job saved before they
+    // existed) takes the first two branches, exactly as it always did.
+    let facet_finishes = if !scene.frosted_planes.is_empty() {
+        facet_finishes_with_frosted(&active_planes, scene.girdle_frosted, &scene.frosted_planes)
+    } else if scene.girdle_frosted {
         girdle_facet_finishes(&active_planes)
     } else {
         Vec::new()
     };
     SceneSnapshot {
+        engine: scene.engine,
+        optical_diagnostics: None,
         yaw: scene.yaw,
         pitch: scene.pitch,
         distance: scene.distance,
@@ -270,15 +275,20 @@ pub fn build_still_job(inputs: &StillJobInputs<'_>, now: i64) -> Result<RenderJo
     let hdr = hdr_source(inputs.scene)?;
     let mut scene = scene_from_snapshot(inputs.scene, inputs.params.width, inputs.params.height);
     scene.max_bounces = inputs.params.max_bounces;
+    scene.engine = inputs.params.engine;
     let job = RenderJobFile {
-        format: JOB_FORMAT_VERSION,
+        engine: inputs.params.engine,
+        optical_diagnostics: inputs.scene.optical_diagnostics.map(job_diagnostics),
+        format: indicatrix_render_jobs::job::format_for_engine(inputs.params.engine),
         token: new_job_token(),
         label: inputs.label.clone(),
         created_at: now,
         design: inputs.design.clone(),
         scene,
+        // `scene.backdrop` is the resolved tray radiance (`SceneSnapshot::backdrop`).
+        scene_backdrop_model: indicatrix_render_jobs::job::BACKDROP_MODEL_TRAY,
         hdr,
-        compute: job_compute(inputs.remote),
+        compute: job_compute_for_engine(inputs.remote, inputs.params.engine),
         output: inputs.output.to_string_lossy().into_owned(),
         kind: JobKind::Still(StillJob {
             samples_per_pixel: inputs.params.samples_per_pixel,
@@ -323,14 +333,18 @@ pub fn build_video_job(
         extinction: request.curves.extinction.clone(),
     });
     let job = RenderJobFile {
-        format: JOB_FORMAT_VERSION,
+        engine: request.scene.engine,
+        optical_diagnostics: request.scene.optical_diagnostics.map(job_diagnostics),
+        format: indicatrix_render_jobs::job::format_for_engine(request.scene.engine),
         token: new_job_token(),
         label,
         created_at: now,
         design,
         scene,
+        // `scene.backdrop` is the resolved tray radiance (`SceneSnapshot::backdrop`).
+        scene_backdrop_model: indicatrix_render_jobs::job::BACKDROP_MODEL_TRAY,
         hdr,
-        compute: job_compute(&request.remote),
+        compute: job_compute_for_engine(&request.remote, request.scene.engine),
         output: request.out_dir.to_string_lossy().into_owned(),
         kind: JobKind::TiltVideo(TiltVideoJob {
             axis_index: u32::try_from(request.axis_index).unwrap_or(0),
@@ -403,4 +417,43 @@ pub fn video_request_from_job(
         remote,
         local_compute,
     }
+}
+
+/// The frozen options of a job for the presentation the live app shows.
+pub(super) const fn job_diagnostics(
+    d: indicatrix::renderer::optical_overlay::OpticalPresentation,
+) -> indicatrix_render_jobs::job::OpticalDiagnosticOptions {
+    indicatrix_render_jobs::job::OpticalDiagnosticOptions {
+        model_version: indicatrix::color::metrics::OPTICAL_MODEL_VERSION,
+        layers: d.layers,
+        opacity: d.opacity,
+        map_mode: d.map_mode,
+        high_contrast: d.high_contrast,
+        scintillation: d.scintillation,
+    }
+}
+
+/// The presentation a job's frozen diagnostic options describe.
+pub const fn diagnostic_presentation(
+    d: indicatrix_render_jobs::job::OpticalDiagnosticOptions,
+) -> indicatrix::renderer::optical_overlay::OpticalPresentation {
+    indicatrix::renderer::optical_overlay::OpticalPresentation {
+        layers: d.layers,
+        opacity: d.opacity,
+        map_mode: d.map_mode,
+        high_contrast: d.high_contrast,
+        scintillation: d.scintillation,
+    }
+}
+
+/// Freeze the selected compute target using the shared transport capability rule.
+pub const fn job_compute_for_engine(
+    remote: &RemoteSelection,
+    engine: indicatrix::renderer::engine::EngineSpec,
+) -> JobCompute {
+    let mut compute = job_compute(remote);
+    if !crate::bridge::render_thread::remote_allowed(engine) {
+        compute.target = ComputeChoice::Local;
+    }
+    compute
 }

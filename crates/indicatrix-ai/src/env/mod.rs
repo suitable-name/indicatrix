@@ -14,8 +14,10 @@
 pub mod action;
 pub(crate) mod common;
 pub mod error;
+mod features;
 pub(crate) mod moves;
 pub mod observation;
+mod observe;
 pub mod optimizer_env;
 pub mod retarget_env;
 pub mod reward;
@@ -28,19 +30,22 @@ pub mod traits;
 pub use action::ContinuousTierAction;
 pub use common::design_source_material;
 pub use error::EnvError;
+pub use moves::{MAX_SAFE_CANDIDATE_ANGLE_DEG, MIN_SAFE_CANDIDATE_ANGLE_DEG};
 pub use observation::{
     CROWN_MAX_ANGLE_DEG, CROWN_MIN_ANGLE_DEG, GLOBAL_DIM, GemstoneObservation, GlobalFeature,
-    OBS_LAYOUT_VERSION, ObservationError, PAVILION_CRITICAL_MARGIN_DEG, PAVILION_MAX_ANGLE_DEG,
-    TIER_DIM, TierFeature, WEIGHT_FRACTION_INDEX, angle_envelope, flat_len, split_flat,
+    IMMOBILE_INDEX, MOBILITY_INDEX, OBS_LAYOUT_VERSION, ObservationError,
+    PAVILION_CRITICAL_MARGIN_DEG, PAVILION_MAX_ANGLE_DEG, TASK_KIND_INDEX, TIER_DIM, TierFeature,
+    WEIGHT_FRACTION_INDEX, angle_envelope, flat_len, objective_coefficients, split_flat,
     weight_fractions,
 };
 pub use optimizer_env::{OptimizerEnv, OptimizerEnvConfig};
 pub use retarget_env::{RetargetEnv, RetargetEnvConfig};
 pub use reward::{RewardConfig, RewardEvaluator, StepFlags};
 pub use teacher::{
-    COMPONENT_BRILLIANCE_LOSS, COMPONENT_EXTINCTION, COMPONENT_WINDOWING, COMPONENT_YIELD_LOSS,
-    DEFAULT_LINE_SEARCH, MEAN_BOUND, N_COMPONENTS, OracleOutcome, SLOPE_EPS, TeacherLabel,
-    TierProbe, TierSensitivity, action_from_direction, assemble_label, direction_from_slopes,
-    score_slopes,
+    COMPONENT_BRILLIANCE_LOSS, COMPONENT_DEEPER_TONE_LOSS, COMPONENT_EXTINCTION,
+    COMPONENT_LIGHTER_TONE_LOSS, COMPONENT_SHAPE_DISTANCE, COMPONENT_WINDOWING,
+    COMPONENT_YIELD_LOSS, DEFAULT_LINE_SEARCH, MEAN_BOUND, N_COMPONENTS, OracleOutcome, SLOPE_EPS,
+    SLOPE_NORM_FLOOR, TeacherLabel, TierProbe, TierSensitivity, action_from_direction,
+    assemble_label, direction_from_slopes, score_slopes,
 };
 pub use traits::{GemstoneRlEnv, Step, StepInfo, StepRejection};

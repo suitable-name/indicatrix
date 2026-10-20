@@ -4,26 +4,27 @@ import android.app.NativeActivity
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Looper
 import android.os.PowerManager
+import android.print.PrintAttributes
 import android.print.PrintManager
 import android.provider.DocumentsContract
 import android.util.Log
 import android.view.WindowManager
-import android.webkit.MimeTypeMap
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 /**
@@ -48,7 +49,6 @@ class MainActivity : NativeActivity() {
     private class PendingRequest(
         val rustId: Long,
         val kind: Int,
-        val saveName: String? = null,
         val saveBytes: ByteArray? = null,
     )
 
@@ -57,6 +57,7 @@ class MainActivity : NativeActivity() {
 
     /** The WebView of the print job in flight; the print adapter needs it alive. */
     private var printView: WebView? = null
+    private var backNavigation: BackNavigationController? = null
 
     // ---------------------------------------------------------------------------------
     // Lifecycle
@@ -66,6 +67,9 @@ class MainActivity : NativeActivity() {
         // Edge to edge: Slint reads the insets and keeps the UI out of the system bars.
         WindowCompat.setDecorFitsSystemWindows(window, false)
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33) {
+            backNavigation = BackNavigationController(this, this::nativeBackCommitted, this::nativeBackProgress)
+        }
         // A recreated activity gets the same launch intent again; import it only once.
         if (savedInstanceState == null) {
             handleIncoming(intent)
@@ -78,7 +82,10 @@ class MainActivity : NativeActivity() {
         handleIncoming(intent)
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun onDestroy() {
+        backNavigation?.close()
+        backNavigation = null
         printView = null
         super.onDestroy()
     }
@@ -86,161 +93,220 @@ class MainActivity : NativeActivity() {
     // ---------------------------------------------------------------------------------
     // Services Rust calls
     // ---------------------------------------------------------------------------------
+    // Every method in this section is called only from Rust over JNI (`platform_android`);
+    // Kotlin sees no callers, so never remove one as unused. JNI calls arrive on a
+    // non-UI thread: UI work hops to the UI thread through [onUi].
 
-    /** The app's cache directory (`Context.getCacheDir()`). */
-    fun cacheDirPath(): String = cacheDir.absolutePath
+    private val vault by lazy { RemoteCredentialVault(this) }
 
-    /**
-     * Opens the system picker. [kind]: 0 designs, 1 HDR map, 2 design folder. The
-     * answer arrives as `nativeFileReady` per file, then `nativeRequestDone`.
-     */
-    fun openDocuments(requestId: Long, kind: Int, allowMultiple: Boolean): String? {
-        runOnUiThread {
-            try {
-                val intent = if (kind == KIND_DESIGN_FOLDER) {
-                    Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-                } else {
-                    Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        // Design and HDR files rarely carry a reliable MIME type, so the
-                        // picker is not narrowed; the core classifies by content.
-                        type = "*/*"
-                        if (allowMultiple && kind == KIND_DESIGNS) {
-                            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                        }
-                    }
-                }
-                startForResult(intent, PendingRequest(requestId, kind))
-            } catch (e: Exception) {
-                Log.w(TAG, "openDocuments failed", e)
-                nativeRequestDone(requestId, describe(e))
-            }
-        }
-        return null
-    }
-
-    /**
-     * Opens the system "save as" dialog and writes [bytes] where the user chooses. The
-     * answer arrives as `nativeSaveDone`.
-     */
-    fun createDocument(requestId: Long, name: String, mime: String, bytes: ByteArray): String? {
-        runOnUiThread {
-            try {
-                // The dialog appends an extension for the MIME type it is given ("x.asc"
-                // would become "x.asc.txt" for text/plain), so a type that does not match
-                // the file name's extension is replaced by the generic one.
-                val extension = name.substringAfterLast('.', "").lowercase()
-                val known = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
-                val pickerType = if (known == mime) mime else "application/octet-stream"
-                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = pickerType
-                    putExtra(Intent.EXTRA_TITLE, name)
-                }
-                startForResult(intent, PendingRequest(requestId, KIND_SAVE, name, bytes))
-            } catch (e: Exception) {
-                Log.w(TAG, "createDocument failed", e)
-                nativeSaveDone(requestId, null, describe(e))
-            }
-        }
-        return null
-    }
-
-    /** Offers a copy of the file to other apps through the share sheet. */
-    fun share(name: String, mime: String, bytes: ByteArray): String? {
-        val file = try {
-            val dir = File(cacheDir, SHARE_DIR)
-            dir.mkdirs()
-            // Only the latest export is needed; keep the cache small.
-            dir.listFiles()?.forEach { it.delete() }
-            File(dir, safeFileName(name)).also { it.writeBytes(bytes) }
-        } catch (e: Exception) {
-            Log.w(TAG, "share: could not write the export", e)
-            return describe(e)
-        }
-        return onUiThread {
-            val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
-            val send = Intent(Intent.ACTION_SEND).apply {
-                type = mime
-                putExtra(Intent.EXTRA_STREAM, uri)
-                clipData = ClipData.newRawUri(name, uri)
+    /** `openDocuments(JIZ)Ljava/lang/String;`: starts the system picker for [kind]. */
+    fun openDocuments(requestId: Long, kind: Int, allowMultiple: Boolean): String? = guarded {
+        val intent = when (kind) {
+            KIND_DESIGN_FOLDER -> Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            KIND_DESIGNS, KIND_HDR_MAP -> Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*" // design and .hdr files have no reliable MIME type
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple && kind == KIND_DESIGNS)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            val chooser = Intent.createChooser(send, null)
-            chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            startActivity(chooser)
-            null
+            else -> throw IllegalArgumentException("Unknown request kind $kind.")
         }
+        startForResult(intent, requestId, kind, null)
+        null
     }
 
-    /** Opens the system print dialog for an HTML document. */
-    fun printHtml(title: String, html: String): String? = onUiThread {
-        val webView = WebView(this)
-        webView.settings.javaScriptEnabled = false
-        webView.settings.allowFileAccess = false
-        webView.webViewClient = object : WebViewClient() {
-            private var started = false
+    /** `createDocument(JLjava/lang/String;Ljava/lang/String;[B)Ljava/lang/String;`: save dialog; the bytes wait in the request. */
+    fun createDocument(requestId: Long, name: String, mime: String, bytes: ByteArray): String? = guarded {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mime.ifBlank { "application/octet-stream" }
+            putExtra(Intent.EXTRA_TITLE, name)
+        }
+        startForResult(intent, requestId, KIND_SAVE, bytes)
+        null
+    }
 
-            override fun onPageFinished(view: WebView, url: String?) {
-                if (started) return
-                started = true
-                try {
-                    val manager = getSystemService(Context.PRINT_SERVICE) as PrintManager
-                    manager.print(title, view.createPrintDocumentAdapter(title), null)
-                } catch (e: Exception) {
-                    Log.w(TAG, "printHtml: could not start the print job", e)
+    /** `share(Ljava/lang/String;Ljava/lang/String;[B)Ljava/lang/String;`: share sheet for a copy in cache/share/. */
+    fun share(name: String, mime: String, bytes: ByteArray): String? = guarded {
+        val dir = File(cacheDir, "share")
+        if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Could not prepare the share folder.")
+        val file = File(dir, safeFileName(name))
+        dir.listFiles()?.forEach { if (it != file) it.delete() }
+        file.writeBytes(bytes)
+        val uri = FileProvider.getUriForFile(this, FILE_AUTHORITY, file)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = mime.ifBlank { "application/octet-stream" }
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newRawUri(file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(send, null).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        onUi { startActivity(chooser) }
+        null
+    }
+
+    /** `printHtml(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;`: loads [html] in a WebView, then opens the print dialog. */
+    fun printHtml(title: String, html: String): String? = guarded {
+        val jobName = title.ifBlank { "Indicatrix" }
+        onUi {
+            val view = WebView(this)
+            view.settings.javaScriptEnabled = false
+            view.settings.allowFileAccess = false
+            view.settings.allowContentAccess = false
+            var started = false
+            view.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(page: WebView, url: String?) {
+                    if (started) return
+                    started = true
+                    try {
+                        val manager = getSystemService(PrintManager::class.java)
+                        manager.print(jobName, page.createPrintDocumentAdapter(jobName), PrintAttributes.Builder().build())
+                    } catch (e: Exception) {
+                        Log.w(TAG, "starting the print job failed", e)
+                    }
                 }
             }
+            printView = view // the print adapter needs the view alive
+            view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
         }
-        // The print adapter reads from this view after the call returns: keep it alive
-        // until the next print job or the end of the activity.
-        printView = webView
-        webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
         null
     }
 
-    /** Puts [text] on the clipboard. */
-    fun setClipboardText(text: String): String? = onUiThread {
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Indicatrix", text))
+    /** `setClipboardText(Ljava/lang/String;)Ljava/lang/String;`: replaces the primary clip with plain text. */
+    fun setClipboardText(text: String): String? = guarded {
+        onUi {
+            val clipboard = getSystemService(ClipboardManager::class.java)
+            clipboard.setPrimaryClip(ClipData.newPlainText("Indicatrix", text))
+        }
         null
     }
 
-    /** Keeps the screen on (or stops doing so). Fire and forget. */
-    fun keepScreenOn(on: Boolean): String? {
-        runOnUiThread {
+    /** `keepScreenOn(Z)Ljava/lang/String;`: sets or clears the keep-screen-on window flag. */
+    fun keepScreenOn(on: Boolean): String? = guarded {
+        onUi {
             if (on) {
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             } else {
                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
         }
-        return null
-    }
-
-    /**
-     * The thermal headroom forecast ten seconds ahead (0 cool, 1 throttling threshold),
-     * or NaN where the device does not report it (Android below 11).
-     */
-    fun thermalHeadroom(): Float {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return Float.NaN
-        return try {
-            (getSystemService(Context.POWER_SERVICE) as PowerManager).getThermalHeadroom(10)
-        } catch (e: Exception) {
-            Float.NaN
-        }
-    }
-
-    /** Opens a web address in the browser. */
-    fun openUrl(url: String): String? = onUiThread {
-        val uri = Uri.parse(url)
-        val scheme = uri.scheme?.lowercase()
-        if (scheme != "https" && scheme != "http") {
-            return@onUiThread "Only web addresses (http or https) can be opened."
-        }
-        startActivity(Intent(Intent.ACTION_VIEW, uri))
         null
     }
+
+    /** `thermalHeadroom()F`: the current thermal headroom, or NaN where the device does not report it. */
+    fun thermalHeadroom(): Float =
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                getSystemService(PowerManager::class.java).getThermalHeadroom(0)
+            } else {
+                Float.NaN
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "thermal headroom is unavailable", e)
+            Float.NaN
+        }
+
+    /** `openUrl(Ljava/lang/String;)Ljava/lang/String;`: opens a web link in the browser. */
+    fun openUrl(url: String): String? = guarded {
+        val uri = Uri.parse(url)
+        if (uri.scheme != "https" && uri.scheme != "http") {
+            throw IllegalArgumentException("Only web links can be opened.")
+        }
+        onUi { startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+        null
+    }
+
+    /** `cacheDirPath()Ljava/lang/String;`: the app's cache directory. */
+    fun cacheDirPath(): String = cacheDir.absolutePath
+
+    /** `systemPowerSave()Z`: whether the battery saver is on. */
+    fun systemPowerSave(): Boolean =
+        try {
+            getSystemService(PowerManager::class.java).isPowerSaveMode
+        } catch (e: Exception) {
+            false
+        }
+
+    /** `networkMetered()I`: 1 metered, 0 unmetered, -1 unknown. */
+    fun networkMetered(): Int =
+        try {
+            val manager = getSystemService(ConnectivityManager::class.java)
+            when {
+                manager.activeNetwork == null -> -1
+                manager.isActiveNetworkMetered -> 1
+                else -> 0
+            }
+        } catch (e: Exception) {
+            -1
+        }
+
+    /** `setBackTarget(II)V`: mirrors Rust's Back state into the [BackNavigationController]. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    fun setBackTarget(target: Int, version: Int) {
+        runOnUiThread { backNavigation?.setTarget(target, version) }
+    }
+
+    /** `storeRemoteCredentials(Ljava/lang/String;)Ljava/lang/String;`: Keystore-wrapped store. */
+    fun storeRemoteCredentials(bundle: String): String? = guarded {
+        vault.store(bundle)
+        null
+    }
+
+    /** `loadRemoteCredentials()Ljava/lang/String;`: the bundle, `null` if none; an exception escapes if it cannot be unlocked. */
+    fun loadRemoteCredentials(): String? = vault.load()
+
+    /** `forgetRemoteCredentials()Ljava/lang/String;`: deletes the encrypted file and the Keystore key. */
+    fun forgetRemoteCredentials(): String? = guarded {
+        vault.forget()
+        null
+    }
+
+    /** Registers a [PendingRequest] under a fresh request code and starts [intent] on the UI thread. */
+    private fun startForResult(intent: Intent, rustId: Long, kind: Int, saveBytes: ByteArray?) {
+        onUi {
+            val code = nextRequestCode++
+            requests[code] = PendingRequest(rustId, kind, saveBytes)
+            try {
+                startActivityForResult(intent, code)
+            } catch (e: Exception) {
+                requests.remove(code)
+                throw e
+            }
+        }
+    }
+
+    /** Runs [block] on the UI thread, waits up to [UI_WAIT_MS] and rethrows what it threw. */
+    private fun <R> onUi(block: () -> R): R {
+        val result = AtomicReference<Any?>()
+        val failure = AtomicReference<Throwable?>()
+        val done = CountDownLatch(1)
+        runOnUiThread {
+            try {
+                result.set(block())
+            } catch (t: Throwable) {
+                failure.set(t)
+            } finally {
+                done.countDown()
+            }
+        }
+        if (!done.await(UI_WAIT_MS, TimeUnit.MILLISECONDS)) {
+            throw IOException("The app did not respond in time.")
+        }
+        failure.get()?.let { throw it }
+        @Suppress("UNCHECKED_CAST")
+        return result.get() as R
+    }
+
+    /** A file name safe inside cache/share/: no separators, no leading dots. */
+    private fun safeFileName(name: String): String {
+        val base = name.substringAfterLast('/').substringAfterLast('\\')
+        val cleaned = base.replace(Regex("[^A-Za-z0-9._ -]"), "_").trimStart('.').trim().take(100)
+        return cleaned.ifEmpty { "export" }
+    }
+
+    private external fun nativeBackCommitted(target: Int, version: Int)
+    private external fun nativeBackProgress(target: Int, version: Int, progress: Float)
 
     // ---------------------------------------------------------------------------------
     // System dialog results
@@ -256,22 +322,11 @@ class MainActivity : NativeActivity() {
         }
     }
 
-    private fun startForResult(intent: Intent, request: PendingRequest) {
-        val code = nextRequestCode++
-        requests[code] = request
-        try {
-            startActivityForResult(intent, code)
-        } catch (e: Exception) {
-            requests.remove(code)
-            throw e
-        }
-    }
-
     /** Reads the picked files on a background thread and hands them to Rust. */
     private fun finishPick(request: PendingRequest, resultCode: Int, data: Intent?) {
         val id = request.rustId
         if (resultCode != RESULT_OK || data == null) {
-            nativeRequestDone(id, null) // cancelled: no files
+            nativeRequestDone(id, null) // canceled: no files
             return
         }
         thread(name = "indicatrix-pick") {
@@ -375,14 +430,14 @@ class MainActivity : NativeActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
         } else {
-            intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            intent.getParcelableExtra(Intent.EXTRA_STREAM)
         }
 
     private fun streamListExtra(intent: Intent): List<Uri> {
         val list = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
         } else {
-            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
         }
         return list?.toList() ?: emptyList()
     }
@@ -390,23 +445,6 @@ class MainActivity : NativeActivity() {
     // ---------------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------------
-
-    /**
-     * Runs [action] on the UI thread and returns its result, waiting at most two
-     * seconds. The wait is bounded because the UI thread can itself be waiting for the
-     * native thread (lifecycle callbacks), which must not deadlock; on a timeout the
-     * action still runs, its result is just not reported.
-     */
-    private fun onUiThread(action: () -> String?): String? {
-        if (Looper.myLooper() == Looper.getMainLooper()) return guarded(action)
-        val done = CountDownLatch(1)
-        var result: String? = null
-        runOnUiThread {
-            result = guarded(action)
-            done.countDown()
-        }
-        return if (done.await(UI_WAIT_MS, TimeUnit.MILLISECONDS)) result else null
-    }
 
     private fun guarded(action: () -> String?): String? =
         try {
@@ -425,16 +463,6 @@ class MainActivity : NativeActivity() {
             else -> e.message ?: e.javaClass.simpleName
         }
 
-    /** A file name that is safe inside the share directory. */
-    private fun safeFileName(name: String): String {
-        val cleaned = name.map { if (it.isLetterOrDigit() || it in "._- ") it else '_' }
-            .joinToString("")
-            .trim()
-            .trimStart('.')
-            .take(100)
-        return cleaned.ifEmpty { "export" }
-    }
-
     // ---------------------------------------------------------------------------------
     // Rust (platform_android/natives.rs)
     // ---------------------------------------------------------------------------------
@@ -448,9 +476,13 @@ class MainActivity : NativeActivity() {
     companion object {
         private const val TAG = "indicatrix"
 
-        // `openDocuments` kinds; the numbers are shared with Rust (platform_android/mod.rs).
+        /** Request kinds sent from Rust (`KIND_*` in platform_android/mod.rs). */
         private const val KIND_DESIGNS = 0
+        private const val KIND_HDR_MAP = 1
         private const val KIND_DESIGN_FOLDER = 2
+
+        /** The FileProvider authority declared in the manifest. */
+        private const val FILE_AUTHORITY = "com.indicatrixsuite.mobile.files"
 
         /** Request kind for a save dialog (never sent from Rust). */
         private const val KIND_SAVE = 100
@@ -460,7 +492,6 @@ class MainActivity : NativeActivity() {
 
         private const val FIRST_REQUEST_CODE = 0x1000
         private const val UI_WAIT_MS = 2000L
-        private const val SHARE_DIR = "share"
 
         init {
             System.loadLibrary("indicatrix_mobile_android")

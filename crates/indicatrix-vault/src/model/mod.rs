@@ -24,6 +24,8 @@ pub mod file;
 /// The library search/filter surface's range and tilt-performance filter bundle -- see
 /// [`filter::RangeFilter`].
 pub mod filter;
+/// The frosting a stored design states -- see [`frosting::StoredTierFrosting`].
+pub mod frosting;
 /// A custom (user-authored) gem material's stored parameters.
 pub mod material;
 /// Refractive-index preset matching for preview-material selection -- see

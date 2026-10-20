@@ -303,6 +303,9 @@ fn request_from_client<S: Read + Write + TimeoutRead>(
             ClientMessage::Contribution(header) => {
                 indicatrix_net::messages::discard_contribution_payload(stream, &header)?;
             }
+            // v25: a durable job request is not served mid-request; a `PutAsset`'s payload
+            // frame must still be consumed.
+            ClientMessage::Job(job) => crate::jobs::ignore_in_flight(stream, &job)?,
             other => tracing::debug!(
                 "request {}: ignoring {other:?} while waiting for its HDR map",
                 pending.request_id

@@ -17,16 +17,16 @@
 //!   (unstamped: the autosave does not change the modification time). Same-tab reloads
 //!   restore from here first, synchronously. [`ATTACHMENTS_DROPPED_KEY`] marks
 //!   an entry stored without its attachments (they did not fit in `sessionStorage`).
-//! - IndexedDB (`storage::idb`, record `designs/current`): the same design file, always
+//! - `IndexedDB` (`storage::idb`, record `designs/current`): the same design file, always
 //!   with its attachments, plus a meta record, written [`IDB_DEBOUNCE`] after the last
 //!   change. At start-up, when `sessionStorage` holds no design, this one is restored
 //!   (toast "Restored your last design"); a record that is not a valid design file is
 //!   ignored with a console warning.
 //!
 //! Every change calls [`schedule_save`], which writes `sessionStorage` after
-//! [`PERSIST_DEBOUNCE`] of quiet and IndexedDB after [`IDB_DEBOUNCE`]. Start-up
-//! restores silently (apart from the IndexedDB toast); a `sessionStorage` entry that does
-//! not parse is removed, with a console note, and the app falls back to IndexedDB.
+//! [`PERSIST_DEBOUNCE`] of quiet and `IndexedDB` after [`IDB_DEBOUNCE`]. Start-up
+//! restores silently (apart from the `IndexedDB` toast); a `sessionStorage` entry that does
+//! not parse is removed, with a console note, and the app falls back to `IndexedDB`.
 //!
 //! Every state change funnels through [`schedule_save`], so it is also where the
 //! renderer hears about one: it asks `crate::render::request_sync` to compare the
@@ -45,7 +45,7 @@ use indicatrix_cut_core::native::{
     AttachmentBlob, DesignExtras, design_from_str, design_to_string,
 };
 use indicatrix_formats::native::design::{FileKind, detect_kind};
-use indicatrix_web_core::tab_state::TabState;
+use indicatrix_web_core::{settings::CURRENT_SETTINGS_VERSION, tab_state::TabState};
 use slint::{Timer, TimerMode};
 use std::time::Duration;
 
@@ -60,7 +60,7 @@ pub const DESIGN_KEY: &str = "indicatrix.design.v1";
 pub const ATTACHMENTS_DROPPED_KEY: &str = "indicatrix.design.attachments_dropped.v1";
 /// Quiet time before a change is written to `sessionStorage` and the settings key.
 pub const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
-/// Quiet time before a change is written to IndexedDB.
+/// Quiet time before a change is written to `IndexedDB`.
 pub const IDB_DEBOUNCE: Duration = Duration::from_secs(2);
 
 thread_local! {
@@ -90,16 +90,19 @@ pub fn discard(key: &str, why: &str) {
     storage::small_remove(key);
 }
 
-/// The stored session payload, or the default when absent or corrupt.
+/// The stored session payload after its one-time migrations
+/// (`SessionPayload::migrated`: a record from before settings version 1 gets GPU rendering
+/// switched on, once; the next save writes the version, so a later "off" stays off), or the
+/// defaults (GPU rendering on) when nothing is stored or it is corrupt.
 fn restore_payload() -> SessionPayload {
     let Some(text) = read(SETTINGS_KEY) else {
-        return SessionPayload::default();
+        return SessionPayload::default().migrated();
     };
     match SessionPayload::from_json(&text) {
-        Ok(payload) => payload,
+        Ok(payload) => payload.migrated(),
         Err(e) => {
             discard(SETTINGS_KEY, &e);
-            SessionPayload::default()
+            SessionPayload::default().migrated()
         }
     }
 }
@@ -150,7 +153,7 @@ fn install_restored(ctx: &Ctx, design: DesignState, unsaved: bool) {
 ///
 /// The same-tab copy in `sessionStorage` is restored synchronously (no UI push; the
 /// caller pushes everything once). When there is none, or it does not parse, the
-/// IndexedDB autosave is read in the background; it pushes the UI itself when it lands,
+/// `IndexedDB` autosave is read in the background; it pushes the UI itself when it lands,
 /// and only if no design has been created or opened in the meantime.
 pub fn restore_design(ctx: &Ctx) {
     if let Some(text) = storage::session::get(DESIGN_KEY)
@@ -191,9 +194,10 @@ fn restore_from_session(ctx: &Ctx, text: &str) -> bool {
     }
 }
 
-/// Restores the IndexedDB autosave into an app that has no design yet, then refreshes
-/// everything. A missing record, an unavailable IndexedDB and a record that is not a
+/// Restores the `IndexedDB` autosave into an app that has no design yet, then refreshes
+/// everything. A missing record, an unavailable `IndexedDB` and a record that is not a
 /// valid design file all leave the app untouched (the last two with a console warning).
+#[expect(clippy::future_not_send, reason = "wasm is single-threaded")]
 async fn restore_from_idb(ctx: &Ctx) {
     let stored = match idb::load_design().await {
         Ok(Some(stored)) => stored,
@@ -211,13 +215,13 @@ async fn restore_from_idb(ctx: &Ctx) {
         console_warn("ignoring the autosaved design (not a design file)");
         return;
     }
-    let (name, unsaved) = match stored.meta {
-        Some(meta) => (meta.design_name, meta.unsaved),
-        None => {
+    let (name, unsaved) = stored.meta.map_or_else(
+        || {
             let tab = restore_tab_state();
             (tab.design_name, tab.design_unsaved)
-        }
-    };
+        },
+        |meta| (meta.design_name, meta.unsaved),
+    );
     // Nothing awaits from here to the end: the check and the install are one step, so a
     // design the user opened while the read was pending is never replaced.
     if ctx.state.borrow().design.is_some() {
@@ -277,6 +281,8 @@ fn save_now(app: &WebApp) {
         design_name: None,
         design_unsaved: false,
         auto_solve_budget_ms: app.auto_solve_budget_ms,
+        // The migrations ran when the payload was restored; the version records that.
+        settings_version: CURRENT_SETTINGS_VERSION,
     };
     match payload.to_json() {
         Ok(json) => write(SETTINGS_KEY, &json),
@@ -290,9 +296,9 @@ fn save_now(app: &WebApp) {
     store_design(design);
 }
 
-/// Writes the current design to IndexedDB in the background (the text is built now, on
+/// Writes the current design to `IndexedDB` in the background (the text is built now, on
 /// the caller's stack, so the async write holds no borrow of the state). Does nothing
-/// without a design: the previous autosave is kept, so a start-up whose IndexedDB
+/// without a design: the previous autosave is kept, so a start-up whose `IndexedDB`
 /// restore is still pending cannot erase it.
 fn save_idb(app: &WebApp) {
     let Some(design) = &app.design else {
@@ -349,7 +355,7 @@ fn design_text(design: &DesignState, with_attachments: bool) -> Result<String, S
 /// and attachments are base64 text of files that can be tens of megabytes, so when the
 /// full text does not fit the design is stored again without its attachments (the
 /// metadata stays). That drop is recorded under [`ATTACHMENTS_DROPPED_KEY`] so a restore
-/// can say so; the attachments are still in the opened file, and IndexedDB ([`save_idb`])
+/// can say so; the attachments are still in the opened file, and `IndexedDB` ([`save_idb`])
 /// keeps them regardless.
 fn store_design(design: &DesignState) {
     let full = match design_text(design, true) {
@@ -378,7 +384,7 @@ fn store_design(design: &DesignState) {
 }
 
 /// Writes the settings and the `sessionStorage` design after [`PERSIST_DEBOUNCE`] of
-/// quiet, and the IndexedDB autosave after [`IDB_DEBOUNCE`] (restarting the same timers
+/// quiet, and the `IndexedDB` autosave after [`IDB_DEBOUNCE`] (restarting the same timers
 /// on every call, so a burst of changes writes once).
 pub fn schedule_save(ctx: &Ctx) {
     let state = ctx.state.clone();

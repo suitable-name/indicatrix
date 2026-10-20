@@ -8,7 +8,7 @@ mod tests;
 
 pub use model::{
     Backdrop, DEFAULT_LIGHTING_RIG, LibrarySettings, LibrarySort, LightingSettings, MAX_RECENT,
-    MobileSettings, RecentItem, RecentKind, RemoteSettings, RemoteTransfer, RenderQuality,
-    RenderSettings, ThemeChoice,
+    MobileSettings, RecentItem, RecentKind, RemoteSettings, RemoteTransfer, RenderBackend,
+    RenderQuality, RenderSettings, ThemeChoice,
 };
 pub use store::SettingsStore;

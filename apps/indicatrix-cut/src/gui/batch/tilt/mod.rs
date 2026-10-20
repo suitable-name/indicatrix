@@ -22,14 +22,22 @@
 //! exactly as `gui::batch::preview` does (see that module's doc comment for the
 //! `LiveComputeTarget`/`RemoteOnly`/`Both` mechanics); the queue's unit here is one
 //! whole design. A single sweep is itself threaded now
-//! (`evaluate_full_axis_profile_at_azimuth_geom_threaded`), so the local lanes cap each
+//! (`evaluate_full_axis_profile_at_azimuth_finished_threaded`), so the local lanes cap each
 //! sweep at `available_parallelism / local_lane_count` threads (at least 1): lanes x inner
 //! threads never exceeds the cores, and the lanes -- not the inner threads -- stay what
 //! spreads a whole-catalogue run across the machine.
 //!
+//! The sweep honours a design's frosting: a frosted facet scatters light instead of
+//! reflecting and refracting it specularly, so the curves of a frosted design are not its
+//! polished ones. The batch resolves the design's frosted planes with its geometry
+//! (`gui::batch::record_planes_with_frosting_for_batch`, as the preview batch does), the
+//! local sweep takes the facet finishes they make, and a remote request carries the planes in
+//! its scene so the worker sweeps the same stone. That is why the stored fingerprint names the
+//! frosting (`frosting=`): setting or clearing it really does change the curves.
+//!
 //! Cancellation is checked before each design any lane claims, and (local path only)
 //! between each design's 4 axis sweeps inside
-//! [`engine::compute_tilt_curves_locally`]'s loop. A `catch_unwind` wraps the whole
+//! [`engine::sweep::compute_tilt_curves_locally`]'s loop. A `catch_unwind` wraps the whole
 //! per-design attempt on every lane, so one bad design becomes a `failed` count rather
 //! than a dead lane. Unlike preview images, a design's tilt curves are ALL-OR-NOTHING --
 //! `TiltPerformanceCurves` requires all 4 axes to construct at all -- so a cancel
@@ -65,7 +73,7 @@ mod remote_lane;
 mod scan;
 mod wiring;
 
-pub use engine::{save_tilt_curves_for_entry, tilt_curves_for_planes};
+pub use engine::{save_tilt_curves_for_entry, tilt_curves_for_stone};
 #[cfg(feature = "ui-harness")]
 pub(in crate::gui) use wiring::note_holders;
 pub(in crate::gui) use wiring::release_window_state;
@@ -79,7 +87,7 @@ mod tests {
         gem_record, has_plane_at, record_with,
     };
     use indicatrix::{
-        geometry::{GpuFacetPlane, cuts::StandardGemCuts},
+        geometry::{GpuFacetPlane, cuts::StandardGemCuts, tool::StoneGeometry},
         optics::materials::GemMaterial,
     };
     use indicatrix_vault::{
@@ -105,7 +113,8 @@ mod tests {
             custom_materials: &[],
             angle_table_entries: &angle_table_entries,
         };
-        let planes = engine::record_planes(&ctx, full).map(|resolved| resolved.planes);
+        let planes =
+            engine::record_planes_with_frosting(&ctx, full).map(|(resolved, _)| resolved.planes);
         let fallbacks = angle_table_entries
             .into_inner()
             .expect("the fallback set is never poisoned in a test");
@@ -167,11 +176,21 @@ mod tests {
     /// ~1.36s) local sweep even starts, so this stays a fast unit test while still
     /// proving the re-exported name resolves and runs to a real return value.
     #[test]
-    fn tilt_curves_for_planes_honours_an_already_set_cancel_flag() {
+    fn tilt_curves_for_stone_honours_an_already_set_cancel_flag() {
         let planes = StandardGemCuts::standard_round_brilliant();
         let material = GemMaterial::diamond();
         let cancel = AtomicBool::new(true);
-        assert!(tilt_curves_for_planes(&planes, &material, None, &cancel, &mut |_| {}).is_none());
+        assert!(
+            tilt_curves_for_stone(
+                StoneGeometry::planes_only(&planes),
+                &[],
+                &material,
+                None,
+                &cancel,
+                &mut |_| {}
+            )
+            .is_none()
+        );
     }
 
     /// The same single-design entry point run to REAL completion (not the
@@ -182,14 +201,21 @@ mod tests {
     /// Asserts a real, non-degenerate curve set comes
     /// back, not merely `Some` wrapping a default/empty result.
     #[test]
-    fn tilt_curves_for_planes_computes_a_real_local_sweep_for_the_open_design_path() {
+    fn tilt_curves_for_stone_computes_a_real_local_sweep_for_the_open_design_path() {
         let planes = StandardGemCuts::standard_round_brilliant();
         let material = GemMaterial::diamond();
         let cancel = AtomicBool::new(false);
         let mut steps = 0usize;
-        let curves = tilt_curves_for_planes(&planes, &material, None, &cancel, &mut |_| {
-            steps += 1;
-        })
+        let curves = tilt_curves_for_stone(
+            StoneGeometry::planes_only(&planes),
+            &[],
+            &material,
+            None,
+            &cancel,
+            &mut |_| {
+                steps += 1;
+            },
+        )
         .expect("a standard round brilliant must sweep successfully");
         assert_eq!(steps, 724, "one progress report per raytrace evaluation");
         assert!(

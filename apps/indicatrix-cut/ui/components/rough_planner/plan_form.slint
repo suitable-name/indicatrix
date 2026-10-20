@@ -4,7 +4,7 @@ import { RoughPlanModel } from "../../models/rough_plan.slint";
 import { RoughField, RoughRadio, RoughPill, Chevron, ElidedText } from "fields.slint";
 import { TipBox } from "../tip_box.slint";
 
-// Left column planning section: stones up to K, candidate radios, the excluded designs
+// Left column planning section: the design and stone limits, candidate radios, the excluded designs
 // disclosure, losses disclosure, Plan/Cancel button, and progress bar.
 export component PlanForm inherits VerticalLayout {
     property <bool> busy: RoughPlanModel.running;
@@ -76,21 +76,21 @@ export component PlanForm inherits VerticalLayout {
                 color: Theme.text-muted;
             }
 
-            // Design cap (1..=99): how many different designs a layout may mix. The number of
-            // stones is not capped; the planner fits as many as yield best.
+            // Design cap (1..=99): how many different designs a layout may mix.
             HorizontalLayout {
                 spacing: 6px;
                 alignment: start;
 
                 Text {
-                    text: "Designs (up to):";
+                    text: "Designs (Up To):";
+                    min-width: 100px;
                     font-size: 11px;
                     color: Theme.text-muted;
                     vertical-alignment: center;
                 }
 
                 TipBox {
-                    hint: "The most different designs one layout may mix, from 1 to 99. The number of stones is not limited: the planner fits as many as yield the most weight. 1 plans every layout with a single design.";
+                    hint: "The most different designs one layout may mix, from 1 to 99. 1 plans every layout with a single design. Stones (Up To) limits how many stones a layout holds.";
                     SpinBox {
                         minimum: 1;
                         maximum: 99;
@@ -98,6 +98,39 @@ export component PlanForm inherits VerticalLayout {
                         enabled: !root.busy;
                         accessible-label: "Most Designs per Layout";
                     }
+                }
+            }
+
+            // Stone cap (0..=99): how many stones a layout may hold in all, whatever their
+            // designs. 0 = no limit (the planner fits as many as yield best).
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                Text {
+                    text: "Stones (Up To):";
+                    min-width: 100px;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+
+                TipBox {
+                    hint: "The most stones one layout may hold in all, whatever their designs, from 1 to 99. 0 means no limit: the planner fits as many stones as yield the most weight. With a limit the planner looks for the heaviest layouts of at most that many stones, which often have larger stones.";
+                    SpinBox {
+                        minimum: 0;
+                        maximum: 99;
+                        value <=> RoughPlanModel.max_stones;
+                        enabled: !root.busy;
+                        accessible-label: "Most Stones per Layout";
+                    }
+                }
+
+                Text {
+                    text: RoughPlanModel.max_stones == 0 ? "No Limit" : "";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
                 }
             }
 
@@ -111,7 +144,7 @@ export component PlanForm inherits VerticalLayout {
                 }
             }
 
-            // Candidate designs choice
+            // Candidate Designs choice
             VerticalLayout {
                 spacing: 2px;
                 Text {

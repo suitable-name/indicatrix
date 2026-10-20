@@ -16,8 +16,8 @@
 //! # Desktop defaults and conversions
 //!
 //! Defaults are the desktop's (`apps/indicatrix-cut/src/settings/model/app_settings.rs`):
-//! Diamond, "Light tent + black cards", exposure 1.0, light 48 deg / 72 deg, grey
-//! backdrop, 12 bounces, 256 live samples, camera 0.35 / 1.15 / 2.4 (near face-up), denoise on,
+//! Diamond, "Light tent + black cards", exposure 1.0, light 48 deg / 72 deg, white
+//! backdrop (a lit tray; saved settings keep their stored index), 12 bounces, 256 live samples, camera 0.35 / 1.15 / 2.4 (near face-up), denoise on,
 //! material linked to the design, every material override off. [`scene_spec`] applies
 //! the desktop's own conversions (`gui::startup_settings::apply_loaded_settings`, the
 //! light and material callbacks, `gui::editor::view::inspector::
@@ -27,11 +27,12 @@
 //! width.
 
 use glam::Vec3;
+mod engine;
 use indicatrix::{
-    geometry::GpuFacetPlane,
+    geometry::{GpuFacetPlane, facet_finishes_with_frosted},
     optics::{
         materials::GemMaterial,
-        raytracer::{DEFAULT_MAX_BOUNCES, DEFAULT_POSE, LightingPreset},
+        raytracer::{DEFAULT_MAX_BOUNCES, DEFAULT_POSE, FacetFinish, LightingPreset},
     },
     render_setup::Backdrop,
 };
@@ -87,6 +88,8 @@ pub struct ExportSettings {
     pub long_edge: u32,
     /// Samples per pixel (`16..=4096`).
     pub spp: u32,
+    /// Fixed Ray-Traced export AA taps, independent of the live view (1, 4, 8 or 16).
+    pub ray_taps: i32,
     /// `display::EXPORT_COLOR_SPACES` index: 0 sRGB, 1 Display P3, 2 Rec.2020.
     pub color_space: i32,
     /// Denoise before tone mapping (the desktop's export never does, so off).
@@ -98,6 +101,7 @@ impl Default for ExportSettings {
         Self {
             long_edge: DEFAULT_EXPORT_EDGE,
             spp: 256,
+            ray_taps: 16,
             color_space: 0,
             denoise: false,
         }
@@ -123,7 +127,8 @@ pub struct RenderSettings {
     pub light_yaw_deg: f32,
     /// Key-light pitch, degrees.
     pub light_pitch_deg: f32,
-    /// `indicatrix::render_setup::Backdrop::index`.
+    /// `indicatrix::render_setup::Backdrop::index` (0 as lit, 1 grey, 2 white, 3 black; an
+    /// unknown index reads as white). Stored as a plain number so a downgrade never fails.
     pub backdrop_index: i32,
     /// Head-shadow radius of the lit presets, degrees (`0..=30`, `0` is off).
     pub head_shadow_deg: f32,
@@ -133,6 +138,12 @@ pub struct RenderSettings {
     pub surface_glare: f32,
     /// Maximum path bounces.
     pub max_bounces: u32,
+    /// Renderer: 0 Path-Traced, 1 Ray-Traced; unknown values load as Path-Traced.
+    pub engine: i32,
+    /// Fixed anti-aliasing tap count for Ray-Traced (1, 4, 8 or 16).
+    pub ray_taps: i32,
+    /// Three refractive indices for approximate dispersion fire.
+    pub ray_fire: bool,
     /// Live target samples per pixel.
     pub target_spp: u32,
     /// Camera yaw, radians.
@@ -165,7 +176,9 @@ pub struct RenderSettings {
     pub stone_width_mm: f32,
     /// Light the stone with the uploaded HDR map, when one is loaded.
     pub use_hdr: bool,
-    /// Whether GPU rendering is enabled (experimental).
+    /// Whether GPU rendering is enabled (on by default). When it is, the page tests the GPU
+    /// while it loads (`gpu_startup`). A record stored before settings version 1 is switched
+    /// on once by [`SessionPayload::migrated`].
     pub gpu_enabled: bool,
     /// The PNG export dialog.
     pub export: ExportSettings,
@@ -179,10 +192,13 @@ impl Default for RenderSettings {
             exposure: 1.0,
             light_yaw_deg: 48.0,
             light_pitch_deg: DEFAULT_LIGHT_PITCH_DEG,
-            backdrop_index: Backdrop::Grey.index(),
+            backdrop_index: Backdrop::White.index(),
             head_shadow_deg: DEFAULT_HEAD_SHADOW_DEG,
             surface_glare: DEFAULT_SURFACE_GLARE,
             max_bounces: DEFAULT_MAX_BOUNCES,
+            engine: 0,
+            ray_taps: 4,
+            ray_fire: true,
             target_spp: DEFAULT_LIVE_SPP,
             camera_yaw: DEFAULT_CAMERA_YAW,
             camera_pitch: DEFAULT_CAMERA_PITCH,
@@ -198,7 +214,9 @@ impl Default for RenderSettings {
             edge_rounding_radius: 0.0,
             stone_width_mm: 0.0,
             use_hdr: true,
-            gpu_enabled: false,
+            // On by the owner's decision: the page tests the GPU while it loads and falls
+            // back to the CPU workers, saying why (`gpu_startup`).
+            gpu_enabled: true,
             export: ExportSettings::default(),
         }
     }
@@ -243,6 +261,10 @@ impl RenderSettings {
     /// `LightingPreset::from_label`.
     #[must_use]
     pub fn sanitized(mut self) -> Self {
+        let engine = self.engine_spec();
+        self.engine = i32::from(engine.engine.index());
+        self.ray_taps = i32::from(engine.ray.aa_taps);
+        self.export.ray_taps = i32::from(self.export_engine_spec().ray.aa_taps);
         let d = Self::default();
         self.exposure =
             finite_or(self.exposure, d.exposure).clamp(EXPOSURE_RANGE.0, EXPOSURE_RANGE.1);
@@ -465,6 +487,34 @@ pub fn scene_spec(settings: &RenderSettings, inputs: &SceneInputs<'_>) -> SceneS
     }
 }
 
+/// [`scene_spec`] for a design that authors frosting.
+///
+/// `frosted` lists the planes (indices into `inputs.planes`, `Design::frosted_planes_from_solved`)
+/// the design frosts, marked frosted on top of the girdle band when the settings' frosted-girdle
+/// toggle is on. The finishes then travel as [`FinishSpec::PerFacet`], which the Worker protocol
+/// already carries, so no protocol change is needed. An empty `frosted` is exactly
+/// [`scene_spec`].
+#[must_use]
+pub fn scene_spec_with_frosting(
+    settings: &RenderSettings,
+    inputs: &SceneInputs<'_>,
+    frosted: &[u32],
+) -> SceneSpec {
+    let mut spec = scene_spec(settings, inputs);
+    if !frosted.is_empty() {
+        let finishes = facet_finishes_with_frosted(inputs.planes, settings.frosted_girdle, frosted);
+        if !finishes.is_empty() {
+            spec.finishes = FinishSpec::PerFacet(
+                finishes
+                    .iter()
+                    .map(|finish| *finish == FacetFinish::Frosted)
+                    .collect(),
+            );
+        }
+    }
+    spec
+}
+
 /// The desktop's default auto-solve budget in milliseconds
 /// (`DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS`).
 pub const DEFAULT_AUTO_SOLVE_BUDGET_MS: u32 = 300;
@@ -504,7 +554,16 @@ pub struct SessionPayload {
     /// ([`AUTO_SOLVE_BUDGETS_MS`]). A payload from an older build has none and takes
     /// [`DEFAULT_AUTO_SOLVE_BUDGET_MS`].
     pub auto_solve_budget_ms: u32,
+    /// The settings migrations this record has been through ([`CURRENT_SETTINGS_VERSION`]
+    /// once [`Self::migrated`] ran). A record from before the field existed reads `0`, and
+    /// so does [`Self::default`]: both are "not migrated yet".
+    pub settings_version: u32,
 }
+
+/// The settings version a current build writes. `1`: GPU rendering is switched on once for
+/// every stored record (owner decision, 2026-10-19), after which the stored value is the
+/// user's.
+pub const CURRENT_SETTINGS_VERSION: u32 = 1;
 
 impl Default for SessionPayload {
     fn default() -> Self {
@@ -513,11 +572,25 @@ impl Default for SessionPayload {
             design_name: None,
             design_unsaved: false,
             auto_solve_budget_ms: DEFAULT_AUTO_SOLVE_BUDGET_MS,
+            settings_version: 0,
         }
     }
 }
 
 impl SessionPayload {
+    /// Runs the one-time migrations a stored record has not been through, and marks it as
+    /// current: a record below version 1 gets `gpu_enabled = true`. A record at the current
+    /// version (or from a newer build) is returned unchanged, so a user who switched the GPU
+    /// off afterwards stays off, and calling this again changes nothing.
+    #[must_use]
+    pub fn migrated(mut self) -> Self {
+        if self.settings_version < 1 {
+            self.render.gpu_enabled = true;
+        }
+        self.settings_version = self.settings_version.max(CURRENT_SETTINGS_VERSION);
+        self
+    }
+
     /// The stored auto-solve budget, capped so a hand-edited payload cannot make the
     /// dock's threshold absurd.
     #[must_use]

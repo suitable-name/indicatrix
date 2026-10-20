@@ -6,9 +6,10 @@
 import { EditorTierItem } from "../types.slint";
 
 export global TierTableModel {
-    // The multi-select bar's Offset box: the tier the keyboard cursor is on, and the text in
-    // the box. Moves every selected tier by that many degrees (one Undo step) and returns
-    // `true`; returns `false` after a toast when the text is not a number or a calculation.
+    // The multi-select bar's Offset box: the tier the keyboard cursor is on (-1 for none), and
+    // the text in the box. Moves every ticked tier by that many degrees (one Undo step) and
+    // returns `true`; the cursor need not be on a ticked row. Returns `false` after a toast
+    // when the text is not a number or a calculation, or when no tier is ticked.
     callback offset_selected(int, string) -> bool;
     // The Tier form's "+ Add" box: the tier's position in the table and the position typed.
     // `true` once the facet is added, `false` after a toast when the text cannot be read.

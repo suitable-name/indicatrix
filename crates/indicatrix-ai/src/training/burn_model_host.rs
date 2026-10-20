@@ -1,11 +1,11 @@
 //! The batched rollout forward of the Burn model, and the state packing the trainers share.
 //!
-//! A trainer rolls out many environments in lock step, and the network is a few hundred
-//! microseconds per sample on a CPU thread but one launch for the whole pass on a GPU.
-//! [`BurnSetAttention::forward_host`] takes the flat observations of a whole pass (one per
+//! A trainer rolls out many environments in lock step. [`BurnSetAttention::forward_host`] takes
+//! the flat observations of a whole pass (one per
 //! environment, padded to the same tier count), runs ONE forward over the batch on the model's
 //! device and hands back the three things sampling needs, the policy means, the log-stds and
-//! the values, as plain host vectors ([`HostPolicyBatch`]) trimmed to each sample's real tiers.
+//! the values, packs the three outputs together for one host readback, then returns plain host
+//! vectors ([`HostPolicyBatch`]) trimmed to each sample's real tiers.
 //! The sampling itself stays on the host, in sample order, so the random stream does not
 //! depend on the device.
 //!
@@ -122,28 +122,6 @@ where
     }
 }
 
-/// A read-back `[batch, max_tiers]` tensor as one row per sample, each cut to the sample's real
-/// tier count (`n_tiers[i] <= max_tiers`, checked by the caller).
-fn trimmed_rows(
-    tensor: Tensor<2>,
-    n_tiers: &[usize],
-    max_tiers: usize,
-) -> Result<Vec<Vec<f32>>, TrainError> {
-    let flat = host_vec(tensor)?;
-    if flat.len() != n_tiers.len() * max_tiers {
-        return Err(TrainError::Tensor(format!(
-            "read back {} values for {} samples of {max_tiers} tiers",
-            flat.len(),
-            n_tiers.len()
-        )));
-    }
-    Ok(flat
-        .chunks_exact(max_tiers)
-        .zip(n_tiers)
-        .map(|(row, &n)| row[..n].to_vec())
-        .collect())
-}
-
 impl BurnSetAttention {
     /// One forward pass over a whole batch of flat observations, read back to the host.
     ///
@@ -189,17 +167,31 @@ impl BurnSetAttention {
         let input = pack_states(rows, dims, &device);
         let out = inference.forward(input.tiers, input.globals, input.mask);
 
-        let values = host_vec(out.value)?;
-        if values.len() != states.len() {
+        // Bundle all rollout outputs into one read-back. Copying one tensor three times adds
+        // synchronization points on accelerators, even though the sampling loop needs all fields.
+        let packed = host_vec(Tensor::cat(
+            vec![out.mean, out.log_std, out.value.reshape([states.len(), 1])],
+            1,
+        ))?;
+        let row_width = 2 * max_tiers + 1;
+        if packed.len() != states.len() * row_width {
             return Err(TrainError::Tensor(format!(
-                "read back {} values for {} samples",
-                values.len(),
+                "read back {} rollout values for {} samples of {row_width}",
+                packed.len(),
                 states.len()
             )));
         }
+        let mut means = Vec::with_capacity(states.len());
+        let mut log_stds = Vec::with_capacity(states.len());
+        let mut values = Vec::with_capacity(states.len());
+        for (row, &n) in packed.chunks_exact(row_width).zip(n_tiers) {
+            means.push(row[..n].to_vec());
+            log_stds.push(row[max_tiers..max_tiers + n].to_vec());
+            values.push(row[2 * max_tiers]);
+        }
         Ok(HostPolicyBatch {
-            means: trimmed_rows(out.mean, n_tiers, max_tiers)?,
-            log_stds: trimmed_rows(out.log_std, n_tiers, max_tiers)?,
+            means,
+            log_stds,
             values,
         })
     }

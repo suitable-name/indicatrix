@@ -260,6 +260,78 @@ export component GuidePanel inherits Rectangle {
             }
         }
 
+        // "Show Me Where" action button: guides the learner to the step's stage
+        // (view, inspector tab, accordion sections, camera reframe) when the target
+        // control is off-screen or out of alignment.
+        if GuideModel.stage_mismatched: Rectangle {
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: show_me_touch.has-hover ? Theme.accent-cyan-surface : Theme.bg-elevated;
+            border-width: show_me_focus.has-focus ? 2px : 1px;
+            border-color: show_me_focus.has-focus ? Theme.accent-cyan-hover : Theme.accent-cyan;
+            clip: true;
+
+            accessible-role: AccessibleRole.button;
+            accessible-label: "Show Me Where";
+            accessible-description: GuideModel.stage_hint;
+            accessible-action-default => { GuideModel.show_me_where(); }
+
+            show_me_focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        GuideModel.show_me_where();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 6px;
+                alignment: center;
+
+                Image {
+                    source: @image-url("../icons/search.svg");
+                    width: 12px;
+                    height: 12px;
+                    colorize: Theme.accent-cyan;
+                    image-fit: contain;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "Show Me Where";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Image {
+                    source: @image-url("../icons/chevron-right.svg");
+                    width: 9px;
+                    height: 9px;
+                    colorize: Theme.accent-cyan;
+                    image-fit: contain;
+                    vertical-alignment: center;
+                }
+            }
+
+            show_me_touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    show_me_focus.focus();
+                    GuideModel.show_me_where();
+                }
+            }
+
+            Tooltip { text: @markdown("\{GuideModel.stage_hint}"); }
+        }
+
         // Status chip: what the guide is waiting for, then a short "Done" before
         // the automatic move to the next step.
         Rectangle {
@@ -352,7 +424,7 @@ export component GuideOverlayLayer inherits Rectangle {
 
     Timer {
         interval: 700ms;
-        running: GuideModel.step_done && !GuideModel.revisiting;
+        running: GuideModel.step_done && !GuideModel.revisiting && !GuideModel.presentation_hold;
         triggered => { GuideModel.complete_advance(); }
     }
 

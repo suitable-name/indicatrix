@@ -135,12 +135,13 @@ pub(in crate::gui::editor) fn retarget_compare_inputs(
                 .to_string(),
         );
     }
-    let anchors = candidate_anchors(guard.generation)?;
-    let mut candidate = build_retarget_candidate(&st.design, &guard.proposal, &anchors)
-        .ok_or_else(|| {
-            "This proposal no longer applies to the current design -- click Recompute first."
-                .to_string()
-        })?;
+    // Only the "still checking" refusal is wanted here: the candidate reads its masts from
+    // the finished check itself.
+    candidate_anchors(guard.generation)?;
+    let mut candidate = build_retarget_candidate(&st.design).ok_or_else(|| {
+        "This proposal no longer applies to the current design -- click Recompute first."
+            .to_string()
+    })?;
     candidate.material = guard.material.clone();
     let mode = if ui.global::<RetargetModel>().get_mode_index() == 1 {
         "Optimize"

@@ -662,7 +662,7 @@ pub fn run_image_comparison_hdr_nee(
     )
 }
 
-fn compute_image_comparison_result(
+pub(super) fn compute_image_comparison_result(
     width: u32,
     height: u32,
     cpu_samples_per_pixel: u32,

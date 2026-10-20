@@ -9,7 +9,7 @@
 //! |---|---|
 //! | `asc` | `indicatrix_formats::asc::to_asc_string` on the editor's export schedule: the effective refractive index, the solved masts and concave tiers as footnotes, with the CRLF line ends `GemCAD` itself writes |
 //! | `isdd` (alias `indicatrix`) | the file the design was opened from, with the design swapped in (see [`Loaded::design_text`]) |
-//! | `gcs` | `indicatrix_formats::gcs::to_gcs_string` on the same schedule `asc` is made from (experimental, as in the editor) |
+//! | `gcs` | `indicatrix_formats::gcs::to_gcs_string_with_frosting` on the same schedule `asc` is made from, with the design's frosted tiers and facets (experimental, as in the editor) |
 //! | `html` | `indicatrix_editor::cut_sheet::cutting_sheet_document_with`: the cutting instructions with their four views, headed by the file's own title, designer, shape and notes (else the `.asc` header lines) and the `--date` text |
 //!
 //! The desktop editor also stamps the library entry a design came from into the footnotes of an
@@ -29,7 +29,7 @@ use indicatrix_cut_core::Design;
 use indicatrix_editor::cut_sheet::cutting_sheet_document_with;
 use indicatrix_formats::{
     asc::{AscSchedule, to_asc_string},
-    gcs::to_gcs_string,
+    gcs::to_gcs_string_with_frosting,
 };
 
 /// The schedule `.asc` and `.gcs` are written from: the effective refractive index (custom
@@ -78,7 +78,7 @@ fn export_text(
         ExportFormat::Isdd => loaded.design_text(design, catalogue),
         ExportFormat::Gcs => {
             let schedule = export_schedule(design, solved, catalogue, ".gcs")?;
-            to_gcs_string(&schedule).map_err(|error| {
+            to_gcs_string_with_frosting(&schedule, &design.gcs_frosting_spec()).map_err(|error| {
                 CliError::design(format!("cannot write the design as .gcs: {error}"))
             })
         }
@@ -125,7 +125,11 @@ mod tests {
         outcome::{EXIT_DESIGN, EXIT_OK, EXIT_USAGE},
         testing,
     };
-    use indicatrix_cut_core::{Design, PreformSpec, ScheduleMeta};
+    use indicatrix_cut_core::{Design, Edit, PreformSpec, ScheduleMeta, TierFrosting};
+    use indicatrix_formats::{
+        asc::AscTier,
+        gcs::{gcs_to_asc_schedule, parse_gcs, to_gcs_string},
+    };
 
     fn loaded() -> Loaded {
         Loaded::in_memory(testing::template(), "round.isdd")
@@ -143,7 +147,8 @@ mod tests {
     }
 
     /// The desktop's Export builds the schedule with `to_asc_schedule_with`, adds the concave
-    /// footnotes and writes it with `to_asc_string` (`native_io/export.rs`, `schedule_file_text`),
+    /// footnotes and writes it with `to_asc_string` (`native_io/export.rs`,
+    /// `schedule_file_text_with_frosting`),
     /// which ends every line with CRLF as `GemCAD` does. The CLI's `.asc` must be those bytes.
     #[test]
     fn asc_text_is_what_the_editors_export_writes() {
@@ -180,6 +185,107 @@ mod tests {
         );
         let again = from_bytes("round.gcs", text.as_bytes()).expect("the exported .gcs opens");
         assert_ne!(again.design.tiers.len(), 0);
+    }
+
+    /// The `.gcs` the command writes states the design's frosting, as the editor's export does,
+    /// and a polished design's text is exactly the plain writer's.
+    #[test]
+    fn gcs_text_states_the_frosting_and_a_polished_design_is_unchanged() {
+        let design = testing::template();
+        let analysis = analyze(&design);
+        let solved = analysis
+            .require_stone(&design)
+            .expect("the template is a stone");
+        let schedule = export_schedule(&design, solved, &Catalogue::default(), ".gcs")
+            .expect("the template has a schedule");
+        let polished = text_in(ExportFormat::Gcs);
+        assert_eq!(polished, to_gcs_string(&schedule).expect("writable"));
+        assert!(
+            !polished.contains("frosting=\""),
+            "a polished design says none"
+        );
+
+        let mut frosted = testing::template();
+        frosted
+            .apply_edit(Edit::SetTierFrosting {
+                index: 0,
+                frosting: Some(TierFrosting::Tier),
+            })
+            .expect("the tier exists");
+        let text = export_text(
+            &Loaded::in_memory(frosted, "frosted.isdd"),
+            &Catalogue::default(),
+            ExportFormat::Gcs,
+            "",
+        )
+        .expect("exports");
+        assert!(text.contains("frosting=\""), "the frosted tier is written");
+    }
+
+    /// The index positions of a tier modulo the gear, sorted: tooth 0 and tooth `gear` are the
+    /// same position, and a tier with no index sits at tooth 0.
+    fn positions(tier: &AscTier, gear: f64) -> Vec<f64> {
+        let mut found: Vec<f64> = if tier.indices.is_empty() {
+            vec![0.0]
+        } else {
+            tier.indices
+                .iter()
+                .map(|index| {
+                    let place = index.rem_euclid(gear);
+                    if gear - place < 1e-6 { 0.0 } else { place }
+                })
+                .collect()
+        };
+        found.sort_by(f64::total_cmp);
+        found
+    }
+
+    /// What the writer is given is what the reader gets back: every tier keeps its angle (the
+    /// girdle may change side, `.gcs` puts it on the pavilion), its name and its index
+    /// positions, and the header values survive. The geometry and the depths are Gem Cut
+    /// Studio's own normalised frame, so they are not compared here.
+    #[test]
+    fn the_gcs_file_reads_back_to_the_schedule_it_was_written_from() {
+        let design = testing::template();
+        let analysis = analyze(&design);
+        let solved = analysis
+            .require_stone(&design)
+            .expect("the template is a stone");
+        let schedule = export_schedule(&design, solved, &Catalogue::default(), ".gcs")
+            .expect("the template has a schedule");
+        let text = to_gcs_string(&schedule).expect("the schedule is writable");
+        let again = gcs_to_asc_schedule(&parse_gcs(&text).expect("the writer's output parses"));
+        assert_eq!(again.tiers.len(), schedule.tiers.len());
+        assert_eq!(again.gear_teeth, schedule.gear_teeth.abs());
+        assert!((again.refractive_index - schedule.refractive_index).abs() < 1e-9);
+        assert_eq!(again.headers.first(), schedule.headers.first());
+        let gear = f64::from(schedule.gear_teeth.abs());
+        for (k, (back, was)) in again.tiers.iter().zip(&schedule.tiers).enumerate() {
+            let girdle = was.angle_deg.abs() == 90.0;
+            assert!(
+                (back.angle_deg - was.angle_deg).abs() < 1e-6 || girdle,
+                "tier {k} ({}): angle {} came back as {}",
+                was.name,
+                was.angle_deg,
+                back.angle_deg
+            );
+            if was.angle_deg == 0.0 {
+                assert_eq!(
+                    back.angle_deg.is_sign_negative(),
+                    was.angle_deg.is_sign_negative(),
+                    "tier {k} ({}): a table is +0, a culet -0",
+                    was.name
+                );
+            }
+            assert_eq!(back.name, was.name, "tier {k}");
+            let (after, before) = (positions(back, gear), positions(was, gear));
+            assert_eq!(after.len(), before.len(), "tier {k} ({})", was.name);
+            assert!(
+                after.iter().zip(&before).all(|(a, b)| (a - b).abs() < 1e-4),
+                "tier {k} ({}): index positions {before:?} came back as {after:?}",
+                was.name
+            );
+        }
     }
 
     #[test]

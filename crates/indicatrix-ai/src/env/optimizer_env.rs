@@ -8,8 +8,8 @@
 //! The MDP is greedy (see `traits`): a candidate replaces the current design only when it is
 //! a valid, girdle-keeping, non-regressing stone that scores strictly lower. A step may try
 //! its action at several scales (a line search, [`OptimizerEnv::step_scaled`]) and keeps the
-//! first improving one. The score includes the yield loss when the weights weigh it and the
-//! preform makes it measurable; a face-up tone weight is refused at construction. Imported
+//! first improving one. The shared scorer includes yield when measurable and both face-up tone
+//! goals. Imported
 //! `.asc` designs pin every tier to a mast; with [`OptimizerEnvConfig::vary_anchored`] (the
 //! default) those tiers turn about their measured hinge, as in the editor's Optimize.
 
@@ -25,9 +25,12 @@ use super::{
     teacher::{OracleOutcome, TeacherLabel, TierProbe},
     traits::{GemstoneRlEnv, Step},
 };
+use indicatrix::optics::raytracer::LightingPreset;
+use indicatrix_cut_core::ShapeTarget;
 use indicatrix_cut_core::{
     Design, ObjectiveComponents, ObjectiveWeights, ResolvedMaterial, optimize::ObjectiveFidelity,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Environment configuration for cut optimization.
 #[derive(Debug, Clone)]
@@ -41,17 +44,27 @@ pub struct OptimizerEnvConfig {
     pub max_step_deg: f64,
     /// Reward function weights and penalties.
     pub reward_config: RewardConfig,
-    /// Objective scoring weights. A yield weight above zero adds the yield loss to the score
-    /// (when the design's preform makes the yield measurable); a face-up tone weight above
-    /// zero is refused by [`OptimizerEnv::new`] ([`EnvError::InvalidConfig`]).
+    /// Objective scoring weights, including measured yield and either tone goal when available.
     pub weights: ObjectiveWeights,
     /// Evaluation fidelity during rollouts (Fast vs Full).
     pub fidelity: ObjectiveFidelity,
+    /// Lighting preset used for training and endpoint scoring.
+    pub lighting: LightingPreset,
+    /// Optional shape target and additive penalty.
+    pub shape_target: Option<ShapeTarget>,
+    /// Probe displacement in degrees, also represented in observations.
+    pub probe_scale_deg: f64,
+    /// Optional allow-list of angle coordinates; coupled mast repairs remain enabled.
+    pub only_tiers: Option<BTreeSet<usize>>,
+    /// Inclusive authored-angle bounds by tier index.
+    pub angle_bounds: BTreeMap<usize, (f64, f64)>,
+    /// Optional measured source material override (for deterministic material augmentation).
+    pub source_material_override: Option<ResolvedMaterial>,
     /// Let `ScaleReference` tiers (every tier of an imported `.asc`) move by turning about
     /// their hinge. Off, only meet-constrained tiers move and an imported design has none.
     pub vary_anchored: bool,
-    /// An episode terminates when the score falls below this. Default `0.0`: an episode only
-    /// ends at the step limit (scores are never negative).
+    /// An episode terminates when the score falls below this. Default `0.0`: ordinary positive
+    /// scores continue to the step limit.
     pub terminal_score: f32,
     /// Fraction of the base design's thinnest girdle gap a candidate must keep (`0..=1`).
     pub min_girdle_ratio: f32,
@@ -65,6 +78,12 @@ impl Default for OptimizerEnvConfig {
             reward_config: RewardConfig::default(),
             weights: ObjectiveWeights::default(),
             fidelity: ObjectiveFidelity::Fast,
+            lighting: LightingPreset::IsoHemisphere,
+            shape_target: None,
+            probe_scale_deg: 0.25,
+            only_tiers: None,
+            angle_bounds: BTreeMap::new(),
+            source_material_override: None,
             vary_anchored: true,
             terminal_score: DEFAULT_TERMINAL_SCORE,
             min_girdle_ratio: DEFAULT_MIN_GIRDLE_RATIO,
@@ -84,12 +103,13 @@ impl OptimizerEnv {
     ///
     /// # Errors
     ///
-    /// [`EnvError`] when the configuration is out of range or weighs the face-up tone
-    /// ([`EnvError::InvalidConfig`]), the design does not solve into a closed, scorable solid,
-    /// no tier of it can move, or it returns no light face-up ([`EnvError::NoLightReturn`]: a
-    /// dead stone whose score no move changes).
+    /// [`EnvError`] when configuration is invalid, the design cannot be solved and scored, or
+    /// no tier can move. A no-light result is scored normally and is not rejected at construction.
     pub fn new(design: Design, config: OptimizerEnvConfig) -> Result<Self, EnvError> {
-        let source = design_source_material(&design);
+        let source = config
+            .source_material_override
+            .clone()
+            .unwrap_or_else(|| design_source_material(&design));
         let settings = CoreSettings {
             max_steps: config.max_steps,
             max_step_deg: config.max_step_deg,
@@ -98,6 +118,12 @@ impl OptimizerEnv {
             terminal_score: config.terminal_score,
             min_girdle_ratio: config.min_girdle_ratio,
             vary_anchored: config.vary_anchored,
+            task_kind: 0.0,
+            lighting: config.lighting,
+            shape_target: config.shape_target,
+            probe_scale_deg: config.probe_scale_deg,
+            only_tiers: config.only_tiers.clone(),
+            angle_bounds: config.angle_bounds.clone(),
         };
         let core = EnvCore::new(
             design,
@@ -134,6 +160,12 @@ impl OptimizerEnv {
     #[must_use]
     pub const fn base_design(&self) -> &Design {
         self.core.base_design()
+    }
+
+    pub(crate) fn preservation_baseline(
+        &self,
+    ) -> std::sync::Arc<indicatrix_cut_core::meet_preservation::MeetPreservationBaseline> {
+        self.core.preservation_baseline()
     }
 
     /// The best design accepted so far in this episode (the state never gets worse).
@@ -203,7 +235,8 @@ impl OptimizerEnv {
     ///
     /// One entry per tier of the design: `None` for a tier the environment does not move, and
     /// for a free tier whose `+h_deg` and `-h_deg` candidates are both refused (unsafe, open,
-    /// unscorable, or failing a gate); otherwise the one-sided difference quotient of the
+    /// unscorable, or failing a gate); otherwise the two-sided derivative (nonuniform when
+    /// clipped) of the
     /// score over `h_deg` degrees (the score slopes of [`Self::teacher_label`]). Cost: one or
     /// two candidate evaluations per free tier. The environment is left exactly as it was (no
     /// step counted, no state change). An `h_deg` that is not finite and positive gives all
@@ -213,9 +246,9 @@ impl OptimizerEnv {
         self.core.score_gradient_fd(h_deg)
     }
 
-    /// What the teacher measures at the current design: per free tier the slopes of the four
-    /// score components and of the score itself per degree (probe at `+h_deg`, else
-    /// `-h_deg`), and the gain of the oracle step (the steepest-descent action of the score
+    /// What the teacher measures at the current design: per free tier the slopes of seven
+    /// score components and of the score itself per degree (two-sided when both probes are
+    /// feasible, otherwise one-sided), and the gain of the oracle step (the steepest-descent action of the score
     /// slopes tried at `scales`, in order, without changing the environment).
     ///
     /// An empty `scales` means "no oracle step" (`oracle_gain` is `None`); this differs from
@@ -255,6 +288,33 @@ impl OptimizerEnv {
     #[must_use]
     pub fn oracle_outcome(&self, slopes: &[Option<f32>], scales: &[f64]) -> OracleOutcome {
         self.core.oracle_outcome(slopes, scales)
+    }
+
+    /// [`Self::oracle_outcome`] with the candidates of the line search evaluated concurrently
+    /// when `parallel` is set (one scoped thread per scale). The outcome is bit-identical to the
+    /// sequential one, `evaluations` included.
+    #[must_use]
+    pub fn oracle_outcome_with(
+        &self,
+        slopes: &[Option<f32>],
+        scales: &[f64],
+        parallel: bool,
+    ) -> OracleOutcome {
+        self.core.oracle_outcome_with(slopes, scales, parallel)
+    }
+
+    /// [`GemstoneRlEnv::step_scaled`] with the candidates of the line search evaluated
+    /// concurrently when `parallel` is set (one scoped thread per scale). The step is
+    /// bit-identical to the sequential one, and `StepInfo::evaluations` is the count of the
+    /// sequential search.
+    pub fn step_scaled_with(
+        &mut self,
+        action: &ContinuousTierAction,
+        scales: &[f64],
+        parallel: bool,
+    ) -> Step<GemstoneObservation> {
+        let outcome = self.core.step_scaled_with(action, scales, parallel);
+        self.finish(outcome)
     }
 
     /// The step the trait methods return: the core outcome plus the observation after it.
@@ -525,20 +585,14 @@ mod tests {
     }
 
     #[test]
-    fn a_face_up_tone_weight_is_refused() {
+    fn a_face_up_tone_weight_is_scored() {
         for preset in [ObjectivePreset::LightenDark, ObjectivePreset::IntensifyPale] {
             let config = OptimizerEnvConfig {
                 weights: preset.weights(),
                 ..OptimizerEnvConfig::default()
             };
-            let refused = OptimizerEnv::new(Design::concave_fixture(), config);
-            assert!(
-                matches!(
-                    refused,
-                    Err(EnvError::InvalidConfig(text)) if text.contains("tone")
-                ),
-                "{preset:?}"
-            );
+            let env = OptimizerEnv::new(Design::concave_fixture(), config).expect("tone scores");
+            assert!(env.base_score().is_finite(), "{preset:?}");
         }
     }
 

@@ -5,10 +5,11 @@
 //! reflect/transmit dispatch.
 //!
 //! Split from a single `scattering.rs` into this module tree by seam: [`hg`] holds the
-//! Henyey-Greenstein volumetric estimator and its own next-event-estimation
-//! contribution, [`frosted`] holds the frosted-facet BSDF and its exterior-side NEE
+//! Henyey-Greenstein volumetric estimator, [`hg_nee`] its scattering-point
+//! next-event-estimation contribution (the shadow probe and [`hg_nee::ShadowAlphas`]),
+//! [`frosted`] holds the frosted-facet BSDF and its exterior-side NEE
 //! contribution, and this file keeps the shared [`NeeContext`]/[`balance_heuristic`]/
-//! [`frosted_orthonormal_basis`] plumbing both submodules build on. Every path
+//! [`frosted_orthonormal_basis`] plumbing the submodules build on. Every path
 //! reachable as `scattering::X` before the split stays reachable at exactly that path
 //! via the re-exports below.
 
@@ -22,6 +23,9 @@ use glam::Vec3;
 // visibility, still capped at its declared visibility.
 pub mod frosted;
 pub mod hg;
+pub mod hg_nee;
+#[cfg(test)]
+mod hg_nee_tests;
 #[cfg(test)]
 mod tests;
 
@@ -31,8 +35,11 @@ pub(crate) use hg::{maybe_scatter_or_extinguish, sample_henyey_greenstein_direct
 // Used only by the GPU twin checks (`renderer::gpu::transport_check`) and tests.
 #[cfg(any(test, feature = "gpu"))]
 pub(crate) use hg::henyey_greenstein_phase;
+
+// hg_nee.rs: the GPU Tier 2 harness drives the real estimator with its per-case fixed
+// alphas (`ShadowAlphas::Fixed`, the standalone kernel's explicit `alphas` input).
 #[cfg(feature = "gpu")]
-pub(crate) use hg::nee_contribution_hg_scatter;
+pub(crate) use hg_nee::{ShadowAlphas, nee_contribution_hg_scatter};
 
 // frosted.rs
 #[cfg(feature = "gpu")]

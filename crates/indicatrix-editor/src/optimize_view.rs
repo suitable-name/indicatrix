@@ -17,7 +17,10 @@ mod plan;
 mod ranges;
 mod ranking;
 
-pub use candidate_apply::{apply_candidate, build_candidate_preview_design, candidate_edits};
+pub use candidate_apply::{
+    apply_candidate, build_candidate_preview_design, candidate_edits, edits_for_relation_session,
+    try_build_candidate_preview_design,
+};
 pub use plan::{
     CUSTOM_PRESET_INDEX, DEFAULT_BUDGET, DEFAULT_CANDIDATES, DEFAULT_GIRDLE_FRACTION,
     DEFAULT_STARTS, MAX_CANDIDATES, MAX_STARTS, RunForm, RunPlan, build_run_plan,
@@ -233,21 +236,35 @@ fn polish_note(outcome: &OptimizeOutcome) -> String {
     }
 }
 
-/// A clone of `design` with every one of `outcome`'s angle changes already applied
-/// -- the candidate a "Preview" toggle shows BEFORE the cutter commits to Apply.
+/// The outcome's complete certified geometry, including angle and mast changes,
+/// shown before the cutter commits to Apply.
 ///
 /// Never touches `History`/`Edit` at all: this is a display-only candidate, never
-/// something an Undo could need to unwind. A change naming a tier the design no
-/// longer has is skipped.
-#[must_use]
-pub fn build_optimize_preview_design(design: &Design, outcome: &OptimizeOutcome) -> Design {
-    let mut preview = design.clone();
-    for change in &outcome.changes {
-        if let Some(tier) = preview.tiers.get_mut(change.index) {
-            tier.angle_deg = change.to_deg;
-        }
-    }
-    preview
+/// something an Undo could need to unwind. Missing tiers, stale source identity
+/// and unpreserved meets are errors, just as for Apply.
+///
+/// # Errors
+///
+/// A message when the outcome is stale, carries no provenance, or fails the geometry gate.
+pub fn build_optimize_preview_design(
+    design: &Design,
+    outcome: &OptimizeOutcome,
+) -> Result<Design, String> {
+    try_build_optimize_preview_design(design, outcome)
+}
+
+/// Fallible legacy outcome materialization, with the same gate as Apply.
+///
+/// # Errors
+///
+/// As [`build_optimize_preview_design`].
+pub fn try_build_optimize_preview_design(
+    design: &Design,
+    outcome: &OptimizeOutcome,
+) -> Result<Design, String> {
+    indicatrix_cut_core::optimize::materialize_outcome(design, outcome)
+        .map(|(preview, _, _)| preview)
+        .map_err(|error| error.to_string())
 }
 
 /// Parses the Optimize weight form's three text fields (plus the yield slider's own

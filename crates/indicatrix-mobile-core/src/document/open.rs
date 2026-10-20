@@ -297,10 +297,11 @@ fn load_converted(file: &PickedFile, kind: InputFileKind) -> Result<Loaded, Stri
     let name = &file.display_name;
     let converted = convert_foreign_design(name, kind, &file.bytes)
         .map_err(|error| format!("Cannot open \"{name}\": {error}"))?;
-    let loaded = design_from_asc_text(&converted.asc_file_name, &converted.asc_text, None)
+    let mut loaded = design_from_asc_text(&converted.asc_file_name, &converted.asc_text, None)
         .map_err(|error| {
             format!("Cannot open \"{name}\": the converted schedule does not parse: {error}")
         })?;
+    loaded.design.apply_imported_frosting(&converted.frosting);
     let mut document = document_for(name, loaded.asc_filename);
     document.original_asc_text = loaded.original_asc_text;
     let extension = if kind == InputFileKind::Gem {

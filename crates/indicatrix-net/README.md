@@ -61,7 +61,7 @@ it.
 
 ## Protocol version and message set
 
-`messages::PROTOCOL_VERSION: u16 = 24`. Three protocols share one authenticated
+`messages::PROTOCOL_VERSION: u16 = 29`. Three protocols share one authenticated
 connection: **render** (offload sample tracing), **tilt curves** (offload one design's
 full tilt-performance sweep), and **library** (read a design catalogue). A peer may
 serve any subset, and — for a viewer — consume all three.
@@ -243,18 +243,54 @@ concave_tiers`, `library::AngleSettingWire::tool_line`, and `LibraryRequest::
 FetchDesignNative` with its `DesignNative`/`DesignNativeNotAvailable` replies. The
 worker's summary `version` hash now also covers `concave_tiers`, so the stamp of every
 design (planar ones included) changes once and each mirror re-syncs its catalogue one
-time. A scene with tools is traced on the CPU only; the GPU path is unchanged. And v20 —
-the current version — added fluorescence: `SceneState::fluorescence` (the material's
-emitters, `indicatrix::optics::fluorescence::Fluorescence`; always on the wire, an empty
-emitter list for a non-fluorescent material) and the `LightingPreset::{UvLamp365,
-UvLamp395}` variants (enum indices 7 and 8). A scene with fluorescence or a UV lamp is
-traced on the CPU only (`scene_routes_to_gpu` is false); the GPU path is unchanged.
-(v21 to v23 are in `PROTOCOL_VERSION`'s own doc comment.) v24 added batched preview
+time. (At v19 a scene with tools was traced on the CPU only; the GPU kernels now trace
+concave stones too, up to 128 tools, see `crates/indicatrix/docs/gpu.md`.) v20 extended the scene with fields that always travel on the wire and
+that only the CPU path uses. v21 appended
+`SceneState::head_shadow_deg` (`f32`, the head-shadow radius of the lit presets), v22 appended
+more `LightingPreset` variants (enum indices 9 to 14) and the `LightingModel::{Aset,
+DaylightSun}` ids, and v23 added `GemMaterial::absorption_unit` (`PerMm` or `ModelUnit`)
+with the rule that inclusion scattering is no longer scaled by the absorption path scale
+(`PROTOCOL_VERSION`'s own doc comment has the details). v24 added batched preview
 requests: `ClientMessage::BatchRenderRequest` (index 8, `messages::batch`) asks for up to
 32 finished pictures at once on one persistent connection, and the worker answers each
 with `StreamEvent::BatchItemDone` (a raw PNG payload frame, byte-identical to the
 viewer's own preview path), `BatchItemFailed`, per-item `BatchItemProgress`, and a final
-`BatchDone`; two batches may be in flight per connection.
+`BatchDone`; two batches may be in flight per connection. v25 added two things. First, the
+float environment-map asset (`messages::envmap_asset`): an asset named by
+`SceneEnvironment::Hdr` may now be an `IXENVMAP` v1 file (magic, version, width, height,
+then little-endian `f32` texels; the byte layout of the Android app's stored map) as well
+as a Radiance `.hdr`, told apart by its magic, so a client can send the exact effective
+map it renders with. The scene's `content_hash` is the SHA-256 of those bytes, the worker
+decodes it bit for bit, and `RenderCapability.hdr` keeps meaning "this endpoint resolves
+HDR assets"; a client that wants the float form requires v25 (the handshake refuses
+anything older). Second, durable server jobs (`ClientMessage::Job`, index 10,
+`messages::job`, `render` feature): `Submit` / `PutAsset` / `Status` / `Fetch` / `Cancel` /
+`Delete` / `List`, answered by `JobResponse` on the same connection. The job id is derived
+by the server from the client certificate fingerprint and a client token, jobs are stored
+durably per owner by the worker (`indicatrix-worker`'s `jobs` module, directory
+`INDICATRIX_JOB_DIR`, retention `INDICATRIX_JOB_RETENTION_HOURS`, default 168), and a
+finished picture can be fetched from any later connection until it expires. New error
+codes: `JOB_UNKNOWN`, `JOB_LIMIT`, `JOB_STATE`.
+v26 appended `SceneState::frosted_planes` (`Vec<u32>`, the ascending indices of the planes a design
+frosts, empty for a design without frosting): the worker marks exactly those planes frosted, on top of the
+girdle band when `girdle_frosted` is set. A job file embeds the scene with a serde default, so a job saved
+before v26 reads as unfrosted. The same version carries the frosting of library designs: `library::DesignRecord::frosting`
+and `library::LibraryResponse::DesignSource::frosting` (both `Vec<FrostedTierWire>`, appended last: a tier's position in the
+design's schedule and the slots of its frosted facets, empty slots for a whole tier), so a mirror and a remote editor open
+keep what a `.gcs` import or a saved design file states. `.asc` cannot carry it, so it travels beside the text.
+v27 (owner decisions 2026-10-19) moved together with the browser worker protocol's 22 for the
+turn-aware Retarget bounds (`indicatrix_cut_core::meet_preservation::PreservationPolicy::bounds_follow_turn`,
+the allowance measured from the requested facet turn): no message of this protocol changed shape, the bump
+pairs peers built on the same side of that rule.
+v28 appends `SceneState::engine` (`EngineSpec`) as the final field. Path-Traced
+remains the default; Ray-Traced carries its fixed AA tap count and Fire setting.
+Sample ranges mean AA tap ranges for Ray-Traced, and display-only frames bypass
+denoising. Update viewers, coordinators and workers together: older postcard peers
+cannot safely read the extended scene layout.
+v29 (backdrop-consistency campaign, 2026-10-20) changes the meaning of `SceneState::backdrop`, not any
+shape: it is the radiance at exposure 1 of the lit tray below the girdle plane, seen by every escape
+(`0.0` = the preset's own ground), where it used to be a card only the camera ray saw. The bump pairs
+peers on the same side of the tray rule; it moves with the browser worker protocol's 24.
 postcard lays structs out as bare fields in order, so every appended field shifts the byte
 layout of every `SceneState`: the bump turns a silent misread into a clear handshake
 refusal (the build-hash check would refuse a peer on a different build anyway, but
@@ -357,10 +393,10 @@ cancelled request the next time `begin_request` is called for a different id.
 refuses to pair a viewer and a worker whose `PROTOCOL_VERSION` or `build_hash` disagree.
 `build_hash` (`indicatrix::BUILD_ID`) is a hash of `indicatrix`'s crate *version*, a
 release-process promise, not of its source. The content hash is the separate
-`source_hash` (`indicatrix::SOURCE_HASH`): when both sides know theirs and they differ,
-pairing is refused too; when either side's is unknown, that is only logged at `warn!` and
-the peers pair on `build_hash` alone. There is no "close enough" tier for anything that
-can be compared: a known disagreement means refuse, including two peers that both
+`source_hash` (`indicatrix::SOURCE_HASH`): it travels in `HELLO`/`WELCOME`, but
+`verify_compatible` does not compare it (a test pins that a differing `source_hash` with a
+matching `build_hash` is compatible), so it is diagnostic only. There is no "close enough" tier for what is compared:
+a different protocol version or `build_hash` means refuse, including two peers that both
 report an `UNKNOWN_BUILD_HASH` (two unknown builds are never treated as compatible even
 with each other).
 
@@ -429,14 +465,18 @@ pub struct SceneState {
     pub material: GemMaterial,
     pub planes: Vec<GpuFacetPlane>,
     pub girdle_frosted: bool,             // per-facet finishes are re-derived from `planes`
-    pub backdrop: f32,                    // backdrop-card radiance, 0.0 = none
+    pub backdrop: f32,                    // tray radiance at exposure 1, 0.0 = the preset's own ground
     pub environment: SceneEnvironment,    // Studio (the fields above) | Hdr { content_hash, width, height }
     pub surface_glare: f32,               // 0.0..=1.0 scale of the first-surface reflection, 1.0 = unscaled; analytic presets only
+    pub tools: Vec<ToolPrimitive>,        // concave-facet tool volumes in cutting order; empty for a convex stone
+    pub head_shadow_deg: f32,             // head-shadow radius of the lit presets, 0.0..=30.0, 16.0 default
+    pub frosted_planes: Vec<u32>,         // ascending indices of the planes a design frosts; empty = none
+    pub engine: EngineSpec,              // final wire field; default Path-Traced, or Ray-Traced options
 }
 ```
 
-The last four fields are `#[serde(default)]` so an older on-disk `scene.json` still
-loads; on the wire (postcard) every field is always present.
+Every field from `girdle_frosted` on is `#[serde(default)]` so an older on-disk
+`scene.json` still loads; on the wire (postcard) every field is always present.
 
 A viewer stores a material as a name plus a list of custom materials loaded from
 its own local SQLite database, and stores a diagram as an id looked up against
@@ -535,9 +575,9 @@ additionally be byte-shuffled and zstd/LZ4-compressed (`radiance::payload`, see
 - **A payload's `request_id` must match the accumulator's current epoch** or it is
   dropped, unconditionally — this is the only defense against a stale, in-flight
   reply from a just-cancelled request being merged into the next one.
-- **A known `build_hash`/`source_hash`/protocol mismatch is refused.** An unknown
-  `source_hash` is logged and pairs on `build_hash`; a peer with no build at all may be
-  paired library-only by the server, which then serves it no render capacity.
+- **A protocol or `build_hash` mismatch is refused.** The `source_hash` is carried but not
+  compared; a peer with no build at all may be paired library-only by the server, which
+  then serves it no render capacity.
 - **Reads are bounded and incremental.** A control message (anything but a radiance,
   asset or contribution payload) is read with `framing::MAX_CONTROL_FRAME_LEN` (1 MiB),
   and a frame's buffer grows as bytes arrive, so a length prefix alone never commits

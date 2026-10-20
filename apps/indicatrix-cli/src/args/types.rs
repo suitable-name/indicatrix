@@ -6,7 +6,7 @@ use indicatrix_cut_core::ObjectivePreset;
 use indicatrix_editor::retarget::CrownShift;
 use indicatrix_formats::native::design::{DESIGN_EXTENSION, LEGACY_DESIGN_EXTENSION};
 use indicatrix_render_jobs::{ComputeChoice, LocalEngines, TransferChoice};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The names `--lighting` takes, and the preset each stands for.
 #[cfg(not(feature = "physical-color"))]
@@ -101,6 +101,8 @@ pub enum Topic {
     Sweep,
     /// `export`.
     Export,
+    /// `census`.
+    Census,
     /// `render`.
     Render,
     /// `tilt-video`.
@@ -120,6 +122,7 @@ impl Topic {
             "retarget" => Self::Retarget,
             "sweep" => Self::Sweep,
             "export" => Self::Export,
+            "census" => Self::Census,
             "render" => Self::Render,
             "tilt-video" => Self::TiltVideo,
             _ => Self::Root,
@@ -183,6 +186,17 @@ impl ExportFormat {
             "gcs" => Some(Self::Gcs),
             "html" | "htm" => Some(Self::Html),
             _ => None,
+        }
+    }
+
+    /// The extension of the file this format is written as (without the dot).
+    #[must_use]
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Isdd => DESIGN_EXTENSION,
+            Self::Gcs => "gcs",
+            Self::Html => "html",
         }
     }
 }
@@ -298,6 +312,10 @@ pub struct RetargetArgs {
     /// Penalise options that drift from the design's table size and crown-to-pavilion ratio
     /// (`--mode optimize`; `--no-keep-look` turns it off).
     pub keep_look: bool,
+    /// Let the girdle band grow up to 5 % and then 10 % thicker, never thinner, when the new
+    /// angles would pinch it at its corners (`--girdle-allowance`; the dialog's "Allow a Thicker
+    /// Girdle", which is on there by default and off here unless asked for).
+    pub girdle_allowance: bool,
     /// The light everything is scored under.
     pub lighting: LightingPreset,
     /// Print JSON instead of text.
@@ -352,6 +370,58 @@ pub struct ExportArgs {
     pub date: Option<String>,
 }
 
+/// The built-in designs a `census` measures.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CensusBuiltins {
+    /// The nine built-in templates.
+    pub templates: bool,
+    /// The built-in fixtures (the concave fixture and the 1.72 brilliant).
+    pub fixtures: bool,
+}
+
+/// How a `census` writes its report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CensusOutput {
+    /// Add the timing columns (they differ from run to run).
+    pub timings: bool,
+    /// JSON instead of CSV.
+    pub json: bool,
+}
+
+/// `census`: the read-only measurement of the meet-preservation gate over many designs
+/// (follow-ups plan 2026-10-19, section 4.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CensusArgs {
+    /// Design files to measure, in the order given.
+    pub files: Vec<PathBuf>,
+    /// The built-in templates and fixtures to include.
+    pub builtins: CensusBuiltins,
+    /// The design library to read (opened read-only).
+    pub db: Option<PathBuf>,
+    /// Every design of the library.
+    pub all: bool,
+    /// These library entry ids only.
+    pub ids: Vec<i64>,
+    /// At most this many library designs (after `offset`).
+    pub limit: Option<usize>,
+    /// Library designs skipped first.
+    pub offset: usize,
+    /// The materials every design is retargeted to.
+    pub targets: Vec<MaterialArg>,
+    /// The algorithms run for each design and target, shift before optimize.
+    pub modes: Vec<Mode>,
+    /// How far the crown follows the pavilion's shift.
+    pub crown: CrownShift,
+    /// Evaluations of the search of the optimize mode.
+    pub budget: usize,
+    /// The report format and its optional timing columns.
+    pub output: CensusOutput,
+    /// Write the report here instead of printing it.
+    pub out: Option<PathBuf>,
+    /// Write the retargeted `.isdd` of every Valid row into this folder.
+    pub out_dir: Option<PathBuf>,
+}
+
 /// Which of the two render commands a [`RenderJobArgs`] belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobCommandKind {
@@ -375,6 +445,8 @@ impl JobCommandKind {
 /// `render` and `tilt-video`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderJobArgs {
+    /// Override the frozen renderer (`--engine path|ray`).
+    pub engine: Option<indicatrix::renderer::engine::RenderEngine>,
     /// Which command this is.
     pub kind: JobCommandKind,
     /// The job file.
@@ -400,9 +472,42 @@ pub struct RenderJobArgs {
     pub quiet: bool,
 }
 
+/// How the reports of several designs are put together on standard output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportStyle {
+    /// Text: each report under a `==> FILE <==` line, a blank line between them.
+    Text,
+    /// JSON: the reports one after the other, each a complete document.
+    Json,
+    /// CSV: one header line, then the rows of every design.
+    Csv,
+}
+
+impl ReportStyle {
+    /// [`ReportStyle::Json`] when `json`, else [`ReportStyle::Text`].
+    #[must_use]
+    pub const fn json_or_text(json: bool) -> Self {
+        if json { Self::Json } else { Self::Text }
+    }
+}
+
+/// A command line that names several design files: the command for each one, in the order
+/// given. A line with one design is the plain command, never a batch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Batch {
+    /// The single-design command of every file. None of them is itself a batch.
+    pub items: Vec<Command>,
+    /// The folder `--out-dir` names (it must exist when the batch runs).
+    pub out_dir: Option<PathBuf>,
+    /// How the reports are put together.
+    pub style: ReportStyle,
+}
+
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Several design files, one command each.
+    Batch(Batch),
     /// Print a help page.
     Help(Topic),
     /// Print the version.
@@ -423,8 +528,34 @@ pub enum Command {
     Sweep(SweepArgs),
     /// `export`.
     Export(ExportArgs),
+    /// `census`.
+    Census(CensusArgs),
     /// `render`.
     Render(RenderJobArgs),
     /// `tilt-video`.
     TiltVideo(RenderJobArgs),
+}
+
+impl Command {
+    /// The design file a single-design command works on; `None` for help, the version, the
+    /// render commands (they take a job file) and a batch.
+    #[must_use]
+    pub fn design(&self) -> Option<&Path> {
+        match self {
+            Self::Info(args) => Some(&args.design),
+            Self::Solve(args) => Some(&args.design),
+            Self::Metrics(args) => Some(&args.design),
+            Self::Validate(args) => Some(&args.design),
+            Self::Optimize(args) => Some(&args.design),
+            Self::Retarget(args) => Some(&args.design),
+            Self::Sweep(args) => Some(&args.design),
+            Self::Export(args) => Some(&args.design),
+            Self::Batch(_)
+            | Self::Census(_)
+            | Self::Help(_)
+            | Self::Version
+            | Self::Render(_)
+            | Self::TiltVideo(_) => None,
+        }
+    }
 }

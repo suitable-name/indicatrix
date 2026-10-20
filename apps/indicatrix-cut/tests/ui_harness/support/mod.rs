@@ -1,7 +1,7 @@
-//! Indicatrix glue around the published `slint-harness` crate: launch and shutdown of the real
+//! Indicatrix glue around the published `uiprobe` crate: launch and shutdown of the real
 //! `MainWindow`, the throw-away profile's settings seeding, fixtures, the secondary-window
 //! operations and the click-everything hosts. The engine itself (element queries, the
-//! invariant sweep, the smoke pass, coverage, key chords, the report) lives in `slint-harness`
+//! invariant sweep, the smoke pass, coverage, key chords, the report) lives in `uiprobe`
 //! and is re-exported here under the paths the scenarios already use.
 //!
 //! Scenario lanes mostly need [`Ctx`] (what a scenario receives), [`query`] (find a control
@@ -22,18 +22,18 @@ pub mod smoke;
 
 /// The coverage recorder entry points and the gate configuration of the crate.
 pub mod coverage {
-    pub use slint_harness::coverage::*;
+    pub use uiprobe::coverage::*;
 }
 /// Element queries and key chords of the crate, under the old path.
-pub use slint_harness::keys;
-pub use slint_harness::{report, view as query};
+pub use uiprobe::keys;
+pub use uiprobe::{report, view as query};
 
 pub use app::{HarnessApp, pump, wait_until};
 pub use ctx::Ctx;
 pub use fixtures::{FixtureDesign, sample_designs, seed_library};
 pub use indicatrix_cut::harness_support::SecondaryWindow;
 pub use profile::{Profile, ProfileExt, SettingsSeed};
-pub use slint_harness::{
+pub use uiprobe::{
     ElementHandle,
     checks::{SweepOptions, sweep},
     report::{Finding, Report},

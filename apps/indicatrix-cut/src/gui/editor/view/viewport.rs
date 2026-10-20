@@ -129,6 +129,7 @@ fn refresh_viewport(
         planes: planes_for_claim,
         tools: tools_for_claim,
         placements: placements_for_claim,
+        frosted: frosted_for_claim,
     } = cut_slider::cut_geometry_no_solve(&state.design, solved, cut_steps);
     let mut ctx = render_ctx
         .lock()
@@ -142,7 +143,7 @@ fn refresh_viewport(
         reason = "f32 is the GPU/storage precision of the gear reference angle (degrees)"
     )]
     let gear_reference_angle = state.design.meta.gear_reference_angle as f32;
-    ctx.claim_active_geometry(
+    let claimed = ctx.claim_active_geometry(
         std::sync::Arc::new(planes_for_claim),
         std::sync::Arc::new(tools_for_claim),
         placements_for_claim,
@@ -151,6 +152,10 @@ fn refresh_viewport(
             generation: state.generation.load(std::sync::atomic::Ordering::Relaxed),
         },
     );
+    if claimed {
+        // The frosted planes of the stone just claimed (empty for every unfrosted design).
+        ctx.claim_active_frosted(frosted_for_claim);
+    }
     ctx.dirty = true;
     let design_gear = ctx.design_gear;
     // Live Render shows a "Cut: ..." pill only while the picture is the editor's design.
@@ -159,6 +164,7 @@ fn refresh_viewport(
         planes: ctx.active_planes.as_ref().clone(),
         tools: ctx.active_tools.as_ref().clone(),
         placements: ctx.active_placements.clone(),
+        frosted: ctx.active_frosted.as_ref().clone(),
     };
     let view_mode = view_mode_index(ui.global::<SolidPreviewModel>().get_view_mode());
     // Letterboxes the request to the traced image's own

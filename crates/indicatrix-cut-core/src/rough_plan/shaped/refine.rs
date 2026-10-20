@@ -408,6 +408,10 @@ pub fn refine_shaped(
 /// The re-pick may give a piece a design the layout did not use. When that takes the
 /// layout past [`PlanSettings::max_designs`], the refinement is redone over the layout's own
 /// designs (taken from `all`, the sanitised catalogue), which can never add one.
+///
+/// The stone cap needs no such care: the refinement keeps the tree and the compaction of the
+/// refined layout can only merge pieces, so the stone count never grows (a debug assertion
+/// checks it).
 #[must_use]
 pub fn refine_shaped_capped(
     ctx: &ShapedCtx,
@@ -417,11 +421,16 @@ pub fn refine_shaped_capped(
     settings: &PlanSettings,
 ) -> RoughLayout {
     let refined = refine_shaped(ctx, layout, pool, settings);
-    if refined.design_count() <= settings.max_designs_usize() {
+    let within = if refined.design_count() <= settings.max_designs_usize() {
         refined
     } else {
         refine_shaped(ctx, layout, &own_pool(all, layout), settings)
-    }
+    };
+    debug_assert!(
+        within.stone_count() <= layout.stone_count(),
+        "the refinement keeps the tree and only merges pieces, so it never adds a stone"
+    );
+    within
 }
 
 /// The tree of `layout`, each piece on its own design and assignment (read back

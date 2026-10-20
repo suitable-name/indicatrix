@@ -2,6 +2,7 @@
 //! view-mode, remote-rendering and window-close callbacks.
 
 use super::state::SolidView;
+use crate::gui::view_modes::{EditViewMode, LiveViewMode};
 use crate::{
     EditorModel, LibraryModel, MainWindow, SolidPreviewModel, ViewportModel,
     bridge::{library::source::LibrarySource, render_thread::RenderContext},
@@ -203,7 +204,8 @@ pub(super) fn setup_solid_view_mode_callbacks(
     ui.global::<SolidPreviewModel>()
         .on_view_mode_changed(move |mode: i32| {
             settings_store_solid_view_mode.update(|s| {
-                s.settings.solid_view_mode = u8::try_from(mode).unwrap_or_default();
+                s.settings.solid_view_mode =
+                    u8::try_from(EditViewMode::from_raw(mode).raw()).unwrap_or_default();
             });
             if let Some(ui) = ui_weak_solid_view_mode.upgrade() {
                 render::render_visibility::recompute_tab_visible(&ui, &render_ctx_solid_view_mode);
@@ -219,7 +221,7 @@ pub(super) fn setup_solid_view_mode_callbacks(
                 // tracing but never force a visible restart: the newly revealed
                 // surface would show whatever was last pushed, reading as "this is
                 // current" even when it isn't.
-                if mode == 1 || mode == 2 {
+                if EditViewMode::from_raw(mode).is_traced() {
                     ctx.dirty = true;
                 }
                 render::camera_lighting::resubmit_at_current_pose(
@@ -286,7 +288,8 @@ pub(super) fn setup_live_view_mode_callbacks(
     ui.global::<ViewportModel>()
         .on_live_view_mode_changed(move |mode: i32| {
             settings_store_live_view_mode.update(|s| {
-                s.settings.live_view_mode = u8::try_from(mode).unwrap_or_default();
+                s.settings.live_view_mode =
+                    u8::try_from(LiveViewMode::from_raw(mode).raw()).unwrap_or_default();
             });
             let Some(ui) = ui_weak_live_view_mode.upgrade() else {
                 return;
@@ -295,9 +298,9 @@ pub(super) fn setup_live_view_mode_callbacks(
             let mut ctx = render_ctx_live_view_mode
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if mode == 1 {
+            if LiveViewMode::from_raw(mode).is_traced() {
                 ctx.dirty = true;
-            } else if mode == 0 {
+            } else if LiveViewMode::from_raw(mode) == LiveViewMode::Solid {
                 render::camera_lighting::resubmit_live_solid(
                     &ui,
                     &ctx,

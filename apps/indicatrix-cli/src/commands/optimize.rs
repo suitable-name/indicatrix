@@ -14,6 +14,10 @@
 //! tilt averages over four axes and 181 angles). A design with no material is scored with its
 //! own refractive index as a flat material, and the report says so.
 //!
+//! A design with concave tiers is searched and reported as the stone with its tools (the
+//! engine places them on every candidate, `Design::tools_for_scoring`), and its yield loss
+//! reads the carved volume; a design without them is scored on its planes alone, as before.
+//!
 //! `--out FILE` saves the BEST candidate as a `.isdd` file, applied through the same
 //! editor session path as the tab's Apply (tiers that follow a relation follow). When the search
 //! finds nothing better, nothing is written and the exit code is still 0: the report says so.
@@ -643,6 +647,32 @@ mod tests {
             );
             assert!(value["written"].is_null());
         }
+    }
+
+    /// The start row of a short search over `design`, as JSON.
+    fn start_of(design: Design) -> Value {
+        let loaded = Loaded::in_memory(design, "fixture.isdd");
+        let mut wanted = args(10);
+        wanted.json = true;
+        // Every tier of the fixture is a pinned (scale reference) one, as in the brilliant the
+        // other tests use, so nothing is free without turning the anchored tiers about their
+        // girdle edges. The tab does that by default (`default_vary_anchored`); say it here.
+        wanted.vary_anchored = true;
+        let outcome = execute(&loaded, &Catalogue::default(), &wanted).expect("searches");
+        let value: Value = serde_json::from_str(&outcome.stdout).expect("valid JSON");
+        value["start"].clone()
+    }
+
+    /// The search scores the stone with its concave tools: the start row of the concave
+    /// fixture is not the start row of the same design without its concave tiers, and its
+    /// yield loss (the carved volume against the same rough) is the larger.
+    #[test]
+    fn a_concave_design_is_searched_with_its_tools() {
+        let carved = start_of(testing::concave());
+        let shell = start_of(testing::concave_shell());
+        assert_ne!(carved, shell, "the tools are part of the start row");
+        let loss = |start: &Value| start["yield_loss_pct"].as_f64().expect("a yield loss");
+        assert!(loss(&carved) > loss(&shell), "{carved} against {shell}");
     }
 
     #[test]

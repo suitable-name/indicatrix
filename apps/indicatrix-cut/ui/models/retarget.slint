@@ -87,7 +87,7 @@ export global RetargetModel {
     // `validity_state`: 0 = no verdict (Optimize before an option is picked, an error,
     // nothing to retarget), 1 = still checking, 2 = valid, 3 = not valid (Apply
     // is disabled, Compare still works), 4 = could not be checked (the design itself does
-    // not solve; Apply stays available). `validity_text` is the one-line verdict
+    // not solve, so there is no candidate stone; Apply is disabled). `validity_text` is the one-line verdict
     // ("Valid: girdle 2.1 % (was 2.3 %), table 56 % (was 56 %)", "Not valid: ..."),
     // `validity_details` the further reasons and warnings, `strategy_text` one sentence on
     // how the facet heights were chosen.

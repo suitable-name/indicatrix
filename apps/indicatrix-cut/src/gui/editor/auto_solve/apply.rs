@@ -53,6 +53,9 @@ pub(super) struct BackgroundSolveResult {
     pub(super) warnings: Vec<(usize, String)>,
     pub(super) yield_texts: (String, String, String, String),
     pub(super) planes: Vec<GpuFacetPlane>,
+    /// The frosted planes among `planes`; empty for every design without frosting. Built on
+    /// the worker thread from the same solve as `planes`.
+    pub(super) frosted: Vec<u32>,
     /// The concave tools cut out of `planes`, and each tool's `(concave tier,
     /// placement)`; both empty for a planar design. Built on the worker thread from
     /// the same solve as `planes`, so the viewport claims them together.
@@ -126,6 +129,7 @@ impl BackgroundSolveResult {
             warnings: Vec::new(),
             yield_texts: (String::new(), String::new(), String::new(), String::new()),
             planes: Vec::new(),
+            frosted: Vec::new(),
             tools: Vec::new(),
             placements: Vec::new(),
             solved: None,
@@ -329,6 +333,7 @@ pub(super) fn apply_background_solve_result(
             planes: result.planes,
             tools: result.tools,
             placements: result.placements,
+            frosted: result.frosted,
         },
         result.gear,
         result.solved,
@@ -386,6 +391,7 @@ fn push_viewport_after_background_solve(
     ) {
         return false;
     }
+    ctx.claim_active_frosted(stone.frosted.clone());
     ctx.dirty = true;
     let design_gear = ctx.design_gear;
     // Live Render shows a "Cut: ..." pill only while the picture is the editor's design.
@@ -401,6 +407,7 @@ fn push_viewport_after_background_solve(
         planes: planes.as_ref().clone(),
         tools: stone.tools,
         placements: stone.placements,
+        frosted: stone.frosted,
     };
     let view_mode = view_mode_index(ui.global::<SolidPreviewModel>().get_view_mode());
     // This is the "immediately after the next edit or Solve" call site that

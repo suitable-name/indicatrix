@@ -169,6 +169,8 @@ pub struct FormFields {
     pub weighed_ct: String,
     /// The design cap as the spin box holds it.
     pub max_designs: i32,
+    /// The stone cap as the spin box holds it (0 = no limit).
+    pub max_stones: i32,
     /// The picked row of the material list (negative for none).
     pub material_index: i32,
 }
@@ -184,6 +186,7 @@ impl FormFields {
             min_width_mm: model.get_min_width_mm().to_string(),
             weighed_ct: model.get_weighed_ct().to_string(),
             max_designs: model.get_max_designs(),
+            max_stones: model.get_max_stones(),
             material_index: model.get_material_index(),
         }
     }
@@ -192,7 +195,7 @@ impl FormFields {
 /// A validated plan form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanForm {
-    /// Design cap, losses, minimum width and specific gravity.
+    /// Design cap, stone cap, losses, minimum width and specific gravity.
     pub settings: PlanSettings,
     /// The chosen material's name.
     pub material_name: String,
@@ -283,9 +286,11 @@ impl PlanForm {
             .and_then(|i| choices.get(i))
             .ok_or_else(|| PICK_MATERIAL_MESSAGE.to_string())?;
         let max_designs = u8::try_from(fields.max_designs.clamp(1, 99)).unwrap_or(1);
+        let max_stones = u8::try_from(fields.max_stones.clamp(0, 99)).unwrap_or(0);
         Ok(Self {
             settings: PlanSettings {
                 max_designs,
+                max_stones,
                 kerf_mm,
                 allowance_mm,
                 skin_mm,
@@ -455,6 +460,7 @@ mod tests {
             min_width_mm: "1.00".to_string(),
             weighed_ct: String::new(),
             max_designs: 2,
+            max_stones: 0,
             material_index: 1,
         }
     }
@@ -473,6 +479,7 @@ mod tests {
             form.settings,
             PlanSettings {
                 max_designs: 2,
+                max_stones: 0,
                 kerf_mm: 0.3,
                 allowance_mm: 0.2,
                 skin_mm: 0.0,
@@ -497,6 +504,25 @@ mod tests {
             .expect("a valid form");
             assert_eq!(form.settings.max_designs, used, "typed {typed}");
             assert_eq!(form.settings.validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn the_stone_cap_is_clamped_to_the_range_the_planner_takes() {
+        for (typed, used) in [(-5, 0), (0, 0), (1, 1), (7, 7), (99, 99), (500, 99)] {
+            let form = PlanForm::parse(
+                &FormFields {
+                    max_stones: typed,
+                    ..fields()
+                },
+                &materials(),
+            )
+            .expect("a valid form");
+            assert_eq!(form.settings.max_stones, used, "typed {typed}");
+            assert_eq!(form.settings.validate(), Ok(()));
+            // 0 is "no limit"; every other value is a cap of that many stones.
+            let expected = (used > 0).then_some(usize::from(used));
+            assert_eq!(form.settings.stone_cap(), expected, "typed {typed}");
         }
     }
 

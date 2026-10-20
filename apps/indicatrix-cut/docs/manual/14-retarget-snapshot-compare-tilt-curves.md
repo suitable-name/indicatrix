@@ -78,11 +78,20 @@ rendered at exactly the same pose and size. Dragging in either image (or
 anywhere in the split view) turns both stones together, the mouse wheel
 zooms both, and a double-click resets them to the front view. **Solid**
 (the default) is the Edit tab's flat grey view and updates instantly;
-**Path Traced** runs the path tracer at a modest fixed quality in the design's
+**Path-Traced** runs the path tracer at a modest fixed quality in the design's
 own material (for Retarget, the "after" side uses the target material) and
 starts once you stop turning the stone, showing the solid view meanwhile —
 the status line reads "Tracing… 1 of 2" while it works. A side that does
 not solve shows a hatched placeholder and the status line says why.
+
+**Ray-Traced** uses eight deterministic AA taps with Fire for the same two designs
+and materials. These are fixed for Compare: the tap count and Fire switch you chose
+in Settings for the Ray-Traced view do not apply here, so both sides are always
+drawn with identical options and the status line reads "Ray-Traced (8 taps)". It
+needs no denoiser. Its color and frost are approximate; it omits
+polarization, birefringent doubling, haze, zoning and edge rounding.
+The optical numbers and tilt comparison still use
+their own analytic tracer, regardless of the image renderer you choose.
 
 Concave tiers (Chapter 16) are part of the stone: Compare draws and traces
 the grooves and dimples of both sides, and the optical figures and the tilt
@@ -220,7 +229,7 @@ counted as failed under **Remote Only**.
 
 ## Exporting a Tilt Performance Video
 
-The Tilt Performance dialog's **Export tilt video** section renders one
+The Tilt Performance dialog's **Export Tilt Video** section renders one
 high-quality frame per swept angle (posed exactly like the dialog's own
 hover preview), optionally overlays the swept brilliance/windowing/
 extinction/angle values into each frame, then muxes the numbered PNG
@@ -310,3 +319,18 @@ thing that can ever refresh a trace.
 Chapter 6 covers Retarget in full; Chapter 8 covers Deep Solve's own,
 catalogue-proportion-based comparison; Chapter 11 covers Save and
 what putting a design in your catalogue actually means.
+
+
+## Inspect optical paths at a tilt angle
+
+Tilt Performance uses the finished stone, even while the Live Render Cut slider shows an earlier cutting stage. Its active-session sweep and hover preview capture the resolved material and current preset/light pose or HDR map, including head shadow. Standardized catalogue and optimizer scoring keep their separate standard-lighting policy; stored library scores are not automatically replaced by current-view diagnostics.
+
+The tilt curves also follow the stone's frosting: frosted facets (the Frosted Girdle switch and any tier you frosted) scatter light, so a frosted design's curves differ from its polished ones, and a design without frosting is swept exactly as before. Changing the frosting makes stored curves stale, and the next Tilt Curves batch recomputes them. The live Checks numbers and the optimizer's scores still treat every facet as polished.
+
+Enable **Optical Diagnostics at Hovered Pose** to classify the preview at the same angle. **Inspect This Angle** opens the larger 360-pixel view; close it to return to the chart layout. Moving across the chart never changes the main camera. Each image and map are produced together by one cancellable latest-request worker. Status distinguishes an updating, ready draft or unavailable preview; outdated thumbnails are hidden.
+
+The signed tilt convention is unchanged: positive/negative tilt selects opposite azimuths, and elevation is 90 degrees minus the absolute tilt. All four axes and fractional video angles use the same camera helper. The preview is labelled as a draft analytical model; its Fire overlay does not add Fire tracing to every curve point.
+
+Tilt-video export has its own **Include Optical Diagnostics and Model Caption (4 Samples/Pixel)** checkbox. Direct and queued videos freeze this option and presentation with the finished scene. Every frame traces its exact pose at output resolution, using the same fixed Fire transfer range. A bottom caption identifies optical diagnostics model 1 and Fire as dispersion potential. One `optical.txt` file in the frame folder records the model, material, lighting, selection and the sweep (axis, start, end, step); the pose of each frame follows from the sweep. Existing performance-value rows remain at the top. Normal videos keep their previous appearance with the checkbox clear. Within a frame, the beauty render fills the first half of the progress and the diagnostic pass the second half. Cancellation is checked during the diagnostic tiles as well as the frame pipeline.
+
+A paused or interrupted diagnostic video resumes only when its `optical.txt` is unchanged. If the diagnostic settings (or the sweep) changed since the frames on disk were rendered, or the frames were rendered without diagnostics, the resume stops with a message; restart the video to render every frame again. A video that is restarted without diagnostics removes the old `optical.txt`.

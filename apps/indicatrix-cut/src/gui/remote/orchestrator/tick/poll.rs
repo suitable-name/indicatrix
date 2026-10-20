@@ -256,11 +256,12 @@ fn observe_drag_edge(
 #[must_use]
 pub(super) fn live_remote_allowed(render_ctx: &Arc<Mutex<RenderContext>>) -> bool {
     let ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
-    live_remote_may_run(LiveRemoteAllowedInputs {
-        tab_visible: ctx.tab_visible,
-        paused: ctx.paused,
-        export_active: ctx.export_active(),
-    })
+    crate::bridge::render_thread::remote_allowed(ctx.engine)
+        && live_remote_may_run(LiveRemoteAllowedInputs {
+            tab_visible: ctx.tab_visible,
+            paused: ctx.effective_paused(),
+            export_active: ctx.export_active(),
+        })
 }
 
 /// Tracks the `true -> false` edge of [`live_remote_allowed`] and suspends the live
@@ -354,7 +355,7 @@ fn maybe_redispatch(
         (
             ctx.scene_generation(),
             ctx.tab_visible,
-            ctx.paused || ctx.export_active(),
+            ctx.effective_paused() || ctx.export_active(),
             ctx.live_epoch.is_some(),
             ctx.live_compute_target,
         )
@@ -465,8 +466,8 @@ fn keep_zoned_stone_local(
     if !matches!(decision, LiveDispatch::Remote) || lock(state).remote_zoning != Some(false) {
         return decision;
     }
-    let zoned =
-        SceneSnapshot::capture(render_ctx).is_ok_and(|snapshot| snapshot.material.zoning.is_some());
+    let zoned = SceneSnapshot::capture(render_ctx)
+        .is_ok_and(|snapshot| !snapshot.engine.is_ray() && snapshot.material.zoning.is_some());
     match zoned_scene_refusal(zoned, false) {
         Ok(()) => decision,
         Err(refusal) => LiveDispatch::Refused(refusal),
@@ -678,5 +679,30 @@ pub(super) fn apply_actions(
                     .release_remote();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+    use indicatrix::renderer::engine::RenderEngine;
+
+    #[test]
+    fn remote_ray_ignores_path_pause_but_still_respects_visibility() {
+        let ctx = Arc::new(Mutex::new(RenderContext {
+            paused: true,
+            tab_visible: true,
+            ..RenderContext::default()
+        }));
+        assert!(!live_remote_allowed(&ctx));
+        ctx.lock().unwrap().engine.engine = RenderEngine::RayTraced;
+        assert!(live_remote_allowed(&ctx));
+        ctx.lock().unwrap().tab_visible = false;
+        assert!(!live_remote_allowed(&ctx));
+        let mut state = ctx.lock().unwrap();
+        state.tab_visible = true;
+        state.engine.engine = RenderEngine::PathTraced;
+        drop(state);
+        assert!(!live_remote_allowed(&ctx));
     }
 }

@@ -99,7 +99,11 @@ pub struct GpuTransportParams {
     /// Light-tent wall flattening (`TentParams::flat`; `0.0` = the tent's gradient). Lives in
     /// the first former pad slot (offset 84), so the struct size is unchanged.
     pub tent_flat: f32,
-    _pad_head_shadow1: u32,
+    /// Number of concave-tool records appended to the `planes` storage buffer, right after
+    /// the real planes (`0`, the default, for a planar stone; see [`Self::with_tool_count`]
+    /// and `renderer::gpu::frame::tools`). Occupies the former `_pad_head_shadow1` slot
+    /// (offset 88), so the struct size is unchanged.
+    num_tools: u32,
     _pad_head_shadow2: u32,
     /// Light-tent wall scale (`TentParams::walls`; `1.0` = the tent). Only the
     /// `LIGHT_TENT` model reads the four `tent_*` fields.
@@ -195,7 +199,7 @@ impl GpuTransportParams {
             head_shadow_outer_cos: DEFAULT_HEAD_SHADOW_COSINES[0],
             head_shadow_inner_cos: DEFAULT_HEAD_SHADOW_COSINES[1],
             tent_flat: TentParams::DEFAULT.flat,
-            _pad_head_shadow1: 0,
+            num_tools: 0,
             _pad_head_shadow2: 0,
             tent_walls: TentParams::DEFAULT.walls,
             tent_cards: TentParams::DEFAULT.cards,
@@ -237,6 +241,21 @@ impl GpuTransportParams {
     pub const fn with_pixel_offset(mut self, pixel_offset: u32) -> Self {
         self.pixel_offset = pixel_offset;
         self
+    }
+
+    /// Returns a copy that traces a concave stone with `num_tools` tool records packed after
+    /// the planes in the `planes` binding (`GpuTransportParams::num_tools`, private). The count is a uniform,
+    /// so a planar stone (`0`) takes exactly the code path it always did.
+    #[must_use]
+    pub const fn with_tool_count(mut self, num_tools: u32) -> Self {
+        self.num_tools = num_tools;
+        self
+    }
+
+    /// Number of concave-tool records in the `planes` buffer (see [`Self::with_tool_count`]).
+    #[must_use]
+    pub const fn tool_count(&self) -> u32 {
+        self.num_tools
     }
 
     /// Returns a copy that skips `transport_main`'s three per-channel debug output
@@ -315,7 +334,7 @@ const _: () = {
     assert!(offset_of!(GpuTransportParams, head_shadow_outer_cos) == 76);
     assert!(offset_of!(GpuTransportParams, head_shadow_inner_cos) == 80);
     assert!(offset_of!(GpuTransportParams, tent_flat) == 84);
-    assert!(offset_of!(GpuTransportParams, _pad_head_shadow1) == 88);
+    assert!(offset_of!(GpuTransportParams, num_tools) == 88);
     assert!(offset_of!(GpuTransportParams, _pad_head_shadow2) == 92);
     assert!(offset_of!(GpuTransportParams, tent_walls) == 96);
     assert!(offset_of!(GpuTransportParams, tent_cards) == 100);

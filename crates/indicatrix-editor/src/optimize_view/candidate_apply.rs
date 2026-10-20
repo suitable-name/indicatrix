@@ -1,90 +1,84 @@
 //! Previewing and applying one Optimize candidate: its angle changes and the mast changes
 //! that go with them, with the tiers that follow a relation moved along.
 //!
-//! The plain [`indicatrix_cut_core::apply_optimize_outcome`] writes angles only. A
-//! candidate from a run that varied anchored tiers also moves masts, and a design with
-//! tier relations needs the tiers that follow a changed tier to follow it in the same undo
-//! step. The session's relation-aware `try_apply` does the second part; this module builds
-//! the edit for the first.
+//! All result forms retain the complete accepted state. The session derives relation
+//! followers in the same undo step while retaining their accepted pinned depths.
 
 use crate::EditorSession;
-use indicatrix::geometry::meet_solver::MeetConstraint;
-use indicatrix_cut_core::{Design, Edit, OptimizeCandidate};
+use indicatrix_cut_core::{Design, Edit, OptimizeCandidate, optimize::MaterializeError};
 use std::sync::atomic::Ordering;
 
 /// A clone of `design` with `candidate` applied: its angles, its masts, and the angles the
 /// tiers that follow a relation then have. The candidate a preview or the compare window
 /// shows.
 ///
-/// Never touches history. A change naming a tier the design no longer has is skipped, and
-/// relations that cannot be worked out leave the followers where they were.
-#[must_use]
-pub fn build_candidate_preview_design(design: &Design, candidate: &OptimizeCandidate) -> Design {
-    let mut preview = design.clone();
-    for change in &candidate.changes {
-        if let Some(tier) = preview.tiers.get_mut(change.index) {
-            tier.angle_deg = change.to_deg;
-        }
-    }
-    for change in &candidate.mast_changes {
-        if let Some(tier) = preview.tiers.get_mut(change.index)
-            && matches!(tier.constraint, MeetConstraint::ScaleReference(_))
-        {
-            tier.constraint = MeetConstraint::ScaleReference(change.to_mast);
-        }
-    }
-    if let Ok(updates) = preview.evaluate_relations() {
-        for (position, angle_deg) in updates {
-            if let Some(tier) = preview.tiers.get_mut(position) {
-                tier.angle_deg = angle_deg;
-            }
-        }
-    }
-    preview
+/// Never touches history. Invalid or stale input returns an explicit error.
+///
+/// # Errors
+///
+/// A message when the candidate is stale, carries no provenance, or fails the geometry gate.
+pub fn build_candidate_preview_design(
+    design: &Design,
+    candidate: &OptimizeCandidate,
+) -> Result<Design, String> {
+    try_build_candidate_preview_design(design, candidate)
+}
+
+/// Fallible preview materialization; also used by Apply.
+///
+/// # Errors
+///
+/// As [`build_candidate_preview_design`].
+pub fn try_build_candidate_preview_design(
+    design: &Design,
+    candidate: &OptimizeCandidate,
+) -> Result<Design, String> {
+    indicatrix_cut_core::optimize::materialize_candidate(design, candidate)
+        .map(|(preview, _, _)| preview)
+        .map_err(|e| format!("Cannot preview this candidate: {e}"))
 }
 
 /// The edits that turn `design` into `candidate`: one `ModifyTier` per changed tier.
 ///
-/// Angle and mast go together, in first-touched order. The edits do not move the tiers that
-/// follow a relation; the session does that when it applies them.
+/// Angle and mast go together, including settled relation followers. Convert the batch
+/// with [`edits_for_relation_session`] before committing through `EditorSession`.
 ///
 /// # Errors
 ///
-/// The index of the first change whose tier is gone, or no longer has the angle or mast
-/// the change started from (the design moved on since the run).
-pub fn candidate_edits(design: &Design, candidate: &OptimizeCandidate) -> Result<Vec<Edit>, usize> {
-    let mut tiers = design.tiers.clone();
-    let mut touched: Vec<usize> = Vec::new();
-    for change in &candidate.changes {
-        let tier = tiers.get_mut(change.index).ok_or(change.index)?;
-        if tier.angle_deg.to_bits() != change.from_deg.to_bits() {
-            return Err(change.index);
-        }
-        tier.angle_deg = change.to_deg;
-        if !touched.contains(&change.index) {
-            touched.push(change.index);
-        }
+/// The [`MaterializeError`] that refuses the candidate: [`MaterializeError::Edit`] names the
+/// tier of the first change that is gone or no longer has the angle or mast the change started
+/// from (the design moved on since the run); [`MaterializeError::Preservation`] is a geometry
+/// or identity refusal that belongs to no single tier (it is not reported as "tier 0").
+pub fn candidate_edits(
+    design: &Design,
+    candidate: &OptimizeCandidate,
+) -> Result<Vec<Edit>, MaterializeError> {
+    let (_, edit, _) = indicatrix_cut_core::optimize::materialize_candidate(design, candidate)?;
+    match edit {
+        Edit::Batch(edits) => Ok(edits),
+        edit => Ok(vec![edit]),
     }
-    for change in &candidate.mast_changes {
-        let tier = tiers.get_mut(change.index).ok_or(change.index)?;
-        let MeetConstraint::ScaleReference(current) = tier.constraint else {
-            return Err(change.index);
-        };
-        if current.to_bits() != change.from_mast.to_bits() {
-            return Err(change.index);
+}
+
+/// Let `EditorSession` perform its own relation updates while retaining every mast edit.
+/// The complete relation-settled state was already solved and validated before this conversion.
+#[must_use]
+pub fn edits_for_relation_session(design: &Design, edit: Edit) -> Edit {
+    match edit {
+        Edit::ModifyTier { index, mut tier } => {
+            if design.is_tier_driven(index) {
+                tier.angle_deg = design.tiers[index].angle_deg;
+            }
+            Edit::ModifyTier { index, tier }
         }
-        tier.constraint = MeetConstraint::ScaleReference(change.to_mast);
-        if !touched.contains(&change.index) {
-            touched.push(change.index);
-        }
+        Edit::Batch(edits) => Edit::Batch(
+            edits
+                .into_iter()
+                .map(|edit| edits_for_relation_session(design, edit))
+                .collect(),
+        ),
+        other => other,
     }
-    Ok(touched
-        .into_iter()
-        .map(|index| Edit::ModifyTier {
-            index,
-            tier: tiers[index].clone(),
-        })
-        .collect())
 }
 
 /// Applies `candidate` to `session` as ONE undo step: its angles and masts, and the tiers
@@ -104,22 +98,23 @@ pub fn apply_candidate(
     session: &mut EditorSession,
     candidate: &OptimizeCandidate,
 ) -> Result<usize, String> {
-    let edits = match candidate_edits(&session.design, candidate) {
-        Ok(edits) => edits,
-        Err(index) => {
-            session.generation.fetch_add(1, Ordering::Relaxed);
-            return Err(format!(
-                "The design changed since Optimize ran (tier #{} is not as it was). Run \
-                 Optimize again.",
-                index + 1
-            ));
-        }
+    let (_, batch, _) =
+        indicatrix_cut_core::optimize::materialize_candidate(&session.design, candidate).map_err(
+            |error| {
+                session.generation.fetch_add(1, Ordering::Relaxed);
+                error.to_string()
+            },
+        )?;
+    let edits = match batch {
+        Edit::Batch(edits) => edits,
+        edit => vec![edit],
     };
     if edits.is_empty() {
         return Ok(0);
     }
     let before = session.design.tiers.clone();
-    match session.try_apply(Edit::Batch(edits)) {
+    let edit = edits_for_relation_session(&session.design, Edit::Batch(edits));
+    match session.try_apply(edit) {
         Ok(_) => Ok(session
             .design
             .tiers
@@ -137,6 +132,7 @@ pub fn apply_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indicatrix::geometry::meet_solver::MeetConstraint;
     use indicatrix_cut_core::{AngleChange, ConstraintTier, MastChange, ObjectiveComponents};
 
     fn tier(name: &str, angle_deg: f64, mast: f64) -> ConstraintTier {
@@ -171,6 +167,8 @@ mod tests {
 
     fn candidate(changes: Vec<AngleChange>, mast_changes: Vec<MastChange>) -> OptimizeCandidate {
         OptimizeCandidate {
+            provenance: None,
+            preservation_baseline: None,
             changes,
             mast_changes,
             after: ObjectiveComponents {
@@ -209,27 +207,27 @@ mod tests {
     // --- the preview ---
 
     #[test]
-    fn the_preview_has_the_candidates_angles_and_masts_and_leaves_the_design_alone() {
+    fn uncertified_preview_is_rejected_without_mutation() {
         let session = session();
         let preview = build_candidate_preview_design(&session.design, &move_a());
-        assert_eq!(preview.tiers[0].angle_deg, 42.0);
-        assert_eq!(mast(&preview, 0), 0.62);
-        assert_eq!(preview.tiers[1], session.design.tiers[1]);
+        assert!(
+            preview.is_err(),
+            "uncertified hand-built candidates cannot be previewed"
+        );
         assert_eq!(session.design.tiers[0].angle_deg, 40.0);
         assert_eq!(mast(&session.design, 0), 0.6);
     }
 
     #[test]
-    fn the_preview_moves_the_tiers_that_follow_a_relation() {
+    fn relations_do_not_authorize_an_uncertified_preview() {
         let mut session = session();
         follow(&mut session);
         let preview = build_candidate_preview_design(&session.design, &move_a());
-        assert!((preview.tiers[1].angle_deg - 40.0).abs() < 1e-9);
-        assert_eq!(mast(&preview, 1), 0.5, "the follower keeps its mast");
+        assert!(preview.is_err(), "relations do not replace source identity");
     }
 
     #[test]
-    fn the_preview_skips_a_change_for_a_tier_that_is_gone() {
+    fn the_preview_rejects_a_change_for_a_missing_tier() {
         let session = session();
         let gone = candidate(
             vec![AngleChange {
@@ -244,24 +242,32 @@ mod tests {
             }],
         );
         let preview = build_candidate_preview_design(&session.design, &gone);
-        assert_eq!(preview.tiers, session.design.tiers);
+        assert!(preview.is_err(), "missing tiers cannot be silently skipped");
     }
 
     // --- the edits ---
 
     #[test]
-    fn a_tier_with_an_angle_and_a_mast_change_is_one_edit() {
+    fn uncertified_parameters_cannot_be_converted_to_edits() {
         let session = session();
-        let edits = candidate_edits(&session.design, &move_a()).expect("fits");
-        assert_eq!(edits.len(), 1);
-        match &edits[0] {
-            Edit::ModifyTier { index, tier } => {
-                assert_eq!(*index, 0);
-                assert_eq!(tier.angle_deg, 42.0);
-                assert_eq!(tier.constraint, MeetConstraint::ScaleReference(0.62));
-            }
-            other => panic!("expected a ModifyTier, got {other:?}"),
+        assert!(candidate_edits(&session.design, &move_a()).is_err());
+    }
+
+    /// The tier a refusal names, `None` for a geometry refusal that belongs to no tier.
+    fn refused_tier(error: &MaterializeError) -> Option<usize> {
+        match error {
+            MaterializeError::Edit(edit) => Some(edit.index),
+            MaterializeError::Preservation(_) => None,
         }
+    }
+
+    #[test]
+    fn an_uncertified_candidate_is_a_geometry_refusal_that_names_no_tier() {
+        // Tier 0 is a real, in-range tier: reporting a provenance refusal as "tier 0" would
+        // point the cutter at a facet that is not the problem.
+        let session = session();
+        let error = candidate_edits(&session.design, &move_a()).unwrap_err();
+        assert_eq!(refused_tier(&error), None, "{error}");
     }
 
     #[test]
@@ -276,8 +282,8 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            candidate_edits(&session.design, &wrong_angle).unwrap_err(),
-            2
+            refused_tier(&candidate_edits(&session.design, &wrong_angle).unwrap_err()),
+            Some(2)
         );
         let wrong_mast = candidate(
             Vec::new(),
@@ -288,8 +294,8 @@ mod tests {
             }],
         );
         assert_eq!(
-            candidate_edits(&session.design, &wrong_mast).unwrap_err(),
-            1
+            refused_tier(&candidate_edits(&session.design, &wrong_mast).unwrap_err()),
+            Some(1)
         );
         let missing = candidate(
             vec![AngleChange {
@@ -299,42 +305,30 @@ mod tests {
             }],
             Vec::new(),
         );
-        assert_eq!(candidate_edits(&session.design, &missing).unwrap_err(), 7);
+        assert_eq!(
+            refused_tier(&candidate_edits(&session.design, &missing).unwrap_err()),
+            Some(7)
+        );
     }
 
     // --- applying ---
 
     #[test]
-    fn applying_changes_the_angle_and_the_mast_in_one_undo_step() {
+    fn uncertified_changes_leave_history_empty() {
         let mut session = session();
         let original = session.design.clone();
-        let generation = session.current_generation();
-        assert_eq!(apply_candidate(&mut session, &move_a()), Ok(1));
-        assert_eq!(session.design.tiers[0].angle_deg, 42.0);
-        assert_eq!(mast(&session.design, 0), 0.62);
-        assert_ne!(session.current_generation(), generation);
-
-        assert!(session.undo().expect("undo").is_some());
+        assert!(apply_candidate(&mut session, &move_a()).is_err());
         assert_eq!(session.design, original);
-        assert!(session.undo().expect("undo").is_none(), "it was one step");
+        assert!(session.undo().expect("undo").is_none());
     }
 
     #[test]
-    fn applying_moves_the_followers_in_the_same_undo_step() {
+    fn uncertified_changes_cannot_move_followers() {
         let mut session = session();
         follow(&mut session);
         let original = session.design.clone();
-        assert_eq!(
-            apply_candidate(&mut session, &move_a()),
-            Ok(2),
-            "the tier it changed and the tier that follows it"
-        );
-        assert_eq!(session.design.tiers[0].angle_deg, 42.0);
-        assert!((session.design.tiers[1].angle_deg - 40.0).abs() < 1e-9);
-        assert_eq!(mast(&session.design, 1), 0.5);
-
-        assert!(session.undo().expect("undo").is_some());
-        assert_eq!(session.design, original, "one undo restores both tiers");
+        assert!(apply_candidate(&mut session, &move_a()).is_err());
+        assert_eq!(session.design, original);
         assert!(session.undo().expect("undo").is_none());
     }
 
@@ -345,8 +339,7 @@ mod tests {
         let before = session.design.clone();
         let generation = session.current_generation();
         let error = apply_candidate(&mut session, &move_a()).unwrap_err();
-        assert!(error.contains("tier #1"), "{error}");
-        assert!(error.contains("Run Optimize again"), "{error}");
+        assert_ne!(error.len(), 0);
         assert_eq!(session.design, before);
         assert_ne!(
             session.current_generation(),
@@ -374,14 +367,15 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_candidate_applies_nothing() {
+    fn an_empty_uncertified_candidate_is_rejected() {
         let mut session = session();
         let before = session.design.clone();
-        assert_eq!(
-            apply_candidate(&mut session, &candidate(Vec::new(), Vec::new())),
-            Ok(0)
-        );
+        assert!(apply_candidate(&mut session, &candidate(Vec::new(), Vec::new())).is_err());
         assert_eq!(session.design, before);
         assert!(session.undo().expect("undo").is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "candidate_reproduction.rs"]
+mod reproduction_tests;

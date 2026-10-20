@@ -1,6 +1,7 @@
 # indicatrix
 
-A physically-based spectral gemstone renderer. It turns GemCAD-style cutting
+A gemstone renderer with a spectral Path-Traced engine and a deterministic Ray-Traced
+engine. It turns GemCAD-style cutting
 schedules — a table of facet angles and index positions, as used by faceting
 diagrams — into rendered output: full spectral analytical / Monte-Carlo
 raytracing through faceted gemstone geometry, plus the gemological brilliance /
@@ -20,7 +21,30 @@ them — GPU or remote samples), and `renderer::frame_denoise` (average → deno
 tone-map for one displayed frame — the GUI's live view and the coordinator's
 finished display frames both call it).
 
-## What it physically models
+## Ray-Traced: The Lightweight Renderer
+
+`renderer::engine::EngineSpec` selects the engine beside `FrameScene`; existing scene
+literals and the spectral tracer remain unchanged. `renderer::whitted::WhittedPrep`
+prepares tint, indices, lighting and frost once per scene. The tracer returns the same
+summed XYZ buffers as Path-Traced, with 1, 4, 8 or 16 fixed AA taps instead of Monte Carlo
+samples; Ray-Traced is final after those taps and bypasses denoising. Fire traces three
+indices at 615, 545 and 465 nm; without it, one chain uses the material's d-line index.
+
+RGB Beer-Lambert tint is calibrated to the measured spectral absorption at the face-up
+path length, with direction-sensitive uniaxial tint and a biaxial mean. Other path lengths
+are approximate. Frost uses a fixed outside-light quadrature. This engine omits
+polarization, birefringent doubling, scattering, zoning and edge rounding.
+Paths beyond the bounce cap are lost.
+Metrics, tilt sweeps and optical diagnostics retain their separate analytic tracer.
+
+The small GPU kernel uses four storage buffers and has CPU fallback. Browser GPU admission
+is independent from the spectral event-wavefront records. Remote scenes carry the engine
+(since protocol 28; the current version is 29), so older peers are refused instead of mixing
+different renderers' sums.
+`--features hdr --example whitted_gallery -- --out DIRECTORY` writes the comparison gallery;
+it must be run by the owner. Device performance and GPU comparisons require validation.
+
+## What Path-Traced Physically Models
 
 - **8-channel stratified hero-wavelength spectral sampling (HWSS)** — each ray
   carries 8 wavelengths at once (one "hero" plus 7 rotated companions), avoiding
@@ -42,14 +66,14 @@ finished display frames both call it).
   stone's color genuinely depends on the electric-field direction relative to the
   crystal's optical axes, not just on wavelength.
 
-33 built-in materials ship with cited dispersion and absorption data
+34 built-in materials ship with cited dispersion and absorption data
 (`GemMaterial::all_materials()` in `src/optics/materials/mod.rs`,
 `GemMaterial::by_name(...)`): Diamond, Sapphire, Ruby, Emerald, Zircon, Alexandrite,
 Topaz, Spinel, Quartz, Tourmaline, Tanzanite, Synthetic Moissanite, Cubic Zirconia,
 Aquamarine, Morganite, Chrysoberyl (Yellow), Amethyst, Citrine, Pyrope Garnet,
 Almandine Garnet, Spessartine Garnet, Color-Change Garnet (Pyrope-Spessartine), Grossular Garnet (Tsavorite), Andradite Garnet
-(Demantoid), Peridot, YAG, GGG, Benitoite, Andalusite, Opal, Glass (N-BK7), Glass (F2)
-and Rutile.
+(Demantoid), Peridot, YAG, GGG, Benitoite, Andalusite, Opal, Glass (N-BK7), Glass (F2),
+Rutile and Ametrine (the one zoned built-in: an amethyst base with a citrine half space).
 
 ## Documentation map
 
@@ -169,7 +193,7 @@ honest about that in its own name.
 
 ## Feature flags
 
-All three are **off by default** — the base dependency set (`glam`, `bytemuck`,
+All of these are **off by default** (the crate also declares an empty `zoning` feature that no code reads) — the base dependency set (`glam`, `bytemuck`,
 `tracing`, `indicatrix-formats`) is deliberately small so the crate stays lean and
 publishable standalone (see below).
 
@@ -193,27 +217,31 @@ in `rayon`, citing this same policy. If you're adding a dependency here, ask
 whether it can be feature-gated, and whether a zero-dependency alternative exists,
 before adding it unconditionally.
 
-## `BUILD_ID`
+## `BUILD_ID` and `SOURCE_HASH`
 
 ```rust
 pub const indicatrix::BUILD_ID: &str = env!("INDICATRIX_BUILD_ID");
+pub const indicatrix::SOURCE_HASH: &str = env!("INDICATRIX_SOURCE_HASH");
 ```
 
-A deterministic content hash (16 lowercase hex chars, 64-bit FNV-1a) of every file
-under `src/` ending in `.rs` **or `.wgsl`**, plus `Cargo.toml`, computed at build
-time in `build.rs`. Files are visited in sorted, POSIX-normalized relative-path
+`BUILD_ID` is the 64-bit FNV-1a hash (16 lowercase hex chars) of the crate version, so
+builds of the same release pair across platforms; it is the identity the handshake
+enforces (together with the protocol version). `SOURCE_HASH` is the deterministic content
+hash (16 lowercase hex chars, 64-bit FNV-1a) of every file under `src/` ending in `.rs`
+**or `.wgsl`**, plus `Cargo.toml`, computed at build time in `build.rs`; it travels in
+the handshake but `verify_compatible` does not compare it, so it is diagnostic only.
+The description below is of `SOURCE_HASH`. Files are visited in sorted, POSIX-normalized relative-path
 order and line endings are normalized (`\r\n` → `\n`) before hashing, so the same
 source produces the same `BUILD_ID` regardless of host OS or checkout line
 endings; the relative path is hashed alongside each file's contents, so a rename
-alone changes the id.
+alone changes the hash.
 
 `.wgsl` is included alongside `.rs` deliberately: a worker running a GPU backend
 executes WGSL as its physics, not as decoration on top of it, and two workers with
-byte-identical Rust but divergent WGSL would otherwise handshake as identical when
-they aren't.
+byte-identical Rust but divergent WGSL differ in `SOURCE_HASH`.
 
 **Why this exists**: `indicatrix-net`'s wire protocol handshake refuses to pair a
-viewer and a remote render worker whose `indicatrix` builds disagree. Mixing samples
+viewer and a remote render worker whose protocol version or `BUILD_ID` disagree. Mixing samples
 traced by two different physics implementations produces a silently, plausibly
 wrong image — no crash, no error, just numbers that look like a converged render
 and aren't. `indicatrix`'s physics has changed many times in rapid succession during

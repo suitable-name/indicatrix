@@ -64,17 +64,23 @@ pub(super) enum Renderer {
     Solid,
     /// The CPU path tracer at a modest fixed quality.
     Traced,
+    /// The deterministic ray tracer at its fixed AA tap count.
+    Ray,
 }
 
 impl Renderer {
-    /// `CompareModel.renderer_index` -> [`Renderer`]; anything but `1` is Solid.
+    /// Maps the known indices explicitly; 0 and every unknown value are Solid.
     #[must_use]
     pub(super) const fn from_index(index: i32) -> Self {
-        if index == 1 {
-            Self::Traced
-        } else {
-            Self::Solid
+        match index {
+            1 => Self::Traced,
+            2 => Self::Ray,
+            _ => Self::Solid,
         }
+    }
+
+    pub(super) const fn is_traced(self) -> bool {
+        matches!(self, Self::Traced | Self::Ray)
     }
 }
 
@@ -94,6 +100,8 @@ pub(super) enum TracedProgress {
 
 /// One side's inputs, gathered on the UI thread before the solve moves off it.
 pub(super) struct SideInput {
+    /// Fluorescence needs the spectral renderer; it must not be silently dropped.
+    pub(super) ray_fluorescent: bool,
     /// The design to show on this side.
     pub(super) design: Design,
     /// The header/caption label, e.g. "Current design".
@@ -167,6 +175,8 @@ pub(super) fn sized_for_design(
 /// what rendering needs -- the solved masts, the stone (planes plus concave tools) both
 /// renderers draw, and the traced material -- not the `Design` itself.
 pub(super) struct CompareSide {
+    /// The resolved material has active emitters.
+    pub(super) ray_fluorescent: bool,
     /// The header/caption label.
     pub(super) label: String,
     /// The side's solved masts, `None` when it does not solve.
@@ -219,6 +229,7 @@ impl CompareSide {
                     .material
                     .map(|material| sized_for_design(material, &input.design, &stone.planes));
                 Self {
+                    ray_fluorescent: input.ray_fluorescent,
                     label: input.label,
                     solved: Some(solved),
                     solve_error: None,
@@ -231,6 +242,7 @@ impl CompareSide {
                 }
             }
             Err(error) => Self {
+                ray_fluorescent: input.ray_fluorescent,
                 label: input.label,
                 solved: None,
                 solve_error: Some(error.to_string()),
@@ -417,7 +429,7 @@ pub(super) fn status_text(
     for (name, side) in [("Before", &session.before), ("After", &session.after)] {
         if let Some(error) = &side.solve_error {
             parts.push(format!("{name} does not solve: {error}"));
-        } else if renderer == Renderer::Traced && side.material.is_err() {
+        } else if renderer.is_traced() && side.material.is_err() {
             parts.push(format!("{name}: material not resolved, nothing to trace"));
         } else if side.tools_dropped {
             parts.push(format!(
@@ -432,6 +444,11 @@ pub(super) fn status_text(
             format!("Tracing… {side} of 2")
         }
         (Renderer::Traced, TracedProgress::Done) => format!("Traced ({traced_spp} spp)"),
+        (Renderer::Ray, TracedProgress::Waiting) => "Ray-Traced: waiting…".to_string(),
+        (Renderer::Ray, TracedProgress::Rendering { side }) => {
+            format!("Ray-Traced: tracing… {side} of 2")
+        }
+        (Renderer::Ray, TracedProgress::Done) => "Ray-Traced (8 taps)".to_string(),
     };
     parts.insert(0, mode);
     parts.join("  ·  ")
@@ -517,7 +534,7 @@ impl FrameBook {
         match kind {
             FrameKind::Solid => !self.traced_shown,
             FrameKind::Traced => {
-                if !matches!(renderer, Renderer::Traced) {
+                if !renderer.is_traced() {
                     return false;
                 }
                 self.traced_shown = true;

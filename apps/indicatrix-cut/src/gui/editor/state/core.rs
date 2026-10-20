@@ -337,6 +337,12 @@ pub(in crate::gui) struct EditorState {
     /// the same reason: `view::refresh_design_settings` only ever receives
     /// `&EditorState`.
     pub(in crate::gui::editor) material_combo_cache: RefCell<MaterialComboCache>,
+    /// The material name Load Selected applied from the library entry
+    /// (`indicatrix_editor::loading::apply_library_material`) because the design named none;
+    /// `None` for every other design. It only drives the "inferred" badge
+    /// (`indicatrix_editor::material_lookup::applied_material_guess`), which retires itself
+    /// as soon as the design's material is anything else. Never saved.
+    pub(in crate::gui::editor) applied_library_material: Option<String>,
     /// Whether this is a REAL design -- created (New Design, any template), loaded
     /// (Load Selected) or opened (Open/Open Recent/the startup restore) --
     /// rather than [`Self::fresh`]'s startup placeholder. Mirrored into
@@ -404,6 +410,7 @@ impl EditorState {
             file_extras: DesignFileExtras::default().with_design_uuid_assigned(None),
             last_pushed_scratch: RefCell::new(PushedScratch::default()),
             material_combo_cache: RefCell::new(MaterialComboCache::default()),
+            applied_library_material: None,
             has_design,
         }
     }

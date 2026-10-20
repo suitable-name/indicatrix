@@ -2,9 +2,8 @@
 
 A set of global shortcuts work anywhere in the window (unless a text field
 currently has focus and would otherwise consume the key, e.g. typing a
-digit into a search box). The editor (Edit tab) ships in the standard
-build; a few of these — Undo/Redo, F5 Solve — are no-ops without a design
-loaded, not gated behind any Cargo feature.
+digit into a search box). The editor (Edit tab) ships in every build; a few
+of these — Undo/Redo, F5 Solve — are no-ops without a design loaded.
 
 **Not every action has a key.** Press **Ctrl+K** (or Ctrl+Shift+P) to open the
 command palette, type a few letters of what you want, and press Enter: every
@@ -37,7 +36,7 @@ between the `<!-- SHORTCUTS_GLOBAL -->`, `<!-- SHORTCUTS_TIER_LIST -->`,
 | Ctrl+F | Focus the catalogue search box, or, while the Edit tab's tier list is showing, the tier list's own filter box instead |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 | Switch to the 3D Spectral Preview tab / Cutting Instructions tab / Files & Downloads tab. There is no Ctrl+4 -- the window only has these three top-level tabs. |
 | Ctrl+Alt+1 / Ctrl+Alt+2 / Ctrl+Alt+3 | Open the Parameters panel on its Stone / Lighting & Environment / Render & Output tab, in the Live Render view and in the Edit view. The View menu and the buttons beside the viewport open it too; Esc folds a floating panel away. |
-| 1 / 2 / 3 / 4 | Solid / Path-Traced / Both / Diagram view of the Edit tab's viewport. Only while that viewport is on screen and no text field has focus. |
+| 1 / 2 / 3 / 4 / 5 | Solid / Path-Traced / Both / Diagram / Ray-Traced view of the Edit tab's viewport. Only while that viewport is on screen and no text field has focus. |
 | Ctrl+, (Ctrl+Comma) | Open Preferences -- the Simple/Advanced interface, UI scale, high contrast, larger handles and tutorials. Not while a text field has focus. |
 | F5 | Solve (Edit tab) -- disabled while a solve is already running, so F5 cannot start a second one on top of it |
 | F1 | Help for this screen -- opens the manual at the page for what is on screen (the open inspector tab in the Edit tab, Live Render, the Cutting Instructions tab). Works while a text field has focus. |
@@ -59,11 +58,11 @@ it). On a keyboard where AltGr+digit types the characters ¹ ² ³, those work a
 These are separate from Ctrl+1/2/3 above (the top-level tabs): the extra Alt picks the
 dock. When the panel floats over the picture (a narrow window), Esc folds it first.
 
-## Plain 1 / 2 / 3 / 4 — Solid/Diagram Viewport View Modes
+## Plain 1 / 2 / 3 / 4 / 5 — Solid/Diagram Viewport View Modes
 
 While the Edit sub-tab's own Solid viewport is on screen (3D Spectral Preview
-tab, Edit sub-tab), the unmodified digit keys **1**, **2**, **3**, and **4** switch
-that viewport's own view mode — Solid, Path-Traced, Both, and Diagram
+tab, Edit sub-tab), the unmodified digit keys **1**, **2**, **3**, **4**, and **5** switch
+that viewport's own view mode — Solid, Path-Traced, Both, Diagram, and Ray-Traced
 respectively (Chapter 13). This is completely separate from Ctrl+1/2/3's
 top-level tab switching above: same digits, different modifier, different
 target, and only active while that particular viewport is the one on
@@ -146,8 +145,9 @@ inspector's own Angle field has focus:
 | Escape | Close the cell without committing (the tier list's inline cell only) |
 <!-- SHORTCUTS_ANGLE_FIELD:END -->
 
-All of the tier-list shortcuts above only do anything on a build
-compiled with the `editor` feature, same as the global ones above.
+The tier-list shortcuts above act on the open design, so like Undo, Redo and F5
+they do nothing until a design is open in the Edit tab. The editor is part of
+every build.
 
 ## Cutting mode
 
@@ -177,11 +177,11 @@ The 3D viewport's camera and light controls (Chapter 2) are mouse
 gestures — left-drag to orbit, right-drag or Shift+left-drag to move the
 light, scroll to zoom — not keyboard shortcuts. The Edit tab's Solid
 viewport (Chapter 13) shares that same orbit/zoom camera with the Live
-Render tab in its Solid/Path-Traced/Both modes; its Diagram mode instead
+Render tab in its Solid/Path-Traced/Both/Ray-Traced modes; its Diagram mode instead
 drags to pan and scrolls to zoom its own image, with a Reset View button
 to snap both back.
 
-On a selected facet in the Solid viewport's Solid, Path-Traced and Both
+On a selected facet in the Solid viewport's Solid, Path-Traced, Both and Ray-Traced
 modes, the angle, depth and index handles are dragged with the left mouse
 button (Chapter 13). While a handle is being dragged, **Shift** switches the
 angle and depth snapping to its fine step, and **Escape** cancels the drag

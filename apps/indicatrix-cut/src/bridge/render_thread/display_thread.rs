@@ -53,6 +53,7 @@ pub(super) struct DisplayWork {
     /// matches the shared counter's CURRENT value, which keeps a `dirty`/resize reset
     /// from letting a stale frame reach the screen.
     generation: u64,
+    scene_generation: u64,
     width: u32,
     height: u32,
     current_sample_count: u32,
@@ -78,6 +79,7 @@ impl DisplayWork {
     const fn empty() -> Self {
         Self {
             generation: 0,
+            scene_generation: 0,
             width: 0,
             height: 0,
             current_sample_count: 0,
@@ -114,12 +116,14 @@ impl DisplayWork {
     pub(super) fn fill(
         &mut self,
         generation: u64,
+        scene_generation: u64,
         denoise_enabled: bool,
         frame: FirstHitSnapshot<'_>,
         metrics_snapshot: FrameMetricsSnapshot,
         activity_flags: FrameActivityFlags,
     ) {
         self.generation = generation;
+        self.scene_generation = scene_generation;
         self.width = frame.width;
         self.height = frame.height;
         self.current_sample_count = frame.current_sample_count;
@@ -258,7 +262,7 @@ where
     // `TraceActivitySink` lets `push_frame_to_ui` reach `ActivityModel` while
     // staying generic over `T`.
     T: TraceActivitySink + 'static,
-    F: Fn(&T, slint::SharedPixelBuffer<slint::Rgba8Pixel>) + Send + 'static + Clone,
+    F: Fn(&T, slint::SharedPixelBuffer<slint::Rgba8Pixel>, u64) + Send + 'static + Clone,
     M: Fn(&T, f32, f32, f32, f32, f32, [f32; 19], [f32; 19], [f32; 19], f32)
         + Send
         + 'static
@@ -339,9 +343,12 @@ where
                         &update_image,
                         &update_metrics,
                         &redraw_gate,
-                        image,
-                        work.metrics_snapshot,
-                        work.activity_flags,
+                        FramePayload {
+                            image,
+                            scene_generation: work.scene_generation,
+                            metrics_snapshot: work.metrics_snapshot,
+                            activity_flags: work.activity_flags,
+                        },
                     );
                 }));
                 if let Err(payload) = outcome {

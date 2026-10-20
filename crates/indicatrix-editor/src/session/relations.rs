@@ -577,7 +577,9 @@ impl EditorSession {
         if edits.is_empty() {
             return Ok(0);
         }
-        match self.try_apply(Edit::Batch(edits)) {
+        let edit =
+            crate::optimize_view::edits_for_relation_session(&self.design, Edit::Batch(edits));
+        match self.try_apply(edit) {
             Ok(_) => Ok(applied),
             Err(error) => {
                 self.generation

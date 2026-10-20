@@ -34,30 +34,39 @@ component ValueRow inherits HorizontalLayout {
     }
 }
 
-// Three-way pill choice (the desktop's backdrop picker).
-component Pills inherits HorizontalLayout {
+// Pill choice (the desktop's backdrop picker). `selected` is the value of the chosen pill:
+// its position, or `values[position]` when `values` is given (the backdrop row shows its
+// pills in display order while the stored indices stay 0 as lit, 1 grey, 2 white, 3 black).
+export component Pills inherits HorizontalLayout {
+    in property <bool> enabled: true;
     in property <[string]> labels;
+    in property <[int]> values;
     in-out property <int> selected;
     callback chosen(int);
     spacing: 4px;
     for label[i] in root.labels: Rectangle {
+        property <int> value: root.values.length > i ? root.values[i] : i;
+        accessible-role: button;
+        accessible-label: label;
         horizontal-stretch: 1;
         height: 24px;
+        opacity: root.enabled ? 1.0 : 0.5;
         border-radius: Theme.radius-sm;
-        background: root.selected == i ? Theme.accent-cyan : (touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+        background: root.selected == value ? Theme.accent-cyan : (touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
         border-width: 1px;
-        border-color: root.selected == i ? Theme.accent-cyan : Theme.border-medium;
+        border-color: root.selected == value ? Theme.accent-cyan : Theme.border-medium;
         touch := TouchArea {
+            enabled: root.enabled;
             clicked => {
-                root.selected = i;
-                root.chosen(i);
+                root.selected = value;
+                root.chosen(value);
             }
         }
         Text {
             text: label;
             font-size: 11px;
             font-weight: 600;
-            color: root.selected == i ? Theme.bg-darkest : Theme.text-secondary;
+            color: root.selected == value ? Theme.bg-darkest : Theme.text-secondary;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
@@ -194,7 +203,11 @@ export component RenderSettingsPanel inherits Rectangle {
                 color: Theme.text-secondary;
             }
             Pills {
-                labels: ["As lit", "Grey", "White"];
+                // The surface the stone lies on, lit by the lighting and seen around the
+                // stone and through its windows. An HDR map is its own world.
+                enabled: !(AppModel.hdr-name != "" && RenderModel.use-hdr);
+                labels: ["As lit", "Black", "Grey", "White"];
+                values: [0, 3, 1, 2];
                 selected <=> RenderModel.backdrop-index;
                 chosen => { RenderModel.settings-edited(); }
             }
@@ -209,6 +222,32 @@ export component RenderSettingsPanel inherits Rectangle {
             }
 
             Caption { text: "QUALITY"; }
+            Pills {
+                labels: ["Path-Traced", "Ray-Traced"];
+                selected <=> RenderModel.engine;
+                chosen => { RenderModel.settings-edited(); }
+            }
+            if RenderModel.engine == 1: VerticalLayout {
+                spacing: 4px;
+                Text { text: "Anti-Aliasing"; color: Theme.text-secondary; font-size: 11px; }
+                Pills {
+                    labels: ["Off", "4×", "8×", "16×"];
+                    selected: RenderModel.ray-taps == 1 ? 0 : RenderModel.ray-taps == 4 ? 1 : RenderModel.ray-taps == 8 ? 2 : 3;
+                    chosen(index) => {
+                        RenderModel.ray-taps = index == 0 ? 1 : index == 1 ? 4 : index == 2 ? 8 : 16;
+                        RenderModel.settings-edited();
+                    }
+                }
+                Switch {
+                    text: "Fire";
+                    checked <=> RenderModel.ray-fire;
+                    toggled => { RenderModel.settings-edited(); }
+                }
+                Text {
+                    text: "Approximate tint and frost; no polarization, birefringent doubling, scattering, zoning or edge rounding. Metrics keep their own tracer.";
+                    font-size: 10px; color: Theme.text-muted; wrap: word-wrap;
+                }
+            }
             HorizontalLayout {
                 spacing: 6px;
                 Text {
@@ -226,7 +265,7 @@ export component RenderSettingsPanel inherits Rectangle {
                     edited => { RenderModel.settings-edited(); }
                 }
             }
-            HorizontalLayout {
+            if RenderModel.engine == 0: HorizontalLayout {
                 spacing: 6px;
                 Text {
                     text: "Target spp";
@@ -244,31 +283,44 @@ export component RenderSettingsPanel inherits Rectangle {
                     edited => { RenderModel.settings-edited(); }
                 }
             }
-            Switch {
+            if RenderModel.engine == 0: Switch {
                 text: "Denoise When Settled";
                 checked <=> RenderModel.denoise;
                 toggled => { RenderModel.settings-edited(); }
             }
             CheckBox {
-                text: "GPU Rendering (Experimental)";
+                text: "GPU Rendering";
                 checked <=> RenderModel.gpu-enabled;
                 toggled => { RenderModel.settings-edited(); }
             }
-            Text {
+            // What the app renders with, kept after the start-up test is over. Conditional
+            // items (not `visible:`) so a hidden one takes no space.
+            if RenderModel.gpu-summary != "": Text {
+                text: RenderModel.gpu-summary;
+                font-size: 11px;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+            // The step of a running test or the result of a passed one; a failure is already in
+            // the sentence above.
+            if RenderModel.gpu-status-text != "" && (RenderModel.gpu-state == 2 || RenderModel.gpu-state == 3): Text {
                 text: RenderModel.gpu-status-text;
                 font-size: 11px;
                 color: Theme.text-secondary;
                 wrap: word-wrap;
-                visible: RenderModel.gpu-status-text != "";
             }
-            Button {
+            Text {
+                text: "Needs WebGPU (Chrome or Edge). Ray-Traced supports every material class on the GPU; Path-Traced supports isotropic stones such as diamond and spinel. A qualification failure or scene limit uses the CPU.";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+            if RenderModel.gpu-state == 1: Button {
                 text: "Test GPU";
-                visible: RenderModel.gpu-state == 1;
                 clicked => { RenderModel.gpu-test-clicked(); }
             }
-            Button {
+            if RenderModel.gpu-state == 4 && RenderModel.gpu-can-forget: Button {
                 text: "Forget GPU Test Result";
-                visible: RenderModel.gpu-state == 4;
                 clicked => { RenderModel.gpu-forget-clicked(); }
             }
 
@@ -312,7 +364,7 @@ export component RenderSettingsPanel inherits Rectangle {
                 toggled => { RenderModel.settings-edited(); }
             }
             ValueRow {
-                label: "Inclusion Haze";
+                label: RenderModel.engine == 1 ? "Inclusion Haze (not shown in Ray-Traced)" : "Inclusion Haze";
                 value: RenderModel.inclusion-sigma-s <= 0 ? "Off" : Math.round(RenderModel.inclusion-sigma-s * 100) / 100 + "";
             }
             Slider {
@@ -323,7 +375,7 @@ export component RenderSettingsPanel inherits Rectangle {
                 changed => { RenderModel.settings-edited(); }
             }
             ValueRow {
-                label: "Edge Rounding";
+                label: RenderModel.engine == 1 ? "Edge Rounding (not shown in Ray-Traced)" : "Edge Rounding";
                 value: RenderModel.edge-rounding <= 0 ? "Off" : Math.round(RenderModel.edge-rounding * 1000) / 1000 + "";
             }
             Slider {
@@ -347,7 +399,7 @@ export component RenderSettingsPanel inherits Rectangle {
                 changed => { RenderModel.settings-edited(); }
             }
             Switch {
-                text: "Crystal Axis Override";
+                text: RenderModel.engine == 1 ? "Crystal Axis Override (tint only in Ray-Traced)" : "Crystal Axis Override";
                 checked <=> RenderModel.c-axis-override;
                 toggled => { RenderModel.settings-edited(); }
             }

@@ -73,6 +73,15 @@ pub(in crate::gui) fn still_summary(still: &StillOutput) -> String {
         1 => "3840x2160".to_string(),
         _ => format!("{}x{}", still.custom_width, still.custom_height),
     };
+    if still.engine.is_ray() {
+        return format!(
+            "{size}, Ray Traced, {} AA taps, Fire {}, {}, {}",
+            still.engine.ray.sanitized().aa_taps,
+            if still.engine.ray.fire { "on" } else { "off" },
+            color_space_name(still.color_space_index),
+            compute_name(still.compute)
+        );
+    }
     format!(
         "{size}, {} samples, {} bounces, {}, {}",
         1u64 << still.sample_exponent.min(40),
@@ -90,6 +99,15 @@ pub(in crate::gui) fn tilt_summary(video: &TiltVideoOutput, compute: TiltVideoCo
         as_i32(video.custom_width),
         as_i32(video.custom_height),
     );
+    if video.engine.is_ray() {
+        return format!(
+            "{width}x{height}, Ray Traced, {} AA taps, Fire {}, {}, {}",
+            video.engine.ray.sanitized().aa_taps,
+            if video.engine.ray.fire { "on" } else { "off" },
+            color_space_name(video.color_space_index),
+            compute_name(compute)
+        );
+    }
     format!(
         "{width}x{height}, {} samples, {} bounces, {}, {}",
         1u64 << video.sample_exponent.min(40),
@@ -114,6 +132,7 @@ pub(in crate::gui) fn publish_summaries(
 /// back. Kept apart from `ExportModel` so the mapping can be tested without a window.
 #[derive(Debug, Clone, PartialEq)]
 struct StillControls {
+    engine: indicatrix::renderer::engine::EngineSpec,
     size_preset: i32,
     custom_width: i32,
     custom_height: i32,
@@ -127,6 +146,7 @@ struct StillControls {
 /// The tilt-video section's controls as plain values (see [`StillControls`]).
 #[derive(Debug, Clone, PartialEq)]
 struct TiltControls {
+    engine: indicatrix::renderer::engine::EngineSpec,
     resolution_preset: i32,
     custom_width: i32,
     custom_height: i32,
@@ -143,6 +163,7 @@ struct TiltControls {
 fn still_controls(settings: &AppSettings) -> StillControls {
     let still = settings.output.clone().sanitised().still;
     StillControls {
+        engine: still.engine,
         size_preset: still.size_preset,
         custom_width: as_i32(still.custom_width),
         custom_height: as_i32(still.custom_height),
@@ -165,6 +186,7 @@ fn still_from_controls(
     uses_remote: bool,
 ) -> StillOutput {
     StillOutput {
+        engine: controls.engine,
         size_preset: controls.size_preset,
         custom_width: as_u32(controls.custom_width),
         custom_height: as_u32(controls.custom_height),
@@ -185,6 +207,7 @@ fn still_from_controls(
 fn tilt_controls(settings: &AppSettings) -> TiltControls {
     let video = settings.output.clone().sanitised().tilt_video;
     TiltControls {
+        engine: video.engine,
         resolution_preset: video.resolution_preset.min(params::CUSTOM_RESOLUTION_INDEX),
         custom_width: as_i32(video.custom_width),
         custom_height: as_i32(video.custom_height),
@@ -207,6 +230,7 @@ fn tilt_from_controls(
     uses_remote: bool,
 ) -> TiltVideoOutput {
     TiltVideoOutput {
+        engine: controls.engine,
         resolution_preset: controls.resolution_preset,
         custom_width: as_u32(controls.custom_width),
         custom_height: as_u32(controls.custom_height),
@@ -227,6 +251,9 @@ fn tilt_from_controls(
 pub(in crate::gui) fn seed_still_dialog(ui: &MainWindow, settings: &AppSettings) {
     let controls = still_controls(settings);
     let model = ui.global::<ExportModel>();
+    model.set_engine_index(i32::from(controls.engine.engine.index()));
+    model.set_ray_taps(i32::from(controls.engine.ray.sanitized().aa_taps));
+    model.set_ray_fire(controls.engine.ray.fire);
     model.set_selected_size_preset(controls.size_preset);
     model.set_custom_width(controls.custom_width);
     model.set_custom_height(controls.custom_height);
@@ -242,6 +269,9 @@ pub(in crate::gui) fn seed_still_dialog(ui: &MainWindow, settings: &AppSettings)
 pub(in crate::gui) fn seed_tilt_dialog(ui: &MainWindow, settings: &AppSettings) {
     let controls = tilt_controls(settings);
     let model = ui.global::<TiltVideoExportModel>();
+    model.set_engine_index(i32::from(controls.engine.engine.index()));
+    model.set_ray_taps(i32::from(controls.engine.ray.sanitized().aa_taps));
+    model.set_ray_fire(controls.engine.ray.fire);
     model.set_resolution_preset(controls.resolution_preset);
     model.set_custom_width(controls.custom_width);
     model.set_custom_height(controls.custom_height);
@@ -273,6 +303,7 @@ pub(in crate::gui) fn remember_still(
     let model = ui.global::<ExportModel>();
     let mut output = settings_store.snapshot().settings.output;
     let controls = StillControls {
+        engine: still_engine(ui),
         size_preset: model.get_selected_size_preset(),
         custom_width: model.get_custom_width(),
         custom_height: model.get_custom_height(),
@@ -296,6 +327,7 @@ pub(in crate::gui) fn remember_tilt(
     let model = ui.global::<TiltVideoExportModel>();
     let mut output = settings_store.snapshot().settings.output;
     let controls = TiltControls {
+        engine: tilt_engine(ui),
         resolution_preset: model.get_resolution_preset(),
         custom_width: model.get_custom_width(),
         custom_height: model.get_custom_height(),
@@ -315,6 +347,38 @@ fn store_and_publish(ui: &MainWindow, settings_store: &SettingsPersister, output
     let compute = settings_store.snapshot().settings.tilt_video_compute_target;
     settings_store.update(|s| s.settings.output = output.clone());
     publish_summaries(ui, &output, compute);
+}
+
+/// The still dialog's renderer, read without changing its callback signature.
+pub(in crate::gui) fn still_engine(ui: &MainWindow) -> indicatrix::renderer::engine::EngineSpec {
+    let model = ui.global::<ExportModel>();
+    output_engine(
+        model.get_engine_index(),
+        model.get_ray_taps(),
+        model.get_ray_fire(),
+    )
+}
+
+/// The tilt dialog's renderer, frozen when its run is captured.
+pub(in crate::gui) fn tilt_engine(ui: &MainWindow) -> indicatrix::renderer::engine::EngineSpec {
+    let model = ui.global::<TiltVideoExportModel>();
+    output_engine(
+        model.get_engine_index(),
+        model.get_ray_taps(),
+        model.get_ray_fire(),
+    )
+}
+
+fn output_engine(index: i32, taps: i32, fire: bool) -> indicatrix::renderer::engine::EngineSpec {
+    use indicatrix::renderer::engine::{EngineSpec, RayOptions, RenderEngine};
+    EngineSpec {
+        engine: RenderEngine::from_index(u8::try_from(index).unwrap_or_default()),
+        ray: RayOptions {
+            aa_taps: u8::try_from(taps).unwrap_or(16),
+            fire,
+        }
+        .sanitized(),
+    }
 }
 
 #[cfg(test)]
@@ -340,6 +404,7 @@ mod tests {
     fn chosen() -> AppSettings {
         let mut settings = AppSettings::default();
         settings.output.still = StillOutput {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             size_preset: 2,
             custom_width: 2400,
             custom_height: 1600,
@@ -350,6 +415,7 @@ mod tests {
             transfer: Some(ExportTransfer::FinalPicture),
         };
         settings.output.tilt_video = TiltVideoOutput {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             resolution_preset: 3,
             custom_width: 640,
             custom_height: 360,
@@ -369,6 +435,7 @@ mod tests {
         assert_eq!(
             controls,
             StillControls {
+                engine: StillOutput::default().engine,
                 size_preset: 0,
                 custom_width: 1920,
                 custom_height: 1080,

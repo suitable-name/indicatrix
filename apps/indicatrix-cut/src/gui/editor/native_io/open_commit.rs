@@ -172,6 +172,7 @@ pub(super) fn open_design_file(
         pending_retarget: None,
         last_pushed_scratch: RefCell::new(PushedScratch::default()),
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
+        applied_library_material: None,
         source_entry_id: None,
         used_placeholder: false,
         // The design file's own `[meta]` and attachments, kept for the next Save. A file
@@ -279,9 +280,11 @@ pub(super) fn open_converted_design(
         asc_file_name,
         asc_text,
         warnings,
+        frosting,
     } = picked;
     match crate::gui::editor::loading::design_from_asc_text(&asc_file_name, &asc_text, None) {
-        Ok(loaded) => {
+        Ok(mut loaded) => {
+            loaded.design.apply_imported_frosting(&frosting);
             commit_plain_design(
                 ui,
                 state,
@@ -361,6 +364,7 @@ fn commit_plain_design(
         pending_retarget: None,
         last_pushed_scratch: RefCell::new(PushedScratch::default()),
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
+        applied_library_material: None,
         // Open (this path and the design-file one above) has no catalogue row of its
         // own -- it loaded from a file the cutter picked directly, not from a library
         // selection -- so there is nothing here for a later Save to write back

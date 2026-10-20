@@ -322,6 +322,7 @@ fn parse_u32(flag: &str, raw: &str) -> Result<u32, String> {
 
 fn parse_render(args: &[String]) -> Result<RenderArgs, String> {
     let mut scene = None;
+    let mut engine = None;
     let mut out = None;
     let mut width = None;
     let mut height = None;
@@ -332,6 +333,13 @@ fn parse_render(args: &[String]) -> Result<RenderArgs, String> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--engine" => {
+                i += 1;
+                engine = Some(match arg_at(args, i, "--engine")? {
+                    value @ ("path" | "ray") => value.to_owned(),
+                    _ => return Err("--engine must be path or ray".to_owned()),
+                });
+            }
             "--scene" => {
                 i += 1;
                 scene = Some(PathBuf::from(arg_at(args, i, "--scene")?));
@@ -368,6 +376,7 @@ fn parse_render(args: &[String]) -> Result<RenderArgs, String> {
     }
 
     Ok(RenderArgs {
+        engine,
         scene: scene.ok_or_else(|| "\"render\" requires --scene <path>".to_string())?,
         out: out.ok_or_else(|| "\"render\" requires --out <path>".to_string())?,
         width: width.ok_or_else(|| "\"render\" requires --width <pixels>".to_string())?,

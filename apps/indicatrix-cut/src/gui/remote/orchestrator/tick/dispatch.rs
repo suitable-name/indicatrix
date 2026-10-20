@@ -66,7 +66,7 @@ pub(super) fn start_remote_render(
         (
             ctx.width,
             ctx.height,
-            ctx.target_samples,
+            ctx.engine.target_samples(ctx.target_samples),
             ctx.live_compute_target,
             ctx.scene_generation(),
         )
@@ -101,7 +101,7 @@ pub(super) fn start_remote_render(
     // its ordinary trace loop, and the render thread's display cycle (not this
     // orchestrator) denoises the merged image with them. Skipped for a display-only
     // epoch too: the remote's frames arrive already denoised.
-    if !combining && !display_only {
+    if snapshot.engine.denoises() && !combining && !display_only {
         // The path signature refracts at the material's index, so it keys the guides.
         let n_d = snapshot.material.dispersion.n_d();
         let guide_key = GuideCache::key_for_geom(
@@ -281,16 +281,19 @@ pub(super) fn connection_is_stale(
 /// `indicatrix_net::scene::SceneState`'s own doc comment on why every field must be a
 /// resolved value, never a name/id the worker can't look up.
 ///
-/// Frosted girdle: `snapshot.facet_finishes` is already either empty (toggle off at
-/// capture time) or `girdle_facet_finishes(&snapshot.active_planes)` (toggle on) -- see
-/// `export_thread::scene_snapshot::SceneSnapshot::capture`. `SceneState::girdle_frosted`
-/// carries that same on/off bit rather than the resolved list itself (see that field's
-/// own doc comment on why), so a non-empty `facet_finishes` here becomes `true`: the
-/// remote worker re-derives the identical `Vec<FacetFinish>` from the identical
-/// `planes` it already receives below, via the same deterministic
-/// `girdle_facet_finishes` function.
+/// Frosted girdle and authored frosting: `snapshot.facet_finishes` is already resolved -- empty
+/// (nothing frosted), `girdle_facet_finishes(&snapshot.active_planes)` (girdle toggle on), or
+/// that list with the design's frosted planes marked too -- see
+/// `export_thread::scene_snapshot::SceneSnapshot::capture`. `SceneState` carries it as the
+/// girdle on/off bit plus the authored frosted plane indices rather than the resolved list
+/// itself (see those fields' doc comments), via `indicatrix::geometry::finishes_wire_form`:
+/// the remote worker re-derives the identical `Vec<FacetFinish>` from the identical `planes`
+/// it already receives below. A scene without authored frosting is the same bytes as before.
 fn scene_state_from_snapshot(snapshot: &SceneSnapshot, width: u32, height: u32) -> SceneState {
+    let (girdle_frosted, frosted_planes) =
+        indicatrix::geometry::finishes_wire_form(&snapshot.active_planes, &snapshot.facet_finishes);
     SceneState {
+        engine: snapshot.engine,
         width,
         height,
         yaw: snapshot.yaw,
@@ -303,7 +306,7 @@ fn scene_state_from_snapshot(snapshot: &SceneSnapshot, width: u32, height: u32) 
         lighting_preset: snapshot.lighting_preset,
         material: snapshot.material.clone(),
         planes: snapshot.active_planes.clone(),
-        girdle_frosted: !snapshot.facet_finishes.is_empty(),
+        girdle_frosted,
         backdrop: snapshot.backdrop,
         surface_glare: snapshot.surface_glare,
         // The concave tools, so the worker traces the same stone as the local tracer; empty
@@ -315,6 +318,7 @@ fn scene_state_from_snapshot(snapshot: &SceneSnapshot, width: u32, height: u32) 
         // empty for a non-fluorescent material.
         fluorescence: snapshot.fluorescence.as_ref().clone(),
         head_shadow_deg: snapshot.head_shadow_deg,
+        frosted_planes,
     }
 }
 

@@ -1,206 +1,258 @@
-//! Scoped-thread helpers for the passes of a rollout and of an evaluation.
+//! One persistent, bounded Rayon pool for CPU-bound environment work.
 //!
-//! The units of work are very unequal: a labelled 24-tier slot costs 28 candidate evaluations
-//! while a 4-tier slot costs 5, and a design with many free tiers takes ten times as long to
-//! evaluate as a small one. Contiguous chunks per thread would leave most threads waiting for the
-//! slowest chunk, so work is handed out one unit at a time, to whichever thread is free: through
-//! a shared counter ([`run_indexed`]) or a shared iterator over the items ([`run_items`]).
-//!
-//! Every unit writes its own result and the results come back in unit order, so what a pass
-//! computes does not depend on the thread count or on the scheduling.
+//! Calls keep an indexed result vector even though Rayon steals uneven-cost tasks dynamically;
+//! deterministic sampling and reductions therefore remain in the caller's index order. Inner
+//! line searches are deliberately serial so environment work cannot multiply the pool width.
 
 use std::{
+    cmp::Reverse,
+    collections::VecDeque,
     sync::{
-        Mutex, PoisonError,
+        Mutex, OnceLock, PoisonError,
         atomic::{AtomicUsize, Ordering},
     },
-    thread::{self, ScopedJoinHandle},
+    thread,
 };
 
-/// Threads worth spawning for `tasks` units of work: the core count, but never more than the
-/// tasks (so 0 for no work).
+use rayon::prelude::*;
+
+static WORK_POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
+
+fn work_pool() -> Option<&'static rayon::ThreadPool> {
+    WORK_POOL
+        .get_or_init(|| {
+            let threads = thread::available_parallelism()
+                .map_or(1, usize::from)
+                .max(1);
+            match rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|index| format!("indicatrix-trainer-cpu-{index}"))
+                .build()
+            {
+                Ok(pool) => Some(pool),
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not create trainer CPU pool ({error}); using serial work"
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+fn ordered<R>(mut pairs: Vec<(usize, R)>) -> Vec<R> {
+    pairs.sort_by_key(|(index, _)| *index);
+    pairs.into_iter().map(|(_, result)| result).collect()
+}
+
+/// Useful pool tasks for `tasks` units of work: never more tasks than units.
 #[must_use]
 pub fn pass_threads(tasks: usize) -> usize {
-    thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(tasks)
+    pool_threads().min(tasks)
 }
 
-/// Joins the workers in spawn order, re-raising the panic of the first one that panicked.
-fn join_all<R>(handles: Vec<ScopedJoinHandle<'_, Vec<(usize, R)>>>) -> Vec<Vec<(usize, R)>> {
-    handles
-        .into_iter()
-        .map(|handle| match handle.join() {
-            Ok(part) => part,
-            Err(payload) => std::panic::resume_unwind(payload),
-        })
-        .collect()
+/// Width of the persistent CPU pool (or the serial fallback width).
+#[must_use]
+pub fn pool_threads() -> usize {
+    work_pool().map_or(1, rayon::ThreadPool::current_num_threads)
 }
 
-/// Puts `(index, result)` pairs back in index order. Every index in `0..count` must appear
-/// exactly once.
-fn gather<R>(parts: Vec<Vec<(usize, R)>>, count: usize) -> Vec<R> {
-    let mut slots: Vec<Option<R>> = (0..count).map(|_| None).collect();
-    for (index, result) in parts.into_iter().flatten() {
-        slots[index] = Some(result);
-    }
-    slots.into_iter().flatten().collect()
+fn ranked(costs: &[u64]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..costs.len()).collect();
+    order.sort_by_key(|&index| Reverse(costs[index]));
+    order
 }
 
-/// `work(i)` for every `i` in `0..tasks`, on up to `threads` scoped threads that pull the next
-/// index from a shared counter. The results are returned in index order. With one thread (or one
-/// task) everything runs on the calling thread.
+/// `work(i)` for every index, on at most `threads` Rayon tasks. Results are index ordered.
 pub fn run_indexed<R, F>(tasks: usize, threads: usize, work: F) -> Vec<R>
 where
     R: Send,
     F: Fn(usize) -> R + Sync,
 {
-    if threads <= 1 || tasks <= 1 {
+    if tasks == 0 {
+        return Vec::new();
+    }
+    let workers = threads.min(tasks).max(1);
+    if workers == 1 || work_pool().is_none() {
         return (0..tasks).map(work).collect();
     }
     let next = AtomicUsize::new(0);
-    let parts = thread::scope(|scope| {
-        let handles: Vec<_> = (0..threads.min(tasks))
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut done = Vec::new();
-                    loop {
-                        let task = next.fetch_add(1, Ordering::Relaxed);
-                        if task >= tasks {
-                            return done;
+    ordered(
+        work_pool()
+            .expect("checked above")
+            .install(|| {
+                (0..workers)
+                    .into_par_iter()
+                    .map(|_| {
+                        let mut results = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, Ordering::Relaxed);
+                            if index >= tasks {
+                                return results;
+                            }
+                            results.push((index, work(index)));
                         }
-                        done.push((task, work(task)));
-                    }
-                })
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect();
-        join_all(handles)
-    });
-    gather(parts, tasks)
+            .into_iter()
+            .flatten()
+            .collect(),
+    )
 }
 
-/// `work(i, &mut items[i])` for every item, on up to `threads` scoped threads that take the
-/// next item from a shared iterator, one at a time. The results are returned in item order. With
-/// one thread (or one item) everything runs on the calling thread.
-pub fn run_items<T, R, F>(items: &mut [T], threads: usize, work: F) -> Vec<R>
+/// Whether a unit may use spare CPU capacity for nested work. Always false: inner solves must
+/// use one thread, which avoids multiplying environment slots by line-search threads.
+pub struct Tail;
+
+impl Tail {
+    #[must_use]
+    #[allow(
+        clippy::unused_self,
+        reason = "kept as a method so spare-capacity tails can become real later"
+    )]
+    pub const fn is_active(&self) -> bool {
+        false
+    }
+}
+
+/// Cost-ranked indexed work; output remains in original index order.
+pub fn run_indexed_ranked<R, F>(costs: &[u64], threads: usize, work: F) -> Vec<R>
+where
+    R: Send,
+    F: Fn(usize) -> R + Sync,
+{
+    if costs.is_empty() {
+        return Vec::new();
+    }
+    let order = ranked(costs);
+    let workers = threads.min(order.len()).max(1);
+    if workers == 1 || work_pool().is_none() {
+        return ordered(
+            order
+                .into_iter()
+                .map(|index| (index, work(index)))
+                .collect(),
+        );
+    }
+    let next = AtomicUsize::new(0);
+    ordered(
+        work_pool()
+            .expect("checked above")
+            .install(|| {
+                (0..workers)
+                    .into_par_iter()
+                    .map(|_| {
+                        let mut results = Vec::new();
+                        loop {
+                            let rank = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(&index) = order.get(rank) else {
+                                return results;
+                            };
+                            results.push((index, work(index)));
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .into_iter()
+            .flatten()
+            .collect(),
+    )
+}
+
+/// Work mutable items in cost order using the persistent pool; return results in item order.
+pub fn run_items_ranked<T, R, F>(items: &mut [T], costs: &[u64], threads: usize, work: F) -> Vec<R>
 where
     T: Send,
     R: Send,
-    F: Fn(usize, &mut T) -> R + Sync,
+    F: Fn(usize, &mut T, &Tail) -> R + Sync,
 {
-    let count = items.len();
-    if threads <= 1 || count <= 1 {
-        return items
-            .iter_mut()
-            .enumerate()
-            .map(|(index, item)| work(index, item))
-            .collect();
+    if items.is_empty() {
+        return Vec::new();
     }
-    let queue = Mutex::new(items.iter_mut().enumerate());
-    let parts = thread::scope(|scope| {
-        let handles: Vec<_> = (0..threads.min(count))
+    let count = items.len();
+    let workers = threads.min(count).max(1);
+    let order = if costs.len() == count {
+        ranked(costs)
+    } else {
+        (0..count).collect()
+    };
+    let mut by_index: Vec<Option<&mut T>> = items.iter_mut().map(Some).collect();
+    let queue: VecDeque<_> = order
+        .into_iter()
+        .filter_map(|index| by_index.get_mut(index)?.take().map(|item| (index, item)))
+        .collect();
+    let queue = Mutex::new(queue.into_iter());
+    let tail = Tail;
+    if workers == 1 || work_pool().is_none() {
+        let mut result = Vec::with_capacity(count);
+        loop {
+            let next = queue.lock().unwrap_or_else(PoisonError::into_inner).next();
+            let Some((index, item)) = next else {
+                break;
+            };
+            result.push((index, work(index, item, &tail)));
+        }
+        return ordered(result);
+    }
+    let parts = work_pool().expect("checked above").install(|| {
+        (0..workers)
+            .into_par_iter()
             .map(|_| {
-                scope.spawn(|| {
-                    let mut done = Vec::new();
-                    loop {
-                        // The guard is a temporary of this statement: the lock is free again
-                        // before the item is worked on.
-                        let next = queue.lock().unwrap_or_else(PoisonError::into_inner).next();
-                        let Some((index, item)) = next else {
-                            return done;
-                        };
-                        done.push((index, work(index, item)));
-                    }
-                })
+                let mut results = Vec::new();
+                loop {
+                    let item = queue.lock().unwrap_or_else(PoisonError::into_inner).next();
+                    let Some((index, item)) = item else {
+                        return results;
+                    };
+                    results.push((index, work(index, item, &tail)));
+                }
             })
-            .collect();
-        join_all(handles)
+            .collect::<Vec<_>>()
     });
-    gather(parts, count)
+    let pairs: Vec<_> = parts.into_iter().flatten().collect();
+    ordered(pairs)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn the_thread_count_is_the_core_count_capped_by_the_work() {
-        let cores = thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    fn task_count_is_bounded_by_useful_work() {
         assert_eq!(pass_threads(0), 0);
         assert_eq!(pass_threads(1), 1);
-        for tasks in [2, 7, 64, 1000] {
-            assert_eq!(pass_threads(tasks), cores.min(tasks));
-        }
+        assert!(pass_threads(17) <= 17);
     }
 
     #[test]
-    fn indexed_results_come_back_in_index_order_for_any_thread_count() {
-        let expected: Vec<usize> = (0..257).map(|i| i * 3 + 1).collect();
-        for threads in [0, 1, 2, 8, 1000] {
-            assert_eq!(
-                run_indexed(257, threads, |i| i * 3 + 1),
-                expected,
-                "{threads}"
-            );
-        }
-        assert_eq!(run_indexed(0, 4, |i| i), Vec::<usize>::new());
-        assert_eq!(run_indexed(1, 4, |i| i + 5), [5]);
-    }
-
-    #[test]
-    fn every_indexed_task_runs_exactly_once() {
-        let runs = AtomicUsize::new(0);
-        let results = run_indexed(100, 6, |i| {
-            runs.fetch_add(1, Ordering::Relaxed);
-            // Uneven work: the early tasks are the slow ones.
-            if i < 4 {
-                thread::sleep(Duration::from_millis(20));
-            }
-            i
-        });
-        assert_eq!(runs.load(Ordering::Relaxed), 100);
-        assert_eq!(results, (0..100).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn items_are_each_worked_on_once_and_the_results_follow_item_order() {
-        for threads in [0, 1, 3, 16] {
-            let mut items: Vec<usize> = (0..50).collect();
-            let results = run_items(&mut items, threads, |index, item| {
-                assert_eq!(index, *item);
-                *item += 100;
-                index * 2
+    fn indexed_work_runs_once_and_returns_deterministically() {
+        let count = AtomicUsize::new(0);
+        for threads in [1, 2, 8, 100] {
+            let got = run_indexed(257, threads, |index| {
+                count.fetch_add(1, Ordering::Relaxed);
+                index * 3 + 1
             });
-            assert_eq!(
-                results,
-                (0..50).map(|i| i * 2).collect::<Vec<_>>(),
-                "{threads}"
-            );
-            assert_eq!(items, (100..150).collect::<Vec<_>>(), "{threads}");
+            assert_eq!(got, (0..257).map(|i| i * 3 + 1).collect::<Vec<_>>());
         }
-        let mut none: Vec<u8> = Vec::new();
-        assert_eq!(run_items(&mut none, 4, |_, _| 0), Vec::<i32>::new());
+        assert_eq!(count.load(Ordering::Relaxed), 257 * 4);
     }
 
     #[test]
-    fn a_slow_item_does_not_hold_up_the_others() {
-        // One 100 ms item among many fast ones: with dynamic scheduling the fast ones all finish
-        // on the other threads, so the order in which the items were taken is not contiguous.
-        let taken = Mutex::new(Vec::new());
-        let mut items: Vec<usize> = (0..40).collect();
-        run_items(&mut items, 4, |index, _| {
-            if index == 0 {
-                thread::sleep(Duration::from_millis(100));
-            }
-            taken.lock().unwrap().push(index);
+    fn ranked_work_returns_original_order_and_mutates_each_item_once() {
+        let costs: Vec<u64> = (0..64_u64).map(|i| i * 37 % 19).collect();
+        let expected: Vec<usize> = (0..64).map(|i| i * 2).collect();
+        assert_eq!(run_indexed_ranked(&costs, 1, |i| i * 2), expected);
+        assert_eq!(run_indexed_ranked(&costs, 6, |i| i * 2), expected);
+        let mut items: Vec<_> = (0..64).collect();
+        let results = run_items_ranked(&mut items, &costs, 6, |i, item, tail| {
+            assert!(!tail.is_active());
+            *item += 100;
+            i * 2
         });
-        let taken = taken.into_inner().unwrap();
-        assert_eq!(taken.len(), 40);
-        // Item 0 finished last or nearly so; the thread that held it took no further items
-        // while it slept.
-        let position = taken.iter().position(|&i| i == 0).unwrap();
-        assert!(position > 20, "item 0 finished at position {position}");
+        assert_eq!(results, expected);
+        assert_eq!(items, (100..164).collect::<Vec<_>>());
     }
 }

@@ -6,7 +6,8 @@
 //! be read (`indicatrix_editor::loading::eval_number`). Slint's own `to-float` reads neither
 //! calculations nor a decimal comma, and silently turns anything else into 0.
 //!
-//! - `offset_selected` -- the multi-select bar's Offset box: moves every selected tier.
+//! - `offset_selected` -- the multi-select bar's Offset box: moves every ticked tier,
+//!   whether or not the cursor is on one of them (`offset_anchor`).
 //! - `add_facet` -- the Tier form's "+ Add" box.
 //! - `rotate_tier` -- the Tier form's Rotate buttons.
 //! - `any_detached` -- whether any row is detached, for the Simple interface's note.
@@ -15,9 +16,13 @@
 //! (`nudge_angle`, `facet_add`, `tier_rotate_indices`), so the undo step, the refresh, the
 //! preview replan and the refusals are those callbacks' own, unchanged.
 
-use crate::{EditorModel, MainWindow, TierTableModel, gui::show_toast};
+use crate::{
+    EditorModel, MainWindow, TierTableModel,
+    gui::{editor::state::EditorState, show_toast},
+};
 use indicatrix_editor::loading::eval_number;
 use slint::ComponentHandle;
+use std::{cell::RefCell, rc::Rc};
 
 /// Narrows a UI value to the `f32` the Slint models hold.
 #[expect(
@@ -51,25 +56,61 @@ fn signed_teeth(teeth: f64, direction: i32) -> f64 {
     if direction < 0 { -teeth } else { teeth }
 }
 
+/// The row the Offset bar hands to `nudge_angle`, which moves the whole ticked group when its
+/// anchor is one of the ticked rows. `cursor` is the keyboard cursor row (negative when there
+/// is none), `ticked` the ticked rows.
+///
+/// With a group of two or more ticked: the cursor row when it is ticked, otherwise the first
+/// ticked row, since ticking a box does not move the cursor and a click on a ticked row would
+/// end the group. With fewer: the cursor row, else the one ticked row. `None` when there is
+/// neither.
+fn offset_anchor(cursor: i32, ticked: &[i32]) -> Option<i32> {
+    let first = ticked.iter().copied().min();
+    if ticked.len() > 1 {
+        return if ticked.contains(&cursor) {
+            Some(cursor)
+        } else {
+            first
+        };
+    }
+    if cursor >= 0 { Some(cursor) } else { first }
+}
+
 /// Registers `TierTableModel`'s callbacks. Called once from `setup_editor_callbacks`.
-pub(in crate::gui::editor) fn setup_tier_table_model(ui: &MainWindow) {
+///
+/// `state` is the editor state the other callbacks hold: the Offset anchor is resolved from
+/// `EditorState::multi_selected`, the very set `nudge_angle` moves, and not from the rows'
+/// `multi_selected` flags, which a background solve's snapshot can briefly leave stale.
+pub(in crate::gui::editor) fn setup_tier_table_model(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+) {
     let model = ui.global::<TierTableModel>();
 
     model.on_offset_selected({
         let ui_weak = ui.as_weak();
+        let state = Rc::clone(state);
         move |anchor, text| {
             let Some(ui) = ui_weak.upgrade() else {
                 return false;
             };
-            // The batch acts on the group that holds the tier the cursor is on.
-            if anchor < 0 {
+            // The batch acts on the ticked group. `nudge_angle` takes the group that holds
+            // its anchor row, so the anchor is a ticked row: the cursor row when it is one,
+            // otherwise the first ticked row. Ticking a box does not move the cursor.
+            let ticked: Vec<i32> = state
+                .borrow()
+                .multi_selected
+                .iter()
+                .filter_map(|&index| i32::try_from(index).ok())
+                .collect();
+            let Some(anchor) = offset_anchor(anchor, &ticked) else {
                 show_toast(
                     &ui,
-                    "Click one of the selected tiers first, then press Offset.",
+                    "Tick two or more tiers first, then press Offset.",
                     "info",
                 );
                 return false;
-            }
+            };
             match read_number("Offset", &text) {
                 Ok(degrees) => {
                     ui.global::<EditorModel>()
@@ -188,6 +229,34 @@ mod tests {
             read_number("Teeth", "NaN"),
             Err("Teeth must be a finite number.".to_string())
         );
+    }
+
+    #[test]
+    fn a_ticked_cursor_row_is_the_anchor() {
+        assert_eq!(offset_anchor(2, &[0, 2, 3]), Some(2));
+    }
+
+    #[test]
+    fn without_a_cursor_the_first_ticked_row_is_the_anchor() {
+        assert_eq!(offset_anchor(-1, &[3, 1, 2]), Some(1));
+    }
+
+    #[test]
+    fn a_cursor_on_an_unticked_row_falls_back_to_the_first_ticked_row() {
+        // The cursor stays where it was when boxes are ticked; the bar still moves the group.
+        assert_eq!(offset_anchor(5, &[1, 2]), Some(1));
+    }
+
+    #[test]
+    fn with_no_group_the_cursor_row_is_kept() {
+        assert_eq!(offset_anchor(4, &[]), Some(4));
+        assert_eq!(offset_anchor(4, &[1]), Some(4));
+    }
+
+    #[test]
+    fn with_no_cursor_and_no_group_there_is_no_anchor() {
+        assert_eq!(offset_anchor(-1, &[]), None);
+        assert_eq!(offset_anchor(-1, &[2]), Some(2));
     }
 
     #[test]

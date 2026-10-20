@@ -260,6 +260,8 @@ pub(super) fn design_record_at(
         }],
         attachments: Vec::new(),
         version: revision_token(url, revision),
+        // An unfrosted design, the ordinary case; the frosting test sets its own.
+        frosting: Vec::new(),
     }
 }
 

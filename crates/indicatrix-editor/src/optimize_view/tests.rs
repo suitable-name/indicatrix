@@ -23,6 +23,7 @@ fn scale_reference_tier(value: f64) -> ConstraintTier {
 /// only the still-improved blended score.
 fn sample_outcome(changed: bool, cancelled: bool) -> OptimizeOutcome {
     OptimizeOutcome {
+        provenance: None,
         before: ObjectiveComponents {
             windowing_pct: 12.5,
             extinction_pct: 8.0,
@@ -82,11 +83,14 @@ fn optimize_result_rows_reports_each_component_separately_never_collapsed() {
     assert_eq!(rows[4].after.as_str(), "15.00 (-5.00, better)");
 }
 
+mod outcome_preview;
+
 #[test]
-fn build_optimize_preview_design_moves_only_the_changed_tiers_angle() {
-    // The ghost-preview candidate must apply every
-    // `AngleChange` to the right tier and leave every other tier's angle (and
-    // every other field) untouched.
+fn build_optimize_preview_design_rejects_an_uncertified_outcome() {
+    // A hand-built outcome carries no provenance, so it cannot be previewed: the ghost preview
+    // shows only states the optimizer certified, and never mutates the design it is given. The
+    // positive case (a certified outcome rebuilds exactly the accepted state, moving only the
+    // changed tiers) is in `outcome_preview`.
     let mut design = Design::new(
         indicatrix_cut_core::PreformSpec::block(2.0, 1.0, 2.0),
         indicatrix_cut_core::ScheduleMeta::default(),
@@ -108,20 +112,16 @@ fn build_optimize_preview_design_moves_only_the_changed_tiers_angle() {
     design.tiers[3].angle_deg = -40.0;
     let outcome = sample_outcome(true, false); // changes tier index 3 to -41.5
     let preview = build_optimize_preview_design(&design, &outcome);
-    assert!((preview.tiers[3].angle_deg - (-41.5)).abs() < 1e-9);
-    // Every other tier is untouched.
-    for i in 0..3 {
-        assert!((preview.tiers[i].angle_deg - design.tiers[i].angle_deg).abs() < 1e-9);
-    }
+    assert!(preview.is_err(), "uncertified outcomes must be rejected");
     // The original design is never mutated.
     assert!((design.tiers[3].angle_deg - (-40.0)).abs() < 1e-9);
 }
 
 #[test]
-fn build_optimize_preview_design_ignores_an_out_of_range_change_index() {
+fn build_optimize_preview_design_refuses_an_out_of_range_change_index() {
     // A design edited between when Optimize ran and when the preview toggle is
     // flipped can shrink the tier list out from under a stale outcome -- this
-    // must degrade gracefully (skip that change), never panic.
+    // must be refused with an error (a change is never silently skipped), never panic.
     let design = Design::new(
         indicatrix_cut_core::PreformSpec::block(2.0, 1.0, 2.0),
         indicatrix_cut_core::ScheduleMeta::default(),
@@ -129,7 +129,7 @@ fn build_optimize_preview_design_ignores_an_out_of_range_change_index() {
     );
     let outcome = sample_outcome(true, false); // names tier index 3, out of range
     let preview = build_optimize_preview_design(&design, &outcome);
-    assert_eq!(preview.tiers.len(), 1);
+    assert!(preview.is_err(), "stale indices cannot be silently skipped");
 }
 
 #[test]
@@ -518,6 +518,8 @@ fn tone_of(l_star: f32, chroma: f32) -> indicatrix::color::metrics::FaceUpTone {
 /// A result whose best candidate is lighter (L* 50 to 60) and weaker (C* 20 to 10).
 fn toned_result(goal: Option<ToneGoal>) -> (OptimizeResult, OptimizeCandidate) {
     let candidate = OptimizeCandidate {
+        provenance: None,
+        preservation_baseline: None,
         changes: Vec::new(),
         mast_changes: Vec::new(),
         after: sample_outcome(false, false).after,

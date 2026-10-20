@@ -3,11 +3,14 @@
 //! Solves the 3-stage guillotine cut sequence (slabs across stage A, bars across stage B,
 //! pieces across stage C) where each piece's value depends on its spatial bounds.
 //!
-//! # Memory
+//! # The number of pieces
 //!
-//! The number of pieces is free: every order's DP places as many stones as the rough, the
-//! losses and the minimum width allow. The design cap is applied outside the DP (see
-//! [`plan_shaped_design_cap`]).
+//! The number of pieces is free unless `PlanSettings::max_stones` caps it: every order's DP
+//! places as many stones as the rough, the losses and the minimum width allow. A stone cap the
+//! free optimum's layout already respects (counted in stones built, see
+//! [`plan_shaped_for_order`]) changes nothing; one that binds is solved by the count DP of
+//! `dp_capped`, the positional twin of this DP with a stone budget in every table. The design
+//! cap is applied outside the DP (see [`plan_shaped_design_cap`]).
 //!
 //! # Memory
 //!
@@ -19,6 +22,7 @@
 use super::{
     clip::{BuildClipParams, ClippedTable, build_clipped_table_jobs},
     ctx::ShapedCtx,
+    dp_capped::solve_order_capped,
     grid::ShapedGrid,
     tree::layout_from_tree_shaped,
 };
@@ -31,7 +35,7 @@ use crate::rough_plan::{
 };
 
 /// Reports one unit of progress; returns `false` to cancel.
-type Tick<'a> = dyn FnMut() -> bool + 'a;
+pub(super) type Tick<'a> = dyn FnMut() -> bool + 'a;
 
 /// Solved positional DP for one cut order.
 pub struct ShapedOrderDp {
@@ -134,12 +138,24 @@ impl ShapedOrderDp {
             return Vec::new();
         }
         let tree = self.reconstruct(grid, table);
-        let layout = layout_from_tree_shaped(ctx, self.order, &tree, pool, settings);
-        if layout.stones.is_empty() {
-            Vec::new()
-        } else {
-            vec![layout]
-        }
+        candidate_of_tree(ctx, self.order, &tree, pool, settings)
+    }
+}
+
+/// The candidate of a cut order built from its best `tree`: the one layout, built in full, or
+/// none when no piece holds a stone.
+pub(super) fn candidate_of_tree(
+    ctx: &ShapedCtx,
+    order: CutOrder,
+    tree: &Tree,
+    pool: &[CandidateDesign],
+    settings: &PlanSettings,
+) -> Vec<RoughLayout> {
+    let layout = layout_from_tree_shaped(ctx, order, tree, pool, settings);
+    if layout.stones.is_empty() {
+        Vec::new()
+    } else {
+        vec![layout]
     }
 }
 
@@ -259,6 +275,18 @@ pub(super) fn solve_order(
 /// Reports [`PlanProgress::Dp`] once per starting plane in the bar and slab
 /// fills, so a cancel is seen within a fraction of the order's work.
 ///
+/// The stone cap is `settings.max_stones`. Without one this is exactly the free DP. With one,
+/// the free DP runs first and its layout is the answer whenever it already holds at most that
+/// many stones (no tree of at most N pieces is worth more than the free optimum, so it IS the
+/// capped optimum). The test is made on the built layout: a tree has at least as many pieces
+/// as the layout has stones, because a piece the fitter leaves without a stone is merged into
+/// a neighbour when the layout is built, so a tree of more pieces than the cap can still build
+/// a layout within it (the table valued a piece the fitter rejects, which a mesh rough's
+/// heuristic solver can do). Otherwise the count DP of the cap runs on the same table (a
+/// second pass, which reports the same events again) and the answer is the best layout of at
+/// most that many stones, not a larger one cut down. That DP limits the pieces of a tree, not
+/// the stones built from it (see `dp_capped`).
+///
 /// # Returns
 ///
 /// `None` if cancelled via `on_progress`.
@@ -279,7 +307,26 @@ pub fn plan_shaped_for_order(
         })
     };
     let dp = solve_order(grid, table, order, &mut tick)?;
-    Some(dp.candidates(grid, table, ctx, settings, pool))
+    let Some(cap) = settings.stone_cap() else {
+        return Some(dp.candidates(grid, table, ctx, settings, pool));
+    };
+    if dp.root_value <= NEG {
+        return Some(Vec::new());
+    }
+    let free = dp.reconstruct(grid, table);
+    let free_layouts = candidate_of_tree(ctx, order, &free, pool, settings);
+    // A tree of at most `cap` pieces builds at most `cap` stones. A larger tree builds fewer
+    // stones than it has pieces when the fitter leaves a piece without one, and may still be
+    // within the cap.
+    if free.leaf_count() <= cap
+        || free_layouts
+            .first()
+            .is_some_and(|layout| layout.stone_count() <= cap)
+    {
+        return Some(free_layouts);
+    }
+    let capped = solve_order_capped(grid, table, order, cap, &mut tick)?;
+    Some(capped.candidates(grid, table, ctx, settings, pool))
 }
 
 /// Parameters for running shaped leave-one-out alternative rounds.

@@ -2,7 +2,10 @@
 //! the fidelity of the report.
 
 use crate::env::DEFAULT_LINE_SEARCH;
+use indicatrix::optics::raytracer::LightingPreset;
 use indicatrix_cut_core::ObjectiveFidelity;
+use indicatrix_cut_core::ShapeTarget;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Policy steps per inference run (the environments' default episode length: 60 steps of
 /// 0.5 degrees reach 30 degrees).
@@ -45,6 +48,14 @@ pub struct InferenceConfig {
     /// is deterministic and the design only changes on an accepted candidate, so a long run of
     /// refused steps repeats itself and would only burn evaluations.
     pub stall_steps: usize,
+    /// Lighting preset used for rollout and endpoint scores.
+    pub lighting: LightingPreset,
+    /// Optional additive shape target.
+    pub shape_target: Option<ShapeTarget>,
+    /// Optional allow-list for independent angle coordinates.
+    pub only_tiers: Option<BTreeSet<usize>>,
+    /// Inclusive authored-angle bounds by tier.
+    pub angle_bounds: BTreeMap<usize, (f64, f64)>,
 }
 
 impl InferenceConfig {
@@ -70,6 +81,10 @@ impl InferenceConfig {
             report_fidelity: ObjectiveFidelity::Full,
             line_search: DEFAULT_LINE_SEARCH.to_vec(),
             stall_steps: DEFAULT_STALL_STEPS,
+            lighting: LightingPreset::IsoHemisphere,
+            shape_target: None,
+            only_tiers: None,
+            angle_bounds: BTreeMap::new(),
         }
     }
 

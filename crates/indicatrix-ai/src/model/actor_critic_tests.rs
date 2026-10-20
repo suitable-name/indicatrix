@@ -3,12 +3,22 @@
 
 use super::*;
 use crate::env::{
-    CROWN_MAX_ANGLE_DEG, CROWN_MIN_ANGLE_DEG, GLOBAL_DIM, MEAN_BOUND, PAVILION_CRITICAL_MARGIN_DEG,
-    PAVILION_MAX_ANGLE_DEG, angle_envelope,
+    GLOBAL_DIM, MAX_SAFE_CANDIDATE_ANGLE_DEG, MEAN_BOUND, MIN_SAFE_CANDIDATE_ANGLE_DEG,
 };
+use crate::model::compose_mean;
 
 /// Balanced objective: equal windowing, extinction and tilt brilliance, no yield.
-const BALANCED: [f32; N_COMPONENTS] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0];
+const BALANCED: [f32; N_COMPONENTS] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0, 0.0, 0.0, 0.0];
+
+fn weights4(a: f32, b: f32, c: f32, d: f32) -> [f32; N_COMPONENTS] {
+    let mut weights = [0.0; N_COMPONENTS];
+    weights[..4].copy_from_slice(&[a, b, c, d]);
+    weights
+}
+
+fn row4(a: f32, b: f32, c: f32, d: f32) -> [f32; N_COMPONENTS] {
+    weights4(a, b, c, d)
+}
 
 fn tier(angle_deg: f32, block_type: f32) -> TierFeature {
     TierFeature {
@@ -18,14 +28,35 @@ fn tier(angle_deg: f32, block_type: f32) -> TierFeature {
         block_type,
         is_pinned: 0.0,
         is_flat: 0.0,
+        is_mobile: 1.0,
         critical_margin_deg: 0.0,
         mast: 0.5,
-        min_angle_deg: 0.0,
-        max_angle_deg: 0.0,
+        min_angle_deg: if block_type < -0.5 {
+            -(MAX_SAFE_CANDIDATE_ANGLE_DEG as f32)
+        } else {
+            MIN_SAFE_CANDIDATE_ANGLE_DEG as f32
+        },
+        max_angle_deg: if block_type < -0.5 {
+            -(MIN_SAFE_CANDIDATE_ANGLE_DEG as f32)
+        } else {
+            MAX_SAFE_CANDIDATE_ANGLE_DEG as f32
+        },
         base_angle_deg: 0.0,
         index_frac: 0.0,
         azimuth_sin: 0.0,
         azimuth_cos: 0.0,
+        orbit_sin_2: 0.0,
+        orbit_cos_2: 1.0,
+        orbit_sin_4: 0.0,
+        orbit_cos_4: 1.0,
+        live_area_fraction: 1.0,
+        live_centroid_x: 0.0,
+        live_centroid_y: 0.0,
+        live_centroid_z: 0.0,
+        geometry_available: 1.0,
+        constraint_kind: 0.0,
+        relation_driven: 0.0,
+        target_driven: 0.0,
     }
 }
 
@@ -42,41 +73,24 @@ fn projected(angle_deg: f32, block_type: f32, delta: f64, crit: f32) -> f64 {
 }
 
 #[test]
-fn projection_bounds_are_the_published_envelope_constants() {
+fn projection_preserves_sign_and_uses_the_shared_safe_angle_interval() {
     let crit = 25.0f32;
     let tol = 1e-4;
-    // Pavilion: steepest and shallowest signed angle reached.
-    let steep = projected(-80.0, -1.0, -20.0, crit);
-    assert!(
-        (steep + f64::from(PAVILION_MAX_ANGLE_DEG)).abs() < tol,
-        "{steep}"
-    );
-    let shallow = projected(-30.0, -1.0, 20.0, crit);
-    let want = -f64::from(crit + PAVILION_CRITICAL_MARGIN_DEG);
-    assert!((shallow - want).abs() < tol, "{shallow} vs {want}");
-    // Crown.
-    let steep = projected(70.0, 1.0, 20.0, crit);
-    assert!(
-        (steep - f64::from(CROWN_MAX_ANGLE_DEG)).abs() < tol,
-        "{steep}"
-    );
-    let shallow = projected(30.0, 1.0, -20.0, crit);
-    assert!(
-        (shallow - f64::from(CROWN_MIN_ANGLE_DEG)).abs() < tol,
-        "{shallow}"
-    );
-    // The envelope helper agrees with what was enforced.
-    assert_eq!(
-        angle_envelope(-1.0, crit),
-        (
-            -PAVILION_MAX_ANGLE_DEG,
-            -(crit + PAVILION_CRITICAL_MARGIN_DEG)
-        )
-    );
+    let min = MIN_SAFE_CANDIDATE_ANGLE_DEG;
+    let max = MAX_SAFE_CANDIDATE_ANGLE_DEG;
+    // A 20-degree request toward either end of the interval is clipped at that end, never past
+    // it and never across the girdle: -15 + 20 would be +5, 15 - 20 would be -5.
+    assert!((projected(-80.0, -1.0, -20.0, crit) + max).abs() < tol);
+    assert!((projected(-15.0, -1.0, 20.0, crit) + min).abs() < tol);
+    assert!((projected(70.0, 1.0, 20.0, crit) - max).abs() < tol);
+    assert!((projected(15.0, 1.0, -20.0, crit) - min).abs() < tol);
+    // Inside the interval the request passes through.
+    assert!((projected(-30.0, -1.0, 20.0, crit) + 10.0).abs() < tol);
+    assert!((projected(30.0, 1.0, -20.0, crit) - 10.0).abs() < tol);
 }
 
 #[test]
-fn a_zero_delta_on_a_tier_outside_its_window_still_approaches_it_by_one_step() {
+fn zero_delta_does_not_retarget_an_out_of_range_angle() {
     let step = 0.75;
     let run = |angle_deg: f32, block_type: f32| {
         let mut action = ContinuousTierAction::new(vec![0.0]);
@@ -88,16 +102,28 @@ fn a_zero_delta_on_a_tier_outside_its_window_still_approaches_it_by_one_step() {
         );
         action.deltas_deg[0]
     };
-    // Pavilion window [41, 85]: -38 is too shallow, so it deepens by exactly one step.
-    assert_eq!(run(-38.0, -1.0), -step);
-    // Too steep: -88 comes back by one step.
-    assert_eq!(run(-88.0, -1.0), step);
-    // Crown window [15, 80].
-    assert_eq!(run(10.0, 1.0), step);
-    assert_eq!(run(85.0, 1.0), -step);
-    // Inside the window a zero delta stays zero.
+    assert_eq!(run(-38.0, -1.0), 0.0);
+    assert_eq!(run(-88.0, -1.0), 0.0);
+    assert_eq!(run(10.0, 1.0), 0.0);
+    assert_eq!(run(85.0, 1.0), 0.0);
     assert_eq!(run(-60.0, -1.0), 0.0);
     assert_eq!(run(50.0, 1.0), 0.0);
+}
+
+#[test]
+fn projection_respects_explicit_tier_bounds_and_empty_intersections() {
+    let mut bounded = tier(40.0, 1.0);
+    bounded.min_angle_deg = 35.0;
+    bounded.max_angle_deg = 45.0;
+    let mut action = ContinuousTierAction::new(vec![20.0]);
+    GemstoneSetAttentionNetwork::project_actions(&mut action, &[bounded.clone()], 90.0, 20.0);
+    assert!((40.0 + action.deltas_deg[0] - 45.0).abs() < 1e-5);
+
+    bounded.min_angle_deg = 100.0;
+    bounded.max_angle_deg = 110.0;
+    let mut action = ContinuousTierAction::new(vec![10.0]);
+    GemstoneSetAttentionNetwork::project_actions(&mut action, &[bounded], 90.0, 20.0);
+    assert_eq!(action.deltas_deg[0], 0.0);
 }
 
 /// A small network (`d_model` 16, two layers) with distinct raw log-stds, so the block each tier
@@ -118,6 +144,7 @@ fn token_with_block(block: f32, seed: f32) -> Vec<f32> {
         .map(|k| 0.05 * (k as f32 + seed))
         .collect();
     token[BLOCK_TYPE_INDEX] = block;
+    token[crate::env::MOBILITY_INDEX] = 1.0;
     token
 }
 
@@ -165,7 +192,7 @@ fn forward_reads_the_log_std_of_the_tiers_block() {
     let (again, _) = net
         .forward(
             &[token_with_block(1.0, 9.0), token_with_block(-1.0, 7.0)],
-            &global_token([0.1, 0.2, 0.3, 0.4]),
+            &global_token(weights4(0.1, 0.2, 0.3, 0.4)),
         )
         .unwrap();
     assert_eq!(again.log_std, vec![policy.log_std[0], policy.log_std[1]]);
@@ -182,7 +209,7 @@ fn forward_reads_the_log_std_of_the_tiers_block() {
 fn forward_agrees_with_forward_full() {
     let net = small_network(21);
     let toks = tokens(5);
-    let global = global_token([0.4, 0.3, 0.2, 0.1]);
+    let global = global_token(weights4(0.4, 0.3, 0.2, 0.1));
     let (policy, value) = net.forward(&toks, &global).unwrap();
     let full = net.forward_full(&toks, &global).unwrap();
     assert_eq!(policy, full.policy);
@@ -205,7 +232,11 @@ fn forward_agrees_with_forward_full() {
 fn the_policy_mean_is_composed_from_the_sensitivities_and_the_weight_fractions() {
     let net = small_network(5);
     let toks = tokens(4);
-    for fractions in [[0.4, 0.3, 0.2, 0.1], [0.0, 0.0, 0.0, 1.0], BALANCED] {
+    for fractions in [
+        weights4(0.4, 0.3, 0.2, 0.1),
+        weights4(0.0, 0.0, 0.0, 1.0),
+        BALANCED,
+    ] {
         let out = net.forward_full(&toks, &global_token(fractions)).unwrap();
         // The network composes exactly what `compose_mean` composes, with the fractions read from
         // entries 15 to 18 of the global token.
@@ -226,7 +257,8 @@ fn the_policy_mean_is_composed_from_the_sensitivities_and_the_weight_fractions()
             .collect();
         let g_max = g.iter().fold(0.0f64, |a, v| a.max(v.abs()));
         for (k, (mean, g)) in out.policy.mean.iter().zip(&g).enumerate() {
-            let want = -f64::from(MEAN_BOUND) * g / (g_max + 1e-6);
+            let want =
+                -(g / g_max.max(f64::from(crate::env::SLOPE_NORM_FLOOR))) * f64::from(MEAN_BOUND);
             assert!(
                 (f64::from(*mean) - want).abs() < 1e-4,
                 "tier {k}: {mean} vs {want}"
@@ -239,7 +271,7 @@ fn the_policy_mean_is_composed_from_the_sensitivities_and_the_weight_fractions()
     // Different weights give a different direction from the same network.
     let a = net.forward(&toks, &global_token(BALANCED)).unwrap().0;
     let b = net
-        .forward(&toks, &global_token([0.0, 0.0, 0.0, 1.0]))
+        .forward(&toks, &global_token(weights4(0.0, 0.0, 0.0, 1.0)))
         .unwrap()
         .0;
     assert_ne!(a.mean, b.mean);
@@ -249,11 +281,11 @@ fn the_policy_mean_is_composed_from_the_sensitivities_and_the_weight_fractions()
 fn a_hand_set_sens_head_gives_every_tier_the_same_slope() {
     let mut net = small_network(7);
     net.sens_head.weights.fill(0.0);
-    let biases = [0.9, 0.6, 0.3, 0.5];
+    let biases = row4(0.9, 0.6, 0.3, 0.5);
     net.sens_head.biases.copy_from_slice(&biases);
 
-    // Balanced: g = (0.9 + 0.6 + 0.3) / 3 = 0.6 on every tier, so g_max = |g| and every tier sits
-    // at -MEAN_BOUND (the epsilon keeps it a hair below).
+    // Balanced: g = (0.9 + 0.6 + 0.3) / 3 = 0.6 on every tier, above the floor, so the mean is
+    // exactly -MEAN_BOUND.
     let out = net
         .forward_full(&tokens(2), &global_token(BALANCED))
         .unwrap();
@@ -263,9 +295,11 @@ fn a_hand_set_sens_head_gives_every_tier_the_same_slope() {
     }
 
     // Extinction only with a negative bias: g = -0.9 on every tier, the mean flips to +MEAN_BOUND.
-    net.sens_head.biases.copy_from_slice(&[0.2, -0.9, 0.1, 0.0]);
+    net.sens_head
+        .biases
+        .copy_from_slice(&row4(0.2, -0.9, 0.1, 0.0));
     let out = net
-        .forward_full(&tokens(3), &global_token([0.0, 1.0, 0.0, 0.0]))
+        .forward_full(&tokens(3), &global_token(weights4(0.0, 1.0, 0.0, 0.0)))
         .unwrap();
     for m in &out.policy.mean {
         assert!((m - MEAN_BOUND).abs() < 1e-5, "{m}");
@@ -274,11 +308,11 @@ fn a_hand_set_sens_head_gives_every_tier_the_same_slope() {
     // The sensitivities are the raw head outputs: nothing squashes a slope of 7 or -3.
     net.sens_head
         .biases
-        .copy_from_slice(&[7.0, -3.0, 0.0, 0.25]);
+        .copy_from_slice(&row4(7.0, -3.0, 0.0, 0.25));
     let out = net
         .forward_full(&tokens(2), &global_token(BALANCED))
         .unwrap();
-    assert_eq!(out.sensitivities, vec![[7.0, -3.0, 0.0, 0.25]; 2]);
+    assert_eq!(out.sensitivities, vec![row4(7.0, -3.0, 0.0, 0.25); 2]);
 }
 
 #[test]
@@ -297,14 +331,14 @@ fn a_hand_set_head_with_a_per_tier_difference_puts_the_steepest_tier_at_the_boun
     net.sens_head.weights[d] = 2.0; // component 1 reads entry 0 twice as strongly
 
     let out = net
-        .forward_full(&tokens(5), &global_token([1.0, 0.0, 0.0, 0.0]))
+        .forward_full(&tokens(5), &global_token(weights4(1.0, 0.0, 0.0, 0.0)))
         .unwrap();
     let z: Vec<f32> = out.sensitivities.iter().map(|s| s[0]).collect();
     let spread =
         z.iter().fold(f32::MIN, |a, &v| a.max(v)) - z.iter().fold(f32::MAX, |a, &v| a.min(v));
     assert!(spread > 1e-4, "the tiers must differ: {z:?}");
     for (s, z) in out.sensitivities.iter().zip(&z) {
-        assert_eq!(*s, [*z, 2.0 * z, 0.0, 0.0]);
+        assert_eq!(*s, row4(*z, 2.0 * z, 0.0, 0.0));
     }
 
     // Windowing only: g_k = z_k, so the steepest tier sits at -+MEAN_BOUND and the others scale.
@@ -325,7 +359,7 @@ fn a_hand_set_head_with_a_per_tier_difference_puts_the_steepest_tier_at_the_boun
 
     // Extinction alone reads the doubled slope of the same tiers: the same direction, since the
     // composition is scale-free.
-    let extinction = compose_mean(&out.sensitivities, &[0.0, 1.0, 0.0, 0.0]);
+    let extinction = compose_mean(&out.sensitivities, &weights4(0.0, 1.0, 0.0, 0.0));
     for (a, b) in extinction.iter().zip(&out.policy.mean) {
         assert!((a - b).abs() < 1e-5, "{a} vs {b}");
     }
@@ -344,7 +378,7 @@ fn all_zero_sensitivities_give_a_zero_mean_never_nan() {
     // Weight fractions of zero (a degenerate global token) are equally harmless.
     net.sens_head.biases.fill(1.0);
     let out = net
-        .forward_full(&tokens(3), &global_token([0.0; 4]))
+        .forward_full(&tokens(3), &global_token([0.0; N_COMPONENTS]))
         .unwrap();
     assert!(out.policy.mean.iter().all(|&m| m == 0.0));
 }
@@ -437,10 +471,12 @@ fn closed_form(d: usize, layers: usize) -> usize {
 fn param_count_follows_the_closed_form_with_the_new_heads() {
     let net = network_with_distinct_log_stds();
     assert_eq!(net.param_count(), closed_form(16, 2));
-    // The closed form of the dimensions of this build: 42 d + 9 outside the layers.
+    // The closed form of the dimensions of this build (26 tier and 41 global features, seven
+    // components): 80 d + 12 outside the layers.
+    assert_eq!((TierFeature::FEATURE_DIM, GLOBAL_DIM), (26, 41));
     assert_eq!(
         closed_form(48, 2),
-        2 * (8 * 48 * 48 + 11 * 48) + 42 * 48 + 9
+        2 * (8 * 48 * 48 + 11 * 48) + 80 * 48 + 12
     );
 }
 
@@ -514,7 +550,10 @@ fn the_heads_start_at_full_xavier_scale_with_their_documented_seeds() {
 fn the_composed_mean_stays_inside_the_bound_on_a_full_size_stone() {
     let net = ModelTier::Small.init_network(3);
     let out = net
-        .forward_full(&tokens(24), &global_token([0.25, 0.25, 0.25, 0.25]))
+        .forward_full(
+            &tokens(24),
+            &global_token([1.0 / N_COMPONENTS as f32; N_COMPONENTS]),
+        )
         .unwrap();
     assert_eq!(out.policy.mean.len(), 24);
     assert_eq!(out.sensitivities.len(), 24);

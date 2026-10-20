@@ -5,15 +5,15 @@
 use super::*;
 use crate::{
     env::GLOBAL_DIM,
-    model::{Linear, compose_mean},
+    model::{Linear, compose_mean_masked},
 };
 use burn::optim::GradientsParams;
 
-const DT: usize = 10;
+const DT: usize = crate::env::TIER_DIM;
 const DG: usize = GLOBAL_DIM;
 
 /// Objective weight fractions written into the synthetic global tokens.
-const FRACTIONS: [f32; N_COMPONENTS] = [0.4, 0.3, 0.2, 0.1];
+const FRACTIONS: [f32; N_COMPONENTS] = [0.4, 0.25, 0.15, 0.1, 0.05, 0.025, 0.025];
 
 #[allow(
     clippy::suboptimal_flops,
@@ -31,6 +31,9 @@ fn tensors(device: &Device, n_real: usize, n_total: usize, pad_value: f32) -> In
     for t in 0..n_total {
         let row: Vec<f32> = (0..DT)
             .map(|k| {
+                if k == crate::env::MOBILITY_INDEX {
+                    return if t < n_real { 1.0 } else { 0.0 };
+                }
                 if t < n_real {
                     val(t * 31 + k)
                 } else {
@@ -70,11 +73,8 @@ fn pure_network(seed: u64) -> GemstoneSetAttentionNetwork {
 
 /// The sensitivities read back to the host as one row per tier.
 fn sensitivity_rows(t: Tensor<3>) -> Vec<[f32; N_COMPONENTS]> {
-    host_vec(t)
-        .unwrap()
-        .chunks_exact(N_COMPONENTS)
-        .map(|c| [c[0], c[1], c[2], c[3]])
-        .collect()
+    let data = host_vec(t).unwrap();
+    data.as_chunks::<N_COMPONENTS>().0.to_vec()
 }
 
 #[test]
@@ -136,11 +136,11 @@ fn burn_and_pure_forward_agree_after_export() {
             log_std[t],
             want_log_std[t]
         );
-        for c in 0..N_COMPONENTS {
+        for (c, got) in sens[t].iter().enumerate() {
             assert!(
-                (sens[t][c] - full.sensitivities[t][c]).abs() < 1e-4,
+                (got - full.sensitivities[t][c]).abs() < 1e-4,
                 "sensitivity[{t}][{c}]: {} vs {}",
-                sens[t][c],
+                got,
                 full.sensitivities[t][c]
             );
         }
@@ -166,14 +166,12 @@ fn the_tensor_composition_matches_the_pure_one_on_identical_sensitivities() {
     // The very same f32 sensitivities go through the pure composition: any difference left is the
     // tensor sum against the `mul_add` fold, a last-ulp matter.
     let rows = sensitivity_rows(out.sensitivities);
-    let fractions = [
-        global_vec[15],
-        global_vec[16],
-        global_vec[17],
-        global_vec[18],
-    ];
+    let fractions: [f32; N_COMPONENTS] = global_vec
+        [WEIGHT_FRACTION_INDEX..WEIGHT_FRACTION_INDEX + N_COMPONENTS]
+        .try_into()
+        .unwrap();
     assert_eq!(fractions, FRACTIONS);
-    let want = compose_mean(&rows, &fractions);
+    let want = compose_mean_masked(&rows, &fractions, &[true; N_COMPONENTS]);
     let got = host_vec(out.mean).unwrap();
     assert_eq!(got.len(), 7);
     for (k, (g, w)) in got.iter().zip(&want).enumerate() {
@@ -187,21 +185,25 @@ fn the_tensor_composition_matches_the_pure_one_on_identical_sensitivities() {
 fn the_composed_mean_normalises_over_the_real_tiers_only() {
     let device = Device::flex();
     // Batch of 2, three tiers, windowing/extinction weights chosen per row.
+    let mut sensitivities = vec![0.0f32; 2 * 3 * N_COMPONENTS];
+    sensitivities[0] = 1.0;
+    sensitivities[N_COMPONENTS] = 2.0;
+    sensitivities[2 * N_COMPONENTS] = 100.0;
+    sensitivities[3 * N_COMPONENTS + 1] = -3.0;
+    sensitivities[4 * N_COMPONENTS + 1] = 1.0;
     let sens = Tensor::<3>::from_data(
-        TensorData::new(
-            vec![
-                // Row 0: slopes 1, 2 and a padded tier with 100.
-                1.0f32, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0,
-                // Row 1: extinction slopes -3, 1 and a zero tier.
-                0.0, -3.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            [2, 3, N_COMPONENTS],
-        ),
+        TensorData::new(sensitivities, [2, 3, N_COMPONENTS]),
         &device,
     );
     let fractions = Tensor::<3>::from_data(
         TensorData::new(
-            vec![1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [
+                [1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             [2, 1, N_COMPONENTS],
         ),
         &device,
@@ -210,7 +212,11 @@ fn the_composed_mean_normalises_over_the_real_tiers_only() {
         TensorData::new(vec![1.0f32, 1.0, 0.0, 1.0, 1.0, 1.0], [2, 3]),
         &device,
     );
-    let mean = host_vec(composed_mean(sens, fractions, mask)).unwrap();
+    let mobile = Tensor::<2>::from_data(
+        TensorData::new(vec![1.0f32, 1.0, 0.0, 1.0, 1.0, 1.0], [2, 3]),
+        &device,
+    );
+    let mean = host_vec(composed_mean(sens, fractions, mask, mobile)).unwrap();
     // Row 0: g_max over the real tiers is 2, so tier 0 sits at half the bound and tier 1 at the
     // bound; the padded tier (100) does not enter the normalisation.
     assert!((mean[0] + MEAN_BOUND / 2.0).abs() < 1e-5, "{}", mean[0]);
@@ -230,8 +236,31 @@ fn the_composed_mean_of_zero_sensitivities_is_zero_never_nan() {
         &device,
     );
     let mask = Tensor::<2>::ones([1, 4], &device);
-    let mean = host_vec(composed_mean(sens, fractions, mask)).unwrap();
+    let mobile = Tensor::<2>::ones([1, 4], &device);
+    let mean = host_vec(composed_mean(sens, fractions, mask, mobile)).unwrap();
     assert!(mean.iter().all(|&m| m == 0.0 && !m.is_nan()), "{mean:?}");
+}
+
+#[test]
+fn the_composed_mean_uses_the_shared_slope_floor_and_excludes_immobile_tiers() {
+    let device = Device::flex();
+    let mut sens = vec![0.0f32; 2 * N_COMPONENTS];
+    sens[0] = crate::env::SLOPE_NORM_FLOOR * 0.25;
+    sens[N_COMPONENTS] = 100.0;
+    let sensitivities =
+        Tensor::<3>::from_data(TensorData::new(sens, [1, 2, N_COMPONENTS]), &device);
+    let fractions = Tensor::<3>::from_data(
+        TensorData::new(
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [1, 1, N_COMPONENTS],
+        ),
+        &device,
+    );
+    let tiers = Tensor::<2>::from_data(TensorData::new(vec![1.0, 1.0], [1, 2]), &device);
+    let mobile = Tensor::<2>::from_data(TensorData::new(vec![1.0, 0.0], [1, 2]), &device);
+    let mean = host_vec(composed_mean(sensitivities, fractions, tiers, mobile)).unwrap();
+    assert!((mean[0] + MEAN_BOUND * 0.25).abs() < 1e-6, "{}", mean[0]);
+    assert_eq!(mean[1], 0.0);
 }
 
 #[test]
@@ -354,12 +383,18 @@ fn corrupt_network_is_an_error_not_a_panic() {
         BurnSetAttention::new(DT, DG, 15, 4, 1, &device),
         Err(TrainError::InvalidConfig(_))
     ));
-    // A tier token too short to carry the block feature cannot drive the per-block log-std.
+    // A tier token too short to carry the block feature cannot drive the per-block log-std, and
+    // one too short for the mobility flag (entry 13, after the block entry 3) cannot compose
+    // the mean over the mobile tiers.
     assert!(matches!(
         BurnSetAttention::new(BLOCK_TYPE_INDEX, DG, 16, 4, 1, &device),
         Err(TrainError::InvalidConfig(_))
     ));
-    assert!(BurnSetAttention::new(BLOCK_TYPE_INDEX + 1, DG, 16, 4, 1, &device).is_ok());
+    assert!(matches!(
+        BurnSetAttention::new(MOBILITY_INDEX, DG, 16, 4, 1, &device),
+        Err(TrainError::InvalidConfig(_))
+    ));
+    assert!(BurnSetAttention::new(MOBILITY_INDEX + 1, DG, 16, 4, 1, &device).is_ok());
     // A global token too short to carry the weight fractions cannot drive the composed mean.
     let needed = WEIGHT_FRACTION_INDEX + N_COMPONENTS;
     assert!(matches!(

@@ -17,8 +17,8 @@ use indicatrix::{
     renderer::env_map::EnvironmentMap,
 };
 use indicatrix_web_core::solve::{
-    MetricsParams, SolveHooks, SolveResponse, TiltParams, run_metrics_with_map, run_tilt,
-    sweep_fraction, sweep_status,
+    MetricsParams, SolveHooks, SolveResponse, TiltParams, run_metrics_with_geometry,
+    run_tilt_with_geometry, sweep_fraction, sweep_status,
 };
 
 use super::{Kind, MetricsReading, Shared, TILT_POINTS, TiltReading, inputs::HDR_ID};
@@ -48,6 +48,8 @@ impl Params {
 
 /// One queued measurement.
 pub(super) struct Job {
+    pub(super) tools: Vec<indicatrix::geometry::tool::ToolPrimitive>,
+    pub(super) policy: Arc<crate::compute_policy::ComputePolicy>,
     pub(super) kind: Kind,
     /// The generation `enqueue` got for it; the job is stale once a newer one exists.
     pub(super) generation: u64,
@@ -73,10 +75,21 @@ pub(super) fn run_loop(shared: &Shared, receiver: &Receiver<Job>) {
         {
             continue;
         }
+        let permit = job.policy.acquire(&|| job.cancel.load(Ordering::Relaxed));
+        let Some(permit) = permit else {
+            finish(shared, &job, Outcome::Cancelled);
+            continue;
+        };
         let outcome = catch_unwind(AssertUnwindSafe(|| run(shared, &job, &mut cache)))
             .unwrap_or_else(|_| {
                 Outcome::Failed("The measurement stopped unexpectedly.".to_owned())
             });
+        drop(permit);
+        let outcome = if job.cancel.load(Ordering::Relaxed) {
+            Outcome::Cancelled
+        } else {
+            outcome
+        };
         finish(shared, &job, outcome);
     }
 }
@@ -86,7 +99,7 @@ fn run(shared: &Shared, job: &Job, cache: &mut Option<MetricsCache>) -> Outcome 
     match &job.params {
         Params::Metrics(params, hdr) => {
             let held = hdr.as_deref().map(|map| (HDR_ID, map));
-            match run_metrics_with_map(cache, params, held) {
+            match run_metrics_with_geometry(cache, params, held, &job.tools) {
                 SolveResponse::Metrics(data) => Outcome::Metrics(data.into()),
                 SolveResponse::AnalysisFailed { message, .. } => Outcome::Failed(message),
                 _ => Outcome::Failed("The measurement gave an unexpected answer.".to_owned()),
@@ -100,6 +113,9 @@ fn run(shared: &Shared, job: &Job, cache: &mut Option<MetricsCache>) -> Outcome 
 fn run_sweep(shared: &Shared, job: &Job, params: &TiltParams) -> Outcome {
     let last = Cell::new(None::<Instant>);
     let on_sweep = |progress: SweepProgress| {
+        if job.policy.paused() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
         let due = last
             .get()
             .is_none_or(|at| at.elapsed() >= PROGRESS_INTERVAL);
@@ -126,7 +142,7 @@ fn run_sweep(shared: &Shared, job: &Job, params: &TiltParams) -> Outcome {
         on_progress: &|_| {},
         on_sweep: &on_sweep,
     };
-    match run_tilt(params, &hooks) {
+    match run_tilt_with_geometry(params, &hooks, &job.tools, Some(1)) {
         SolveResponse::TiltCurves(data) => {
             let well_formed = data.axes.len() == 4
                 && data.axes.iter().all(|axis| {
@@ -148,9 +164,22 @@ fn run_sweep(shared: &Shared, job: &Job, params: &TiltParams) -> Outcome {
 
 /// Stores `outcome` when `job` is still the newest of its kind, then tells the UI.
 fn finish(shared: &Shared, job: &Job, outcome: Outcome) {
-    let current = shared.generation(job.kind).is_current(job.generation);
-    if current {
+    {
         let mut inner = shared.lock();
+        let busy = match job.kind {
+            Kind::Metrics => inner.metrics.busy.as_ref(),
+            Kind::Tilt => inner.tilt.busy.as_ref(),
+        };
+        if !shared.generation(job.kind).is_current(job.generation)
+            || busy.is_none_or(|busy| busy.generation != job.generation)
+        {
+            return;
+        }
+        let outcome = if job.cancel.load(Ordering::Relaxed) {
+            Outcome::Cancelled
+        } else {
+            outcome
+        };
         match (job.kind, outcome) {
             (Kind::Metrics, Outcome::Metrics(reading)) => {
                 if let Some(busy) = inner.metrics.busy.take() {

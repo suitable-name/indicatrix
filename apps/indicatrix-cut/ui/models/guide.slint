@@ -105,6 +105,9 @@ export global GuideModel {
     /// reached (`notify`) and the automatic move to the next step, driven by
     /// `GuideAdvanceTimer` (`guide_panel.slint`).
     in-out property <bool> step_done: false;
+    // Presentation clients hold automatic progression while demonstrating a full script.
+    // This never changes goal evaluation or marks a step complete.
+    in-out property <bool> presentation_hold: false;
     /// `true` after Back, until the user moves forward again: the step is being re-read, so a
     /// goal that is already met shows "Done" and waits for Next instead of moving on by itself
     /// after the short "Done" moment (which would make Back bounce straight forward again).
@@ -120,6 +123,12 @@ export global GuideModel {
     /// Whether the panel is collapsed to its small "Guide · Step N of M" pill
     /// (both mounts). Survives step changes; `start()` expands it again.
     in-out property <bool> collapsed: false;
+    /// Whether the current step's target is off-screen or out of stage alignment.
+    in-out property <bool> stage_mismatched: false;
+    /// Contextual description of what clicking "Show Me Where" will do.
+    in-out property <string> stage_hint: "Navigate to this step's screen and controls.";
+    /// Requests navigation to the step's stage.
+    callback show_me_where();
     // What `current` reads while `step_index` is out of range: every field default,
     // so every `allow` flag is `false` (irrelevant, since `open` gates them anyway).
     property <GuideStepData> blank_step;
@@ -209,6 +218,7 @@ export global GuideModel {
         root.collapsed = false;
         root.step_done = false;
         root.revisiting = false;
+        root.stage_mismatched = false;
         root.reset_perform();
         root.step_index = 0;
         root.open = true;
@@ -273,6 +283,7 @@ export global GuideModel {
     next => {
         root.step_done = false;
         root.revisiting = false;
+        root.stage_mismatched = false;
         root.reset_perform();
         if root.has_next {
             root.step_index += 1;
@@ -287,6 +298,7 @@ export global GuideModel {
     callback back();
     back => {
         root.step_done = false;
+        root.stage_mismatched = false;
         root.reset_perform();
         if root.has_back {
             root.revisiting = true;
@@ -298,6 +310,7 @@ export global GuideModel {
     close => {
         root.step_done = false;
         root.revisiting = false;
+        root.stage_mismatched = false;
         root.reset_perform();
         root.open = false;
     }

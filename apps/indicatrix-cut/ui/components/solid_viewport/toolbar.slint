@@ -134,14 +134,14 @@ component ToolbarHelp inherits VerticalLayout {
     }
 }
 
-// The view-mode pills: Solid / Path-traced / Both / Diagram. `tight` is the
+// The view-mode pills: Solid / Path-Traced / Ray-Traced / Both / Diagram. `tight` is the
 // phone-width variant with narrower pills.
 component ModePills inherits HorizontalLayout {
     in property <bool> tight: false;
     spacing: root.tight ? 4px : 8px;
 
     ModePill {
-        width: root.tight ? 56px : 84px;
+        width: root.tight ? 48px : 84px;
         text: "Solid";
         hint: "Flat-shaded picture of the solved stone. Quick, and independent of the light tracer.";
         selected: SolidPreviewModel.view_mode == 0;
@@ -149,7 +149,7 @@ component ModePills inherits HorizontalLayout {
         picked => { SolidPreviewModel.view_mode = 0; }
     }
     ModePill {
-        width: root.tight ? 92px : 110px;
+        width: root.tight ? 82px : 110px;
         text: "Path-Traced";
         hint: "The realistic light-traced picture, the same one the Live Render tab shows.";
         selected: SolidPreviewModel.view_mode == 1;
@@ -157,7 +157,15 @@ component ModePills inherits HorizontalLayout {
         picked => { SolidPreviewModel.view_mode = 1; }
     }
     ModePill {
-        width: root.tight ? 52px : 84px;
+        width: root.tight ? 82px : 110px;
+        text: "Ray-Traced";
+        hint: "Ray-Traced is an approximation: one index per color chain and averaged color; no polarization, doubling, haze, zoning, edge rounding or diffuse frost light. Energy past the bounce limit is omitted.";
+        selected: SolidPreviewModel.view_mode == 4;
+        highlighted: GuideModel.highlight_target == "view_modes";
+        picked => { SolidPreviewModel.view_mode = 4; }
+    }
+    ModePill {
+        width: root.tight ? 44px : 84px;
         text: "Both";
         hint: "The light-traced picture with the solid's own facet edges drawn on top.";
         selected: SolidPreviewModel.view_mode == 2;
@@ -165,7 +173,7 @@ component ModePills inherits HorizontalLayout {
         picked => { SolidPreviewModel.view_mode = 2; }
     }
     ModePill {
-        width: root.tight ? 72px : 96px;
+        width: root.tight ? 60px : 96px;
         text: "Diagram";
         hint: "A flat faceting diagram -- crown, pavilion and side profile -- with the index wheel. It does not turn with the camera.";
         selected: SolidPreviewModel.view_mode == 3;
@@ -377,12 +385,12 @@ component ToolPills inherits HorizontalLayout {
 
 // The toolbar re-flows by its own width (it is explicitly x/y/width-positioned
 // at 100% of the viewport, so reading `root.width` here is not a binding loop):
-//   wide   (>= 1500px)  one row: Cut, modes, views, tools, Parameters buttons.
-//   medium (980-1500)   two rows: [Cut, modes, tools] and [views, Parameters buttons].
-//   low    (620-980)    three rows: [Cut, modes], [views], [tools, Parameters buttons].
+//   wide   (>= 1740px)  one row: Cut, modes, views, tools, Parameters buttons.
+//   medium (1100-1620)   two rows: [Cut, modes, tools] and [views, Parameters buttons].
+//   low    (740-1100)    three rows: [Cut, modes], [views], [tools, Parameters buttons].
 //   narrow (< 620)      four rows of tighter pills: modes, views, tools, Parameters buttons (the Cut row
 //                       above them while a cut shows).
-// The widths are the pills' own sums (about 1480px / 980px / 610px / 380px); the "?" help
+// The widths are the pills' own sums (about 1480px / 1100px / 610px / 380px); the "?" help
 // button at the end of the first row is 28 px of each (the medium and narrow limits were
 // 940 and 600 before it was added), and the Parameters buttons (about 100 px) went into the
 // rows that had room, with the wide limit raised from 1400px by their width.
@@ -404,16 +412,16 @@ export component SolidViewportToolbar inherits VerticalLayout {
     in-out property <length> diagram_pan_x: 0px;
     in-out property <length> diagram_pan_y: 0px;
 
-    property <bool> wide: root.width >= 1500px;
-    property <bool> narrow: root.width < 620px;
-    property <bool> medium: !root.wide && root.width >= 980px;
+    property <bool> wide: root.width >= 1740px;
+    property <bool> narrow: root.width < 740px;
+    property <bool> medium: !root.wide && root.width >= 1100px;
     property <bool> low: !root.wide && !root.medium && !root.narrow;
     // With a design to cut, in every mode that draws the stone: the Solid and Both
     // views show it, and the path tracer follows the cut too, so Path-traced keeps the
     // slider rather than hiding a cut it still obeys. Not the Diagram, which always shows
     // the finished design. Kept while a cut is active even if the solid is momentarily
     // missing, so the cut can always be undone.
-    property <bool> has_cut: SolidPreviewModel.view_mode != 3 && SolidPreviewModel.cut_step_count > 0 && (SolidPreviewModel.has_solid || SolidPreviewModel.view_mode == 1 || SolidPreviewModel.tier_cutoff != -1);
+    property <bool> has_cut: SolidPreviewModel.view_mode != 3 && SolidPreviewModel.cut_step_count > 0 && (SolidPreviewModel.has_solid || SolidPreviewModel.view_mode == 1 || SolidPreviewModel.view_mode == 4 || SolidPreviewModel.tier_cutoff != -1);
     // The pill rows' height (28px rows, 6px between rows), for the hint strip
     // that goes under them.
     // (Narrow: modes, views, tools and the Parameters row, plus the cut slider's row when it shows.)
@@ -431,7 +439,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
     // refreshes this automatically. Solve is still the right thing to suggest
     // when nothing has ever solved at all (`SolidPreviewModel.has_solid`
     // false), which keeps its own, more actionable phrasing.
-    property <string> status_text: root.batch_suspends_tracer ? "Live render paused -- a catalogue batch is running in the background." : (SolidPreviewModel.stale ? (SolidPreviewModel.has_solid ? "Preview one edit behind -- updating." : "Not solved -- click Solve to refresh.") : SolidPreviewModel.status);
+    property <string> status_text: root.batch_suspends_tracer ? "Live render paused -- a catalogue batch is running in the background." : (SolidPreviewModel.stale ? (SolidPreviewModel.has_solid ? "Preview one edit behind -- updating." : "Not solved -- click Solve to refresh.") : (SolidPreviewModel.status != "" ? SolidPreviewModel.status : (SolidPreviewModel.view_mode == 4 ? "Ray-Traced: approximate color and frost; one index per color chain. No polarization, doubling, haze, zoning or edge rounding; bounce-limited." : "")));
 
     if root.wide: HorizontalLayout {
         spacing: 8px;
@@ -557,6 +565,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
 
             accessible-role: AccessibleRole.text;
             accessible-label: root.status_text;
+            Tooltip { text: @markdown("\{root.status_text}"); }
 
             Text {
                 text: root.status_text;

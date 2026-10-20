@@ -117,6 +117,10 @@ pub struct TierRow {
     /// or empty when the angle is free. A non-empty text is what the tier table's link
     /// badge and the inspector's "Follows a relation" note are built from.
     pub relation_text: String,
+    /// How the design frosts this tier, as the table says it (`"Frosted"`,
+    /// `"Frosted: 2 of 8"`), or empty for a polished tier -- what the table's frost mark and
+    /// the inspector's Frosted toggle are built from.
+    pub frosting_text: String,
 }
 
 /// One per-facet chip in the inspector's Tier tab -- see

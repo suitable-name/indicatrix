@@ -1,0 +1,39 @@
+import { CheckBox, Slider, Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { OpticalModel } from "../../models/optical.slint";
+export component OpticalPanel inherits Rectangle {
+    background: Theme.surface-dialog;
+    border-color: Theme.border-subtle;
+    border-width: 1px;
+    border-radius: Theme.radius-md;
+    ScrollView {
+    VerticalLayout {
+        padding: 10px; spacing: 4px;
+        CheckBox { text: "Enable Optical Diagnostics"; checked <=> OpticalModel.enabled; }
+        Text { text: "Analytical light paths at this viewing angle."; color: Theme.text-primary; wrap: word-wrap; }
+        HorizontalLayout {
+            CheckBox { text: "Windowing (/)"; checked <=> OpticalModel.windowing; }
+            CheckBox { text: "Extinction (X)"; checked <=> OpticalModel.extinction; }
+        }
+        HorizontalLayout {
+            CheckBox { text: "Brilliance (Dots)"; checked <=> OpticalModel.brilliance; }
+            CheckBox { text: "Fire (Dispersion Potential)"; checked <=> OpticalModel.fire; }
+        }
+        CheckBox { text: "Scintillation"; accessible-label: "Scintillation layer"; checked <=> OpticalModel.scintillation; }
+        HorizontalLayout {
+            Text { text: "Opacity"; color: Theme.text-primary; }
+            Slider { minimum: 0; maximum: 1; value <=> OpticalModel.opacity; accessible-label: "Optical diagnostic opacity"; }
+            Button { text: "Reset to 45%"; clicked => { OpticalModel.opacity = 0.45; } }
+        }
+        Button { text: "Refresh Diagnostic Map"; clicked => { OpticalModel.refresh(); } }
+        CheckBox { text: "Diagnostic Map on Neutral Stone"; checked <=> OpticalModel.map_mode; }
+        Text { text: OpticalModel.status; color: Theme.text-primary; wrap: word-wrap; }
+        Text { text: "Legend: cyan / windowing (light that leaves through the pavilion; the render shows the backdrop there); magenta X extinction; green dots returned; gold stipple dispersion potential (0-0.1 weighted degrees)."; color: Theme.text-primary; wrap: word-wrap; }
+        if OpticalModel.scintillation : Text { text: "Scintillation: flicker across ±3° yaw and local contrast; map domain."; color: Theme.text-primary; wrap: word-wrap; }
+        Text { text: OpticalModel.summary; color: Theme.text-primary; wrap: word-wrap; }
+        Text { text: "Visible-area shares differ from the HUD disc/aperture ray fan. Fire is separate from the three count fractions."; color: Theme.text-secondary; wrap: word-wrap; }
+        Text { text: OpticalModel.limitations; color: Theme.text-secondary; wrap: word-wrap; }
+        Text { text: OpticalModel.hover_text; color: Theme.text-primary; wrap: word-wrap; }
+    }
+    }
+}

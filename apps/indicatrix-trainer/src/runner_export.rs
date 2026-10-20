@@ -22,9 +22,18 @@ impl TrainingRunner {
     #[must_use]
     pub fn metric_point(&self, steps_per_sec: f32) -> IterationMetricPoint {
         let s = &self.stats;
+        // A checkpoint save first synchronizes the update thread. Keep that pending update's
+        // figures visible until the next iterate consumes them into its IterationReport.
+        let pending = self.installed_update.as_ref();
+        let last_train = pending.map_or(&s.last_train, |update| &update.train);
+        let last_imitation = pending.map_or(s.last_imitation, |update| update.imitation);
+        let update_secs = pending.map_or(s.update_secs, |update| update.secs);
+        let weight_export_secs = pending.map_or(s.weight_export_secs, |update| update.export_secs);
+        let update_of_iteration =
+            pending.map_or(s.update_of_iteration, |update| Some(update.iteration));
         let optics = s.current.unwrap_or_default();
         let val = s.last_validation.as_ref();
-        let imitation = s.last_imitation.unwrap_or_default();
+        let imitation = last_imitation.unwrap_or_default();
         let log_std = &self.net.log_std_raw;
         let mean_log_std =
             log_std.iter().map(|&raw| bounded_log_std(raw)).sum::<f32>() / log_std.len() as f32;
@@ -35,11 +44,11 @@ impl TrainingRunner {
             steps_per_sec,
             mean_step_reward: s.mean_step_reward,
             best_score: s.best.as_ref().map(|b| b.final_score),
-            policy_loss: s.last_train.policy_loss,
-            value_loss: s.last_train.value_loss,
-            entropy: s.last_train.entropy,
-            clip_fraction: s.last_train.clip_fraction,
-            approx_kl: s.last_train.approx_kl,
+            policy_loss: last_train.policy_loss,
+            value_loss: last_train.value_loss,
+            entropy: last_train.entropy,
+            clip_fraction: last_train.clip_fraction,
+            approx_kl: last_train.approx_kl,
             solid_closed: s.solid_closed,
             brilliance: optics.brilliance,
             windowing: optics.windowing,
@@ -51,13 +60,13 @@ impl TrainingRunner {
             mean_step_reward_raw: s.mean_step_reward_raw,
             reward_scale: s.reward_scale,
             explained_variance: s.explained_variance,
-            grad_norm: if s.last_imitation.is_some() {
+            grad_norm: if last_imitation.is_some() {
                 imitation.grad_norm
             } else {
-                s.last_train.grad_norm
+                last_train.grad_norm
             },
             mean_log_std,
-            early_stopped: s.last_train.early_stopped,
+            early_stopped: last_train.early_stopped,
             accepted_frac: s.accepted_frac,
             episodes_finished: s.episodes_finished,
             episodes_improved_frac: s.episodes_improved_frac,
@@ -70,9 +79,10 @@ impl TrainingRunner {
             rej_not_improved: s.rej_not_improved,
             imitation_loss: imitation.loss,
             sens_mse: imitation.sens_mse,
-            train_cosine: s.last_imitation.filter(|m| m.updates > 0).map(|m| m.cosine),
+            train_cosine: last_imitation.filter(|m| m.updates > 0).map(|m| m.cosine),
             gain_loss: imitation.gain_loss,
             labelled_samples: s.labelled_samples,
+            component_support: imitation.component_support,
             labels_this_round: s.labels_this_round,
             oracle_gain_mean: s.oracle_gain_mean,
             val_improvement: val.map(|v| v.mean_improvement),
@@ -84,9 +94,25 @@ impl TrainingRunner {
             val_designs: val.map_or(0, |v| v.designs),
             rollout_secs: s.rollout_secs,
             label_secs: s.label_secs,
-            update_secs: s.update_secs,
+            update_secs,
+            packing_ms: if last_imitation.is_some() {
+                imitation.packing_ms
+            } else {
+                last_train.packing_ms
+            },
+            training_host_ms: if last_imitation.is_some() {
+                imitation.update_ms
+            } else {
+                last_train.update_ms
+            },
+            weight_export_ms: weight_export_secs * 1_000.0,
+            rollout_forward_ms: s.rollout_forward_ms,
+            update_wait_secs: s.update_wait_secs,
+            update_of_iteration,
             evaluations_this_round: s.evaluations_this_round,
             workers: self.cfg.workers,
+            effective_slots: self.cfg.effective_workers(),
+            cpu_pool_threads: super::pool::pool_threads(),
         }
     }
 
@@ -108,12 +134,19 @@ impl TrainingRunner {
             })
             .unwrap_or_default();
         let target_material = if self.cfg.mode == TrainingMode::Optimizer {
-            "Own material (optimizer)".to_owned()
+            "Sampled source material (optimizer)".to_owned()
         } else if self.cfg.universal_spectrum {
             "Universal Spectrum (n=1.43-2.90)".to_owned()
         } else {
             self.cfg.fixed_target.clone()
         };
+        let mut metrics_history = history.to_vec();
+        if let Some(last) = metrics_history
+            .last_mut()
+            .filter(|point| point.iteration == s.iteration)
+        {
+            *last = self.metric_point(last.steps_per_sec);
+        }
         TrainingRunStats {
             version: STATS_VERSION.to_owned(),
             timestamp_rfc3339: rfc3339_utc_now(),
@@ -149,17 +182,34 @@ impl TrainingRunner {
             algo: self.cfg.algo.to_string(),
             label_every: self.cfg.label_every,
             objectives: self.cfg.objectives.to_string(),
+            train_fidelity: match self.cfg.train_fidelity {
+                indicatrix_cut_core::ObjectiveFidelity::Fast => "fast",
+                indicatrix_cut_core::ObjectiveFidelity::Full => "full",
+            }
+            .to_owned(),
+            validation_fidelity: match self.cfg.validation_fidelity {
+                super::EvalFidelity::Fast => "fast",
+                super::EvalFidelity::Full => "full",
+            }
+            .to_owned(),
+            shape_target_sampling: "episode-seeded: none/table/crown/both".to_owned(),
+            lighting_sampling: "episode-seeded: iso/daylight/incandescent/ring/shop/tray/aset"
+                .to_owned(),
+            objective_sweep: self.cfg.objective_sweep,
+            classical_budget: self.cfg.classical_budget,
             explore_std: self.cfg.explore_std,
             max_step_deg: self.max_step_deg(),
             recent_rewards: s.reward_history.iter().copied().collect(),
-            metrics_history: history.to_vec(),
+            metrics_history,
             event_logs: event_logs.to_vec(),
         }
     }
 
     // ---- checkpoints ------------------------------------------------------------------------
 
-    /// The current network with its metadata.
+    /// The current network with its metadata: the weights of the last installed update. An
+    /// imitation update still training is not in it; call [`Self::sync_update`] first to
+    /// include it (a final [`Self::validate`] does so too).
     #[must_use]
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint::new(
@@ -209,9 +259,13 @@ impl TrainingRunner {
                 self.cfg.tier.code_str()
             )));
         }
-        self.trainer.load_weights(&checkpoint.network)?;
+        // The update in flight trains the weights that are about to be replaced: let it finish
+        // so the load is the last word on the trainer.
+        self.sync_update()?;
+        self.updater.load_weights(checkpoint.network.clone())?;
         self.net = checkpoint.network;
-        self.refresh_rollout_model();
+        self.refresh_rollout_model()?;
+        self.installed_update = None;
         let iteration = usize::try_from(checkpoint.iteration).unwrap_or(usize::MAX);
         // The statistics belong to the model: the previous model's episodes, best score, reward
         // history and validation are dropped. The displayed stone's optics describe the live
@@ -268,9 +322,9 @@ impl TrainingRunner {
         let steps = (iteration as u64)
             .saturating_mul(self.cfg.ppo.epochs_per_batch as u64)
             .saturating_mul(mini_batches as u64);
-        self.trainer.set_update_count(steps);
+        self.updater.set_update_count(steps);
         let schedule = resumed_schedule(self.cfg.ppo.lr_schedule, steps);
         self.cfg.ppo.lr_schedule = schedule;
-        self.trainer.config.lr_schedule = schedule;
+        self.updater.set_ppo_config(self.cfg.ppo.clone());
     }
 }

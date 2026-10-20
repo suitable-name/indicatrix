@@ -24,7 +24,10 @@ structure. Deeper material lives alongside it in `docs/`:
   preview-then-handoff model: how the live view shares its sample budget with the
   remote coordinator, full-data vs. final-picture transfer, HDR scenes, and how
   denoising and the TLS connection are handled across that.
-- [`docs/export.md`](docs/export.md) — how `.asc` import and export work.
+- [`docs/export.md`](docs/export.md) — how design-file import (`.asc`, `.gem`,
+  `.gcs`) and `.asc` export work, and the high-resolution still export.
+- [`docs/file-association.md`](docs/file-association.md) — opening `.isdd` files
+  from the system (for whoever packages the program).
 - [`docs/gpu.md`](docs/gpu.md) — the `gpu` feature and exactly when and why a
   frame falls back from GPU to the CPU tracer.
 - [`docs/manual/README.md`](docs/manual/README.md) — the user manual, for
@@ -62,9 +65,12 @@ python scripts/make-icons.py
 
 A **release** build sets `windows_subsystem = "windows"`, so launching the `.exe`
 directly no longer opens an empty console beside the window. A **debug** build keeps its
-console, so `cargo run` still shows panics during development. If a `tracing` subscriber
-is ever added to this crate, it must write somewhere other than stdout — a release build
-has no console to write to.
+console, so `cargo run` still shows panics during development. A release build has no
+console to write to, so `main.rs` installs a `tracing` subscriber
+(`install_tracing_subscriber`) that writes to stderr, filtered by `RUST_LOG` (default
+`warn`, `info` for `indicatrix` and `indicatrix_cut`), and also to `indicatrix-cut.log`
+(beside the executable, else the temp directory) when the program is started with
+`--log`. Anything added to it must not write to stdout.
 
 ### The `gpu` feature
 
@@ -88,7 +94,7 @@ session, and is a normal outcome, not an error — see
 - View a diagram in 3D with `indicatrix`'s full spectral path tracer — orbit camera,
   adjustable lighting/exposure/material/quality, live optical-metrics readouts
   (brilliance/fire/scintillation/windowing/extinction) and a tilt-performance
-  analysis graph — 19 measured tilt angles swept at four camera azimuths (0°,
+  analysis graph — 181 measured tilt angles (1° steps from −90° to +90°) swept at four camera azimuths (0°,
   45°, 90°, 135°), switchable or overlaid, with a hover readout that
   interpolates between the measured points.
 - View the cutting-instructions table (facet/angle/index/notes) and any attached
@@ -98,8 +104,9 @@ session, and is a normal outcome, not an error — see
   whole tier live, with snapping (Shift for fine steps, a Snap pill to turn it
   off), the tiers that follow outlined before you let go, and one undo step per
   drag — see Chapter 13 of the manual.
-- Import your own `.asc` file(s) — a single file, or a folder, optionally
-  including its subfolders — into the local library. Imports run off the UI
+- Import your own `.asc`, `.gem` (GemCAD) or `.gcs` (Gem Cut Studio) file(s) — a
+  single file, or a folder, optionally including its subfolders — into the local
+  library (`.gem` and `.gcs` are converted to `.asc` cutting instructions). Imports run off the UI
   thread with progress, and geometry-derived metadata (proportions, and a
   conservatively classified shape) is measured at import rather than left blank.
   Export a diagram back out as `.asc` — either its
@@ -173,13 +180,15 @@ tabs — the 3D viewport, the cutting-instructions table, and attachments.
 cargo test -p indicatrix-cut
 ```
 
-No `tests/` directory — all coverage is inline `#[cfg(test)]`. What's covered:
+Most coverage is inline `#[cfg(test)]`; `tests/` holds the integration suites (the UI
+harness behind the `ui-harness` feature, UI screenshots, theme-token and guide checks).
+What the inline tests cover:
 the `HandoffMachine` state machine exhaustively (including an all-state-pairs
 no-panic sweep), settings TOML round trips (including the remote endpoint, the
 migration from the old worker list, and `PreviewScale::Custom`), the debounced
 settings writer, the HDR/remote guard, the live remote lane, tonemap/denoise
 correctness and the "denoise is a no-op at converged sample counts" property,
-quality-preset label/index round trips, and filename sanitization. **Nothing
-exercises the actual Slint window, a live socket to a `indicatrix-worker`, or the
-SQLite-backed end-to-end flow** — per the source's own doc comments, those are
-left to manual verification.
+quality-preset label/index round trips, and filename sanitization. The Slint
+windows are driven by the UI harness in `tests/ui_harness` (feature `ui-harness`).
+**Nothing exercises a live socket to an `indicatrix-worker`** — per the source's
+own doc comments, that is left to manual verification.

@@ -125,6 +125,10 @@ export struct IndexChipItem {
     // occurrence at all), this is the real per-position state, because
     // `EditorModel.facet_toggle_detach` acts on one chip at a time.
     detached: bool,
+    // Whether THIS occurrence is frosted: the tier is frosted as a whole, or this facet is one
+    // of the tier's frosted facets (`Design::tier_frosting`). A frosted chip is tinted and its
+    // frost button shows the facet is frosted; `EditorModel.toggle_facet_frosted` flips it.
+    frosted: bool,
 }
 
 // One row of the Edit sub-tab's tier list -- the Slint-facing mirror of an
@@ -312,6 +316,10 @@ export struct EditorTierItem {
     // link icon and refuses inline edits, the inspector's Tier form shows the relation
     // in its Angle field (prefixed "=") and offers "Remove relation".
     relation_text: string,
+    // How the design frosts this tier: "" for a polished tier, "Frosted" for a whole frosted
+    // tier and "Frosted: 2 of 8" for a tier frosted facet by facet
+    // (`Design::tier_frosting_text`). Non-empty marks the row with a frost icon.
+    frosting_text: string,
 }
 
 // The concave tier form's fields, as typed -- passed whole to

@@ -40,6 +40,9 @@ pub enum AccumulationOutcome {
 /// fresh-calibrate behaviour this type replaced (see each field's own doc comment).
 #[derive(Default)]
 pub struct AccumulationCarry {
+    /// Small deterministic GPU backend, reused across tilt frames.
+    pub(in crate::bridge::export_thread::worker) ray_gpu:
+        Option<std::sync::Arc<indicatrix::renderer::gpu_backend::whitted::WhittedGpuBackend>>,
     /// Whether remote availability has already been probed for this carry -- once
     /// `true`, [`super::core::render_accumulation`] reuses [`Self::remote_capability`]
     /// instead of dispatching another `probe_remote` call. A fresh

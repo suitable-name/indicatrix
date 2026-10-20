@@ -61,7 +61,7 @@ pub const HIGHLIGHT_TARGETS: &[&str] = &[
     // The viewing, output, library and app tutorials (`tutorials::viewing`).
     // The Solid viewport picture.
     "solid_viewport",
-    // The Solid | Path-traced | Both | Diagram pills of the viewport toolbar.
+    // The Solid | Path-Traced | Ray-Traced | Both | Diagram pills of the viewport toolbar.
     "view_modes",
     // The Cut slider of the viewport toolbar.
     "cut_slider",

@@ -25,6 +25,8 @@ const MIN_SEPARATION_DEG: f64 = 1e-6;
 pub(super) struct PoolEntry {
     /// Every free tier's angle, in free-tier order.
     pub(super) angles: Vec<f64>,
+    /// Exact accepted authored state (absent only in synthetic test engines).
+    pub(super) design: Option<crate::design::Design>,
     /// The state's fast-fidelity score.
     pub(super) score: f32,
 }
@@ -46,6 +48,25 @@ fn similar(separation_deg: f64, a: &[f64], b: &[f64]) -> bool {
         && a.iter()
             .zip(b)
             .all(|(x, y)| (x - y).abs() < separation_deg - SEPARATION_TOLERANCE_DEG)
+}
+
+fn same_depths(a: Option<&crate::design::Design>, b: Option<&crate::design::Design>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            a.tiers.len() == b.tiers.len()
+                && a.tiers
+                    .iter()
+                    .zip(&b.tiers)
+                    .all(|(a, b)| match (&a.constraint, &b.constraint) {
+                        (
+                            indicatrix::geometry::meet_solver::MeetConstraint::ScaleReference(x),
+                            indicatrix::geometry::meet_solver::MeetConstraint::ScaleReference(y),
+                        ) => (x - y).abs() < 1e-5 * x.abs().max(y.abs()).max(1e-9),
+                        _ => a.constraint == b.constraint,
+                    })
+        }
+        _ => true,
+    }
 }
 
 impl CandidatePool {
@@ -83,32 +104,88 @@ impl CandidatePool {
 
     /// Offers one scored state. Ignored when the pool is disabled or the score is not
     /// finite; see the module docs for the keep/evict rule.
+    #[cfg(test)]
     pub(super) fn offer(&mut self, angles: Vec<f64>, score: f32) {
+        self.offer_entry(PoolEntry {
+            angles,
+            score,
+            design: None,
+        });
+    }
+
+    pub(super) fn offer_design(
+        &mut self,
+        design: crate::design::Design,
+        free: &[usize],
+        score: f32,
+    ) {
+        let angles = free.iter().map(|&i| design.tiers[i].angle_deg).collect();
+        self.offer_entry(PoolEntry {
+            angles,
+            score,
+            design: Some(design),
+        });
+    }
+
+    pub(super) fn offer_entry(&mut self, offered: PoolEntry) {
+        let PoolEntry {
+            angles,
+            score,
+            design,
+        } = offered;
         if !self.is_enabled() || !score.is_finite() {
             return;
         }
         let separation = self.separation_deg;
-        if self
-            .entries
-            .iter()
-            .any(|entry| entry.score <= score && similar(separation, &entry.angles, &angles))
-        {
+        if self.entries.iter().any(|entry| {
+            entry.score <= score
+                && similar(separation, &entry.angles, &angles)
+                && same_depths(entry.design.as_ref(), design.as_ref())
+        }) {
             return;
         }
         // Every similar entry left has a worse score than this one: evict them all.
         let mut kept: Vec<PoolEntry> = std::mem::take(&mut self.entries)
             .into_iter()
-            .filter(|entry| !similar(separation, &entry.angles, &angles))
+            .filter(|entry| {
+                !similar(separation, &entry.angles, &angles)
+                    || !same_depths(entry.design.as_ref(), design.as_ref())
+            })
             .collect();
         let position = kept.partition_point(|entry| entry.score <= score);
-        kept.insert(position, PoolEntry { angles, score });
+        kept.insert(
+            position,
+            PoolEntry {
+                angles,
+                design,
+                score,
+            },
+        );
         kept.truncate(self.capacity);
         self.entries = kept;
+    }
+
+    /// Complete-state alternatives; exclude the winner without losing mast-only rivals.
+    pub(super) fn rivals_for_design(
+        self,
+        best: &crate::design::Design,
+        free: &[usize],
+    ) -> Vec<PoolEntry> {
+        let angles: Vec<_> = free.iter().map(|&i| best.tiers[i].angle_deg).collect();
+        self.entries
+            .into_iter()
+            .filter(|entry| {
+                !similar(self.separation_deg, &entry.angles, &angles)
+                    || !same_depths(entry.design.as_ref(), Some(best))
+            })
+            .take(self.capacity.saturating_sub(1))
+            .collect()
     }
 
     /// The kept states other than `best_angles` itself (and anything similar to it),
     /// best first, at most `capacity - 1` of them: the alternatives to the run's end
     /// point, which the caller already holds as a design.
+    #[cfg(test)]
     pub(super) fn rivals(self, best_angles: &[f64]) -> Vec<PoolEntry> {
         let Self {
             capacity,

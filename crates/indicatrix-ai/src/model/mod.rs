@@ -18,8 +18,8 @@ pub use network::{
     InferenceScratch, LayerNorm, Linear, MlpBlock, ModelError, MultiHeadAttention, gelu,
 };
 pub use policy::{
-    GaussianPolicy, LOG_STD_INIT, LOG_STD_MAX, LOG_STD_MIN, block_slot, bounded_log_std,
-    compose_mean, log_std_raw_init,
+    GaussianPolicy, LOG_STD_INIT, LOG_STD_MAX, LOG_STD_MIN, LOG_STD_SLOTS, block_slot,
+    bounded_log_std, compose_mean, compose_mean_masked, log_std_raw_init,
 };
 pub use rng::Prng;
 pub use weights::WeightError;

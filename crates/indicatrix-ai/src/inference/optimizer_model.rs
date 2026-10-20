@@ -13,32 +13,29 @@
 //! `Fast` fidelity, so the final design is only adopted when it also measures strictly better
 //! in the report; otherwise the result proposes no change.
 //!
-//! The environment scores with the yield term when the weights weigh it and the preform makes
-//! the yield measurable (`ObjectiveWeights::score_with_yield`, as the report does), otherwise
-//! with the optical `ObjectiveWeights::score`. A tone weight is not supported and is refused
-//! with [`InferenceError::UnsupportedObjective`].
+//! The environment scores optical, tone and shape terms through the shared core path and adds
+//! measured yield loss when requested and available. The final proposal is compared using the
+//! same configured report fidelity.
 //!
-//! The optimizer is the retarget task with the target equal to the source material, so one
-//! trained model serves both: [`RlOptimizerModel::from_checkpoint`] and
-//! [`RlOptimizerModel::load`] accept a retarget checkpoint as well as an optimizer one.
+//! Checkpoints are task-specific: the optimizer wrapper accepts an optimizer checkpoint only.
 
 use super::{
     config::InferenceConfig,
     error::InferenceError,
-    policy::{
-        check_network, ensure_supported_objective, network_from_file, network_of, run_policy,
-    },
-    report::{DesignReport, angle_changes, mast_changes, report_design},
+    policy::{check_network, network_from_file, network_of, run_policy},
+    report::{DesignReport, angle_changes, mast_changes, report_design_with_settings},
 };
 use crate::{
     env::{OptimizerEnv, OptimizerEnvConfig},
     model::{Checkpoint, GemstoneSetAttentionNetwork, TrainingMode},
 };
 use indicatrix_cut_core::{
-    AngleChange, CANONICAL_LIGHTING_PRESET, Design, MastChange, ObjectiveWeights,
-    OptimizeCandidate, OptimizeOutcome, OptimizeResult,
+    AngleChange, Design, MastChange, ObjectiveWeights, OptimizeCandidate, OptimizeOutcome,
+    OptimizeResult,
+    meet_preservation::{MeetPreservationBaseline, PreservationPolicy},
+    optimize::{OptimizationProvenance, authoring_identity, materialize_preserved_changes},
 };
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 /// High-level RL inference engine for optimizing a design under its authored material.
 #[derive(Debug, Clone)]
@@ -48,7 +45,7 @@ pub struct RlOptimizerModel {
 }
 
 impl RlOptimizerModel {
-    /// Wrap a trained optimizer (or retarget) network.
+    /// Wrap a trained optimizer network.
     ///
     /// # Errors
     ///
@@ -62,17 +59,12 @@ impl RlOptimizerModel {
         Ok(Self { network, config })
     }
 
-    /// Wrap the network of a training checkpoint, an optimizer one or a retarget one.
-    ///
-    /// A retarget model serves the optimizer because the optimizer is the retarget task with
-    /// the target equal to the source material, and retarget training draws exactly that case
-    /// in a fraction of its episodes. The reverse is refused by
-    /// [`RlRetargetModel`](super::RlRetargetModel).
+    /// Wrap the network of an optimizer checkpoint.
     ///
     /// # Errors
     ///
-    /// [`InferenceError::Weights`] when the network does not fit the current observation
-    /// layout.
+    /// [`InferenceError::Weights`] when the checkpoint task/schema/layout does not match or
+    /// its network does not fit the current observation layout.
     pub fn from_checkpoint(
         checkpoint: Checkpoint,
         config: InferenceConfig,
@@ -83,13 +75,12 @@ impl RlOptimizerModel {
         })
     }
 
-    /// Load a training checkpoint file, an optimizer one or a retarget one (see
-    /// [`Self::from_checkpoint`] for why both serve).
+    /// Load an optimizer training checkpoint file.
     ///
     /// # Errors
     ///
     /// [`InferenceError::Weights`] for an unreadable or damaged file, another schema or
-    /// observation layout version, or a network that does not fit.
+    /// observation layout version, a retarget checkpoint, or a network that does not fit.
     pub fn load(path: &Path, config: InferenceConfig) -> Result<Self, InferenceError> {
         Ok(Self {
             network: network_from_file(path, TrainingMode::Optimizer)?,
@@ -115,14 +106,13 @@ impl RlOptimizerModel {
     /// changes are empty and `after` equals `before`. Angles of tiers that follow a relation
     /// are not listed (the apply path works them out). `evaluations` counts the candidate
     /// evaluations the rollout spent (between one and the number of line-search scales per
-    /// step; the before and after report evaluations are not counted). The tone fields are
-    /// `None`: this engine does not measure the face-up tone.
+    /// step; the before and after report evaluations are not counted). The result includes
+    /// tones measured under the configured lighting, plus the configured tone goal if weighted.
     ///
     /// # Errors
     ///
-    /// [`InferenceError::UnsupportedObjective`] when `weights` weigh the face-up tone (checked
-    /// first, before any environment work), [`InferenceError::Env`] when the configuration is
-    /// out of range or the design does not solve into a closed stone with a movable tier,
+    /// [`InferenceError::Env`] when the configuration is out of range or the design does not
+    /// solve into a closed stone with a movable tier,
     /// [`InferenceError::Model`] when the network rejects an observation,
     /// [`InferenceError::Unscorable`] when the report cannot be measured.
     pub fn optimize(
@@ -130,7 +120,6 @@ impl RlOptimizerModel {
         design: &Design,
         weights: ObjectiveWeights,
     ) -> Result<OptimizeResult, InferenceError> {
-        ensure_supported_objective(&weights)?;
         let config = &self.config;
         let mut env = OptimizerEnv::new(
             design.clone(),
@@ -139,6 +128,10 @@ impl RlOptimizerModel {
                 max_step_deg: config.max_step_deg,
                 weights,
                 fidelity: config.rollout_fidelity,
+                lighting: config.lighting,
+                shape_target: config.shape_target,
+                only_tiers: config.only_tiers.clone(),
+                angle_bounds: config.angle_bounds.clone(),
                 ..OptimizerEnvConfig::default()
             },
         )?;
@@ -155,19 +148,55 @@ impl RlOptimizerModel {
 
         let gem = &env.source_material().gem;
         let end = env.current_design();
-        let before = report_design(design, gem, &weights, config.report_fidelity)?;
+        let before = report_design_with_settings(
+            design,
+            gem,
+            &weights,
+            config.report_fidelity,
+            config.lighting,
+            config.shape_target,
+        )?;
         let changes = angle_changes(design, end);
-        let adopted = if changes.is_empty() {
+        let masts = mast_changes(design, end);
+        let adopted = if end == design {
             None
         } else {
-            let after = report_design(end, gem, &weights, config.report_fidelity)?;
-            (after.score < before.score).then(|| Adopted {
+            let after = report_design_with_settings(
+                end,
+                gem,
+                &weights,
+                config.report_fidelity,
+                config.lighting,
+                config.shape_target,
+            )?;
+            (after.score < before.score).then_some(Adopted {
                 after,
                 changes,
-                masts: mast_changes(design, end),
+                masts,
             })
         };
-        Ok(build_result(before, adopted, run.evaluations))
+        let stamp = match &adopted {
+            Some(adopted) => Some(
+                stamp_proposal(
+                    design,
+                    env.current_design(),
+                    &adopted.changes,
+                    &adopted.masts,
+                    &env.preservation_baseline(),
+                )
+                .map_err(InferenceError::Preservation)?,
+            ),
+            None => None,
+        };
+        let tone_goal = (weights.tone_weight > 0.0).then_some(weights.tone_goal);
+        Ok(build_result(
+            before,
+            adopted,
+            run.evaluations,
+            stamp,
+            config.lighting,
+            tone_goal,
+        ))
     }
 }
 
@@ -178,29 +207,90 @@ struct Adopted {
     masts: Vec<MastChange>,
 }
 
+/// The scoring identity of a result this engine produced. It is not a cut-core scoring key, so
+/// `OptimizationProvenance::matches_scoring` never accepts it for a cut-core search.
+const AI_SCORING_IDENTITY: &str = "indicatrix-ai:rl-optimizer";
+
+/// The cut-core provenance and baseline of a proposal, which exist only when the proposal went
+/// through the meet-preserving gate.
+struct Stamp {
+    provenance: OptimizationProvenance,
+    baseline: Arc<MeetPreservationBaseline>,
+}
+
+/// Runs the proposal through cut-core's meet-preserving gate under the Optimize policy, the
+/// policy of the cut-core search this engine stands in for.
+///
+/// Returns an error when exact materialization differs from the certified proposal or the
+/// original-relative gate refuses it; no provenance is emitted for an uncertified result.
+fn stamp_proposal(
+    design: &Design,
+    certified_state: &Design,
+    changes: &[AngleChange],
+    masts: &[MastChange],
+    baseline: &MeetPreservationBaseline,
+) -> Result<Stamp, String> {
+    let policy = PreservationPolicy::OPTIMIZE;
+    let (state, _, _) =
+        materialize_preserved_changes(design, changes, masts, Some(baseline), policy)
+            .map_err(|error| error.to_string())?;
+    if &state != certified_state {
+        return Err(
+            "materializing the result changed its certified angles, masts, or authoring geometry"
+                .into(),
+        );
+    }
+    let preservation = baseline
+        .validate(&state, policy)
+        .map_err(|error| error.to_string())?;
+    let provenance = OptimizationProvenance {
+        source: authoring_identity(design).map_err(|error| error.to_string())?,
+        candidate: authoring_identity(&state).map_err(|error| error.to_string())?,
+        scoring: AI_SCORING_IDENTITY.to_owned(),
+        policy,
+        masts: masts
+            .iter()
+            .map(|m| (m.index, m.from_mast, m.to_mast))
+            .collect(),
+        diagnostics: baseline.diagnostics(),
+        preservation,
+    };
+    Ok(Stamp {
+        provenance,
+        baseline: Arc::new(baseline.clone()),
+    })
+}
+
 fn build_result(
     before: DesignReport,
     adopted: Option<Adopted>,
     evaluations: usize,
+    stamp: Option<Stamp>,
+    lighting: indicatrix::optics::raytracer::LightingPreset,
+    tone_goal: Option<indicatrix_cut_core::ToneGoal>,
 ) -> OptimizeResult {
     let (after, changes, masts) = match adopted {
         Some(adopted) => (adopted.after, adopted.changes, adopted.masts),
         None => (before, Vec::new(), Vec::new()),
     };
-    let candidates = if changes.is_empty() {
+    let provenance = stamp.as_ref().map(|s| s.provenance.clone());
+    let candidates = if changes.is_empty() && masts.is_empty() {
         Vec::new()
     } else {
         vec![OptimizeCandidate {
+            provenance: provenance.clone(),
+            preservation_baseline: stamp.map(|s| s.baseline),
             changes: changes.clone(),
             mast_changes: masts.clone(),
             after: after.components,
             score: after.score,
             yield_loss_pct: after.yield_loss_pct,
-            tone: None,
+            tone: Some(after.tone),
         }]
     };
     OptimizeResult {
         outcome: OptimizeOutcome {
+            provenance,
             before: before.components,
             before_score: before.score,
             before_yield_loss_pct: before.yield_loss_pct,
@@ -215,9 +305,9 @@ fn build_result(
         },
         candidates,
         mast_changes: masts,
-        tone_before: None,
-        tone_goal: None,
-        lighting: CANONICAL_LIGHTING_PRESET,
+        tone_before: Some(before.tone),
+        tone_goal,
+        lighting,
         starts_run: 1,
         best_start: 0,
     }
@@ -295,10 +385,8 @@ mod tests {
     fn constant_network(bias: f32) -> GemstoneSetAttentionNetwork {
         let mut network = ModelTier::Small.init_network(11);
         network.sens_head.weights.fill(0.0);
-        network
-            .sens_head
-            .biases
-            .copy_from_slice(&[bias, 0.0, 0.0, 0.0]);
+        network.sens_head.biases.fill(0.0);
+        network.sens_head.biases[0] = bias;
         network
     }
 
@@ -335,6 +423,10 @@ mod tests {
                 max_step_deg: config.max_step_deg,
                 weights,
                 fidelity: config.rollout_fidelity,
+                lighting: config.lighting,
+                shape_target: config.shape_target,
+                only_tiers: config.only_tiers.clone(),
+                angle_bounds: config.angle_bounds.clone(),
                 ..OptimizerEnvConfig::default()
             },
         )
@@ -352,10 +444,24 @@ mod tests {
         .expect("the policy runs");
         let gem = &env.source_material().gem;
         let end = env.current_design();
-        let before = report_design(&design, gem, &weights, config.report_fidelity)
-            .expect("the start is scorable");
-        let after =
-            report_design(end, gem, &weights, config.report_fidelity).expect("the end is scorable");
+        let before = report_design_with_settings(
+            &design,
+            gem,
+            &weights,
+            config.report_fidelity,
+            config.lighting,
+            config.shape_target,
+        )
+        .expect("the start is scorable");
+        let after = report_design_with_settings(
+            end,
+            gem,
+            &weights,
+            config.report_fidelity,
+            config.lighting,
+            config.shape_target,
+        )
+        .expect("the end is scorable");
         assert!(
             after.score < before.score,
             "the probe found an improving policy"
@@ -412,8 +518,9 @@ mod tests {
 
     #[test]
     fn a_policy_that_does_not_move_proposes_no_change() {
-        // Zero sensitivities give a zero mean: every step is a zero turn, which the greedy
-        // environment rejects at every scale of the line search.
+        // Zero sensitivities give a zero mean: every step is a zero turn, a projection no-op the
+        // greedy environment refuses before it reaches the scorer, at every scale of the line
+        // search. Nothing changes and nothing is spent.
         let design = envelope_fixture();
         assert_free_tiers_inside_their_envelope(&design);
         let result = constant_model(0.0)
@@ -424,29 +531,38 @@ mod tests {
         assert_eq!(result.mast_changes.len(), 0);
         assert_eq!(result.outcome.after, result.outcome.before);
         assert_eq!(result.outcome.after_score, result.outcome.before_score);
-        assert!((1..=4 * DEFAULT_LINE_SEARCH.len()).contains(&result.outcome.evaluations));
+        assert_eq!(result.outcome.evaluations, 0);
     }
 
     #[test]
     fn a_stalled_run_spends_only_the_steps_up_to_the_stall_limit() {
+        // A zero turn costs no evaluation, so the stall rule is measured with the constant turn
+        // in the direction that does NOT improve the fixture: every step scores its line search
+        // and is refused, the design never changes, and each step therefore costs the same.
         let design = envelope_fixture();
-        let evaluations = |stall_steps: usize| {
-            RlOptimizerModel::new(
-                constant_network(0.0),
+        let run = |bias: f32, stall_steps: usize| {
+            let result = RlOptimizerModel::new(
+                constant_network(bias),
                 fast_config().with_stall_steps(stall_steps),
             )
             .expect("the network fits")
             .optimize(&design, ObjectiveWeights::default())
-            .expect("the fixture optimizes")
-            .outcome
-            .evaluations
+            .expect("the fixture optimizes");
+            (result.candidates.is_empty(), result.outcome.evaluations)
         };
-        // A refused step spends the whole line search, so the counts are in steps of it.
-        let one = evaluations(1);
-        let all = evaluations(0);
-        assert!(one <= DEFAULT_LINE_SEARCH.len(), "{one}");
-        assert!(all > one, "{all} against {one}");
-        assert!(all <= 4 * DEFAULT_LINE_SEARCH.len(), "{all}");
+        let bias = PROBE_BIASES
+            .iter()
+            .copied()
+            .find(|&bias| {
+                let (unchanged, evaluations) = run(bias, 0);
+                unchanged && evaluations > 0
+            })
+            .expect("a uniform turn in one direction is scored and refused at every scale");
+        let (_, one) = run(bias, 1);
+        let (_, all) = run(bias, 0);
+        assert!((1..=DEFAULT_LINE_SEARCH.len()).contains(&one), "{one}");
+        // Four steps of the same refused search; a stall limit of one stops after the first.
+        assert_eq!(all, 4 * one, "{all} against {one}");
     }
 
     #[test]
@@ -475,27 +591,26 @@ mod tests {
     }
 
     #[test]
-    fn a_tone_weight_is_refused_before_any_environment_work() {
-        // Zero steps make the environment refuse to start (`InferenceError::Env`), so the
-        // tone error can only come first.
-        let model = RlOptimizerModel::new(
-            ModelTier::Small.init_network(11),
-            fast_config().with_steps(0),
-        )
-        .expect("the network fits");
+    fn tone_objectives_reach_the_scoring_environment() {
+        let mut config = fast_config().with_steps(1);
+        config.lighting = indicatrix::optics::raytracer::LightingPreset::Daylight;
+        let model = RlOptimizerModel::new(ModelTier::Small.init_network(11), config)
+            .expect("the network fits");
         let design = Design::concave_fixture();
         for preset in [ObjectivePreset::LightenDark, ObjectivePreset::IntensifyPale] {
-            let result = model.optimize(&design, preset.weights());
-            assert!(
-                matches!(result, Err(InferenceError::UnsupportedObjective(_))),
-                "{preset:?}: {result:?}"
+            let result = model
+                .optimize(&design, preset.weights())
+                .unwrap_or_else(|error| panic!("{preset:?}: {error}"));
+            assert_eq!(
+                result.lighting,
+                indicatrix::optics::raytracer::LightingPreset::Daylight
             );
+            assert!(result.tone_before.is_some(), "{preset:?}");
+            assert_eq!(result.tone_goal, Some(preset.weights().tone_goal));
+            if let Some(candidate) = result.candidates.first() {
+                assert!(candidate.tone.is_some(), "{preset:?}");
+            }
         }
-        // The premise: without the tone term the same model fails in the environment.
-        assert!(matches!(
-            model.optimize(&design, ObjectivePreset::Balanced.weights()),
-            Err(InferenceError::Env(_))
-        ));
     }
 
     #[test]
@@ -512,6 +627,8 @@ mod tests {
             ObjectivePreset::LowWindowing,
             ObjectivePreset::LowExtinction,
             ObjectivePreset::KeepWeight,
+            ObjectivePreset::LightenDark,
+            ObjectivePreset::IntensifyPale,
         ] {
             let result = single_step
                 .optimize(&design, preset.weights())
@@ -550,28 +667,46 @@ mod tests {
     }
 
     #[test]
-    fn a_retarget_checkpoint_also_serves_the_optimizer() {
-        for mode in [TrainingMode::Optimizer, TrainingMode::Retarget] {
-            let model = RlOptimizerModel::from_checkpoint(checkpoint_of(mode), fast_config())
-                .unwrap_or_else(|error| panic!("{mode}: {error}"));
-            assert_eq!(model.config(), &fast_config(), "{mode}");
-        }
-    }
-
-    #[test]
-    fn a_damaged_checkpoint_is_still_refused_whatever_its_mode() {
-        let mut checkpoint = checkpoint_of(TrainingMode::Retarget);
-        checkpoint.network.tier_proj.weights.pop();
+    fn only_an_optimizer_checkpoint_serves_the_optimizer() {
+        let model = RlOptimizerModel::from_checkpoint(
+            checkpoint_of(TrainingMode::Optimizer),
+            fast_config(),
+        )
+        .expect("an optimizer checkpoint serves the optimizer");
+        assert_eq!(model.config(), &fast_config());
+        // Checkpoints are task-specific (schema 4): a retarget model is refused by its mode.
         assert!(matches!(
-            RlOptimizerModel::from_checkpoint(checkpoint, fast_config()),
-            Err(InferenceError::Weights(
-                WeightError::DimensionMismatch { .. }
-            ))
+            RlOptimizerModel::from_checkpoint(checkpoint_of(TrainingMode::Retarget), fast_config()),
+            Err(InferenceError::Weights(WeightError::ModeMismatch {
+                expected: TrainingMode::Optimizer,
+                got: TrainingMode::Retarget,
+            }))
         ));
     }
 
     #[test]
-    fn loading_a_file_accepts_both_modes() {
+    fn a_damaged_checkpoint_is_still_refused_whatever_its_mode() {
+        let damaged = |mode: TrainingMode| {
+            let mut checkpoint = checkpoint_of(mode);
+            checkpoint.network.tier_proj.weights.pop();
+            checkpoint
+        };
+        assert!(matches!(
+            RlOptimizerModel::from_checkpoint(damaged(TrainingMode::Optimizer), fast_config()),
+            Err(InferenceError::Weights(
+                WeightError::DimensionMismatch { .. }
+            ))
+        ));
+        // The mode is checked before the network: a damaged retarget checkpoint is refused for
+        // its mode, and never reaches the optimizer.
+        assert!(matches!(
+            RlOptimizerModel::from_checkpoint(damaged(TrainingMode::Retarget), fast_config()),
+            Err(InferenceError::Weights(WeightError::ModeMismatch { .. }))
+        ));
+    }
+
+    #[test]
+    fn loading_a_file_follows_the_same_mode_rule() {
         let optimizer = checkpoint_file(TrainingMode::Optimizer, "optimizer-file");
         let retarget = checkpoint_file(TrainingMode::Retarget, "retarget-file");
         let from_optimizer = RlOptimizerModel::load(&optimizer, fast_config());
@@ -579,6 +714,9 @@ mod tests {
         let _ = std::fs::remove_file(&optimizer);
         let _ = std::fs::remove_file(&retarget);
         assert!(from_optimizer.is_ok());
-        assert!(from_retarget.is_ok());
+        assert!(matches!(
+            from_retarget,
+            Err(InferenceError::Weights(WeightError::ModeMismatch { .. }))
+        ));
     }
 }

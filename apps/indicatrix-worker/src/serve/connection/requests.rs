@@ -17,9 +17,9 @@ use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_net::{
     framing::{FramingError, IDLE_READ_TIMEOUT},
     messages::{
-        BatchRenderRequest, ClientMessage, ErrorMsg, FinalImageRequest, NetError, PayloadEncoding,
-        RenderRequest, StreamEvent, TiltCurvesRequest, TransferMode, adaptive::PeerLink,
-        error_codes,
+        BatchRenderRequest, ClientMessage, ErrorMsg, FinalImageRequest, JobRequest, NetError,
+        PayloadEncoding, RenderRequest, StreamEvent, TiltCurvesRequest, TransferMode,
+        adaptive::PeerLink, error_codes,
     },
 };
 use std::{
@@ -68,6 +68,9 @@ pub struct RequestContext<'a> {
     /// are resolved first (`crate::assets::ensure_environment`); without it they are
     /// refused (see `crate::assets::hdr_route`).
     pub assets: Option<&'a AssetCache>,
+    /// The durable job service (v25): `None` on a server without an own render lane and on a
+    /// `join`ed worker's connection, where job requests are refused.
+    pub jobs: Option<&'a Arc<crate::jobs::JobService>>,
 }
 
 /// Writes the `UNSUPPORTED_REQUEST` reply for a well-formed request this server does
@@ -198,6 +201,17 @@ pub fn serve_requests<S: Read + Write + TimeoutRead + TimeoutWrite>(
                 batch::serve_batches(stream, batch_request, ctx)?;
                 None
             }
+            // v25: a durable job request, answered at once (the render itself runs on the
+            // job executor, never on this connection). Its owner is the viewer identity.
+            (NextRequest::Job(job_request), session) => {
+                crate::jobs::serve_job(
+                    stream,
+                    *job_request,
+                    ctx.jobs.map(|jobs| &**jobs),
+                    session.map(|session| &*session.viewer),
+                )?;
+                None
+            }
         };
         // Served: the request no longer needs its HDR map pinned.
         drop(hdr_pin);
@@ -217,6 +231,8 @@ fn refuse_zoning_through_coordinator<S: Write>(
         NextRequest::FinalImage(r) => r.request_id,
         NextRequest::TiltCurves(r) => r.request_id,
         NextRequest::Batch(r) => r.request_id,
+        // A job carries its scene beside no zones (they are not part of a job).
+        NextRequest::Job(_) => return Ok(false),
     };
     if crate::serve::zoning::take(request_id).is_none() {
         return Ok(false);
@@ -287,7 +303,11 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
         indicatrix_net::messages::write_stream_event(
             stream,
             &StreamEvent::Error(ErrorMsg {
-                code: VALIDATION_FAILED_CODE,
+                code: if request.scene.engine.is_ray() {
+                    error_codes::UNSUPPORTED_REQUEST
+                } else {
+                    VALIDATION_FAILED_CODE
+                },
                 message: msg,
                 request_id: Some(request.request_id),
             }),
@@ -412,7 +432,7 @@ fn prepare_hdr<S: Read + Write + TimeoutRead + TimeoutWrite>(
         }
         // A batch item naming an HDR map fails by itself (`batch::check_item`); no asset is
         // fetched for a batch (nor for a tilt-curves request).
-        NextRequest::Batch(_) | NextRequest::TiltCurves(_) => {
+        NextRequest::Batch(_) | NextRequest::TiltCurves(_) | NextRequest::Job(_) => {
             return Ok(Prepared::Serve(HdrPin::NONE));
         }
         NextRequest::Render(r) => (
@@ -493,6 +513,7 @@ enum NextRequest {
     TiltCurves(TiltCurvesRequest),
     FinalImage(FinalImageRequest),
     Batch(BatchRenderRequest),
+    Job(Box<JobRequest>),
 }
 
 /// Reads the next message off `stream`: blocking, or -- on a coordinator viewer
@@ -550,6 +571,7 @@ fn read_next_message<S: Read + Write + TimeoutRead>(
                 return Ok(Some(NextRequest::FinalImage(*r)));
             }
             ClientMessage::BatchRenderRequest(r) => return Ok(Some(NextRequest::Batch(*r))),
+            ClientMessage::Job(request) => return Ok(Some(NextRequest::Job(request))),
             ClientMessage::Ping { nonce } => write_pong(stream, nonce)?,
             // The zones of the request that follows: kept for it.
             #[cfg(feature = "worker")]

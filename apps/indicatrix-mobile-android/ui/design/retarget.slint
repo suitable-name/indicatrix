@@ -1,0 +1,81 @@
+import { ComboBox, CheckBox, LineEdit, SpinBox, ProgressIndicator } from "std-widgets.slint";
+import { Shell } from "../models.slint";
+import { Theme } from "../theme.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { PrimaryButton, TextButton } from "../shell/buttons.slint";
+import { ListRow } from "../shell/list_row.slint";
+
+export global RetargetModel {
+    in-out property <bool> open: false;
+    in property <bool> release-ready: false;
+    in property <[string]> materials;
+    in-out property <int> material: 0;
+    in-out property <string> ri;
+    in-out property <int> crown: 0;
+    in-out property <string> crown-fraction: "0.5";
+    in-out property <bool> girdle: true;
+    in-out property <bool> search: false;
+    in property <[string]> presets;
+    in-out property <int> preset: 0;
+    in-out property <int> range: 1;
+    in-out property <int> effort: 1;
+    in-out property <bool> keep-look: true;
+    in-out property <int> candidates: 3;
+    in-out property <string> seed: "0";
+    in property <bool> running: false;
+    in property <string> status;
+    in property <[string]> results;
+    in property <string> comparison;
+    in property <bool> can-apply: false;
+    in-out property <string> variant-name: "Retarget candidate";
+    callback show(); callback close(); callback start(); callback cancel();
+    callback select(int); callback apply(); callback save-variant();
+}
+
+export component RetargetScreen inherits Rectangle {
+    background: Theme.surface;
+    TouchArea { }
+    VerticalLayout {
+        TopBar { title: "Retarget For Material"; show-back: true; back-clicked => { Shell.request-back(); } }
+        PageScroll {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: Theme.space-md; spacing: Theme.space-sm;
+                Text { text: "Retarget changes cutting geometry for a target material. Checking and preview leave the current design untouched."; wrap: word-wrap; color: Theme.on-surface-variant; }
+                if !RetargetModel.release-ready: Text { text: "Release use awaits shared Retarget preservation regression validation."; wrap: word-wrap; color: Theme.on-surface-variant; }
+                ComboBox { model: RetargetModel.materials; current-index <=> RetargetModel.material; }
+                Text { text: "RI Override (Optional For a Named Material)"; color: Theme.on-surface-variant; }
+                LineEdit { text <=> RetargetModel.ri; }
+                ComboBox { model: ["Crown follows pavilion stretch", "Keep crown angles", "Scale crown by critical angle ratio", "Fraction of critical angle shift"]; current-index <=> RetargetModel.crown; }
+                if RetargetModel.crown == 3: LineEdit { text <=> RetargetModel.crown-fraction; }
+                CheckBox { text: "Allow Supported Girdle Thickening (Up To 10%)"; checked <=> RetargetModel.girdle; }
+                PrimaryButton {
+                    text: "Check Shift"; enabled: RetargetModel.release-ready && !RetargetModel.running;
+                    clicked => { RetargetModel.search = false; RetargetModel.start(); }
+                }
+                Text { text: "Search Alternatives"; color: Theme.on-surface; }
+                ComboBox { model: RetargetModel.presets; current-index <=> RetargetModel.preset; }
+                ComboBox { model: ["±3°", "±6°", "±10°", "±15°"]; current-index <=> RetargetModel.range; }
+                ComboBox { model: ["Quick · 100", "Normal · 300", "Thorough · 800"]; current-index <=> RetargetModel.effort; }
+                CheckBox { text: "Keep the Design's Look"; checked <=> RetargetModel.keep-look; }
+                Text { text: "Candidates"; color: Theme.on-surface-variant; }
+                SpinBox { minimum: 1; maximum: 5; value <=> RetargetModel.candidates; }
+                Text { text: "Seed"; color: Theme.on-surface-variant; }
+                LineEdit { text <=> RetargetModel.seed; }
+                PrimaryButton {
+                    text: "Search Checked Alternatives"; enabled: RetargetModel.release-ready && !RetargetModel.running;
+                    clicked => { RetargetModel.search = true; RetargetModel.start(); }
+                }
+                if RetargetModel.running: ProgressIndicator { indeterminate: true; }
+                if RetargetModel.running: TextButton { text: "Cancel Operation"; clicked => { RetargetModel.cancel(); } }
+                Text { text: RetargetModel.status; color: Theme.on-surface; wrap: word-wrap; }
+                for candidate[index] in RetargetModel.results: ListRow { title: candidate; clicked => { RetargetModel.select(index); } }
+                Text { text: RetargetModel.comparison; color: Theme.on-surface; wrap: word-wrap; }
+                PrimaryButton { text: "Apply Geometry and Target Material"; enabled: RetargetModel.can-apply; clicked => { RetargetModel.apply(); } }
+                LineEdit { text <=> RetargetModel.variant-name; }
+                TextButton { text: "Save Candidate As Variant"; enabled: RetargetModel.can-apply; clicked => { RetargetModel.save-variant(); } }
+            }
+        }
+    }
+}

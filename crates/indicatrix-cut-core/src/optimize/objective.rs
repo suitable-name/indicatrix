@@ -308,9 +308,10 @@ pub fn evaluate_objective(
     evaluate_objective_under(planes, material, fidelity, CANONICAL_LIGHTING_PRESET)
 }
 
-/// [`evaluate_objective`] with the `Full` sweep capped at `max_threads` (`None` = the
-/// machine, `Some(1)` = serial). For a caller that runs several evaluations side by side;
-/// bit-identical to the uncapped call.
+/// [`evaluate_objective`] with the `Full` sweep capped at `max_threads`.
+///
+/// `None` is the machine, `Some(1)` is serial. For a caller that runs several evaluations
+/// side by side; bit-identical to the uncapped call.
 #[must_use]
 pub fn evaluate_objective_threaded(
     planes: &[GpuFacetPlane],
@@ -371,11 +372,34 @@ pub fn evaluate_objective_with_tone_under_threaded(
     preset: LightingPreset,
     max_threads: Option<usize>,
 ) -> (ObjectiveComponents, FaceUpTone) {
+    evaluate_objective_with_tone_geom_under_threaded(
+        StoneGeometry::planes_only(planes),
+        material,
+        fidelity,
+        preset,
+        max_threads,
+    )
+}
+
+/// [`evaluate_objective_with_tone_under_threaded`] for a stone that may carry concave tools.
+///
+/// The tools are grooves and dimples: the tracer cuts them out of the planes, so the
+/// figures describe the stone the cutter holds.
+///
+/// With no tools this is the planes-only call, bit for bit (it is that call).
+#[must_use]
+pub fn evaluate_objective_with_tone_geom_under_threaded(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+    preset: LightingPreset,
+    max_threads: Option<usize>,
+) -> (ObjectiveComponents, FaceUpTone) {
     let environment = preset.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
     // The `_core` path skips Fire and scintillation, which this objective never reads; the
     // three components and the tone are bit-identical to the full path's.
     let (m, tone) = evaluate_gem_optical_metrics_with_tone_geom_core(
-        StoneGeometry::planes_only(planes),
+        geom,
         material,
         0.0,
         90.0f32.to_radians(),
@@ -387,8 +411,8 @@ pub fn evaluate_objective_with_tone_under_threaded(
             extinction_pct: m.extinction_pct,
             tilt_brilliance_pct: m.brilliance_pct,
         },
-        ObjectiveFidelity::Full => evaluate_objective_under_threaded(
-            planes,
+        ObjectiveFidelity::Full => evaluate_objective_geom_under_threaded(
+            geom,
             material,
             ObjectiveFidelity::Full,
             preset,
@@ -430,11 +454,45 @@ pub fn evaluate_objective_under_threaded(
     preset: LightingPreset,
     max_threads: Option<usize>,
 ) -> ObjectiveComponents {
+    evaluate_objective_geom_under_threaded(
+        StoneGeometry::planes_only(planes),
+        material,
+        fidelity,
+        preset,
+        max_threads,
+    )
+}
+
+/// [`evaluate_objective_under`] for a stone that may carry concave tools.
+///
+/// This is what the optimizer, Retarget and the angle sweep score, so their figures
+/// describe the stone the Compare window draws. Bit-identical to the planes-only call when
+/// `geom` has no tools.
+#[must_use]
+pub fn evaluate_objective_geom_under(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+    preset: LightingPreset,
+) -> ObjectiveComponents {
+    evaluate_objective_geom_under_threaded(geom, material, fidelity, preset, None)
+}
+
+/// [`evaluate_objective_geom_under`] with the `Full` sweep capped at `max_threads`
+/// (`None` = the machine, `Some(1)` = serial). `Fast` is one pose and ignores the cap.
+#[must_use]
+pub fn evaluate_objective_geom_under_threaded(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+    preset: LightingPreset,
+    max_threads: Option<usize>,
+) -> ObjectiveComponents {
     let environment = preset.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
     match fidelity {
         ObjectiveFidelity::Fast => {
             let m = evaluate_gem_optical_metrics_geom_core(
-                StoneGeometry::planes_only(planes),
+                geom,
                 material,
                 0.0,
                 90.0f32.to_radians(),
@@ -453,12 +511,8 @@ pub fn evaluate_objective_under_threaded(
             let mut n = 0u32;
             // One batch of all 724 poses; the axes come back in `PROFILE_AZIMUTHS_DEG`
             // order, so the serial f64 sums below add in the same order as before.
-            let profiles = evaluate_all_axes_profiles_geom_threaded(
-                StoneGeometry::planes_only(planes),
-                material,
-                environment,
-                max_threads,
-            );
+            let profiles =
+                evaluate_all_axes_profiles_geom_threaded(geom, material, environment, max_threads);
             for profile in &profiles {
                 for i in 0..TILT_ANGLES_DEG.len() {
                     brilliance_sum += f64::from(profile.brilliance[i]);

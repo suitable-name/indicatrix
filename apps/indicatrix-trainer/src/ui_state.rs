@@ -221,6 +221,9 @@ pub struct ProgressSnapshot {
     pub batch_size: usize,
     /// Epochs per update in effect (per round for imitation).
     pub ppo_epochs: usize,
+    /// Imitation mini-batches trained per round in effect (0: full epochs over the aggregate,
+    /// see `ppo_epochs`).
+    pub updates_per_round: usize,
     /// Parallel environments.
     pub worker_count: usize,
     /// True once an update changed the weights since the last save, load or re-initialisation
@@ -270,6 +273,7 @@ impl Default for ProgressSnapshot {
             rollout_size: 0,
             batch_size: 0,
             ppo_epochs: 0,
+            updates_per_round: 0,
             worker_count: 0,
             weights_dirty: false,
             run_generation: 0,

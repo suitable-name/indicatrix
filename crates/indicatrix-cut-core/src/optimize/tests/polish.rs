@@ -87,6 +87,38 @@ fn polish_stage_stops_when_cancelled() {
     assert_eq!(result.evaluations, start.len());
 }
 
+/// `max_evaluations` is a hard cap: a landscape that rejects every point but the start
+/// (infinite scores) forces the contraction and then a shrink that re-scores every vertex
+/// but the best, which used to run the count past the cap by a whole simplex. The cap is
+/// below, at and above the dimension (nine, the free tiers of the multi-start fixture).
+#[test]
+fn polish_stage_never_evaluates_more_often_than_its_cap() {
+    let start = [0.0_f64; 9];
+    for cap in [0, 1, 5, 9, 10, 11, 12, 13, 19, 20, 25] {
+        let calls = std::cell::Cell::new(0usize);
+        let f = |p: &[f64]| {
+            calls.set(calls.get() + 1);
+            if p.iter().all(|&x| x == 0.0) {
+                0.0
+            } else {
+                f32::INFINITY
+            }
+        };
+        let result = polish::run_polish(&start, 0.0, 0.5, cap, 1e-6, &|| false, f);
+        assert!(
+            calls.get() <= cap,
+            "{} calls against a cap of {cap}",
+            calls.get()
+        );
+        assert_eq!(result.evaluations, calls.get());
+        assert_eq!(
+            result.point, start,
+            "nothing but the start is ever accepted"
+        );
+        assert_eq!(result.score, 0.0);
+    }
+}
+
 /// A point the scoring closure rejects (here, anything outside a synthetic `|a|,
 /// |b| <= 5` box, scored `f32::INFINITY` -- exactly how
 /// `candidate::build_free_angle_candidate` treats an out-of-bounds simplex point,

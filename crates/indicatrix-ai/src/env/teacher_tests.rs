@@ -17,6 +17,44 @@ fn close(a: f32, b: f32, tolerance: f32) -> bool {
     (a - b).abs() <= tolerance
 }
 
+/// Whether two tier sensitivities agree bit for bit, NaN included. `PartialEq` says
+/// `NaN != NaN`, and a label of a design without a shape target (or a measurable yield) carries
+/// NaN in that component by contract, so `assert_eq!` on labels would never hold.
+fn same_sensitivity(a: Option<TierSensitivity>, b: Option<TierSensitivity>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.forward_probe == b.forward_probe
+                && a.score.to_bits() == b.score.to_bits()
+                && a.components
+                    .iter()
+                    .zip(&b.components)
+                    .all(|(x, y)| x.to_bits() == y.to_bits())
+        }
+        _ => false,
+    }
+}
+
+fn assert_same_tiers(a: &[Option<TierSensitivity>], b: &[Option<TierSensitivity>], context: &str) {
+    assert_eq!(a.len(), b.len(), "{context}");
+    for (tier, (x, y)) in a.iter().zip(b).enumerate() {
+        assert!(
+            same_sensitivity(*x, *y),
+            "{context}: tier {tier}: {x:?} vs {y:?}"
+        );
+    }
+}
+
+/// [`assert_same_tiers`] over the tiers, `assert_eq!` over the oracle figures and the cost.
+fn assert_same_label(a: &TeacherLabel, b: &TeacherLabel, context: &str) {
+    assert_same_tiers(&a.tiers, &b.tiers, context);
+    assert_eq!(
+        (a.oracle_gain, a.oracle_scale, a.evaluations),
+        (b.oracle_gain, b.oracle_scale, b.evaluations),
+        "{context}"
+    );
+}
+
 /// The probes of every tier of the design, one task each as a trainer's pool would run them:
 /// the per-tier sensitivities and the sum of the evaluations they cost.
 fn probe_all(env: &RetargetEnv, h_deg: f64) -> (Vec<Option<TierSensitivity>>, usize) {
@@ -32,20 +70,15 @@ fn probe_all(env: &RetargetEnv, h_deg: f64) -> (Vec<Option<TierSensitivity>>, us
 }
 
 #[test]
-fn the_yield_loss_is_floored_at_zero_for_a_stone_bigger_than_its_preform() {
+fn the_yield_loss_matches_shared_core_for_a_stone_bigger_than_its_preform() {
     use crate::env::common::{objective_score, yield_loss_pct};
     use indicatrix_cut_core::{ObjectiveComponents, ObjectiveWeights};
 
     assert_eq!(yield_loss_pct(40.0), 60.0);
     assert_eq!(yield_loss_pct(100.0), 0.0);
-    assert_eq!(
-        yield_loss_pct(130.0),
-        0.0,
-        "a yield above 100 % is a full yield, not a gain"
-    );
+    assert_eq!(yield_loss_pct(130.0), -30.0);
 
-    // With the floor the score of a Keep Weight objective stays within 0..=100 whatever the
-    // yield says, so an episode cannot end as "perfect" because the stone outgrew its preform.
+    // AI scoring follows the core's exact yield-loss convention, including over-100% yield.
     let weights = ObjectiveWeights {
         yield_weight: 3.0,
         ..ObjectiveWeights::default()
@@ -56,24 +89,26 @@ fn the_yield_loss_is_floored_at_zero_for_a_stone_bigger_than_its_preform() {
         tilt_brilliance_pct: 100.0,
     };
     let score = objective_score(&weights, &components, Some(130.0));
-    assert!(score >= 0.0, "score {score} went negative");
-    assert_eq!(score, objective_score(&weights, &components, Some(100.0)));
+    assert!(score < objective_score(&weights, &components, Some(100.0)));
 }
 
 #[test]
 fn the_constants_are_the_contract() {
-    assert_eq!(N_COMPONENTS, 4);
+    assert_eq!(N_COMPONENTS, 7);
     assert_eq!(
         [
             COMPONENT_WINDOWING,
             COMPONENT_EXTINCTION,
             COMPONENT_BRILLIANCE_LOSS,
-            COMPONENT_YIELD_LOSS
+            COMPONENT_YIELD_LOSS,
+            COMPONENT_LIGHTER_TONE_LOSS,
+            COMPONENT_DEEPER_TONE_LOSS,
+            COMPONENT_SHAPE_DISTANCE
         ],
-        [0, 1, 2, 3]
+        [0, 1, 2, 3, 4, 5, 6]
     );
     assert_eq!(DEFAULT_LINE_SEARCH, [1.0, 0.5, 0.25]);
-    assert_eq!(SLOPE_EPS, 1e-6);
+    assert_eq!(SLOPE_NORM_FLOOR, 0.05);
     // 95 % of the step for the steepest tier.
     assert!(
         close(MEAN_BOUND.tanh(), 0.95, 1e-6),
@@ -84,8 +119,16 @@ fn the_constants_are_the_contract() {
 
 #[test]
 fn the_steepest_tier_gets_the_mean_bound_against_its_slope() {
-    let direction = direction_from_slopes(&[Some(2.0), Some(-4.0), Some(1.0), Some(4.0)]);
-    assert_eq!(direction.len(), 4);
+    let direction = direction_from_slopes(&[
+        Some(2.0),
+        Some(-4.0),
+        Some(1.0),
+        Some(4.0),
+        None,
+        None,
+        None,
+    ]);
+    assert_eq!(direction.len(), 7);
     // Both |4| tiers are steepest: the bound, opposite to the sign of the slope.
     assert!(close(direction[1], MEAN_BOUND, 1e-5), "{direction:?}");
     assert!(close(direction[3], -MEAN_BOUND, 1e-5), "{direction:?}");
@@ -110,6 +153,7 @@ fn a_missing_or_non_finite_slope_is_no_slope() {
         Some(f32::NEG_INFINITY),
         Some(-1.0),
         Some(0.5),
+        None,
     ]);
     // The four non-slopes are zero and do not take part in the maximum.
     assert_eq!(direction[..4], [0.0; 4]);
@@ -170,12 +214,23 @@ fn the_label_measures_every_free_tier_and_leaves_the_environment_alone() {
 
     let label = env.teacher_label(H, &DEFAULT_LINE_SEARCH);
     assert_eq!(label.tiers.len(), tiers);
+    // The fixture's block preform makes the yield measurable and the tone is always measured,
+    // so six components are finite; the fixture has no shape target, so the seventh is NaN
+    // ("not measured"), never a number invented for it.
+    assert!(env.config().shape_target.is_none());
+    assert!(observation.global.yield_available > 0.5);
     for (index, entry) in label.tiers.iter().enumerate() {
         if env.movable_tier_indices().contains(&index) {
             let sensitivity = entry.expect("a free tier with a feasible probe");
             assert!(sensitivity.score.is_finite(), "tier {index}");
             assert!(
-                sensitivity.components.iter().all(|slope| slope.is_finite()),
+                sensitivity.components[..COMPONENT_SHAPE_DISTANCE]
+                    .iter()
+                    .all(|slope| slope.is_finite()),
+                "tier {index}: {sensitivity:?}"
+            );
+            assert!(
+                sensitivity.components[COMPONENT_SHAPE_DISTANCE].is_nan(),
                 "tier {index}: {sensitivity:?}"
             );
         } else {
@@ -206,44 +261,92 @@ fn the_score_slope_is_the_gradient_the_trainer_already_used() {
 
 #[test]
 fn the_component_slopes_are_the_probes_own_differences() {
-    let mut env = fixture_env();
-    let tiers = env.base_design().tiers.len();
+    // The label's quotient per tier: the nonuniform two-sided derivative when both probes pass
+    // the gates, the one-sided quotient when only one does (`forward_probe` says which).
+    let env = fixture_env();
     let label = env.teacher_label(H, &[]);
-    let base = env.base_components();
-    let h = H as f32;
+    let base = component_values(&env.core.current_eval);
     let mut checked = 0;
+    let mut two_sided = 0;
+    let mut refused = Vec::new();
     for tier in env.movable_tier_indices().to_vec() {
         let sensitivity = label.tiers[tier].expect("a free tier");
-        if !sensitivity.forward_probe {
-            continue;
+        let h_plus = env.core.probe_delta(tier, H);
+        let h_minus = -env.core.probe_delta(tier, -H);
+        assert!(h_plus > 0.0 && h_minus > 0.0);
+        let (positive, scored_positive) = env.core.probe(tier, h_plus);
+        let (negative, scored_negative) = env.core.probe(tier, -h_minus);
+        let quotient = |center: f32, plus: Option<f32>, minus: Option<f32>| -> f32 {
+            let (f0, span) = (f64::from(center), h_plus + h_minus);
+            match (plus, minus) {
+                (Some(plus), Some(minus)) => {
+                    (h_minus / span * ((f64::from(plus) - f0) / h_plus)
+                        + h_plus / span * ((f0 - f64::from(minus)) / h_minus))
+                        as f32
+                }
+                (Some(plus), None) => ((f64::from(plus) - f0) / h_plus) as f32,
+                (None, Some(minus)) => ((f0 - f64::from(minus)) / h_minus) as f32,
+                (None, None) => unreachable!("the label has a sensitivity for tier {tier}"),
+            }
+        };
+        let plus = positive.as_ref().map(component_values);
+        let minus = negative.as_ref().map(component_values);
+        for component in 0..N_COMPONENTS {
+            let got = sensitivity.components[component];
+            let want = quotient(
+                base[component],
+                plus.map(|row| row[component]),
+                minus.map(|row| row[component]),
+            );
+            if want.is_nan() {
+                assert!(got.is_nan(), "tier {tier} component {component}: {got}");
+            } else {
+                assert!(
+                    close(got, want, 1e-3),
+                    "tier {tier} component {component}: {got} vs {want}"
+                );
+            }
         }
-        // The step of the same one-hot delta scores the very same candidate.
-        let _ = env.reset(0);
-        let mut deltas = vec![0.0; tiers];
-        deltas[tier] = H;
-        let _ = env.step(&ContinuousTierAction::new(deltas));
-        let probed = env.last_components().expect("the +h candidate scored");
-        let [windowing, extinction, brilliance_loss, _] = sensitivity.components;
-        assert!(close(
-            windowing,
-            (probed.windowing_pct - base.windowing_pct) / h,
-            1e-3
-        ));
-        assert!(close(
-            extinction,
-            (probed.extinction_pct - base.extinction_pct) / h,
-            1e-3
-        ));
-        // The component is the LOSS: a brilliance gain is a negative slope.
-        let brilliance_delta = probed.tilt_brilliance_pct - base.tilt_brilliance_pct;
-        assert!(
-            close(brilliance_loss, -brilliance_delta / h, 1e-3),
-            "tier {tier}: {brilliance_loss} vs {}",
-            -brilliance_delta / h
+        let want_score = quotient(
+            env.core.current_eval.score,
+            positive.as_ref().map(|eval| eval.score),
+            negative.as_ref().map(|eval| eval.score),
         );
+        assert!(
+            close(sensitivity.score, want_score, 1e-3),
+            "tier {tier}: {} vs {want_score}",
+            sensitivity.score
+        );
+        assert_eq!(sensitivity.forward_probe, positive.is_some(), "tier {tier}");
+        // Why a side was not usable: refused before scoring (the meet-preserving projection
+        // names its reason) or scored and failed a gate.
+        let explain = |delta: f64, scored: bool| {
+            let mut deltas = vec![0.0; label.tiers.len()];
+            deltas[tier] = delta;
+            let action = ContinuousTierAction::new(deltas);
+            let projection = crate::env::moves::preservation_refusal(
+                &env.core.space,
+                &env.core.current_design,
+                &action,
+                delta.abs(),
+            );
+            (tier, delta, scored, projection)
+        };
+        if positive.is_none() {
+            refused.push(explain(h_plus, scored_positive));
+        }
+        if negative.is_none() {
+            refused.push(explain(-h_minus, scored_negative));
+        }
+        two_sided += usize::from(positive.is_some() && negative.is_some());
         checked += 1;
     }
-    assert!(checked > 0, "no free tier had a feasible +h probe");
+    assert!(checked > 0, "no free tier had a feasible probe");
+    assert!(
+        two_sided > 0,
+        "no free tier had both probes accepted; refused (tier, delta, scored, projection): \
+         {refused:?}"
+    );
 }
 
 #[test]
@@ -254,6 +357,8 @@ fn the_score_slope_is_the_weighted_composition_of_the_component_slopes() {
         ObjectivePreset::LowWindowing,
         ObjectivePreset::LowExtinction,
         ObjectivePreset::KeepWeight,
+        ObjectivePreset::LightenDark,
+        ObjectivePreset::IntensifyPale,
     ] {
         let env = fixture_env_with(|config| config.weights = preset.weights());
         let fractions = env.build_observation().global.weight_fractions;
@@ -263,6 +368,7 @@ fn the_score_slope_is_the_weighted_composition_of_the_component_slopes() {
             let composed: f32 = fractions
                 .iter()
                 .zip(&sensitivity.components)
+                .filter(|(fraction, _)| **fraction > 0.0)
                 .map(|(fraction, slope)| fraction * slope)
                 .sum();
             assert!(
@@ -318,7 +424,7 @@ fn no_scales_means_no_oracle_step() {
         assert_eq!(probes_only.oracle_gain, None);
         assert_eq!(probes_only.oracle_scale, None);
         // The probes do not depend on the scales.
-        assert_eq!(probes_only.tiers, full.tiers);
+        assert_same_tiers(&probes_only.tiers, &full.tiers, &format!("{scales:?}"));
         // The oracle candidates are what the full label spent on top of the probes.
         assert!(full.evaluations > probes_only.evaluations);
     }
@@ -349,16 +455,21 @@ fn the_label_is_the_probes_and_the_oracle_assembled() {
     for scales in scale_lists {
         let oracle = env.oracle_outcome(&slopes, scales);
         let assembled = assemble_label(tiers.clone(), probe_evaluations, oracle);
-        assert_eq!(env.teacher_label(H, scales), assembled, "{scales:?}");
+        assert_same_label(
+            &env.teacher_label(H, scales),
+            &assembled,
+            &format!("{scales:?}"),
+        );
     }
     // The same on a weighted objective, where the yield joins the score.
     let weighted =
         fixture_env_with(|config| config.weights = ObjectivePreset::KeepWeight.weights());
     let (tiers, probe_evaluations) = probe_all(&weighted, H);
     let oracle = weighted.oracle_outcome(&score_slopes(&tiers), &DEFAULT_LINE_SEARCH);
-    assert_eq!(
-        weighted.teacher_label(H, &DEFAULT_LINE_SEARCH),
-        assemble_label(tiers, probe_evaluations, oracle)
+    assert_same_label(
+        &weighted.teacher_label(H, &DEFAULT_LINE_SEARCH),
+        &assemble_label(tiers, probe_evaluations, oracle),
+        "KeepWeight",
     );
 }
 
@@ -369,18 +480,31 @@ fn a_probe_reports_the_slopes_and_the_evaluations_it_spent() {
     let mut spent = 0;
     for &tier in env.movable_tier_indices() {
         let probe = env.probe_tier(tier, H);
-        assert_eq!(probe.sensitivity, label.tiers[tier], "tier {tier}");
+        assert!(
+            same_sensitivity(probe.sensitivity, label.tiers[tier]),
+            "tier {tier}: {:?} vs {:?}",
+            probe.sensitivity,
+            label.tiers[tier]
+        );
         let sensitivity = probe
             .sensitivity
             .expect("a free tier with a feasible probe");
-        // One candidate when `+h` was usable; the `-h` fallback adds at most one more.
+        // Both sides are tried: one candidate per side that reached the scorer, so at least
+        // one (the side the slope came from) and at most two; a side refused before scoring
+        // (the projection) is free.
         assert!(
             (1..=2).contains(&probe.evaluations),
             "tier {tier}: {probe:?}"
         );
-        if sensitivity.forward_probe {
-            assert_eq!(probe.evaluations, 1, "tier {tier}");
-        }
+        let (positive, scored_positive) = env.core.probe(tier, env.core.probe_delta(tier, H));
+        let (negative, scored_negative) = env.core.probe(tier, env.core.probe_delta(tier, -H));
+        assert_eq!(
+            probe.evaluations,
+            usize::from(scored_positive) + usize::from(scored_negative),
+            "tier {tier}"
+        );
+        assert_eq!(sensitivity.forward_probe, positive.is_some(), "tier {tier}");
+        assert!(positive.is_some() || negative.is_some(), "tier {tier}");
         spent += probe.evaluations;
     }
     // Without an oracle step the label's cost is the probes' cost.
@@ -508,7 +632,7 @@ fn the_oracle_outcome_follows_its_slopes_and_its_scales() {
 #[test]
 fn assemble_label_joins_the_pieces_and_adds_the_evaluations() {
     let measured = TierSensitivity {
-        components: [1.0, -2.0, 0.5, 0.25],
+        components: [1.0, -2.0, 0.5, 0.25, 0.0, 0.0, 0.0],
         score: -0.75,
         forward_probe: false,
     };
@@ -606,7 +730,12 @@ fn probes_from_several_threads_equal_the_serial_ones() {
     assert_eq!(probes.len(), free.len());
     let mut evaluations = 0;
     for (tier, probe) in probes {
-        assert_eq!(probe.sensitivity, serial[tier], "tier {tier}");
+        assert!(
+            same_sensitivity(probe.sensitivity, serial[tier]),
+            "tier {tier}: {:?} vs {:?}",
+            probe.sensitivity,
+            serial[tier]
+        );
         evaluations += probe.evaluations;
     }
     assert_eq!(evaluations, serial_evaluations);
@@ -617,4 +746,14 @@ fn both_environments_can_be_shared_between_threads() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<RetargetEnv>();
     assert_send_sync::<OptimizerEnv>();
+}
+
+#[test]
+fn unequal_probe_spacing_uses_the_quadratic_exact_nonuniform_derivative() {
+    let x = 2.0_f64;
+    let h_plus = 0.4_f64;
+    let h_minus = 0.2_f64;
+    let f = |v: f64| (v * v) as f32;
+    let derivative = super::nonuniform_secant(f(x), f(x + h_plus), f(x - h_minus), h_plus, h_minus);
+    assert!((f64::from(derivative) - 2.0 * x).abs() < 1e-6);
 }

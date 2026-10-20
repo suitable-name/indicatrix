@@ -140,6 +140,10 @@ pub struct RenderSetup {
     /// coordinator holds HDR jobs' maps through it), `None` otherwise (and when
     /// it cannot be opened), in which case HDR scenes are refused.
     pub assets: Option<Arc<crate::assets::AssetCache>>,
+    /// The durable job service (v25): opened with `--render` (jobs render on the own lane),
+    /// `None` otherwise (and when its directory cannot be opened), in which case job requests
+    /// are refused.
+    pub jobs: Option<Arc<crate::jobs::JobService>>,
     /// `--payload-encoding`: how frames sent to a viewer are compressed.
     pub payload: indicatrix_net::messages::adaptive::PayloadChoice,
 }
@@ -346,6 +350,7 @@ fn serve_accepted<S>(
         cert_role,
         coordinator: Some((&render.coordinator, viewer)),
         assets: render.assets.as_deref(),
+        jobs: render.jobs.as_ref(),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         connection::handle_viewer_connection(stream, &ctx)

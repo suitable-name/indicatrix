@@ -9,17 +9,13 @@
 //! The Diagram view (mode 3) draws the finished design only, with its own picture, so cutting
 //! mode switches to the Solid view while it is open.
 
+use crate::gui::view_modes::EditViewMode;
 use crate::{
     EditorModel, MainWindow, SolidPreviewModel,
     gui::solid_preview::cut_slider::{CutPosition, MODEL_FINISHED},
 };
 use indicatrix_editor::cutting_mode::CuttingStep;
 use slint::{ComponentHandle, Model};
-
-/// `SolidPreviewModel.view_mode` of the Solid view.
-const VIEW_SOLID: i32 = 0;
-/// `SolidPreviewModel.view_mode` of the Diagram view.
-const VIEW_DIAGRAM: i32 = 3;
 
 /// What the viewport showed before cutting mode took it over.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,10 +47,9 @@ impl Saved {
 /// The view mode cutting mode draws in: the Solid view when the viewport is in the Diagram,
 /// else the one it is in (the solid picture is drawn in the others too).
 pub(super) const fn view_mode_while_open(view_mode: i32) -> i32 {
-    if view_mode == VIEW_DIAGRAM {
-        VIEW_SOLID
-    } else {
-        view_mode
+    match EditViewMode::from_raw(view_mode) {
+        EditViewMode::Diagram => EditViewMode::Solid.raw(),
+        mode => mode.raw(),
     }
 }
 
@@ -74,7 +69,7 @@ pub(super) fn capture(ui: &MainWindow) -> Saved {
             ui.global::<SolidPreviewModel>().get_viewport_height(),
         ),
         tier_cutoff: ui.global::<SolidPreviewModel>().get_tier_cutoff(),
-        view_mode: ui.global::<SolidPreviewModel>().get_view_mode(),
+        view_mode: EditViewMode::from_raw(ui.global::<SolidPreviewModel>().get_view_mode()).raw(),
         selected_row: ui.global::<EditorModel>().get_selected_tier_index(),
     }
 }
@@ -175,6 +170,8 @@ mod tests {
         assert_eq!(view_mode_while_open(0), 0);
         assert_eq!(view_mode_while_open(1), 1);
         assert_eq!(view_mode_while_open(2), 2);
+        assert_eq!(view_mode_while_open(4), 4);
+        assert_eq!(view_mode_while_open(-1), 0);
     }
 
     #[test]

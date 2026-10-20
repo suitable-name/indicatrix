@@ -9,6 +9,13 @@ use slint::{ComponentHandle, Model};
 pub const STUDIO: &str = "45.148 SplitChecker 12";
 /// The design of the editor shots.
 pub const FVS: &str = "41.029B FVS-65";
+/// The design of the Optimize and Retarget shots. Neither `FVS` ("41.029B FVS-65") nor `STUDIO`
+/// (`"45.148 SplitChecker 12"`): both were refused by the former meet near-incidence rule
+/// (replaced 2026-10-20 by the identification radius), so Optimize and Retarget produced none
+/// of the dialogs these shots photograph. "Astryx Star" (a Square Emerald, library entry 1)
+/// captured and retargeted valid under both rules (`census_lib100.csv`, entry 1), so the shots
+/// stay comparable.
+pub const OPT_DESIGN: &str = "Astryx Star";
 /// The crown tier the editor shots select.
 pub const CROWN_TIER: &str = "C3";
 
@@ -125,7 +132,7 @@ impl Sc<'_, '_> {
     /// # Errors
     ///
     /// The design is not found, does not load, or does not solve.
-    pub fn open_in_editor(&mut self, title: &str) -> Result<(), String> {
+    pub fn open_in_editor(&self, title: &str) -> Result<(), String> {
         self.select_design(title)?;
         let ui = self.ui();
         let editor = ui.global::<EditorModel>();

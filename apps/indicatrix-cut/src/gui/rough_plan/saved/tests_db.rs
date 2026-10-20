@@ -34,7 +34,7 @@ pub(super) fn library() -> Mutex<Database> {
 
 /// Every float of `layout` as bits, so two layouts compare exactly (`-0.0` and `0.0`
 /// differ, a NaN equals itself).
-fn bits(layout: &RoughLayout) -> Vec<u64> {
+pub(super) fn bits(layout: &RoughLayout) -> Vec<u64> {
     let mut out = vec![
         layout.total_carat.to_bits(),
         layout.total_volume_mm3.to_bits(),
@@ -65,9 +65,21 @@ fn bits(layout: &RoughLayout) -> Vec<u64> {
 }
 
 /// A real plan run: a 10 mm cube with one corner edge cut away (the shaped planner's
-/// path), two candidate designs, three results wanted. Returns what the run used and the
-/// layouts it found.
+/// path), two candidate designs, three results wanted, no stone cap. Returns what the run
+/// used and the layouts it found.
 fn planned_rough() -> (
+    RoughModel,
+    PlanSettings,
+    [CandidateDesign; 2],
+    Vec<RoughLayout>,
+) {
+    planned_rough_with(0)
+}
+
+/// [`planned_rough`] planned with at most `max_stones` stones per layout (0: no limit).
+pub(super) fn planned_rough_with(
+    max_stones: u8,
+) -> (
     RoughModel,
     PlanSettings,
     [CandidateDesign; 2],
@@ -86,6 +98,7 @@ fn planned_rough() -> (
     );
     let settings = PlanSettings {
         max_designs: 3,
+        max_stones,
         kerf_mm: 0.3,
         allowance_mm: 0.2,
         skin_mm: 0.0,
@@ -122,10 +135,14 @@ fn planned_rough() -> (
     (model, settings, candidates, planned)
 }
 
-#[test]
-fn planned_layouts_survive_save_list_load_and_parse_bit_for_bit() {
-    let (model, settings, candidates, planned) = planned_rough();
-
+/// The text a save writes for a planned run: the designs the layouts use recorded by shape,
+/// the layouts ranked in order, and the loader's own checks passed.
+pub(super) fn checked_plan_text(
+    model: &RoughModel,
+    settings: &PlanSettings,
+    candidates: &[CandidateDesign],
+    planned: &[RoughLayout],
+) -> String {
     // The plan's designs, as a save records them.
     let mut used: Vec<i64> = planned
         .iter()
@@ -162,19 +179,25 @@ fn planned_layouts_survive_save_list_load_and_parse_bit_for_bit() {
             layout,
         })
         .collect();
-    let text = serialize_checked_plan(&SerializeInput {
+    serialize_checked_plan(&SerializeInput {
         name: "Planned",
         created_at: 1_790_000_000,
         library_id: Some(5),
-        model: &model,
+        model,
         material_name: "Quartz",
         weighed_ct: None,
-        settings: &settings,
+        settings,
         candidate_source: CandidateSource::Filter,
         designs: &records,
         layouts: &ranked,
     })
-    .expect("the planner's own output passes the loader's checks");
+    .expect("the planner's own output passes the loader's checks")
+}
+
+#[test]
+fn planned_layouts_survive_save_list_load_and_parse_bit_for_bit() {
+    let (model, settings, candidates, planned) = planned_rough();
+    let text = checked_plan_text(&model, &settings, &candidates, &planned);
 
     let db = library();
     let id = store::save_plan(&db, "Planned", &text).expect("stored");

@@ -72,7 +72,7 @@ pub fn diagram_job(
 /// `None` when `solved` does not have one entry per tier, or the design does not close to
 /// a solid.
 #[must_use]
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     reason = "the gear's reference angle is a small number of degrees; the diagram works in f32"
 )]

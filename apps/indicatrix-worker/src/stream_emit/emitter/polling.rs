@@ -188,5 +188,11 @@ pub(in crate::stream_emit) fn poll_for_client_message<S: Read + TimeoutRead>(
         // knows whether this request reserved a contribution slot (see
         // `ClientPoll::Contribution`'s own doc comment).
         ClientMessage::Contribution(header) => ClientPoll::Contribution(header),
+        // v25: a durable job request is not served while a request streams (a job client
+        // uses a connection of its own); a `PutAsset`'s payload frame is consumed.
+        ClientMessage::Job(job) => {
+            crate::jobs::ignore_in_flight(stream, &job)?;
+            ClientPoll::Stale
+        }
     })
 }

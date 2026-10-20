@@ -50,15 +50,19 @@
 //! - Workers are loaded from [`crate::WORKER_LOADER_URL`].
 
 mod cancel_url;
+mod engine;
+mod gpu_events;
+mod gpu_slot;
 mod handle;
 mod picture_worker;
 mod render_callbacks;
 mod render_events;
 mod render_pool;
+mod render_spawn;
 mod solve_client;
 mod watchdog;
 
-pub use render_callbacks::PictureResult;
+pub use render_callbacks::{GpuEvent, PictureResult};
 pub use render_pool::RenderPool;
 pub use solve_client::{
     ANALYSIS_INACTIVITY_TIMEOUT_MS, DEFAULT_SOLVE_TIMEOUT_MS, SUPERSEDE_RESPAWN_AFTER_MS,
@@ -71,6 +75,12 @@ use crate::hdr::{HdrAdmission, render_worker_count};
 
 /// The HDR map the analysis Worker holds: its id and the file's bytes.
 type HeldHdr = (u64, Rc<Vec<u8>>);
+
+/// A Worker count or slot index as the `u32` the protocol carries. A page holds a handful
+/// of Workers, so the saturation is unreachable.
+fn slot_u32(count: usize) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
 
 /// The whole pool: render Workers, the solve Worker, and (created on first use) the
 /// analysis Worker.

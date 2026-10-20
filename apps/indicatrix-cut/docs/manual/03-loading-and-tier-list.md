@@ -6,9 +6,8 @@ This chapter gets a design open in the editor and explains every column of
 the tier list, so the numbers on screen make sense before you touch
 anything.
 
-**Limitation.** The editor described in this chapter and Chapters 4–8 is
-only present in the standard build of the app (see Chapter 1). If your copy
-has no "Edit" sub-tab next to "Live Render," it was built without it.
+The editor described in this chapter and Chapters 4–8 ships in every build
+of the app (see Chapter 1): the "Edit" sub-tab sits next to "Live Render."
 
 ## The Editor's Toolbar
 
@@ -29,9 +28,9 @@ the manual. The groups, left to right:
 - **Retarget..., Tilt Curves, Cut Mode** — Retarget is an automated proposal
   for adapting a design to a different material (Chapter 6).
 - **Snapshot, Compare** (Advanced interface, Chapter 17).
-- **File** — a menu with New Design..., Open, Load Selected, Save, Export .asc,
-  Export Cutting Sheet (HTML), Export Diagram (PNG) and, in the Advanced
-  interface, Export as Gem Cut Studio (.gcs). When the design will ask before it
+- **File** — a menu with New Design..., Open..., Load Selected, Save, Export .asc...,
+  Export Cutting Sheet (HTML)..., Export Diagram (PNG)... and, in the Advanced
+  interface, Export as Gem Cut Studio (.gcs).... When the design will ask before it
   saves, **Will Ask Before Saving** sits beside the button. See Chapter 11 for
   what each item actually writes.
 
@@ -111,7 +110,7 @@ by the time you see it.
 
 ## Starting a New Design Instead
 
-Choose **File**, then **New Design...** on the command bar (or File → New at the top of the window) to open the New Design dialog rather
+Choose **File**, then **New Design...** on the command bar (or File → New Design... at the top of the window) to open the New Design dialog rather
 than loading an existing design: pick the preform shape and dimensions, the
 index gear, symmetry order, mirror, and a starting material, then click
 **Create**. Every one of these stays editable afterward — gear, symmetry,
@@ -202,6 +201,10 @@ a small bar above the table shows "N selected" with **Clear** and
 per tier. Shift-click a row instead to select every tier between it and
 whichever row you selected last, inclusive; see "Selecting Several Tiers
 for a Batched Nudge" in Chapter 4 for how that range then behaves.
+
+A tier that is cut frosted, as a whole or facet by facet, carries a small frost
+icon in its row; hover it to read "Frosted" or, for a tier frosted facet by facet,
+"Frosted: 2 of 8" (Chapter 4, "Frosting a Tier").
 
 If there are no tiers yet, the list reads: "No tiers yet -- open the Tier
 tab below to add one."

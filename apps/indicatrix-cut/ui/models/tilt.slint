@@ -35,6 +35,15 @@ export global TiltModel {
     in property <bool> curves_stale: false;
 
     in property <image> hover_preview_image;
+    in property <bool> hover_ready: false;
+    in property <string> hover_status: "";
+    in-out property <bool> hover_diagnostics: false;
+    in-out property <bool> hover_inspect: false;
+    in-out property <int> hover_axis: 0;
+    in-out property <float> hover_tilt: 0;
+    callback cancel_hover();
+    changed dialog_open => { if !dialog_open { cancel_hover(); } }
+
     callback request_tilt_hover_preview(int, float);
 
     callback request_tilt_profile_axes();
@@ -72,6 +81,10 @@ export global TiltModel {
 // fresh every time the dialog is re-instantiated, per the task's own "collapsed on
 // popup open, not persisted" requirement.
 export global TiltVideoExportModel {
+    // Renderer: 0 Path-Traced, 1 Ray-Traced. AA applies only to Ray-Traced.
+    in-out property <int> engine_index: 0;
+    in-out property <int> ray_taps: 16;
+    in-out property <bool> ray_fire: true;
     // Sweep: start/end in whole degrees (`SpinBox`-driven, two-way bound directly since
     // both are `int`), step as an arbitrary fractional degree value (`LineEdit`-driven
     // via `parse_step_deg`, validated in Rust down to

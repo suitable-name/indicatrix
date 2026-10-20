@@ -12,29 +12,24 @@
 //! plausible radiance -- no NaN, no panic, no obviously wrong magnitude distinguishes
 //! "two different physics implementations summed together" from "a converged render".
 //!
-//! # Two independent identities, checked at two different strengths
+//! # Build identity: enforced `build_hash`, diagnostic `source_hash`
 //!
 //! [`indicatrix::BUILD_ID`] is a hash of `indicatrix`'s crate VERSION, computed in its
-//! `build.rs`, so builds of the same release pair across platforms and checkouts -- but
-//! that guarantee rests entirely on a release-process promise ("bump the version
-//! whenever anything under `src/` that affects a traced sample changes") that nothing
-//! enforces. [`indicatrix::SOURCE_HASH`] is a content hash of the actual `indicatrix`
-//! source tree (`.rs` and `.wgsl`), so it disagrees the moment physics-affecting source
-//! changes even if the version didn't get bumped -- see `indicatrix`'s own `build.rs`
-//! doc comment for the full rationale.
+//! `build.rs`, so builds of the same release pair across platforms and checkouts. That
+//! guarantee rests on a release-process promise ("bump the version whenever anything
+//! under `src/` that affects a traced sample changes"). [`indicatrix::SOURCE_HASH`] is a
+//! content hash of the `indicatrix` source tree; it is carried in `HELLO` and `WELCOME`
+//! for diagnostics only and is never compared, so builds of the same version from
+//! different machines pair normally (a test pins that).
 //!
-//! [`verify_compatible`] therefore runs two checks of different strength: `build_hash`
-//! disagreeing (or being [`UNKNOWN_BUILD_HASH`] on either side) is always a hard refusal
-//! -- see [`Incompatible::BuildHashMismatch`]/[`Incompatible::UnknownBuild`]. `source_hash`
-//! disagreeing is ALSO a hard refusal ([`Incompatible::SourceHash`]), but only when BOTH
-//! sides could establish their own source hash; when either side's is unknown, that's
-//! logged at `warn!` and pairing proceeds on `build_hash` alone, since an unknown source
-//! hash is not itself evidence of a physics mismatch.
+//! [`verify_compatible`] compares only the protocol version and `build_hash`: a
+//! `build_hash` that disagrees (or is [`UNKNOWN_BUILD_HASH`] on either side) is always a
+//! hard refusal -- see [`Incompatible::BuildHashMismatch`]/[`Incompatible::UnknownBuild`].
 //!
 //! # This is an accident detector, not a security control
 //!
-//! `build_hash`/`source_hash` are self-reported values a peer states in its own
-//! `HELLO`/`WELCOME` -- nothing here signs or independently verifies them. A hostile
+//! `build_hash` is a self-reported value a peer states in its own
+//! `HELLO`/`WELCOME` -- nothing here signs or independently verifies it. A hostile
 //! peer can trivially claim whatever hash it likes and pass this check while running
 //! entirely different physics; [`verify_compatible`] only catches an HONEST peer running
 //! a different, unintentionally-mismatched build (the release-process-promise gap the
@@ -44,9 +39,8 @@
 //!
 //! # Refusal is the only outcome for a KNOWN disagreement
 //!
-//! [`verify_compatible`] returns `Ok(())` for an exact `build_hash` match (and either an
-//! exact `source_hash` match or an unknown `source_hash` on some side) and an
-//! [`Incompatible`] error for everything else -- deliberately no "close enough" tier for
+//! [`verify_compatible`] returns `Ok(())` for a matching protocol version and an exact
+//! known `build_hash` match, and an [`Incompatible`] error for everything else -- deliberately no "close enough" tier for
 //! anything it CAN compare.
 //!
 //! # Library-only builds
@@ -266,15 +260,6 @@ pub enum Incompatible {
         local: [u8; 8],
         remote: [u8; 8],
     },
-    /// Both sides' `build_hash` agreed, but their `source_hash`es -- established on
-    /// BOTH sides -- disagreed: the actual `indicatrix` source tree differs even though
-    /// the crate version did not (see the module doc comment). Never raised when either
-    /// side's `source_hash` is [`UNKNOWN_BUILD_HASH`] -- that case is logged at `warn!`
-    /// instead, see [`verify_compatible`].
-    SourceHash {
-        local: [u8; 8],
-        remote: [u8; 8],
-    },
 }
 
 impl std::fmt::Display for Incompatible {
@@ -297,11 +282,6 @@ impl std::fmt::Display for Incompatible {
                     "indicatrix version mismatch (build id local={local:02x?}, remote={remote:02x?}): viewer and worker must run the same indicatrix release"
                 )
             }
-            Self::SourceHash { local, remote } => write!(
-                f,
-                "indicatrix source mismatch despite matching build id (source hash local={local:02x?}, \
-                 remote={remote:02x?}): viewer and worker must run byte-identical indicatrix source"
-            ),
         }
     }
 }
@@ -313,18 +293,15 @@ impl std::error::Error for Incompatible {}
 /// Typically one side's own [`local_hello`] and the `HELLO`/`WELCOME` just received
 /// from the other side. Runs the two-level check the module doc comment describes:
 /// `build_hash` must match exactly (and be known on both sides) or this refuses
-/// outright; `source_hash` must ALSO match when both sides could establish their own
-/// (a mismatch there refuses too, [`Incompatible::SourceHash`]), but an unknown
-/// `source_hash` on either side is only logged at `warn!` -- not a refusal, since an
-/// unknown source hash isn't itself evidence of a physics mismatch. `Ok(())` covers
-/// every case that isn't a KNOWN disagreement -- deliberately no "close enough" tier
-/// for anything this function CAN compare.
+/// outright. `source_hash` is never compared (diagnostic only), so builds of the same
+/// version from different machines pair normally. Deliberately no "close enough" tier
+/// for anything this function DOES compare.
 ///
 /// # Errors
 ///
-/// Returns [`Incompatible::ProtocolVersionMismatch`], [`Incompatible::UnknownBuild`],
-/// [`Incompatible::BuildHashMismatch`], or [`Incompatible::SourceHash`] for the
-/// respective disagreement -- see each variant's doc comment.
+/// Returns [`Incompatible::ProtocolVersionMismatch`], [`Incompatible::UnknownBuild`]
+/// or [`Incompatible::BuildHashMismatch`] for the respective disagreement -- see each
+/// variant's doc comment.
 pub fn verify_compatible(local: &Hello, remote: &Hello) -> Result<(), Incompatible> {
     if local.protocol_version != remote.protocol_version {
         return Err(Incompatible::ProtocolVersionMismatch {
@@ -356,9 +333,8 @@ mod tests {
         assert!(verify_compatible(&hello, &hello).is_ok());
     }
 
-    /// A [`Hello`] with an unknown `source_hash` -- the shape every pre-Finding-15 test
-    /// below expects, so a mismatched/matched `build_hash` alone still drives the
-    /// outcome (the `source_hash` check only ever warns, never refuses, when unknown).
+    /// A [`Hello`] with an unknown `source_hash`, so the `build_hash` alone drives the
+    /// outcome (the `source_hash` is never compared).
     fn hello(protocol_version: u16, build_hash: [u8; 8]) -> Hello {
         Hello::viewer(protocol_version, build_hash, UNKNOWN_BUILD_HASH)
     }
@@ -398,7 +374,7 @@ mod tests {
     fn a_peer_advertising_the_previous_protocol_version_is_refused() {
         let current = crate::messages::PROTOCOL_VERSION;
         assert_eq!(
-            current, 24,
+            current, 29,
             "update this pinned value if PROTOCOL_VERSION moves again"
         );
         let local = hello(current, [1; 8]);
@@ -456,9 +432,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_source_hash_on_either_side_is_a_warning_not_a_refusal() {
+    fn an_unknown_source_hash_on_either_side_is_not_a_refusal() {
         // build_hash matches on both; source_hash unknown on one side (or both) must
-        // not refuse the pairing -- see verify_compatible's doc comment.
+        // not refuse the pairing -- the source hash is never compared.
         let known_source = Hello::viewer(1, [7; 8], [8; 8]);
         let unknown_source = hello(1, [7; 8]); // source_hash: UNKNOWN_BUILD_HASH
         assert!(verify_compatible(&known_source, &unknown_source).is_ok());

@@ -140,12 +140,12 @@ fn without_zoning_field(dump: &str) -> std::borrow::Cow<'_, str> {
 
 /// The hashes of [`material_dump_hashes`] (through [`without_zoning_field`]).
 const MATERIAL_DUMP_HASHES: [u64; 6] = [
-    3_580_898_491_540_929_908,
-    12_196_816_847_341_780_186,
-    9_708_379_532_442_297_358,
-    2_548_391_994_686_336_338,
-    6_689_374_829_022_688_779,
-    4_166_139_222_748_066_605,
+    3_406_687_501_831_710_678,
+    5_927_579_380_106_949_764,
+    2_060_072_288_219_298_442,
+    13_844_451_999_494_852_372,
+    12_709_525_471_044_566_507,
+    9_463_665_728_701_972_335,
 ];
 
 #[test]
@@ -274,30 +274,109 @@ fn girdle_finish_and_stone_width_outputs_are_pinned() {
     );
 }
 
+/// The backdrop pins after the lit-tray model (2026-10-20): the albedo of each choice (the
+/// tray radiance itself follows the lighting, so it is no longer one number per choice),
+/// the pill indices (Black appended as 3), the fallback and the default (White), and the
+/// on-disk TOML names. The old test pinned the card levels `0.0 / 0.23 / 8.0`, the
+/// index fallback Grey and the default Grey; those moved on purpose, and saved settings
+/// (which always write the name) are untouched.
 #[test]
-fn backdrop_levels_indices_and_settings_form_are_pinned() {
+fn backdrop_albedos_indices_default_and_settings_form_are_pinned() {
     #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
     struct Wrapper {
         backdrop: Backdrop,
     }
-    let all = [Backdrop::AsLit, Backdrop::Grey, Backdrop::White];
-    let levels: Vec<u32> = all.into_iter().map(|b| b.level().to_bits()).collect();
-    assert_eq!(levels, [0, 1_047_233_823, 1_090_519_040]);
+    let all = [
+        Backdrop::AsLit,
+        Backdrop::Grey,
+        Backdrop::White,
+        Backdrop::Black,
+    ];
+    let albedo_bits: Vec<u32> = all
+        .into_iter()
+        .map(|b| {
+            indicatrix::render_setup::Backdrop::from_index(b.index())
+                .albedo()
+                .to_bits()
+        })
+        .collect();
+    assert_eq!(
+        albedo_bits,
+        [
+            0.0_f32.to_bits(),
+            0.18_f32.to_bits(),
+            0.90_f32.to_bits(),
+            0.02_f32.to_bits()
+        ]
+    );
     let indices: Vec<i32> = all.into_iter().map(Backdrop::index).collect();
-    assert_eq!(indices, [0, 1, 2]);
-    for index in -1..4 {
+    assert_eq!(indices, [0, 1, 2, 3]);
+    for index in -1..5 {
         let back = Backdrop::from_index(index);
         assert_eq!(
             back.index(),
-            if (0..=2).contains(&index) { index } else { 1 }
+            if (0..=3).contains(&index) { index } else { 2 }
         );
     }
-    assert_eq!(Backdrop::default(), Backdrop::Grey);
+    assert_eq!(Backdrop::default(), Backdrop::White);
+    // As Lit resolves to exactly 0.0 under every preset (the preset's own ground).
+    assert_eq!(
+        Backdrop::AsLit
+            .resolve(
+                indicatrix::optics::raytracer::LightingPreset::default(),
+                0.8,
+                1.2
+            )
+            .to_bits(),
+        0.0_f32.to_bits()
+    );
     for backdrop in all {
         let text = toml::to_string(&Wrapper { backdrop }).unwrap();
         assert_eq!(text, format!("backdrop = \"{backdrop:?}\"\n"));
         let back: Wrapper = toml::from_str(&text).unwrap();
         assert_eq!(back, Wrapper { backdrop });
+    }
+}
+
+/// Prints the resolved tray radiance (bits and value) of every choice under the preview
+/// rig/pose and the live default rig/pose, for the owner to read off after the first run and
+/// pin. Ignored: the values are measurements of the tray model
+/// (`indicatrix::optics::raytracer::tray_radiance`), not decisions. Run with
+/// `cargo test -p indicatrix-cut backdrop_resolved_trays_print -- --ignored --nocapture`.
+#[test]
+#[ignore = "prints the resolved tray radiance per choice for the owner to pin"]
+fn backdrop_resolved_trays_print() {
+    use indicatrix::optics::raytracer::LightingPreset;
+    let poses = [
+        (
+            "preview WhiteTray 0.85/0.95",
+            LightingPreset::WhiteTray,
+            0.85,
+            0.95,
+        ),
+        (
+            "preview-pose IsoHemisphere",
+            LightingPreset::IsoHemisphere,
+            0.85,
+            0.95,
+        ),
+        (
+            "live default LightTent 48/72 deg",
+            LightingPreset::default(),
+            48.0_f32.to_radians(),
+            72.0_f32.to_radians(),
+        ),
+    ];
+    for (name, preset, yaw, pitch) in poses {
+        for backdrop in [
+            Backdrop::AsLit,
+            Backdrop::Grey,
+            Backdrop::White,
+            Backdrop::Black,
+        ] {
+            let tray = backdrop.resolve(preset, yaw, pitch);
+            println!("{name} {backdrop:?}: {tray} bits={}", tray.to_bits());
+        }
     }
 }
 

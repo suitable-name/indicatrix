@@ -8,10 +8,11 @@
 
 use std::sync::Arc;
 
+use indicatrix::geometry::tool::ToolPrimitive;
 use indicatrix::renderer::env_map::EnvironmentMap;
 use indicatrix_web_core::{
-    scene::{CameraSpec, SceneSpec},
-    settings::{SceneInputs, render_material, scene_spec},
+    scene::{CameraSpec, CustomMaterialSpec, SceneSpec},
+    settings::{SceneInputs, render_material, scene_spec_with_frosting},
 };
 
 use super::RenderView;
@@ -27,8 +28,19 @@ pub(super) const NOT_SOLVED: &str = "Solve the design to render it";
 /// picture, so an unchanged key needs no restart.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SceneKey {
+    pub(super) engine: indicatrix::renderer::engine::EngineSpec,
+    pub(super) document: u64,
+    pub(super) generation: u64,
+    pub(super) backend: crate::settings::RenderBackend,
+    pub(super) remote: Option<crate::settings::RemoteSettings>,
     /// The scene description (planes, material, camera, lighting, size).
     pub(super) spec: SceneSpec,
+    /// Exact resolved subtracted tool volumes; changing any tool restarts tracing.
+    pub(super) tools: Vec<ToolPrimitive>,
+    /// The traced material's physics recipe when it is a custom material that has one: the
+    /// scene builds its fluorescence from it (`GeometrySceneSpec::build_with_customs`). Empty
+    /// for a catalogue material. Part of the key so a recipe edit restarts the trace.
+    pub(super) customs: Vec<CustomMaterialSpec>,
     /// Which HDR map lights the scene (by identity), if one does.
     pub(super) hdr: Option<usize>,
     /// The sample target of the epoch.
@@ -64,10 +76,22 @@ pub(super) fn prepare(state: &AppState, view: RenderView) -> Result<Prepared, St
         return Err("Nothing to render: the design has no facets yet.".to_owned());
     }
     let settings = render_settings(state, state.window_class == WindowClass::Compact);
+    let tiers = state
+        .solve
+        .current_tiers(generation)
+        .ok_or_else(|| NOT_SOLVED.to_owned())?;
+    let (tools, _) = state
+        .session
+        .design
+        .concave_tools_from_solved(tiers)
+        .map_err(|error| format!("Cannot render concave geometry: {error}"))?;
     let custom = &state.props.custom_materials;
     let material = render_material(&settings, Some(&state.session.design), custom)?;
     let hdr = state.hdr.active();
-    let mut spec = scene_spec(
+    // The planes the design frosts (empty for a design without frosting, which is then the
+    // scene it always was).
+    let frosted = state.session.design.frosted_planes_from_solved(tiers);
+    let mut spec = scene_spec_with_frosting(
         &settings,
         &SceneInputs {
             planes,
@@ -77,6 +101,7 @@ pub(super) fn prepare(state: &AppState, view: RenderView) -> Result<Prepared, St
             height: view.height,
             hdr_id: hdr.as_ref().map(|_| HDR_ID),
         },
+        &frosted,
     );
     // The render shares the Solid view's orbit, unclamped by the web settings' ranges.
     let pose = state.viewport.camera;
@@ -85,8 +110,23 @@ pub(super) fn prepare(state: &AppState, view: RenderView) -> Result<Prepared, St
         pitch: pose.pitch,
         distance: pose.distance,
     };
+    // Only the traced material can fluoresce, so only its recipe is carried.
+    let customs: Vec<CustomMaterialSpec> = state
+        .props
+        .snapshot_for(&material.name)
+        .map(|snapshot| CustomMaterialSpec::from_snapshot(material.name.clone(), snapshot))
+        .into_iter()
+        .collect();
     let key = SceneKey {
+        engine: state.settings.render.engine_spec(),
+        document: state.operations.document_id(),
+        generation,
+        backend: state.settings.render.backend,
+        remote: (state.settings.render.backend == crate::settings::RenderBackend::Remote)
+            .then(|| state.settings.remote.clone()),
         spec,
+        tools,
+        customs,
         hdr: hdr.as_ref().map(|map| Arc::as_ptr(map).addr()),
         target: super::live_target_spp(state),
     };

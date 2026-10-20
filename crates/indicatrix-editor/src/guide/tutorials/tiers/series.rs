@@ -432,7 +432,7 @@ fn arithmetic_in_fields() -> Guide {
             check("Crown Main has both rings", |ctx| {
                 let gear = f64::from(ctx.design.meta.gear_teeth_abs());
                 tier_called(ctx.design, "Crown Main").is_some_and(|tier| {
-                    STAR.iter()
+                    MAIN.iter().chain(STAR.iter())
                         .all(|star| tier.indices.iter().any(|have| same_index_set(&[*have], &[*star], gear)))
                 })
             }),

@@ -223,7 +223,8 @@ fn wavefront_bounce(
     // regardless of which entry point filled it, so this dispatch fills it itself,
     // before the out-of-range early return below, for the same
     // every-invocation-reaches-the-barrier reason `transport_main` does.
-    let plane_count = arrayLength(&planes);
+    // The real planes only -- see `transport_main`'s identical fill.
+    let plane_count = scene_plane_count();
     if (plane_count <= PLANES_SHARED_CAPACITY) {
         var fill_i = local_index;
         loop {

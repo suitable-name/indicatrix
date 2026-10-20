@@ -106,8 +106,12 @@ fn build_params(
         seed: model.get_seed_text().trim().parse::<u64>().unwrap_or(0),
         max_evaluations: u32::try_from(configured_budget(model)).unwrap_or(u32::MAX),
         polish: model.get_polish_enabled(),
-        only_tiers: (model.get_only_selected() && !multi_selected.is_empty())
-            .then(|| multi_selected.iter().map(|&i| i as u32).collect()),
+        only_tiers: (model.get_only_selected() && !multi_selected.is_empty()).then(|| {
+            multi_selected
+                .iter()
+                .map(|&i| u32::try_from(i).unwrap_or(u32::MAX))
+                .collect()
+        }),
         lighting_preset_index,
         starts: 1,
     })

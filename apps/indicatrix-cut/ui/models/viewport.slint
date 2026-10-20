@@ -9,10 +9,11 @@ import { PhysicscolorModel } from "physics_color.slint";
 export global ViewportModel {
     in property <image> render_image;
     in property <bool> has_render: false;
-    // Live Render tab's own Solid/Path-traced toggle -- `0` shows the fast CPU solid
+    // Live Render modes: 0 Solid, 1 Path-Traced, 2 Ray-Traced.
+    // Live Render tab's own renderer toggle -- `0` shows the fast CPU solid
     // raster (`SolidPreviewModel.image`, forced to `view_mode` 0 regardless of the
     // Edit tab's own choice -- see `gui::render::camera_lighting::resubmit_live_solid`),
-    // `1` (default) shows the spectral path tracer (`render_image` above), same as
+    // `2` shows the deterministic ray tracer; `1` (model default) shows the spectral path tracer (`render_image` above), same as
     // this tab's sole behaviour before this control existed. Hoisted here rather than
     // local to `GemViewportView` for the same reason as `render_paused` below --
     // reading a global survives that view being conditionally destroyed/recreated

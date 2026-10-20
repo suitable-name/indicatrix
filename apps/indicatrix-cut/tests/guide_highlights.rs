@@ -164,3 +164,15 @@ fn the_helpers_find_what_they_look_for() {
     assert!(!is_raised("slice_started", &cut_slider, &slint));
     assert_eq!(constant_for("tier_selected"), "TIER_SELECTED");
 }
+
+#[test]
+fn ray_traced_guide_target_has_a_real_viewport_pill_and_video_route() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let toolbar = fs::read_to_string(root.join("ui/components/solid_viewport/toolbar.slint"))
+        .expect("viewport toolbar source");
+    let targets = fs::read_to_string(root.join("tests/tutorial_videos/targets.rs"))
+        .expect("video target registry source");
+    assert!(toolbar.contains("text: \"Ray-Traced\";"));
+    assert!(toolbar.contains("SolidPreviewModel.view_mode = 4;"));
+    assert!(targets.contains("4 => \"Ray-Traced\""));
+}

@@ -273,6 +273,7 @@ fn a_malformed_goal_names_its_problem() {
         Goal::TierCountAtLeast(1),
         Goal::Material("Diamond".into()),
         Goal::ViewMode(3),
+        Goal::ViewMode(4),
         Goal::InspectorTab(0),
         Goal::All(vec![Goal::SolvedClosed, Goal::ViewMode(0)]),
     ];
@@ -286,7 +287,7 @@ fn a_malformed_goal_names_its_problem() {
         Goal::TierExists(String::new()),
         Goal::Material("  ".into()),
         Goal::TierCountAtLeast(0),
-        Goal::ViewMode(4),
+        Goal::ViewMode(5),
         Goal::ViewMode(-1),
         Goal::InspectorTab(9),
         Goal::All(Vec::new()),

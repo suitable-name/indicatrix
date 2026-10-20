@@ -187,7 +187,9 @@ struct NeeHgScatterCase {
 // them as explicit per-case parameters instead (`alphas`, `sigma_s`,
 // `absorption_path_scale`, `frosted_exit`), and samples the HDR environment through this
 // file's own `tf_hdr_env_sample_bilinear`/`tf_dist2d_sample` (bindings 62-66) rather than
-// the megakernel's scene-wide texture bindings.
+// the megakernel's scene-wide texture bindings. It has no `rc`/`is_extraordinary` inputs:
+// its `alphas` are fixed for the case whatever direction the shadow ray takes, the CPU
+// function's `ShadowAlphas::Fixed` arm, which is what the harness driver feeds it.
 fn tf_nee_contribution_hg_scatter(
     lambdas: ptr<function, array<f32, 8>>,
     n_inside_hero: f32,
@@ -212,7 +214,7 @@ fn tf_nee_contribution_hg_scatter(
         return;
     }
 
-    let probe_origin = scatter_point + sample.dir * 1e-4;
+    let probe_origin = scatter_point + sample.dir * HG_SHADOW_PROBE_OFFSET;
     let hit = tf_intersect_ray(probe_origin, sample.dir);
     if (!hit.hit) {
         return;
@@ -251,12 +253,14 @@ fn tf_nee_contribution_hg_scatter(
     let refracted_uv = hdr_direction_to_uv(refracted_dir);
     let env_rgb = tf_hdr_env_sample_bilinear(refracted_uv.x, refracted_uv.y);
 
-    // The medium transmittance a phase-sampled continuation reaching this
-    // same boundary would have paid -- the same per-channel
-    // `exp_poly(-(alphas[k]+sigma_s)*hit.t*path_scale)` the megakernel twin and the CPU
-    // function both apply (`exp_poly`, not the `exp()` builtin -- see
-    // that function's own doc comment, `transport_physics.wgsl`).
-    let hit_t_scaled = hit.t * absorption_path_scale;
+    // The medium transmittance a phase-sampled continuation in this same direction would
+    // pay on its way to this same boundary -- the same per-channel
+    // `exp_poly(-(alphas[k]+sigma_s)*(hit.t+offset)*path_scale)` the megakernel twin and
+    // the CPU function both apply (`exp_poly`, not the `exp()` builtin -- see that
+    // function's own doc comment, `transport_physics.wgsl`), over the full distance from
+    // the scattering point: the probe's origin sits `HG_SHADOW_PROBE_OFFSET` inside the
+    // material, so `hit.t` alone is that much short.
+    let hit_t_scaled = (hit.t + HG_SHADOW_PROBE_OFFSET) * absorption_path_scale;
     // `sigma_s` is per model unit (size-independent): converted to absorption-length units
     // exactly as the CPU twin does (`sigma_s / absorption_path_scale`).
     let sigma_s_abs = sigma_s / absorption_path_scale;

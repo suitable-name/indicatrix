@@ -1,14 +1,16 @@
 //! One parser per command: the words after the command's name into its argument struct.
 
 use super::{
+    batch::{Fan, fan_out},
     types::{
-        ExportArgs, ExportFormat, InfoArgs, JobCommandKind, MaterialArg, MetricsArgs, Mode,
-        OptimizeArgs, RenderJobArgs, ReportFormat, RetargetArgs, SolveArgs, SweepArgs,
-        ValidateArgs,
+        CensusArgs, CensusBuiltins, CensusOutput, Command, ExportArgs, ExportFormat, InfoArgs,
+        JobCommandKind, MaterialArg, MetricsArgs, Mode, OptimizeArgs, RenderJobArgs, ReportFormat,
+        ReportStyle, RetargetArgs, SolveArgs, SweepArgs, ValidateArgs,
     },
     values::{
-        Cursor, parse_candidates, parse_crown_fraction, parse_export_format, parse_lighting,
-        parse_mode, parse_preset, parse_range, parse_ri, set_material,
+        Cursor, parse_candidates, parse_count, parse_crown_fraction, parse_crown_mode,
+        parse_export_format, parse_ids, parse_lighting, parse_mode, parse_modes, parse_preset,
+        parse_range, parse_ri, parse_targets, set_material,
     },
 };
 use indicatrix_cut_core::{CANONICAL_LIGHTING_PRESET, ObjectivePreset};
@@ -22,52 +24,76 @@ use indicatrix_formats::native::design::{DESIGN_EXTENSION, DESIGN_EXTENSION_DOTT
 use indicatrix_render_jobs::{ComputeChoice, LocalEngines, TransferChoice};
 use std::path::PathBuf;
 
-pub(super) fn parse_info(args: &[String]) -> Result<InfoArgs, String> {
+pub(super) fn parse_info(args: &[String]) -> Result<Command, String> {
     let mut cursor = Cursor::new("info", args);
-    let (mut design, mut json, mut out, mut db) = (None, false, None, None);
+    let (mut designs, mut json, mut out, mut out_dir, mut db) =
+        (Vec::new(), false, None, None, None);
     while let Some(word) = cursor.token() {
         match word {
             "--json" => json = true,
-            "--out" => out = Some(cursor.path("--out")?),
+            "--out" => out = Some(("--out", cursor.path("--out")?)),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
             "--db" => db = Some(cursor.path("--db")?),
-            other => cursor.design_word(other, &mut design)?,
+            other => cursor.design_word(other, &mut designs)?,
         }
     }
-    Ok(InfoArgs {
-        design: cursor.require_design(design)?,
-        json,
+    let fan = Fan {
+        command: "info",
+        designs: cursor.require_designs(designs)?,
         out,
-        db,
+        out_dir,
+        extension: if json { "json" } else { "txt" },
+        style: ReportStyle::json_or_text(json),
+    };
+    fan_out(fan, |design, out| {
+        Command::Info(InfoArgs {
+            design,
+            json,
+            out,
+            db: db.clone(),
+        })
     })
 }
 
-pub(super) fn parse_solve(args: &[String]) -> Result<SolveArgs, String> {
+pub(super) fn parse_solve(args: &[String]) -> Result<Command, String> {
     let mut cursor = Cursor::new("solve", args);
-    let (mut design, mut json, mut out, mut db) = (None, false, None, None);
+    let (mut designs, mut json, mut out, mut out_dir, mut db) =
+        (Vec::new(), false, None, None, None);
     while let Some(word) = cursor.token() {
         match word {
             "--json" => json = true,
-            "--out" => out = Some(cursor.path("--out")?),
+            "--out" => out = Some(("--out", cursor.path("--out")?)),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
             "--db" => db = Some(cursor.path("--db")?),
-            other => cursor.design_word(other, &mut design)?,
+            other => cursor.design_word(other, &mut designs)?,
         }
     }
-    Ok(SolveArgs {
-        design: cursor.require_design(design)?,
-        json,
+    let fan = Fan {
+        command: "solve",
+        designs: cursor.require_designs(designs)?,
         out,
-        db,
+        out_dir,
+        extension: DESIGN_EXTENSION,
+        style: ReportStyle::json_or_text(json),
+    };
+    fan_out(fan, |design, out| {
+        Command::Solve(SolveArgs {
+            design,
+            json,
+            out,
+            db: db.clone(),
+        })
     })
 }
 
-pub(super) fn parse_metrics(args: &[String]) -> Result<MetricsArgs, String> {
+pub(super) fn parse_metrics(args: &[String]) -> Result<Command, String> {
     let mut cursor = Cursor::new("metrics", args);
-    let mut design = None;
+    let mut designs = Vec::new();
     let mut material = None;
     let mut tilt = false;
     let (mut json, mut csv) = (false, false);
     let mut lighting = CANONICAL_LIGHTING_PRESET;
-    let (mut out, mut db) = (None, None);
+    let (mut out, mut out_dir, mut db) = (None, None, None);
     while let Some(word) = cursor.token() {
         match word {
             "--material" => {
@@ -82,39 +108,50 @@ pub(super) fn parse_metrics(args: &[String]) -> Result<MetricsArgs, String> {
             "--json" => json = true,
             "--csv" => csv = true,
             "--lighting" => lighting = parse_lighting(cursor.value("--lighting")?)?,
-            "--out" => out = Some(cursor.path("--out")?),
+            "--out" => out = Some(("--out", cursor.path("--out")?)),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
             "--db" => db = Some(cursor.path("--db")?),
-            other => cursor.design_word(other, &mut design)?,
+            other => cursor.design_word(other, &mut designs)?,
         }
     }
     if json && csv {
         return Err("give one of --json and --csv, not both".to_string());
     }
-    let format = if json {
-        ReportFormat::Json
+    let (format, extension, style) = if json {
+        (ReportFormat::Json, "json", ReportStyle::Json)
     } else if csv {
-        ReportFormat::Csv
+        (ReportFormat::Csv, "csv", ReportStyle::Csv)
     } else {
-        ReportFormat::Text
+        (ReportFormat::Text, "txt", ReportStyle::Text)
     };
-    Ok(MetricsArgs {
-        design: cursor.require_design(design)?,
-        material,
-        tilt,
-        format,
-        lighting,
+    let fan = Fan {
+        command: "metrics",
+        designs: cursor.require_designs(designs)?,
         out,
-        db,
+        out_dir,
+        extension,
+        style,
+    };
+    fan_out(fan, |design, out| {
+        Command::Metrics(MetricsArgs {
+            design,
+            material: material.clone(),
+            tilt,
+            format,
+            lighting,
+            out,
+            db: db.clone(),
+        })
     })
 }
 
-pub(super) fn parse_validate(args: &[String]) -> Result<ValidateArgs, String> {
+pub(super) fn parse_validate(args: &[String]) -> Result<Command, String> {
     let mut cursor = Cursor::new("validate", args);
-    let mut design = None;
+    let mut designs = Vec::new();
     let mut material = None;
     let mut json = false;
     let mut lighting = CANONICAL_LIGHTING_PRESET;
-    let (mut out, mut db) = (None, None);
+    let (mut out, mut out_dir, mut db) = (None, None, None);
     while let Some(word) = cursor.token() {
         match word {
             "--material" => {
@@ -127,24 +164,35 @@ pub(super) fn parse_validate(args: &[String]) -> Result<ValidateArgs, String> {
             }
             "--json" => json = true,
             "--lighting" => lighting = parse_lighting(cursor.value("--lighting")?)?,
-            "--out" => out = Some(cursor.path("--out")?),
+            "--out" => out = Some(("--out", cursor.path("--out")?)),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
             "--db" => db = Some(cursor.path("--db")?),
-            other => cursor.design_word(other, &mut design)?,
+            other => cursor.design_word(other, &mut designs)?,
         }
     }
-    Ok(ValidateArgs {
-        design: cursor.require_design(design)?,
-        json,
-        material,
-        lighting,
+    let fan = Fan {
+        command: "validate",
+        designs: cursor.require_designs(designs)?,
         out,
-        db,
+        out_dir,
+        extension: if json { "json" } else { "txt" },
+        style: ReportStyle::json_or_text(json),
+    };
+    fan_out(fan, |design, out| {
+        Command::Validate(ValidateArgs {
+            design,
+            json,
+            material: material.clone(),
+            lighting,
+            out,
+            db: db.clone(),
+        })
     })
 }
 
-pub(super) fn parse_optimize(args: &[String]) -> Result<OptimizeArgs, String> {
+pub(super) fn parse_optimize(args: &[String]) -> Result<Command, String> {
     let mut cursor = Cursor::new("optimize", args);
-    let mut design = None;
+    let mut designs = Vec::new();
     let mut preset = ObjectivePreset::Balanced;
     let mut budget = DEFAULT_BUDGET;
     let mut starts = DEFAULT_STARTS;
@@ -153,7 +201,7 @@ pub(super) fn parse_optimize(args: &[String]) -> Result<OptimizeArgs, String> {
     let mut candidates = DEFAULT_CANDIDATES;
     let mut lighting = CANONICAL_LIGHTING_PRESET;
     let mut json = false;
-    let (mut out, mut db) = (None, None);
+    let (mut out, mut out_dir, mut db) = (None, None, None);
     while let Some(word) = cursor.token() {
         match word {
             "--preset" => preset = parse_preset(cursor.value("--preset")?)?,
@@ -164,29 +212,40 @@ pub(super) fn parse_optimize(args: &[String]) -> Result<OptimizeArgs, String> {
             "--candidates" => candidates = parse_candidates(cursor.value("--candidates")?)?,
             "--lighting" => lighting = parse_lighting(cursor.value("--lighting")?)?,
             "--json" => json = true,
-            "--out" => out = Some(cursor.path("--out")?),
+            "--out" => out = Some(("--out", cursor.path("--out")?)),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
             "--db" => db = Some(cursor.path("--db")?),
-            other => cursor.design_word(other, &mut design)?,
+            other => cursor.design_word(other, &mut designs)?,
         }
     }
-    Ok(OptimizeArgs {
-        design: cursor.require_design(design)?,
-        preset,
-        budget,
-        starts,
-        seed,
-        vary_anchored,
-        candidates,
-        lighting,
-        json,
+    let fan = Fan {
+        command: "optimize",
+        designs: cursor.require_designs(designs)?,
         out,
-        db,
+        out_dir,
+        extension: DESIGN_EXTENSION,
+        style: ReportStyle::json_or_text(json),
+    };
+    fan_out(fan, |design, out| {
+        Command::Optimize(OptimizeArgs {
+            design,
+            preset,
+            budget,
+            starts,
+            seed,
+            vary_anchored,
+            candidates,
+            lighting,
+            json,
+            out,
+            db: db.clone(),
+        })
     })
 }
 
-pub(super) fn parse_retarget(args: &[String]) -> Result<RetargetArgs, String> {
+pub(super) fn parse_retarget(args: &[String]) -> Result<Command, String> {
     let mut cursor = Cursor::new("retarget", args);
-    let mut design = None;
+    let mut designs = Vec::new();
     let mut target = None;
     let mut mode = Mode::Shift;
     let mut crown = CrownShift::default();
@@ -196,9 +255,10 @@ pub(super) fn parse_retarget(args: &[String]) -> Result<RetargetArgs, String> {
     let mut budget = None;
     let mut seed = 0_u64;
     let mut keep_look = true;
+    let mut girdle_allowance = false;
     let mut lighting = CANONICAL_LIGHTING_PRESET;
     let mut json = false;
-    let (mut out, mut db) = (None, None);
+    let (mut out, mut out_dir, mut db) = (None, None, None);
     while let Some(word) = cursor.token() {
         match word {
             "--material" => {
@@ -231,11 +291,13 @@ pub(super) fn parse_retarget(args: &[String]) -> Result<RetargetArgs, String> {
             "--budget" => budget = Some(parse_budget(cursor.value("--budget")?)?),
             "--seed" => seed = parse_seed(cursor.value("--seed")?)?,
             "--no-keep-look" => keep_look = false,
+            "--girdle-allowance" => girdle_allowance = true,
             "--lighting" => lighting = parse_lighting(cursor.value("--lighting")?)?,
             "--json" => json = true,
-            "--out" => out = Some(cursor.path("--out")?),
+            "--out" => out = Some(("--out", cursor.path("--out")?)),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
             "--db" => db = Some(cursor.path("--db")?),
-            other => cursor.design_word(other, &mut design)?,
+            other => cursor.design_word(other, &mut designs)?,
         }
     }
     if usize::from(fraction_given) + usize::from(ratio_given) + usize::from(follow_given) > 1 {
@@ -244,35 +306,130 @@ pub(super) fn parse_retarget(args: &[String]) -> Result<RetargetArgs, String> {
                 .to_string(),
         );
     }
-    let design = cursor.require_design(design)?;
+    let designs = cursor.require_designs(designs)?;
     let target = target.ok_or_else(|| {
         "\"retarget\" needs the material to retarget for: --material NAME or --ri N (see --help)"
             .to_string()
     })?;
-    Ok(RetargetArgs {
-        design,
-        target,
-        mode,
-        crown,
-        preset,
-        range_deg,
-        budget,
-        seed,
-        keep_look,
-        lighting,
-        json,
+    let fan = Fan {
+        command: "retarget",
+        designs,
         out,
-        db,
+        out_dir,
+        extension: DESIGN_EXTENSION,
+        style: ReportStyle::json_or_text(json),
+    };
+    fan_out(fan, |design, out| {
+        Command::Retarget(RetargetArgs {
+            design,
+            target: target.clone(),
+            mode,
+            crown,
+            preset,
+            range_deg,
+            budget,
+            seed,
+            keep_look,
+            girdle_allowance,
+            lighting,
+            json,
+            out,
+            db: db.clone(),
+        })
     })
 }
 
-pub(super) fn parse_sweep(args: &[String]) -> Result<SweepArgs, String> {
+/// The materials `census` retargets to when `--targets` is not given.
+const DEFAULT_CENSUS_TARGETS: [&str; 5] = [
+    "Diamond",
+    "Sapphire",
+    "Quartz",
+    "Cubic Zirconia",
+    "Tourmaline",
+];
+
+/// The search budget `census` gives the optimize mode when `--budget` is not given.
+const DEFAULT_CENSUS_BUDGET: usize = 100;
+
+pub(super) fn parse_census(args: &[String]) -> Result<Command, String> {
+    let mut cursor = Cursor::new("census", args);
+    let mut files = Vec::new();
+    let mut builtins = CensusBuiltins::default();
+    let mut output = CensusOutput::default();
+    let mut all = false;
+    let (mut db, mut out, mut out_dir) = (None, None, None);
+    let mut ids = Vec::new();
+    let (mut limit, mut offset) = (None, 0_usize);
+    let mut targets = None;
+    let mut modes = None;
+    let mut crown = CrownShift::default();
+    let mut budget = DEFAULT_CENSUS_BUDGET;
+    while let Some(word) = cursor.token() {
+        match word {
+            "--templates" => builtins.templates = true,
+            "--fixtures" => builtins.fixtures = true,
+            "--all" => all = true,
+            "--timings" => output.timings = true,
+            "--json" => output.json = true,
+            "--db" => db = Some(cursor.path("--db")?),
+            "--ids" => ids = parse_ids(cursor.value("--ids")?)?,
+            "--limit" => limit = Some(parse_count("--limit", cursor.value("--limit")?)?),
+            "--offset" => offset = parse_count("--offset", cursor.value("--offset")?)?,
+            "--targets" => targets = Some(parse_targets(cursor.value("--targets")?)?),
+            "--modes" => modes = Some(parse_modes(cursor.value("--modes")?)?),
+            "--crown" => crown = parse_crown_mode(cursor.value("--crown")?)?,
+            "--budget" => budget = parse_budget(cursor.value("--budget")?)?,
+            "--out" => out = Some(cursor.path("--out")?),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
+            other => cursor.design_word(other, &mut files)?,
+        }
+    }
+    if all && !ids.is_empty() {
+        return Err("give one of --all and --ids, not both".to_string());
+    }
+    if (all || !ids.is_empty()) && db.is_none() {
+        return Err("--all and --ids read a design library: give --db FILE".to_string());
+    }
+    if db.is_some() && !all && ids.is_empty() {
+        return Err("--db needs --all or --ids LIST for the designs to measure".to_string());
+    }
+    if files.is_empty() && builtins == CensusBuiltins::default() && db.is_none() {
+        return Err(
+            "\"census\" needs designs to measure: --templates, --fixtures, design files or \
+             --db FILE with --all or --ids (see --help)"
+                .to_string(),
+        );
+    }
+    Ok(Command::Census(CensusArgs {
+        files,
+        builtins,
+        db,
+        all,
+        ids,
+        limit,
+        offset,
+        targets: targets.unwrap_or_else(|| {
+            DEFAULT_CENSUS_TARGETS
+                .iter()
+                .map(|name| MaterialArg::Named((*name).to_string()))
+                .collect()
+        }),
+        modes: modes.unwrap_or_else(|| vec![Mode::Shift]),
+        crown,
+        budget,
+        output,
+        out,
+        out_dir,
+    }))
+}
+
+pub(super) fn parse_sweep(args: &[String]) -> Result<Command, String> {
     let mut cursor = Cursor::new("sweep", args);
-    let mut design = None;
+    let mut designs = Vec::new();
     let mut tier = None;
     let (mut from_deg, mut to_deg, mut step_deg) = (None, None, None);
     let mut tilt = false;
-    let mut csv = None;
+    let (mut csv, mut out_dir) = (None, None);
     let mut json = false;
     let mut material = None;
     let mut lighting = CANONICAL_LIGHTING_PRESET;
@@ -284,7 +441,8 @@ pub(super) fn parse_sweep(args: &[String]) -> Result<SweepArgs, String> {
             "--to" => to_deg = Some(cursor.number("--to")?),
             "--step" => step_deg = Some(cursor.number("--step")?),
             "--tilt" => tilt = true,
-            "--csv" => csv = Some(cursor.path("--csv")?),
+            "--csv" => csv = Some(("--csv", cursor.path("--csv")?)),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
             "--json" => json = true,
             "--material" => {
                 let name = cursor.value("--material")?;
@@ -296,23 +454,37 @@ pub(super) fn parse_sweep(args: &[String]) -> Result<SweepArgs, String> {
             }
             "--lighting" => lighting = parse_lighting(cursor.value("--lighting")?)?,
             "--db" => db = Some(cursor.path("--db")?),
-            other => cursor.design_word(other, &mut design)?,
+            other => cursor.design_word(other, &mut designs)?,
         }
     }
-    let design = cursor.require_design(design)?;
+    let designs = cursor.require_designs(designs)?;
     let missing = |flag: &str| format!("\"sweep\" needs {flag} (see --help)");
-    Ok(SweepArgs {
-        design,
-        tier: tier.ok_or_else(|| missing("--tier NAME"))?,
-        from_deg: from_deg.ok_or_else(|| missing("--from ANGLE"))?,
-        to_deg: to_deg.ok_or_else(|| missing("--to ANGLE"))?,
-        step_deg: step_deg.ok_or_else(|| missing("--step DEGREES"))?,
-        tilt,
-        csv,
-        json,
-        material,
-        lighting,
-        db,
+    let tier = tier.ok_or_else(|| missing("--tier NAME"))?;
+    let from_deg = from_deg.ok_or_else(|| missing("--from ANGLE"))?;
+    let to_deg = to_deg.ok_or_else(|| missing("--to ANGLE"))?;
+    let step_deg = step_deg.ok_or_else(|| missing("--step DEGREES"))?;
+    let fan = Fan {
+        command: "sweep",
+        designs,
+        out: csv,
+        out_dir,
+        extension: "csv",
+        style: ReportStyle::json_or_text(json),
+    };
+    fan_out(fan, |design, csv| {
+        Command::Sweep(SweepArgs {
+            design,
+            tier: tier.clone(),
+            from_deg,
+            to_deg,
+            step_deg,
+            tilt,
+            csv,
+            json,
+            material: material.clone(),
+            lighting,
+            db: db.clone(),
+        })
     })
 }
 
@@ -341,6 +513,7 @@ pub(super) fn parse_render_job(
     let mut job: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut local = LocalEngines::default();
+    let mut engine = None;
     let (mut compute, mut transfer) = (None, None);
     let (mut remote, mut cert_dir): (Option<String>, Option<PathBuf>) = (None, None);
     let (mut contribute_local, mut restart, mut quiet) = (false, false, false);
@@ -361,6 +534,17 @@ pub(super) fn parse_render_job(
                 return Err(format!(
                     "{word} is for \"tilt-video\", not \"{command}\" (see --help)"
                 ));
+            }
+            "--engine" => {
+                engine = Some(match cursor.value("--engine")? {
+                    "path" => indicatrix::renderer::engine::RenderEngine::PathTraced,
+                    "ray" => indicatrix::renderer::engine::RenderEngine::RayTraced,
+                    other => {
+                        return Err(format!(
+                            "unknown renderer {other:?} for --engine (expected path or ray)"
+                        ));
+                    }
+                });
             }
             "--local" => local = parse_local(cursor.value("--local")?)?,
             "--compute" => compute = Some(parse_compute(cursor.value("--compute")?)?),
@@ -399,6 +583,7 @@ pub(super) fn parse_render_job(
         return Err("--compute remote needs --remote and --cert-dir".to_string());
     }
     Ok(RenderJobArgs {
+        engine,
         kind,
         job,
         out,
@@ -413,37 +598,59 @@ pub(super) fn parse_render_job(
     })
 }
 
-pub(super) fn parse_export(args: &[String]) -> Result<ExportArgs, String> {
+pub(super) fn parse_export(args: &[String]) -> Result<Command, String> {
     let mut cursor = Cursor::new("export", args);
-    let mut design = None;
+    let mut designs = Vec::new();
     let mut format = None;
     let mut out: Option<PathBuf> = None;
+    let mut out_dir: Option<PathBuf> = None;
     let mut db = None;
     let mut date = None;
     while let Some(word) = cursor.token() {
         match word {
             "--format" => format = Some(parse_export_format(cursor.value("--format")?)?),
             "--out" => out = Some(cursor.path("--out")?),
+            "--out-dir" => out_dir = Some(cursor.path("--out-dir")?),
             "--db" => db = Some(cursor.path("--db")?),
             "--date" => date = Some(cursor.value("--date")?.to_string()),
-            other => cursor.design_word(other, &mut design)?,
+            other => cursor.design_word(other, &mut designs)?,
         }
     }
-    let design = cursor.require_design(design)?;
-    let out = out.ok_or_else(|| "\"export\" needs --out FILE (see --help)".to_string())?;
+    let designs = cursor.require_designs(designs)?;
+    if out.is_none() && out_dir.is_none() {
+        return Err(
+            "\"export\" needs --out FILE, or --out-dir DIR for several designs (see --help)"
+                .to_string(),
+        );
+    }
+    // `--out-dir` names no file, so the format cannot come from the name there.
     let format = format
-        .or_else(|| ExportFormat::from_file_name(&out.to_string_lossy()))
+        .or_else(|| {
+            out.as_ref()
+                .and_then(|path| ExportFormat::from_file_name(&path.to_string_lossy()))
+        })
         .ok_or_else(|| {
             format!(
                 "\"export\" needs --format asc|{DESIGN_EXTENSION}|gcs|html, or an --out file \
                  ending in .asc, {DESIGN_EXTENSION_DOTTED}, .gcs or .html (see --help)"
             )
         })?;
-    Ok(ExportArgs {
-        design,
-        format,
-        out,
-        db,
-        date,
+    let fan = Fan {
+        command: "export",
+        designs,
+        out: out.map(|file| ("--out", file)),
+        out_dir,
+        extension: format.extension(),
+        style: ReportStyle::Text,
+    };
+    fan_out(fan, |design, out| {
+        Command::Export(ExportArgs {
+            design,
+            format,
+            // Always given: the line named `--out`, or `--out-dir` made one for each design.
+            out: out.unwrap_or_default(),
+            db: db.clone(),
+            date: date.clone(),
+        })
     })
 }

@@ -3,14 +3,14 @@
 use glam::DVec3;
 
 use super::{
-    Axis, BarCut, CandidateDesign, CutOrder, CutPlan, DesignHull, FINAL_TOP, LayoutGroup,
-    PlacedStone, PlanProgress, PlanSettings, REFINE_TOP, RoughBlock, RoughLayout, RoughModel,
-    SHAPED_UNIFORM_DESIGNS, SingleFit, SlabCut, fit_single_stones, fit_single_stones_with,
-    merge_and_rank_capped,
+    Axis, BarCut, CandidateDesign, CutOrder, CutPlan, DesignHull, FINAL_TOP, LayoutCaps,
+    LayoutGroup, PlacedStone, PlanProgress, PlanSettings, REFINE_TOP, RoughBlock, RoughLayout,
+    RoughModel, SHAPED_UNIFORM_DESIGNS, SingleFit, SlabCut, fit_single_stones,
+    fit_single_stones_with, merge_and_rank_within,
     pareto::{pareto_front, sanitize},
     plan_rough,
-    rank::{best_layout, flatten_groups, rank_indices_capped},
-    refine::{final_ranking_capped, own_pool},
+    rank::{best_layout, flatten_groups, rank_indices_within},
+    refine::{final_ranking_within, own_pool},
     shape::RoughBase,
     shaped::{
         BuildClipParams, ShapedAltParams, ShapedCtx, build_clipped_table, plan_shaped_alternatives,
@@ -173,10 +173,12 @@ pub fn single_fit_layouts(
 ///
 /// Dispatches to either the plain block or shaped planning path based on the model geometry.
 /// Returns up to 10 ranked layouts ([`FINAL_TOP`]), with at most three per design set (see
-/// [`plan_rough`]). The result is `None` only when cancelled via `on_progress`; invalid
-/// settings ([`PlanSettings::validate`]), an invalid or empty model (the app validates the
-/// model before calling), no valid design, or a rough too small for any stone all give
-/// `Some(Vec::new())`.
+/// [`plan_rough`]), each within both caps of the settings ([`PlanSettings::max_designs`] and
+/// [`PlanSettings::max_stones`], which the searches themselves respect: a stone cap finds the
+/// best layouts of at most that many stones and does not cut larger ones down). The result is
+/// `None` only when cancelled via `on_progress`; invalid settings
+/// ([`PlanSettings::validate`]), an invalid or empty model (the app validates the model before
+/// calling), no valid design, or a rough too small for any stone all give `Some(Vec::new())`.
 pub fn plan(
     input: &PlanInput<'_>,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
@@ -231,10 +233,10 @@ fn plan_plain_block(
         PLAIN_SINGLE_FITS,
         rough.volume_mm3(),
     ));
-    Some(merge_and_rank_capped(
+    Some(merge_and_rank_within(
         layouts,
         FINAL_LAYOUTS,
-        input.settings.max_designs_usize(),
+        input.settings.caps(),
     ))
 }
 
@@ -384,8 +386,8 @@ fn finish_shaped(
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<RoughLayout>> {
     let (flat, group_of) = flatten_groups(groups);
-    let max_designs = input.settings.max_designs_usize();
-    let ranked = rank_indices_capped(&flat, REFINE_TOP, max_designs);
+    let caps = input.settings.caps();
+    let ranked = rank_indices_within(&flat, REFINE_TOP, caps);
     let mut refined = Vec::with_capacity(ranked.len() + SHAPED_SINGLE_LAYOUTS);
     for &idx in &ranked {
         if !on_progress(PlanProgress::Refine) {
@@ -412,17 +414,17 @@ fn finish_shaped(
         SHAPED_SINGLE_LAYOUTS,
         ctx.model_volume,
     ));
-    Some(final_ranking_capped(refined, &flat, &ranked, max_designs))
+    Some(final_ranking_within(refined, &flat, &ranked, caps))
 }
 
 /// The layouts to show when a plan was stopped before its refinement ran.
 ///
 /// Every layout of `groups` and of `extra` (single-stone and uniform layouts), unrefined,
-/// ranked and cut to [`FINAL_LAYOUTS`] by [`merge_and_rank_capped`]. Empty when none has a
+/// ranked and cut to [`FINAL_LAYOUTS`] by [`merge_and_rank_within`]. Empty when none has a
 /// stone.
 #[must_use]
 pub fn partial_ranking(groups: &[LayoutGroup], extra: Vec<RoughLayout>) -> Vec<RoughLayout> {
-    partial_ranking_capped(groups, extra, usize::MAX)
+    partial_ranking_within(groups, extra, LayoutCaps::NONE)
 }
 
 /// [`partial_ranking`] keeping only layouts of at most `max_designs` different designs.
@@ -432,8 +434,19 @@ pub fn partial_ranking_capped(
     extra: Vec<RoughLayout>,
     max_designs: usize,
 ) -> Vec<RoughLayout> {
+    partial_ranking_within(groups, extra, LayoutCaps::designs_only(max_designs))
+}
+
+/// [`partial_ranking`] keeping only the layouts `caps` admits: its design cap and its stone
+/// cap.
+#[must_use]
+pub fn partial_ranking_within(
+    groups: &[LayoutGroup],
+    extra: Vec<RoughLayout>,
+    caps: LayoutCaps,
+) -> Vec<RoughLayout> {
     let (flat, _) = flatten_groups(groups);
     let mut all: Vec<RoughLayout> = flat.into_iter().cloned().collect();
     all.extend(extra);
-    merge_and_rank_capped(all, FINAL_LAYOUTS, max_designs)
+    merge_and_rank_within(all, FINAL_LAYOUTS, caps)
 }

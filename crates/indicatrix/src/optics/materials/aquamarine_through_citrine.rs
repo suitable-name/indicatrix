@@ -57,18 +57,52 @@ impl GemMaterial {
                     c: 0.0,
                 },
                 birefringence_delta: -0.0060,
-                // Chromophore: Fe2+ in the beryl channel structure, whose primary
-                // absorption sits near 830nm (near-infrared), outside this renderer's
-                // 380-780nm sampled band. Modelled with a wide Gaussian (width 110nm)
-                // so its blue-side tail still reaches into the 700-780nm red edge of
-                // the visible band (unlike Tourmaline's 1120nm band, too far out to
-                // reach it at all), giving aquamarine its pale blue-green cast. Peak
-                // (1.0) deliberately weak, matching aquamarine's reputation as one of
-                // the palest common colored gemstones.
-                absorption: AbsorptionTensor::isotropic(vec![AbsorptionBand::new(
-                    830.0, 110.0, 1.0,
-                )]),
-                c_axis: Vec3::Y,
+                // Chromophore: Fe2+-Fe3+ intervalence band at ~600-680 nm polarised
+                // along c (e-ray, the blue), Fe2+ at ~830 nm (strong in the o-ray,
+                // where only its 650-780 nm tail is visible), weak Fe3+ at 428 nm and
+                // a near-UV edge in both rays. FITTED 2026-10-19 by bounded
+                // least-squares energy-Gaussian fits (log residual, 380-780 nm; the
+                // NIR band centres sit on their bounds, only their tails matter) to
+                // the two polarised Caltech Mineral Spectroscopy Server spectra of
+                // aquamarine GRR 1488 (Lajes Pintada, Brazil; 5.531 mm; per-ray
+                // baselines 0.683 / 0.866 removed), `data/reference_spectra/
+                // caltech_aquamarine_grr1488_{eperpc,eparc}_5p531mm.csv`, at the
+                // crystal's own iron content over the 8.8 mm face-up path of a 7 mm
+                // stone. Swatch (7 mm, D65, (2o + e)/3): L*85 C*16 h=247 (o-ray
+                // L*97 C*13: near-colorless; e-ray L*44 C*88 h 287: deep
+                // violet-blue); p = 2: h 227. The face-up wave normal is the view
+                // axis and `c_axis` is `Vec3::X` (c in the table plane, as for
+                // Tourmaline, the way aquamarine is cut), so the face-up view mixes
+                // the o- and e-ray and reads blue; with c along the view axis it
+                // would see the near-colorless o-ray only.
+                absorption: AbsorptionTensor::uniaxial(
+                    vec![
+                        // o-ray (E perp c): near-colorless; UV/Fe3+ edge, Fe3+ 429 nm,
+                        // weak IVCT leak, Fe2+ ~830 nm tail
+                        AbsorptionBand::energy(363.0, 5_531.0, 1.19),
+                        AbsorptionBand::energy(429.0, 1_500.0, 0.214),
+                        AbsorptionBand::energy(645.0, 3_657.0, 0.198),
+                        AbsorptionBand::energy(845.0, 2_797.0, 6.54),
+                    ],
+                    vec![
+                        // e-ray (E par c): the blue ray; Fe2+-Fe3+ IVCT ~600-680 nm +
+                        // Fe2+ ~830 nm
+                        AbsorptionBand::energy(378.0, 3_102.0, 0.892),
+                        AbsorptionBand::energy(428.0, 565.0, 0.317),
+                        AbsorptionBand::energy(600.0, 4_405.0, 3.26),
+                        AbsorptionBand::energy(810.0, 5_471.0, 8.82),
+                    ],
+                ),
+                // c_axis set INTO the table plane (Vec3::X) rather than the Vec3::Y
+                // every other built-in defaults to, exactly as Tourmaline does -- a
+                // deliberate override, not an oversight. Aquamarine's color sits in
+                // the e-ray (E parallel to c): with c_axis=Y the face-up wave normal
+                // is parallel to c, where both eigenmodes are the o-ray (L*97, almost
+                // colorless), backwards from how aquamarine is cut and worn (c in the
+                // table plane, so the blue ray shows face-up). See the test
+                // `aquamarine_face_up_sees_the_blue_ray_with_c_axis_in_table_plane`
+                // in `tests/raytracer_tests/pleochroic_orientation.rs`.
+                c_axis: Vec3::X,
                 biaxial_delta_beta_alpha: None,
                 scattering_sigma_s: 0.0,
                 scattering_g: 0.0,

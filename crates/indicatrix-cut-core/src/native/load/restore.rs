@@ -5,7 +5,7 @@
 
 use super::MaterialResolution;
 use crate::{
-    design::{ConstraintTier, Design, RelationError, TierId, TierRelation},
+    design::{ConstraintTier, Design, RelationError, TierFrosting, TierId, TierRelation},
     native::convert::{
         concave_tier_from_table, meet_constraint_from_native, tier_target_from_native,
     },
@@ -135,6 +135,37 @@ pub(in crate::native) fn apply_tier_ids_and_targets(
         .filter_map(|(maybe_target, &id)| maybe_target.map(|t| (id, tier_target_from_native(t))))
         .collect();
     design.tier_ids = ids;
+}
+
+/// [`raw_tier_ids_from_native`]'s counterpart for [`TierTable::frosted`] and
+/// [`TierTable::frosted_facets`]: per tier, whether it is frosted as a whole and which facets
+/// are frosted one by one.
+pub(in crate::native) fn raw_tier_frosting_from_native(
+    native_tiers: &[TierTable],
+) -> Vec<(bool, Vec<f64>)> {
+    native_tiers
+        .iter()
+        .map(|t| (t.frosted, t.frosted_facets.clone()))
+        .collect()
+}
+
+/// Restores `design.tier_frosting` from `raw` (captured via
+/// [`raw_tier_frosting_from_native`] before the native file's own `tiers` array was
+/// consumed), each entry keyed by the id its tier ended up with. A tier the file does not
+/// mark is polished, which is also what a file saved before frosting existed reads as; a
+/// non-finite facet position is dropped. Must run after [`apply_tier_ids_and_targets`].
+pub(in crate::native) fn apply_tier_frosting(design: &mut Design, raw: &[(bool, Vec<f64>)]) {
+    design.tier_frosting.clear();
+    for ((frosted, facets), &id) in raw.iter().zip(&design.tier_ids) {
+        let frosting = if *frosted {
+            Some(TierFrosting::Tier)
+        } else {
+            TierFrosting::of_facets(facets.iter().copied())
+        };
+        if let Some(frosting) = frosting {
+            design.tier_frosting.insert(id, frosting);
+        }
+    }
 }
 
 /// [`raw_tier_ids_from_native`]'s counterpart for [`TierTable::angle_relation`].

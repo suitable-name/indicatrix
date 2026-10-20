@@ -3,17 +3,16 @@
 [![#MadeWithSlint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-light.svg#gh-light-mode-only)](https://slint.dev)
 [![#MadeWithSlint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-dark.svg#gh-dark-mode-only)](https://slint.dev)
 
-A physically-based spectral gemstone renderer and faceting-design library, in
-Rust. It's for anyone who wants to see what a real cut gemstone actually looks
-like from its real cutting instructions — spectral fire and polarization included,
-not the RGB/scalar-IOR approximation every conventional renderer reaches for —
-and for anyone building their own library of faceting designs (`.asc` files)
-around one.
+A gemstone renderer and faceting-design library in Rust. Its **Path-Traced** view
+models spectral fire, polarization and birefringence from real cutting instructions.
+Its **Ray-Traced** view is a lighter deterministic RGB/scalar-index approximation,
+with fixed anti-aliasing taps and optional three-index Fire. **Solid** shows the geometry
+without light transport. The tools also build a library of faceting designs (`.asc` files).
 
 ## What makes it technically interesting
 
-At the center is `indicatrix`, a spectral path tracer that traces real gemstone
-geometry rather than approximating it:
+At the center is `indicatrix`. Its Path-Traced engine traces real gemstone geometry
+with these optical models:
 
 - **8-channel stratified hero-wavelength spectral sampling (HWSS)** — each ray
   carries 8 wavelengths at once (one "hero" plus 7 rotated companions),
@@ -45,6 +44,8 @@ geometry rather than approximating it:
 | [`crates/indicatrix`](crates/indicatrix/README.md) | The spectral path tracer — the physics core. Facet planes + material in, rendered pixels and/or brilliance/fire/scintillation metrics out. |
 | [`crates/indicatrix-net`](crates/indicatrix-net/README.md) | Wire protocol between a viewer, a coordinator and its render workers: offloading `indicatrix` sample tracing, and reading a remote design library. Types and framing only — no sockets. |
 | `crates/indicatrix-dispatch` | Sample-range scheduling for render lanes: the shared disjoint sample cursor, per-lane rate models and chunk sizing, and a lane pool that merges chunk sums deterministically. No networking and no GUI types; used by both the desktop app and the coordinator. |
+| `crates/indicatrix-render-jobs` | The frozen render job file (scene, material, lighting, camera and export settings) shared by the desktop render queue and the command-line renderer, the job state machine, queue ordering and the shell and PowerShell script writer. |
+| `crates/indicatrix-update` | The new-version check of the apps against the GitHub releases (`v<version>` tags). |
 | `crates/indicatrix-cut-core` | The editor core behind `indicatrix-cut`'s Edit tab: preform, editable cutting instructions, undo/redo, design templates. |
 | `crates/indicatrix-solid` | The solid and diagram previews: the software rasteriser, the GemCAD-style three-panel diagram, facet picking and the preview pipeline. No GUI types; used by the desktop app and the browser app. |
 | `crates/indicatrix-editor` | The editing logic behind the design editor with no GUI in it: the editor session, tier forms, file loading and naming, retargeting, the cutting sheet, the guided walkthrough and the mouse-manipulation math. Used by the desktop app and the browser app. |
@@ -52,7 +53,7 @@ geometry rather than approximating it:
 | [`crates/indicatrix-formats`](crates/indicatrix-formats/README.md) | Reader/writer for GemCAD-style `.asc` cutting-instructions files. Zero runtime dependencies. |
 | [`crates/indicatrix-vault`](crates/indicatrix-vault/README.md) | Local SQLite-backed design library — models, storage, and local `.asc` import/export. |
 | [`apps/indicatrix-cut`](apps/indicatrix-cut/README.md) | The desktop faceting-design editor, built with [Slint](https://slint.dev/): browse, search, and render your library in 3D, with a faceting editor for material retargeting and a solid inspection view. |
-| [`apps/indicatrix-web`](apps/indicatrix-web/README.md) | The browser build (Slint compiled to WebAssembly, static files): open or start a design, edit it, view it as a solid, a diagram and a CPU-rendered stone, and save it back as downloads. Rendering and slow solves run in Web Workers (`apps/indicatrix-web-compute` is their entry point). No design library, remote rendering, Deep Solve or GPU path; state lives in the tab's session only. Built with `trunk`. |
+| [`apps/indicatrix-web`](apps/indicatrix-web/README.md) | The browser build (Slint compiled to WebAssembly, static files): edit a design and view Solid, Diagram, Path-Traced or Ray-Traced. CPU Web Workers handle rendering and slow solves. WebGPU supports every material class in Ray-Traced and isotropic materials in Path-Traced, with separate qualification and CPU fallback. No design library, remote rendering or Deep Solve; state lives in the tab's session. Built with `trunk`. |
 | [`apps/indicatrix-mobile-android`](apps/indicatrix-mobile-android/README.md) | The Android phone and tablet app: a touch-first Slint UI over `indicatrix-mobile-core`, the JNI platform services (files, share, print) and a desktop preview of the same UI. Not in an app store yet; build and install it yourself. |
 | [`crates/indicatrix-mobile-core`](crates/indicatrix-mobile-core/README.md) | The UI-free core of the mobile app: app state, settings, the library, the compute threads (render, solve, analysis), cutting progress and the platform-service trait. Shared by the Android app and any later iOS app; tested natively. |
 | [`apps/indicatrix-worker`](apps/indicatrix-worker/README.md) | Headless render CLI and remote server — `serve` is a coordinator that serves a design library over mutual TLS and (on a `worker` build) spreads render requests over the machines that `join` it, rendering itself too with `--render`. |
@@ -143,7 +144,7 @@ workspace commands above skip them):
 cargo ui-harness                                                    # the UI harness: every flow, report in target/ui-harness/
 cargo ui-static                                                     # static scan of the .slint sources
 INDICATRIX_HARNESS_LIBRARY=facet_diagrams.sqlite cargo ui-screens   # rewrite the screenshots in assets/
-cargo ui-clippy                                                     # clippy over the three targets
+cargo ui-clippy                                                     # clippy over the four targets
 ```
 
 The aliases live in `.cargo/config.toml`. `ui-screens` draws with Slint's software renderer in a
@@ -278,6 +279,7 @@ All of the following are **off by default**, except `indicatrix-net`'s `compress
 | `indicatrix-net` | `render` | `SceneState`/`RenderRequest` and everything else that needs `indicatrix`'s resolved scene/material types. Off by default so a library-only `indicatrix-worker` build never compiles `indicatrix` in at all. |
 | `apps/indicatrix-cut` | `gpu` | Routes the viewport's progressive accumulation and the high-resolution export worker through `indicatrix`'s GPU megakernel, falling back to the CPU tracer per frame whenever it declines. See [`apps/indicatrix-cut/docs/gpu.md`](apps/indicatrix-cut/docs/gpu.md). |
 | `apps/indicatrix-cut` | `physical-color` | Shows the physics-based color editor in the Gem Material Editor (the Fantasy/Physics toggle and the host-crystal and element-recipe section). UI only: a material's stored color mode and recipe are kept and rendered in every build, with or without this feature; without it the editor always shows the plain Fantasy colors. Not part of the shipped or PGO builds. |
+| `apps/indicatrix-cut` | `experimental` | Bundle that turns on `physical-color`. |
 | `apps/indicatrix-worker` | `worker` | Render capacity: the coordinator's worker port and job execution on `serve`, `serve --render`, the `join` subcommand, and the `render` subcommand actually working. Turns on `indicatrix-net/render`. Without it, `indicatrix-worker` serves a read-only design library only. |
 | `apps/indicatrix-worker` | `gpu` | Implies `worker`. Routes `render`/`serve --render`/`join` tracing through `indicatrix`'s GPU megakernel, falling back to the CPU tracer whenever it declines. |
 
@@ -358,6 +360,35 @@ same UI also runs on the desktop:
 
 More phone and tablet shots are in [`assets/mobile/`](assets/mobile/); `cargo ui-screens-mobile`
 rewrites them from the desktop preview, `cargo ui-screens` the desktop ones.
+
+## Tutorial Videos
+
+`cargo tutorial-videos` plays every built-in tutorial in the real app (Slint's software renderer, a
+throw-away profile) and records it: a drawn mouse cursor glides to what each step is about, a click
+ripple shows the press, the app reacts, and long background work (solves, renders) is sped up or cut
+out. Per tutorial it writes, into `videos/` (or the folder `INDICATRIX_VIDEOS_OUT` names):
+
+- `<tutorial-id>.mp4`: 1920 x 1080, 30 fps, H.264, ready for YouTube;
+- `<tutorial-id>.srt`: captions, the step title and text;
+- `<tutorial-id>.chapters.txt`: a YouTube chapter list, one chapter per step.
+
+```
+cargo tutorial-videos                      # every built-in tutorial
+cargo tutorial-videos -- welcome worked    # only tutorials whose id contains one of these words
+INDICATRIX_VIDEOS_4K=1 cargo tutorial-videos -- welcome    # keep the 3840 x 2160 capture
+```
+
+Environment variables: `INDICATRIX_VIDEOS_OUT` (output folder), `INDICATRIX_VIDEOS_4K` (no
+downscale to 1920 x 1080), `INDICATRIX_VIDEOS_FPS` (24 to 60, default 30),
+`INDICATRIX_HARNESS_LIBRARY` (optional: a `facet_diagrams.sqlite` to copy into the throw-away
+profile; without it a small fixture library is used), `UIPROBE_JOBS=serial` (one tutorial at a
+time) and `UIPROBE_FFMPEG` (the ffmpeg executable). ffmpeg must be on `PATH` or named by
+`UIPROBE_FFMPEG`.
+
+A tutorial whose run hits a step the recorder cannot show (a step that only a direct event can
+finish), a skipped step, a timeout, a panic, an error toast or private text on screen writes no
+video: the old file stays and the run reports a finding in `target/tutorial-videos/report.md`.
+Videos are written to `<name>.mp4.part` and renamed when they are complete.
 
 ## The design library is yours to build
 

@@ -296,8 +296,10 @@ struct ResolvedPlanes {
     /// it, the SAME resolution (design file first) the preview and tilt batches use, so
     /// this view's stone and a record's cached thumbnails and tilt curves never describe
     /// different geometry. It parses and solves the design file: it runs on the worker
-    /// thread, never the UI thread.
-    planes: Result<CataloguePlanes, String>,
+    /// thread, never the UI thread. Paired with the ascending indices of the planes the
+    /// design frosts ([`crate::gui::editor::resolve_catalogue_planes_with_frosting`]), so the
+    /// viewport shows the finish the editor, the thumbnail and the Compare window show.
+    planes: Result<(CataloguePlanes, Vec<u32>), String>,
 }
 
 /// Resolves `full`'s planes on a worker thread and draws them from the event loop,
@@ -333,7 +335,7 @@ fn spawn_planes_resolution(
             let planes = match full {
                 Ok(Some(full)) => {
                     crate::gui::library::local::catch_file_panic(std::panic::AssertUnwindSafe(
-                        || crate::gui::editor::resolve_catalogue_planes(&full),
+                        || crate::gui::editor::resolve_catalogue_planes_with_frosting(&full),
                     ))
                 }
                 Ok(None) => Err("the design no longer exists".to_string()),
@@ -372,8 +374,8 @@ fn apply_resolved_planes(
     ) {
         return;
     }
-    let catalogue = match resolved.planes {
-        Ok(catalogue) => catalogue,
+    let (catalogue, frosted) = match resolved.planes {
+        Ok(resolved_planes) => resolved_planes,
         Err(message) => {
             error!(
                 "Resolving the planes of diagram #{} failed: {message}",
@@ -388,6 +390,7 @@ fn apply_resolved_planes(
     // The design file's material and size, for the viewport to draw the stone as the
     // editor and the exports do (`planes::apply_catalogue_material`).
     let design_material = DesignFileMaterial::from(&catalogue);
+    let (tools, tool_placements) = (catalogue.render_tools, catalogue.render_placements);
     let real_design = (
         catalogue.planes,
         catalogue.gear_teeth,
@@ -407,6 +410,11 @@ fn apply_resolved_planes(
             preview_material: resolved.preview_material.as_deref(),
             real_design: Some(real_design),
             design_material,
+            // The stone with its concave tools, as the Compare window draws it.
+            tools,
+            tool_placements,
+            concave_rows: Vec::new(),
+            frosted,
         },
     );
     request_live_solid_redraw(ui);

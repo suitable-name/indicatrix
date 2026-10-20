@@ -1,0 +1,89 @@
+// Side-effect-free Back target query plus a single version-checked commit.
+// The pinned backend opt-out leaves one app-owned native callback on API 33+.
+import { RemoteModel } from "pages/remote.slint";
+import { Shell } from "models.slint";
+import { DocumentModel } from "design/document_model.slint";
+import { RenderModel } from "design/render/render_model.slint";
+import { TiersModel } from "design/tiers/tiers_model.slint";
+import { PropsModel } from "design/props/props_model.slint";
+import { CutModel } from "cut/cut_model.slint";
+import { LibraryModel } from "library/library_model.slint";
+import { HistoryModel } from "design/history.slint";
+import { ConcaveModel } from "design/concave.slint";
+import { DeepSolveModel } from "design/deep_solve.slint";
+import { VariantsModel } from "design/variants.slint";
+import { OptimizeModel } from "design/optimization.slint";
+import { RetargetModel } from "design/retarget.slint";
+
+export global Navigation {
+    in-out property <bool> design-menu-open: false;
+    property <bool> design-visible: Shell.destination == 1 && DocumentModel.has-design;
+    out property <int> target:
+        Shell.dialog-visible ? 1 : Shell.info-visible ? 2 :
+        CutModel.mode-open ? 6 : DocumentModel.gallery-open ? 7 :
+        design-visible && VariantsModel.open ? 22 :
+        design-visible && RetargetModel.open ? 24 :
+        design-visible && OptimizeModel.open ? 23 :
+        design-visible && DeepSolveModel.open ? 3 :
+        design-visible && ConcaveModel.open ? 4 :
+        design-visible && HistoryModel.open ? 5 :
+        design-visible && RenderModel.export-open ? 8 :
+        design-visible && PropsModel.number-open ? 9 :
+        design-visible && TiersModel.confirm-open ? 10 :
+        design-visible && TiersModel.angle-open ? 11 :
+        design-visible && TiersModel.index-entry-open ? 12 :
+        design-visible && TiersModel.tier-open ? 13 :
+        design-visible && design-menu-open ? 14 :
+        Shell.destination == 0 && LibraryModel.tag-sheet-open ? 15 :
+        Shell.destination == 0 && LibraryModel.filter-open ? 16 :
+        Shell.destination == 0 && LibraryModel.sort-open ? 17 :
+        Shell.destination == 0 && LibraryModel.selecting ? 18 :
+        design-visible && Shell.sheet-detent == 2 ? 19 :
+        Shell.destination == 3 && Shell.more-page != 0 ? 20 :
+        Shell.destination != 1 ? 21 : 0;
+    out property <bool> can-handle-back: target != 0;
+    in-out property <int> version: 0;
+    in-out property <float> gesture-progress: 0;
+    callback state-changed(int, int);
+    // Several different pages share the same action kind. Their identity must
+    // change as well, otherwise an old predictive gesture could pop a new page.
+    property <string> state-key: "" + target + ":" + Shell.destination + ":" + Shell.more-page
+        + (target == 1 ? ":" + Shell.dialog-id + Shell.dialog-title + Shell.dialog-body : "")
+        + (target == 2 ? ":" + Shell.info-title + Shell.info-body : "");
+    changed state-key => { version = version + 1; gesture-progress = 0; }
+    changed version => { state-changed(target, version); }
+
+    // A cancelled gesture only queries; it never calls commit. Version checks,
+    // rather than a time debounce, reject commits for a changed navigation state.
+    public function commit(expected-target: int, expected-version: int) -> bool {
+        if (target == 0 || target != expected-target || version != expected-version) { return false; }
+        // Advance synchronously: a second queued commit cannot reuse this gesture.
+        version = version + 1;
+        gesture-progress = 0;
+        if (target == 1) { Shell.close-dialog(false); }
+        else if (target == 2) { Shell.info-visible = false; }
+        else if (target == 3) { DeepSolveModel.close(); }
+        else if (target == 4) { ConcaveModel.close(); }
+        else if (target == 5) { HistoryModel.close(); }
+        else if (target == 6) { CutModel.mode-close(); }
+        else if (target == 7) { DocumentModel.gallery-open = false; }
+        else if (target == 8) { RenderModel.export-closed(); }
+        else if (target == 9) { PropsModel.close-number(); }
+        else if (target == 10) { TiersModel.answer-confirm(false); }
+        else if (target == 11) { TiersModel.close-angle(); }
+        else if (target == 12) { TiersModel.index-entry-open = false; }
+        else if (target == 13) { TiersModel.close-tier(); }
+        else if (target == 14) { design-menu-open = false; }
+        else if (target == 15) { LibraryModel.close-tag-sheet(); }
+        else if (target == 16) { LibraryModel.filter-open = false; }
+        else if (target == 17) { LibraryModel.sort-open = false; }
+        else if (target == 18) { LibraryModel.clear-selection(); }
+        else if (target == 19) { Shell.sheet-detent = 1; }
+        else if (target == 20) { if (Shell.more-page == 4) { RemoteModel.close(); } else { Shell.more-page = Shell.more-page == 3 ? 2 : 0; } }
+        else if (target == 21) { Shell.select-destination(1); }
+        else if (target == 22) { VariantsModel.close(); }
+        else if (target == 23) { OptimizeModel.close(); }
+        else if (target == 24) { RetargetModel.close(); }
+        return true;
+    }
+}

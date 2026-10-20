@@ -156,6 +156,35 @@ mod tests {
         }
     }
 
+    /// The built-in trays of 2026-10-20 reach existing settings files: a stored "Dramatic
+    /// Spotlight" that still carries White comes back Black on load, while a user preset keeps
+    /// whatever tray its owner chose.
+    #[test]
+    fn ensure_built_in_presets_brings_the_dramatic_spotlight_tray_to_old_files() {
+        let mut old = built_in_presets()
+            .into_iter()
+            .find(|p| p.name == "Dramatic Spotlight")
+            .expect("the Dramatic Spotlight built-in exists");
+        old.backdrop = crate::settings::model::Backdrop::White;
+        let mut mine = old.clone();
+        mine.name = "My Spotlight".to_string();
+        mine.built_in = false;
+        let mut file = SettingsFile {
+            settings: AppSettings::default(),
+            presets: vec![old, mine],
+            rig_profiles: Vec::new(),
+        };
+        file.ensure_built_in_presets();
+        assert_eq!(
+            file.find_preset("Dramatic Spotlight").map(|p| p.backdrop),
+            Some(crate::settings::model::Backdrop::Black)
+        );
+        assert_eq!(
+            file.find_preset("My Spotlight").map(|p| p.backdrop),
+            Some(crate::settings::model::Backdrop::White)
+        );
+    }
+
     #[test]
     fn ensure_built_in_presets_adds_a_missing_one() {
         let mut file = SettingsFile {

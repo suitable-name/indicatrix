@@ -619,6 +619,7 @@ fn traced_as_batch(
             .zip(outs.iter_mut())
             .map(|(spec, out)| GpuBatchItem {
                 scene: spec.scene(planes),
+                tools: &[],
                 first_sample: spec.first_sample,
                 samples: spec.samples,
                 out: out.as_mut_slice(),

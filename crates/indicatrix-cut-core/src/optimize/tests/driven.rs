@@ -1,7 +1,7 @@
 //! Tests for tiers that follow a relation: they are never free, a candidate that moves
 //! a tier they read moves them too (so the score describes a design the user can get),
-//! they never appear in a change list, and applying a candidate leaves the relations
-//! satisfied in the same undo step.
+//! their angle never appears in a change list (their depth may: followers keep depth
+//! freedom), and applying a candidate leaves the relations satisfied in the same undo step.
 //!
 //! Every test uses RBC-445. Tier 8 is "B" (29.0 degrees) and tier 9 is "C" (28.1 degrees);
 //! C is made to follow B with `B - 0.9`.
@@ -9,14 +9,15 @@
 use super::{
     super::{
         AngleChange, ObjectiveComponents, ObjectiveWeights, OptimizeCandidate, OptimizeConfig,
-        SearchHooks, apply_optimize_candidate, candidate, free_tier_indices,
-        free_tier_indices_with, optimize_design_with, space::settle_relations,
+        SearchHooks, apply_optimize_candidate, apply_optimize_outcome, apply_optimize_result,
+        candidate, free_tier_indices, free_tier_indices_with, optimize_design_with,
+        space::settle_relations,
     },
     anchored::{anchored_options, space_for},
     fixtures::{imported_rbc, rbc_445},
 };
 use crate::{design::Design, edit::History};
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::{geometry::meet_solver::MeetConstraint, optics::materials::GemMaterial};
 
 const DRIVER: usize = 8;
 const FOLLOWER: usize = 9;
@@ -57,6 +58,8 @@ fn yield_only() -> OptimizeConfig {
 
 fn candidate_of(changes: Vec<AngleChange>) -> OptimizeCandidate {
     OptimizeCandidate {
+        provenance: None,
+        preservation_baseline: None,
         changes,
         mast_changes: Vec::new(),
         after: ObjectiveComponents {
@@ -145,11 +148,26 @@ fn a_design_without_relations_is_settled_untouched() {
 // --- a whole run ---
 
 /// Optimize with only the tier that "C" reads free: every candidate keeps `C = B - 0.9`,
-/// "C" is in no change list, and the candidate's yield is the yield of the design the
+/// "C" is in no angle change list, and the candidate's yield is the yield of the design the
 /// relation produces.
+///
+/// "C" keeps its depth freedom: `movable_masts` lets a pinned relation follower with a hinge
+/// move its mast, and the meets "C" shares with the turned crown facet need it (item 2 of
+/// `docs/meet-preserving-optimizers-implementation-report.md`: followers contribute depth
+/// variables, only independent follower-angle edits are refused). So a depth change of "C"
+/// is listed with the rest of the certified state; it starts from the mast the design
+/// pinned, applying it reproduces the listed depth bit for bit (owner decision Q1,
+/// 2026-10-19), and applying moves "C"'s angle only through the relation. The check is never
+/// vacuous: a list that does not name "C" must leave its pinned mast bit for bit, and at
+/// least one list (the result's or a candidate's) names it, since the turned crown facet
+/// moves the meets "C" shares with it.
 #[test]
-fn every_candidate_keeps_the_relation_and_never_lists_the_follower() {
+fn every_candidate_keeps_the_relation_and_never_lists_the_followers_angle() {
     let design = imported_with_follower();
+    let MeetConstraint::ScaleReference(pinned_follower_mast) = design.tiers[FOLLOWER].constraint
+    else {
+        panic!("the imported follower is pinned");
+    };
     let mut options = anchored_options(&design);
     options
         .anchor_hinges
@@ -172,21 +190,63 @@ fn every_candidate_keeps_the_relation_and_never_lists_the_follower() {
         "turning the crown facet changes how much of the rough is kept"
     );
     assert!(result.outcome.changes.iter().all(|c| c.index != FOLLOWER));
-    assert!(result.mast_changes.iter().all(|m| m.index != FOLLOWER));
+
+    // The follower's pinned depth after `applied` took a change list: bit for bit the
+    // depth that list named, or, when the list does not name it, bit for bit the pinned
+    // mast. Returns whether the list named it, so the exact branch is known to have run.
+    let follower_depth_reproduced = |applied: &Design, listed: &[super::super::MastChange]| {
+        let MeetConstraint::ScaleReference(now) = applied.tiers[FOLLOWER].constraint else {
+            panic!("the follower stays pinned");
+        };
+        let mut listed_follower = false;
+        for mast in listed.iter().filter(|m| m.index == FOLLOWER) {
+            listed_follower = true;
+            assert_eq!(mast.from_mast.to_bits(), pinned_follower_mast.to_bits());
+            assert_eq!(
+                now.to_bits(),
+                mast.to_mast.to_bits(),
+                "applying must reproduce the listed follower depth exactly"
+            );
+        }
+        if !listed_follower {
+            assert_eq!(
+                now.to_bits(),
+                pinned_follower_mast.to_bits(),
+                "a list that does not name the follower's depth must leave it pinned as it was"
+            );
+        }
+        listed_follower
+    };
+    let mut follower_depth_listed = false;
+
+    // Applying the result itself (one undo step) reproduces every listed follower depth,
+    // through both apply APIs: the outcome alone (rebuilt from its provenance) and the
+    // result (its `changes` together with its `mast_changes`).
+    let mut applied = design.clone();
+    let mut history = History::new();
+    apply_optimize_outcome(&mut history, &mut applied, &result.outcome)
+        .expect("the result applies to the design it was computed from");
+    follower_depth_listed |= follower_depth_reproduced(&applied, &result.mast_changes);
+    assert!(history.undo(&mut applied).expect("one undo step"));
+    assert_eq!(applied, design);
+    let mut applied = design.clone();
+    let mut history = History::new();
+    apply_optimize_result(&mut history, &mut applied, &result)
+        .expect("the result applies through its own API");
+    follower_depth_listed |= follower_depth_reproduced(&applied, &result.mast_changes);
+    assert!(history.undo(&mut applied).expect("one undo step"));
+    assert_eq!(applied, design);
 
     for candidate_found in &result.candidates {
         assert!(candidate_found.changes.iter().all(|c| c.index != FOLLOWER));
-        assert!(
-            candidate_found
-                .mast_changes
-                .iter()
-                .all(|m| m.index != FOLLOWER)
-        );
 
         let mut applied = design.clone();
         let mut history = History::new();
         apply_optimize_candidate(&mut history, &mut applied, candidate_found)
             .expect("a candidate applies to the design it was computed from");
+        // A listed depth of the follower starts from the pinned mast and is what applying
+        // leaves on the tier.
+        follower_depth_listed |= follower_depth_reproduced(&applied, &candidate_found.mast_changes);
         let driver_deg = applied.tiers[DRIVER].angle_deg;
         assert!(
             (applied.tiers[FOLLOWER].angle_deg - (driver_deg - 0.9)).abs() < 1e-9,
@@ -209,6 +269,11 @@ fn every_candidate_keeps_the_relation_and_never_lists_the_follower() {
             candidate_found.yield_loss_pct
         );
     }
+    assert!(
+        follower_depth_listed,
+        "the turned crown facet moves the meets C shares with it, so some certified state \
+         lists C's depth; otherwise the exact check above never ran"
+    );
 }
 
 /// With several tiers free, the follower is still never a variable and never listed.
@@ -240,7 +305,7 @@ fn a_run_with_many_free_tiers_never_changes_the_follower_directly() {
 // --- applying ---
 
 #[test]
-fn applying_a_candidate_moves_the_follower_in_the_same_undo_step() {
+fn uncertified_angle_changes_cannot_move_a_follower() {
     let original = imported_with_follower();
     let mut design = original.clone();
     let mut history = History::new();
@@ -250,22 +315,13 @@ fn applying_a_candidate_moves_the_follower_in_the_same_undo_step() {
         to_deg: 30.0,
     }]);
 
-    let touched = apply_optimize_candidate(&mut history, &mut design, &found)
-        .expect("the change applies to the design it started from");
-    assert_eq!(
-        touched, 2,
-        "the tier it changed and the tier that follows it"
-    );
-    assert_eq!(design.tiers[DRIVER].angle_deg, 30.0);
-    assert!((design.tiers[FOLLOWER].angle_deg - 29.1).abs() < 1e-9);
-
-    assert!(history.undo(&mut design).expect("undo"));
-    assert_eq!(design, original, "one undo restores both tiers");
-    assert!(!history.undo(&mut design).expect("undo"), "it was one step");
+    assert!(apply_optimize_candidate(&mut history, &mut design, &found).is_err());
+    assert_eq!(design, original);
+    assert!(!history.can_undo());
 }
 
 #[test]
-fn applying_to_a_design_without_relations_touches_only_the_changed_tiers() {
+fn uncertified_angle_changes_cannot_bypass_the_network() {
     let original = imported_rbc();
     let mut design = original.clone();
     let mut history = History::new();
@@ -274,7 +330,7 @@ fn applying_to_a_design_without_relations_touches_only_the_changed_tiers() {
         from_deg: 29.0,
         to_deg: 30.0,
     }]);
-    let touched = apply_optimize_candidate(&mut history, &mut design, &found).expect("applies");
-    assert_eq!(touched, 1);
-    assert_eq!(design.tiers[FOLLOWER], original.tiers[FOLLOWER]);
+    assert!(apply_optimize_candidate(&mut history, &mut design, &found).is_err());
+    assert_eq!(design, original);
+    assert!(!history.can_undo());
 }

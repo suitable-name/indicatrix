@@ -3,16 +3,20 @@
 //!
 //! # Same search as the desktop
 //!
-//! [`run_optimize`] is the body of the desktop's Optimize action
-//! (`gui/editor/callbacks/solve_actions/optimize_run.rs` +
-//! `optimize_solve.rs`): the RI defaulting for a design that names no material
-//! (`optimize_view::default_optimize_material_ri`), the "only selected tiers" pinning
-//! (`optimize_view::pin_non_selected_free_tiers`), then
-//! `indicatrix_cut_core::optimize_design` against the resolved material. [`run_retarget`]
-//! is the desktop's Retarget action (`retarget_actions/{proposal,optimize_run}.rs`):
-//! `retarget::build_proposal` for Shift mode, and for Optimize mode the same
-//! seed-then-search sequence the desktop's worker thread runs (`seed_shift_design`,
-//! `optimize_design`, `rows_from_outcome`).
+//! [`run_optimize`] shares material defaulting and the constrained search with the
+//! desktop. Selection restricts independent angle variables without replacing authored
+//! meet constraints.
+//!
+//! Retarget Shift runs the desktop's own check (`retarget::check`): the plan's angles are
+//! projected onto the ORIGINAL meet network, so a design whose facets are pinned (every
+//! imported design) works, and the answer carries the masts the projection moved
+//! ([`RetargetResultData::anchors`]) next to the angles. The page applies them together with
+//! `retarget::apply_with_anchors`, which validates the exact state again. A change the check
+//! refuses comes back as [`RetargetResultData::solve_error`], never as rows.
+//!
+//! Retarget's legacy angle-only Optimize path searches from the original design under the
+//! stricter Retarget preservation policy and carries no masts; states requiring pinned-depth
+//! changes are refused up front.
 //!
 //! # Progress and cancel
 //!
@@ -29,7 +33,7 @@
 //! cancel flag while it is scoring the starting point).
 
 use indicatrix::optics::raytracer::LightingPreset;
-use std::{collections::BTreeSet, sync::atomic::AtomicBool};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use indicatrix::{
     color::metrics::SweepProgress, geometry::meet_solver::Block, optics::materials::GemMaterial,
@@ -39,13 +43,14 @@ use indicatrix_cut_core::{
     ObjectiveWeights, OptimizeConfig, OptimizeOutcome, ResolvedMaterial, Risk, SearchHooks,
     free_tier_indices,
     optimize::{OptimizeOptions, SearchStage, inclusive_max_evaluations_for},
-    optimize_design,
 };
 use indicatrix_editor::{
     material_lookup::{EditorMaterialLookup, resolved_gem_material},
-    optimize_view::{default_optimize_material_ri, pin_non_selected_free_tiers},
+    optimize_view::default_optimize_material_ri,
     retarget::{
-        self, CrownShift, RetargetError, RetargetMode, RetargetProposal, RetargetRow,
+        self, AnchorChange, CrownShift, RetargetError, RetargetMode, RetargetProposal, RetargetRow,
+        anchors::angle_differences,
+        check::{CheckInputs, run_check},
         view::resolved_material_from_selection,
     },
 };
@@ -226,6 +231,9 @@ pub struct AngleChangeData {
 /// named no material.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OptimizeResultData {
+    /// Portable freshness and complete accepted-state metadata. Old messages fail Apply.
+    #[serde(default)]
+    pub provenance: Option<indicatrix_cut_core::optimize::OptimizationProvenance>,
     /// Windowing, extinction and tilt brilliance before, in percent.
     pub before: [f32; 3],
     /// The blended score before.
@@ -269,6 +277,7 @@ impl OptimizeResultData {
     #[must_use]
     pub fn from_outcome(outcome: &OptimizeOutcome, defaulted_ri: Option<f64>) -> Self {
         Self {
+            provenance: outcome.provenance.clone(),
             before: components_array(&outcome.before),
             before_score: outcome.before_score,
             before_yield_loss_pct: outcome.before_yield_loss_pct,
@@ -297,6 +306,7 @@ impl OptimizeResultData {
     #[must_use]
     pub fn to_outcome(&self) -> OptimizeOutcome {
         OptimizeOutcome {
+            provenance: self.provenance.clone(),
             before: components_from_array(self.before),
             before_score: self.before_score,
             before_yield_loss_pct: self.before_yield_loss_pct,
@@ -325,7 +335,7 @@ impl OptimizeResultData {
 pub enum RetargetModeData {
     /// The deterministic critical-angle shift.
     Shift,
-    /// The shift, then an `optimize_design` search over the free tiers.
+    /// A meet-preserving search from the original geometry under the target material.
     Optimize,
 }
 
@@ -439,18 +449,62 @@ impl From<&RetargetRowData> for RetargetRow {
     }
 }
 
+/// One `ScaleReference` mast a Retarget changes (`AnchorChange` as plain data).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AnchorChangeData {
+    /// The tier's position in `design.tiers`.
+    pub tier_index: u32,
+    /// The mast before the retarget.
+    pub old_mast: f64,
+    /// The mast after it.
+    pub new_mast: f64,
+}
+
+impl From<&AnchorChange> for AnchorChangeData {
+    fn from(anchor: &AnchorChange) -> Self {
+        Self {
+            tier_index: u32::try_from(anchor.tier_index).unwrap_or(u32::MAX),
+            old_mast: anchor.old_mast,
+            new_mast: anchor.new_mast,
+        }
+    }
+}
+
+impl From<&AnchorChangeData> for AnchorChange {
+    fn from(anchor: &AnchorChangeData) -> Self {
+        Self {
+            tier_index: anchor.tier_index as usize,
+            old_mast: anchor.old_mast,
+            new_mast: anchor.new_mast,
+        }
+    }
+}
+
 /// A Retarget answer: exactly one of `rows` (with `notes`), `anchored_errors` or
 /// `solve_error` is populated, like the desktop's `RetargetView`.
+///
+/// A Shift answer that has rows also carries the masts the check moved (`anchors`) and the
+/// verdict line (`validity_headline`); Apply needs both with the rows
+/// (`retarget::apply_with_anchors`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RetargetResultData {
-    /// The proposal's rows (empty on either error).
+    /// The proposal's rows (empty on either error). In Shift mode the angles are the
+    /// CHECKED candidate's, which the projection may have turned a little away from the
+    /// plain shift.
     pub rows: Vec<RetargetRowData>,
     /// The proposal's notes (empty on either error).
     pub notes: Vec<String>,
     /// `#N "name"` per anchored tier when Optimize mode refused.
     pub anchored_errors: Vec<String>,
-    /// The solve error's text when Optimize mode could not solve the design.
+    /// The refusal's text: the solve error when Optimize mode could not solve the design, or
+    /// the check's verdict (headline and reasons) when Shift mode was refused.
     pub solve_error: String,
+    /// The `ScaleReference` masts the check changed, to apply with the rows (Shift mode;
+    /// empty when nothing is pinned and always empty for Optimize mode and for either error).
+    pub anchors: Vec<AnchorChangeData>,
+    /// The check's one-line verdict ("Valid: girdle ...", "Not valid: ..."); empty for
+    /// Optimize mode.
+    pub validity_headline: String,
 }
 
 impl RetargetResultData {
@@ -463,6 +517,12 @@ impl RetargetResultData {
             target,
             notes: self.notes.clone(),
         })
+    }
+
+    /// The masts to apply with [`Self::to_proposal`]'s rows.
+    #[must_use]
+    pub fn to_anchors(&self) -> Vec<AnchorChange> {
+        self.anchors.iter().map(AnchorChange::from).collect()
     }
 }
 
@@ -486,14 +546,11 @@ pub fn run_optimize(
     }
     let mut selection = design.material.clone();
     let defaulted_ri = default_optimize_material_ri(design, &mut selection, custom);
-    let target_design = match restricted_design(design, params) {
-        Ok(d) => d,
-        Err(response) => return *response,
-    };
-    let free = free_tier_indices(&target_design).len();
+    let options = optimize_options(params);
+    let free = indicatrix_cut_core::free_tier_indices_with(design, &options).len();
     let config = params.config();
     let material = resolved_gem_material(&selection, &EditorMaterialLookup::new(custom));
-    match search(&target_design, &material, &config, free, hooks) {
+    match search(design, &material, &config, &options, free, hooks) {
         Ok(outcome) => {
             SolveResponse::Optimized(OptimizeResultData::from_outcome(&outcome, defaulted_ri))
         }
@@ -501,41 +558,30 @@ pub fn run_optimize(
     }
 }
 
-/// `design`, or (for `only_tiers`) the clone with every other free tier pinned at its
-/// solved mast; the error answer when that solve fails.
-fn restricted_design(
-    design: &Design,
-    params: &OptimizeParams,
-) -> Result<Design, Box<SolveResponse>> {
-    let Some(only) = &params.only_tiers else {
-        return Ok(design.clone());
-    };
-    if only.is_empty() {
-        return Ok(design.clone());
-    }
-    let keep: BTreeSet<usize> = only.iter().map(|&i| i as usize).collect();
-    match design.solve() {
-        Ok(solved) => Ok(pin_non_selected_free_tiers(design, &solved, &keep)),
-        Err(error) => Err(Box::new(analysis_failed(&error))),
+fn optimize_options(params: &OptimizeParams) -> OptimizeOptions {
+    OptimizeOptions {
+        only_tiers: params
+            .only_tiers
+            .as_ref()
+            .filter(|only| !only.is_empty())
+            .map(|only| only.iter().map(|&i| i as usize).collect()),
+        ..Default::default()
     }
 }
 
-/// [`optimize_design`] with `hooks` translated to the search's own, and progress reports
+/// Constrained optimization with `hooks` translated to the search's own, and progress reports
 /// carrying the run's inclusive budget.
 fn search(
     design: &Design,
     material: &GemMaterial,
     config: &OptimizeConfig,
+    options: &OptimizeOptions,
     free_tier_count: usize,
     hooks: &SolveHooks<'_>,
 ) -> Result<OptimizeOutcome, DesignSolveError> {
-    // `optimize_design` runs with the default options, so that is the candidate count the
-    // multi-start budget (screening plus one polish per kept start) is quoted for.
-    let max_evaluations = inclusive_max_evaluations_for(
-        config,
-        OptimizeOptions::default().keep_candidates,
-        free_tier_count,
-    );
+    // Include screening and polishing for the requested candidate count.
+    let max_evaluations =
+        inclusive_max_evaluations_for(config, options.keep_candidates, free_tier_count);
     let on_progress = |evaluations: usize, stage: SearchStage| {
         (hooks.on_progress)(ProgressReport {
             stage,
@@ -548,7 +594,8 @@ fn search(
         on_progress: Some(&on_progress),
         on_start: None,
     };
-    optimize_design(design, material, config, &search_hooks)
+    indicatrix_cut_core::optimize_design_with(design, material, config, options, &search_hooks)
+        .map(|result| result.outcome)
 }
 
 fn analysis_failed(error: &DesignSolveError) -> SolveResponse {
@@ -574,13 +621,7 @@ pub fn run_retarget(
         follow_pavilion: params.crown_follows_pavilion,
     };
     let result = match params.mode {
-        RetargetModeData::Shift => proposal_result(retarget::build_proposal(
-            design,
-            &target,
-            crown,
-            RetargetMode::Shift,
-            custom,
-        )),
+        RetargetModeData::Shift => shift_result(design, &target, crown, custom, hooks),
         RetargetModeData::Optimize => {
             optimize_mode_result(design, &target, crown, params, custom, hooks)
         }
@@ -588,15 +629,66 @@ pub fn run_retarget(
     SolveResponse::Retargeted(result)
 }
 
-/// A `build_proposal` answer as plain data.
-fn proposal_result(result: Result<RetargetProposal, RetargetError>) -> RetargetResultData {
-    match result {
-        Ok(proposal) => RetargetResultData {
-            rows: proposal.rows.iter().map(RetargetRowData::from).collect(),
-            notes: proposal.notes,
+/// Shift mode: the desktop's check of the plan, as plain data.
+///
+/// The plan's angles are projected onto the original meet network (`retarget::check`), so a
+/// pinned design works: the masts of the facets that turn move with them. A valid check
+/// answers with the CHECKED candidate's angles as rows, the masts it moved, and its verdict;
+/// anything else answers with the verdict as `solve_error` and no rows, so the page can never
+/// offer a change that would detach a meet.
+fn shift_result(
+    design: &Design,
+    target: &ResolvedMaterial,
+    crown: CrownShift,
+    custom: &[GemMaterial],
+    hooks: &SolveHooks<'_>,
+) -> RetargetResultData {
+    let plan = retarget::build_plan(design, target, crown, custom);
+    let inputs = CheckInputs {
+        girdle: None,
+        design,
+        plan: &plan,
+        current_gem: None,
+        lighting: indicatrix_cut_core::CANONICAL_LIGHTING_PRESET,
+    };
+    let stopped = || hooks.cancel.load(Ordering::Relaxed);
+    let Some((_, check)) = run_check(&inputs, None, &stopped) else {
+        return RetargetResultData {
+            solve_error: "The retarget check was cancelled.".to_string(),
             ..RetargetResultData::default()
-        },
-        Err(error) => error_result(&error),
+        };
+    };
+    let headline = check.validity.headline();
+    let Some(candidate) = check.candidate.as_ref().filter(|_| check.allows_apply()) else {
+        let mut message = headline.clone();
+        for line in check.validity.detail_lines() {
+            message.push_str("\n- ");
+            message.push_str(&line);
+        }
+        return RetargetResultData {
+            solve_error: message,
+            validity_headline: headline,
+            ..RetargetResultData::default()
+        };
+    };
+    // When the projection left every planned angle where the plan put it, the plan's own rows
+    // and notes are the answer; otherwise the rows carry the checked angles.
+    let planned_angles_kept = plan
+        .moving_angles()
+        .iter()
+        .all(|&(index, angle)| candidate.tiers[index].angle_deg.to_bits() == angle.to_bits());
+    let shown = if planned_angles_kept {
+        plan.proposal()
+    } else {
+        plan.with_angles(design, &angle_differences(design, candidate))
+            .proposal()
+    };
+    RetargetResultData {
+        rows: shown.rows.iter().map(RetargetRowData::from).collect(),
+        notes: shown.notes,
+        anchors: check.anchors.iter().map(AnchorChangeData::from).collect(),
+        validity_headline: headline,
+        ..RetargetResultData::default()
     }
 }
 
@@ -616,9 +708,8 @@ fn error_result(error: &RetargetError) -> RetargetResultData {
     }
 }
 
-/// `RetargetMode::Optimize`: the desktop worker thread's sequence -- the up-front
-/// anchored-tier refusal, the shift seed, the search against the target's material, then
-/// the rows and notes the synchronous path would have built.
+/// Legacy angle-only Retarget: refuse pinned tiers, then search from the original
+/// geometry against the target material with the Retarget preservation policy.
 fn optimize_mode_result(
     design: &Design,
     target: &ResolvedMaterial,
@@ -634,14 +725,20 @@ fn optimize_mode_result(
     }
     let n_from = design.effective_refractive_index_with(custom);
     let n_to = target.n_d;
-    let seeded = retarget::seed_shift_design(design, &scope, &blocks, n_from, n_to, crown);
+    // The original stone is the immutable reference, including in this legacy worker.
+    // This angle-only interface cannot transport projected pinned depths.
+    let options = OptimizeOptions {
+        only_tiers: Some(scope.iter().copied().collect()),
+        preservation_policy: indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET,
+        ..Default::default()
+    };
     let config = params.optimize.config();
-    let free = free_tier_indices(&seeded).len();
-    match search(&seeded, &target.gem, &config, free, hooks) {
+    let free = indicatrix_cut_core::free_tier_indices_with(design, &options).len();
+    match search(design, &target.gem, &config, &options, free, hooks) {
         Ok(outcome) => {
             let rows = retarget::rows_from_outcome(
                 design,
-                &seeded,
+                design,
                 &scope,
                 &blocks,
                 n_to,

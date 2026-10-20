@@ -77,6 +77,51 @@ pub(super) fn load_and_open(window: &AppWindow, state: &Shared, id: EntryId) {
     });
 }
 
+/// What the snackbar says when the restored design's library entry turns out to be deleted.
+const RESTORED_ENTRY_DELETED: &str =
+    "Your last design was deleted from the Library. It is open as an unsaved design.";
+
+/// Checks the design the autosave brought back at start-up against the library: when its
+/// entry no longer exists (the app died between a delete and the clean-up that follows it,
+/// or the autosave was written by a build older than that clean-up), the design is
+/// detached from the entry and its autosave is deleted, so it is not restored again and a
+/// Save cannot silently create a new entry for a design the user deleted. The design stays
+/// open as an unsaved design. The library is asked on the worker queue, and an entry whose
+/// row cannot be read counts as existing.
+pub(super) fn settle_restored(window: &AppWindow, state: &Shared) {
+    let prepared = {
+        let mut app = state.borrow_mut();
+        let entry = app.document.library_entry();
+        entry.and_then(|entry| {
+            document::library_handle(&mut app)
+                .ok()
+                .map(|handle| (entry, handle))
+        })
+    };
+    let Some((entry, handle)) = prepared else {
+        return;
+    };
+    let weak = window.as_weak();
+    submit(move || {
+        if handle.missing(&[entry]).is_empty() {
+            return;
+        }
+        run_on_ui(&weak, move |window, state| {
+            let detached = match state.try_borrow_mut() {
+                Ok(mut app) => app.forget_deleted_entries(&[entry]),
+                Err(error) => {
+                    tracing::warn!(%error, "the app state was busy; a deleted entry stays linked");
+                    false
+                }
+            };
+            if detached {
+                crate::design::refresh(window, state);
+                toast(window, RESTORED_ENTRY_DELETED);
+            }
+        });
+    });
+}
+
 /// Installs a loaded entry, or says why it could not be opened.
 fn finish_open(
     window: &AppWindow,
@@ -168,6 +213,31 @@ fn saved(
             toast(window, &message);
         }
     }
+}
+
+/// The dialog id of "Clear Recent Items?". More's row opens that question itself with this
+/// id (`ui/pages/more.slint`); keep the two in step. Ids 1001 and 1002 are the
+/// unsaved-changes questions (`guard`).
+pub(super) const DIALOG_CLEAR_RECENT: i32 = 1003;
+
+/// Answers the recent items' question. Returns false for any other dialog id.
+pub(super) fn handle_dialog_result(
+    window: &AppWindow,
+    state: &Shared,
+    id: i32,
+    confirmed: bool,
+) -> bool {
+    if id != DIALOG_CLEAR_RECENT {
+        return false;
+    }
+    if confirmed {
+        state.borrow_mut().update_settings(|settings| {
+            settings.clear_recent();
+        });
+        crate::design::refresh(window, state);
+        toast(window, "Recent items cleared");
+    }
+    true
 }
 
 /// A row of the Recent list was tapped: a library design reopens, a file asks for the

@@ -27,6 +27,17 @@ use crate::{
     settings::{RenderQuality, ThemeChoice},
 };
 
+/// Remote is cancelled/retried, so a previous local pause must not follow it.
+#[test]
+fn selecting_remote_does_not_inherit_a_local_render_pause() {
+    let mut render = super::RenderState::default();
+    render.select_backend(crate::settings::RenderBackend::DeviceCpu);
+    render.set_user_paused(true);
+    render.select_backend(crate::settings::RenderBackend::Remote);
+    assert!(!render.user_paused());
+    assert_eq!(render.status(), RenderStatus::Idle);
+}
+
 /// The traced raster of the pool tests.
 const SMALL: RenderView = RenderView {
     width: 32,
@@ -53,6 +64,7 @@ fn unsolved_state() -> AppState {
     );
     state.settings.render.live_spp_compact = 8;
     state.settings.render.denoise = false;
+    state.settings.render.backend = crate::settings::RenderBackend::DeviceCpu;
     state
 }
 
@@ -447,8 +459,13 @@ fn a_hot_device_pauses_and_a_cooler_one_continues() {
         state.render.status(),
         RenderStatus::Paused(PauseReason::Hot)
     );
-    // One worker is enough to finish.
+    // Remain paused inside the recovery band, then resume below the cool threshold.
     state.render.govern(Some(0.96), false);
+    assert_eq!(
+        state.render.status(),
+        RenderStatus::Paused(PauseReason::Hot)
+    );
+    state.render.govern(Some(0.89), false);
     wait_done(&state);
 }
 

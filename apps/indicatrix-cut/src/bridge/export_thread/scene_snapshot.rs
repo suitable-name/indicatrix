@@ -11,7 +11,10 @@ use crate::bridge::{
     },
 };
 use indicatrix::{
-    geometry::{girdle_facet_finishes, plane::GpuFacetPlane, tool::ToolPrimitive},
+    geometry::{
+        facet_finishes_with_frosted, girdle_facet_finishes, plane::GpuFacetPlane,
+        tool::ToolPrimitive,
+    },
     optics::{
         fluorescence::Fluorescence,
         materials::GemMaterial,
@@ -34,6 +37,10 @@ use std::sync::{Arc, Mutex};
 /// geometry, and bounce cap, which only holds if they all descend from ONE capture.
 #[derive(Clone)]
 pub struct SceneSnapshot {
+    /// Frozen renderer and its deterministic options.
+    pub engine: indicatrix::renderer::engine::EngineSpec,
+    /// Explicit opt-in, frozen at export start; absent for clean renders/thumbnails.
+    pub optical_diagnostics: Option<indicatrix::renderer::optical_overlay::OpticalPresentation>,
     /// Camera yaw.
     pub yaw: f32,
     /// Camera pitch.
@@ -52,7 +59,10 @@ pub struct SceneSnapshot {
     pub max_bounces: u32,
     /// Exposure multiplier applied when tone-mapping.
     pub exposure: f32,
-    /// Backdrop radiance -- `RenderContext::backdrop` resolved through `Backdrop::level`.
+    /// Tray radiance at exposure 1 (`0.0` = As Lit) -- `RenderContext::backdrop` resolved
+    /// through `Backdrop::resolve` at this snapshot's own lighting preset and light pose.
+    /// Seen by every escape from the stone and by the camera alike; every pass-through
+    /// (remote scene state, jobs, overlay, tilt preview) carries this value unchanged.
     pub backdrop: f32,
     /// Surface-glare scale (`RenderContext::surface_glare`, `0.0..=1.0`): exports follow
     /// the viewport's value the way they follow its lighting preset. Analytic presets
@@ -65,8 +75,9 @@ pub struct SceneSnapshot {
     pub active_planes: Vec<GpuFacetPlane>,
     /// The concave tools cut out of `active_planes` (`RenderContext::active_tools`);
     /// empty for a planar design, which is then exported exactly as before. A tool-bearing
-    /// scene is traced on the CPU alone (`scene_routes_to_gpu`) and sent to a remote
-    /// worker as `SceneState::tools`.
+    /// scene is traced by the GPU kernels with its tools (`scene_routes_to_gpu_with_tools`, up
+    /// to `GPU_MAX_TOOL_PRIMITIVES`; beyond that on the CPU) and sent to a remote worker as
+    /// `SceneState::tools`.
     pub tools: Vec<ToolPrimitive>,
     /// The material's fluorescent emitters (`RenderContext::active_fluorescence`, resolved
     /// from the physics recipe), empty for every non-fluorescent material, which then exports
@@ -74,10 +85,13 @@ pub struct SceneSnapshot {
     /// worker as `SceneState::fluorescence`. An `Arc` so a fan-out's clones share the sampling
     /// tables the first trace builds.
     pub fluorescence: Arc<Fluorescence>,
-    /// Frosted girdle: `girdle_facet_finishes(&active_planes)` when
-    /// `RenderContext::girdle_frosted` was on at capture time, empty otherwise --
-    /// already resolved here (rather than a bare `bool` re-classified per batch) since
-    /// `active_planes` never changes mid-export.
+    /// Frosted girdle and authored frosting: `girdle_facet_finishes(&active_planes)` when
+    /// `RenderContext::girdle_frosted` was on at capture time, with the planes the design
+    /// frosts (`RenderContext::active_frosted`, or the finished stone's own) marked `Frosted`
+    /// too; empty when neither applies -- already resolved here (rather than a bare `bool`
+    /// re-classified per batch) since `active_planes` never changes mid-export.
+    /// `indicatrix::geometry::finishes_wire_form` splits it back into the pieces a remote
+    /// `SceneState` carries.
     pub facet_finishes: Vec<FacetFinish>,
     /// A loaded HDR environment map, captured from `RenderContext::env_map` exactly
     /// like the live viewport reads it. `None` means the export uses the analytic
@@ -168,9 +182,21 @@ impl SceneSnapshot {
         // `RenderContext`'s hot-path per-frame snapshot), so this is the one actual deep
         // copy `capture` makes -- `.to_vec()` off the `Arc<Vec<..>>` (via its
         // `Deref<Target = [GpuFacetPlane]>`).
-        let (active_planes, tools) = finished.map_or_else(
-            || (guard.active_planes.to_vec(), guard.active_tools.to_vec()),
-            |stone| (stone.planes.clone(), stone.tools.clone()),
+        let (active_planes, tools, frosted) = finished.map_or_else(
+            || {
+                (
+                    guard.active_planes.to_vec(),
+                    guard.active_tools.to_vec(),
+                    guard.active_frosted.to_vec(),
+                )
+            },
+            |stone| {
+                (
+                    stone.planes.clone(),
+                    stone.tools.clone(),
+                    stone.frosted.clone(),
+                )
+            },
         );
         let material = apply_material_overrides(
             material,
@@ -186,12 +212,16 @@ impl SceneSnapshot {
         // Frosted girdle: an empty `Vec` at the off position is
         // `trace_spectral_ray_with_finish`'s documented equivalent of
         // `trace_spectral_ray` (every facet reads `FacetFinish::default() == Polished`).
-        let facet_finishes = if guard.girdle_frosted {
+        let facet_finishes = if !frosted.is_empty() {
+            facet_finishes_with_frosted(&active_planes, guard.girdle_frosted, &frosted)
+        } else if guard.girdle_frosted {
             girdle_facet_finishes(&active_planes)
         } else {
             Vec::new()
         };
         Ok(Self {
+            engine: guard.engine,
+            optical_diagnostics: None,
             yaw: guard.yaw,
             pitch: guard.pitch,
             distance: guard.distance,
@@ -201,7 +231,11 @@ impl SceneSnapshot {
             lighting_preset: guard.lighting_preset,
             max_bounces: guard.max_bounces,
             exposure: guard.exposure,
-            backdrop: guard.backdrop.level(),
+            backdrop: guard.backdrop.resolve(
+                guard.lighting_preset,
+                guard.light_yaw,
+                guard.light_pitch,
+            ),
             surface_glare: guard.surface_glare,
             head_shadow_deg: guard.head_shadow_deg,
             active_planes,
@@ -505,6 +539,7 @@ mod tests {
             planes: own[..4].to_vec(),
             tools: Vec::new(),
             placements: Vec::new(),
+            frosted: Vec::new(),
         };
 
         let swapped = SceneSnapshot::capture_finished(&ctx, Some(&finished)).expect("resolves");
@@ -519,11 +554,54 @@ mod tests {
             planes: Vec::new(),
             tools: Vec::new(),
             placements: Vec::new(),
+            frosted: Vec::new(),
         };
         let kept = SceneSnapshot::capture_finished(&ctx, Some(&empty)).expect("resolves");
         assert_eq!(kept.active_planes, own);
         let plain = SceneSnapshot::capture_finished(&ctx, None).expect("resolves");
         assert_eq!(plain.active_planes, own);
+    }
+
+    /// The design's frosted planes reach the export as `Frosted` finishes on exactly those
+    /// planes -- the live viewport's list for the context's own stone, the finished stone's
+    /// own for a substitute -- and a design without frosting still carries none.
+    #[test]
+    fn capture_carries_the_authored_frosting_into_the_exported_scene() {
+        let ctx = Mutex::new(RenderContext {
+            active_frosted: Arc::new(vec![2, 5]),
+            ..Default::default()
+        });
+        let planes = ctx.lock().unwrap().active_planes.to_vec();
+        let scene = SceneSnapshot::capture(&ctx).expect("default resolves");
+        assert_eq!(scene.facet_finishes.len(), planes.len());
+        for (index, finish) in scene.facet_finishes.iter().enumerate() {
+            let expected = if index == 2 || index == 5 {
+                FacetFinish::Frosted
+            } else {
+                FacetFinish::Polished
+            };
+            assert_eq!(*finish, expected, "plane {index}");
+        }
+
+        let finished = StoneGeometryBuf {
+            planes: planes[..8].to_vec(),
+            tools: Vec::new(),
+            placements: Vec::new(),
+            frosted: vec![1],
+        };
+        let swapped = SceneSnapshot::capture_finished(&ctx, Some(&finished)).expect("resolves");
+        assert_eq!(
+            swapped.facet_finishes,
+            facet_finishes_with_frosted(&finished.planes, false, &[1]),
+            "the substitute stone's own frosting wins over the context's"
+        );
+
+        let plain = SceneSnapshot::capture(&Mutex::new(RenderContext::default()))
+            .expect("default resolves");
+        assert_eq!(
+            plain.facet_finishes,
+            [] as [indicatrix::optics::raytracer::FacetFinish; 0]
+        );
     }
 
     /// The Live Render toolbar's view-only colour must reach the export (and so the tilt

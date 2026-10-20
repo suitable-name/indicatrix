@@ -8,8 +8,11 @@ The browser build of Indicatrix: open or start a faceting design, edit it in the
 stone, and save it back as a download. It is a Slint UI compiled to
 `wasm32-unknown-unknown`, served as static files, with its heavy work (rendering and
 the slow solves) in Web Workers. It has no design library, no remote worker, no Deep
-Solve, no GPU path and no database; a design lives in the browser tab's session and
-nowhere else.
+Solve and no database; a design lives in the browser tab's session and
+nowhere else. Rendering runs on your CPU cores; in Chrome and Edge the GPU joins in for
+Ray-Traced views of every material class and Path-Traced views of isotropic stones such
+as diamond and spinel. Each kernel set is qualified independently, and the page says
+what it renders with.
 
 ## What works
 
@@ -19,7 +22,7 @@ nowhere else.
   layout follows the browser window; the dock is resizable (drag its left edge, and the
   bar above the inspector), and below 900 px it becomes an overlay opened by a "Design"
   button at the main view's bottom-right corner. Every pill and icon button has a
-  tooltip; Help has a short **User guide** and the **Keyboard shortcuts** list (also `?`).
+  tooltip; Help has the **Guided Walkthrough**, a short **User Guide** and the **Keyboard Shortcuts** list (also `?`).
 - **Tier table and editing (Design dock).** The desktop's tier table with its columns
   (code in cutting order -- P1, G1, C1, T --, angle, name, indices, meets, mast, solve
   strategy, margin, orbit, Adopt / Pin / Detach / Add Anchor, move, duplicate, delete),
@@ -50,7 +53,7 @@ nowhere else.
   dispersion, birefringence, specific gravity, color). A custom material is offered in
   the material lists and kept with the design's `.isdd` file (its snapshot: optics and
   body color; a built-in material's name is refused, so a custom material never shadows
-  one). The Render tab's "Linked to design" switch is the one control for whether the
+  one). The Render tab's "Linked to Design" switch is the one control for whether the
   render follows the design's material.
 - **Optimize and Retarget.** Optimize's coordinate search and Retarget's Optimize mode run
   in the solve Worker with live progress. Cancel is cooperative: the Worker looks at a
@@ -60,7 +63,10 @@ nowhere else.
   reads "Stop now"; pressing it, or a search that has not stopped after 30 s, terminates
   the Worker and keeps no partial result. A result computed for an older
   design stays on screen badged "Stale: design changed" with a Recompute.
-  Snapshot design / Compare to snapshot lists what changed tier by tier.
+  Snapshot Design / Compare to Snapshot... lists what changed tier by tier. Both searches
+  receive the design as its native file, which keeps the concave tiers, so the Worker scores
+  every candidate on the stone with its tools through the shared editor engines, and the
+  inspector's yield and carat figures use the carved volume (as on the desktop).
 - **Optical metrics and the Tilt Curve dialog.** The Render tab's HUD shows the desktop's
   five metrics (Brilliance, Fire, Scintillation, Windowing, Extinction) for the pose and
   light on screen, dimmed while a new pose is being measured. The Tilt Curve pill (Render
@@ -75,7 +81,12 @@ nowhere else.
   analysis Worker holds the same map and the HUD says "Scored under the HDR map" (or, when
   the memory budget left the analysis Worker no copy, names the preset it fell back to and
   that the map is not loaded). The tilt sweep stays under the lighting preset's rig, as the
-  desktop's dialog does, and its dialog says so while a map is loaded.
+  desktop's dialog does, and its dialog says so while a map is loaded. For a design with
+  concave tiers both score the stone WITH its resolved tools (the desktop's
+  `Design::tools_for_scoring` and `StoneGeometry`, the stone the render draws): the tools
+  travel to the analysis Worker with the request (`MetricsWithTools` / `TiltWithTools`; a
+  flat design sends the planar request, bytes unchanged, and gets the same numbers as
+  before), and a change of the tools alone recomputes the HUD and marks the curves stale.
 - **Solve.** Small designs solve on the page, everything else in the solve Worker, with the
   desktop's own rules (`solve_policy`). The result is cached per design generation. F5
   solves (the page does not reload).
@@ -95,19 +106,33 @@ nowhere else.
   the provisional tier with the same handles, then Keep (Enter) or Discard (Esc); Flip
   (F) cuts the other side. The math and wording are `indicatrix_editor::manipulate`,
   shared with the desktop.
-- **Render tab.** A live spectral render on CPU Web Workers (one per core, up to eight),
-  progressive with an optional denoise once settled (made by a Worker of its own, so the
-  tracing never pauses for it), using the design's solved planes. A render Worker that
+- **Render tab.** Choose Path-Traced, the live spectral render, or Ray-Traced, a deterministic
+  approximation using 1, 4, 8 or 16 fixed anti-aliasing taps and optional three-index Fire.
+  Ray-Traced finishes without denoising, approximates body tint and frosted facets, and omits
+  polarization, birefringent doubling, scattering, zoning and edge rounding.
+  The metrics and tilt curves keep their own analytic tracer.
+  Both use CPU Web Workers (one per core, up to eight)
+  and, for every Ray-Traced material class or isotropic Path-Traced stones in Chrome and Edge,
+  on WebGPU too (see **GPU start-up test**
+  below), progressive
+  with an optional denoise once settled (made by a Worker of its own, so the tracing
+  never pauses for it), using the design's solved planes and, for a design with concave
+  tiers, its resolved tools (the desktop's `Design::tools_for_scoring`): every Worker, CPU
+  or GPU, and the denoiser's guide pass and the PNG export see the same concave stone. A
+  render Worker that
   crashes or goes silent is replaced and the render restarts; a solve that keeps failing
   is tried three times with a growing pause and then shown as an error until the design
   changes.
-  The settings panel has exposure, light direction, backdrop, bounces, target samples,
+  The settings panel has renderer, anti-aliasing taps and Fire, exposure, light direction,
+  backdrop, bounces, target samples for Path-Traced,
   frosted girdle, inclusion haze, edge rounding, stone size and crystal-axis override,
-  and an uploaded `.hdr` environment map. A view narrower than 16:10 is traced at 16:10
+  the GPU Rendering switch with the sentence that says what the page renders with, and
+  an uploaded `.hdr` environment map. A view narrower than 16:10 is traced at 16:10
   and letterboxed, so the whole stone stays in the frame on a phone-width window.
-  File > Export PNG renders a still at a chosen size and color space (sRGB or
+  File > Export PNG uses the selected renderer, with fixed taps for Ray-Traced and samples
+  plus optional denoise for Path-Traced, at a chosen size and color space (sRGB or
   Display P3, with an embedded profile), at the framing the view shows.
-- **Guided walkthrough** (Help > Guided walkthrough, or the link on the empty state). The
+- **Guided Walkthrough** (Help > Guided Walkthrough, or the link on the empty state). The
   desktop's ten-step worked example, the same steps (`indicatrix_editor::guide`) in a
   panel that docks beside the Design dock in a wide window and floats (draggable,
   collapsible) elsewhere; the few lines that name a desktop-only place are reworded
@@ -138,8 +163,8 @@ nowhere else.
   first, in a Save / Discard / Cancel dialog (Save downloads the `.isdd` file, then
   continues); closing or reloading the tab with unsaved changes asks the browser's own
   leave-the-page question.
-- **Saving (browser downloads).** Save design (`.isdd`, Ctrl+S), Save `.asc`, Download cutting
-  sheet (HTML), Download diagram PNG and Export PNG. Each one uses the desktop's own
+- **Saving (browser downloads).** Save Design (`.isdd`, Ctrl+S), Save .asc, Export .gcs
+  (Experimental), Download Cutting Sheet (HTML), Download Diagram PNG and Export PNG. Each one uses the desktop's own
   function, so the bytes match what the desktop would write. File names follow the
   desktop's naming.
 - **Design metadata and attachments.** The `.isdd` file carries descriptive
@@ -157,23 +182,56 @@ nowhere else.
   notes, tags and licence of an opened file, read-only; the web app has no editor for
   them or for the attachments. A file whose attachments are over the cap or damaged is
   refused on save with the reason in the message.
-- **Session memory.** Settings (including the auto-solve budget), the current design and
-  the guide's place are saved to `sessionStorage` about half a second after each change,
-  under the keys `indicatrix.settings.v1` (JSON), `indicatrix.design.v1` (an
-  `.isdd` design file, metadata included) and `indicatrix.guide.v1` (JSON). They are
-  restored after a reload of the same tab and are gone when the tab closes. If the design's
-  attachments do not fit in `sessionStorage`, the stored design leaves them out (the
-  metadata stays), `indicatrix.design.attachments_dropped.v1` records that, and the
-  restored tab says so; the attachments are still in the file that was opened. A settings
-  entry from an older build still loads. Where `sessionStorage` is unavailable (some
-  private windows) the app runs the same and simply starts empty after a reload; a
-  console note says storage could not be used.
+- **Memory across reloads.** Three stores, each for what it suits:
+  `localStorage` holds the settings (including the auto-solve budget) as
+  `indicatrix.settings.v1` (JSON), the guide's place as `indicatrix.guide.v1`, cutting marks,
+  and the GPU test result per graphics card (`indicatrix.admission.<card>.v1`); these are
+  shared by every tab and remembered in this browser until the site data is cleared.
+  `sessionStorage` holds what belongs to one tab: the design name and unsaved flag
+  (`indicatrix.tab.v1`) and a same-tab copy of the current design (`indicatrix.design.v1`, an
+  `.isdd` design file, metadata included) for a synchronous restore after a reload; it is
+  gone when the tab closes. If the design's attachments do not fit in `sessionStorage`, that
+  copy leaves them out (the metadata stays), `indicatrix.design.attachments_dropped.v1`
+  records that, and the restored tab says so. IndexedDB holds the autosaved design with its
+  attachments, restored when the tab has no copy of its own. An entry an earlier build left
+  in `sessionStorage` is moved to `localStorage` on first read, and where `localStorage` is
+  blocked the small keys stay in `sessionStorage`. Where no storage is available (some
+  private windows) the app runs the same and simply starts empty after a reload; a console
+  note says storage could not be used.
+- **GPU start-up test.** While the page loads, and whenever the Render panel's **GPU
+  Rendering** switch is turned on, the page tests the GPU behind a progress card (starting
+  the GPU Worker and asking for the adapter, checking its limits, compiling the kernels
+  one by one, a 16x16 test render). The card's Hide button hides it only; the CPU Workers
+  render meanwhile. Then it says what the app renders with, as a message and as a sentence
+  that stays in the Render panel (the status strip keeps a short form): "Rendering on the
+  GPU (adapter name) with 7 workers on the CPU", "Rendering on the CPU (7 workers):
+  reason", or "GPU rendering is off". A browser with no WebGPU starts no GPU Worker and
+  says so. For Path-Traced, a stone the GPU cannot trace (anisotropic, color-zoned,
+  a map too large for the adapter) renders on the CPU, and the sentence names the
+  reason. A concave stone, up to the 128 tools a design can hold, does run on the GPU:
+  the tool records ride in the planes buffer the kernels already bind, so no adapter needs
+  more storage buffers than before. The switch stays: off, the page skips the test. GPU rendering is on by default, and
+  once, when a build with settings version 1 first reads settings stored by an earlier build,
+  it is switched on for that browser too (the saved settings then carry `settings_version`,
+  so a visitor who switches it off afterwards stays off).
+  Ray-Traced qualifies separately, using its own kernel hash, crash marker and
+  16×16 four-tap CPU/GPU comparison. It needs four storage bindings and supports
+  every material class; tool/map limits can send it to the CPU.
+  The result is kept per graphics card, browser version and shader build. An adapter that
+  passed earlier only compiles the kernels again (the test render is skipped; the compile is
+  kept because it is the step a lost GPU process is caught in). Crash markers: a marker is
+  written before the GPU Worker is started and again before every compile, so a page that
+  finds one at load knows the browser lost the GPU during the last run; such a run (and an
+  adapter that failed) is not repeated by itself. The panel shows the reason and **Forget GPU
+  Test Result** lifts it, after which **Test GPU** runs the test by hand. Reloading the tab
+  while a run is still going is read the same way. Where the browser storage cannot keep a
+  marker, nothing is tested by itself.
 - **Diagnostics:** Rust panics and `tracing` events from the shared crates appear in the
   browser console.
 
 ## Keyboard shortcuts
 
-`?` (or Help > Keyboard shortcuts) lists them in the app. The desktop's set is kept where a
+`?` (or Help > Keyboard Shortcuts) lists them in the app. The desktop's set is kept where a
 browser allows it; browser-reserved combinations are replaced.
 
 | Keys | Action |
@@ -196,8 +254,9 @@ File menu and the tabs.
 ## Not in the web app
 
 - **The design library** (catalogue, search, mirror), **remote rendering and the
-  coordinator**, **Deep Solve**, **the GPU renderer** (the megakernel's pipeline compile
-  takes Chrome's GPU process down; rendering is CPU-only for now), and **the database**.
+  coordinator**, **Deep Solve**, and **the database**. (For Path-Traced, anisotropic and color-zoned
+  stones render on the CPU only in the browser; the GPU renders isotropic stones in
+  Chrome and Edge.)
 - **Batch export, the tilt video and GIF export** and the vault's custom-material store.
 - **Optimize and Retarget ghost preview in the viewport, and the before/after Compare
   window.** The results are listed in the inspector and the Retarget dialog; the stone in
@@ -212,10 +271,13 @@ File menu and the tabs.
 
 ## Limits
 
-- **Rendering is on the CPU**: `clamp(cores - 1, 1, 8)` Workers (one when the browser
-  reports no core count). A few hundred samples per pixel take tens of seconds to
-  minutes depending on the machine and the view size; the live view traces at most
-  960 px on an edge and a Retina-class scale factor counts at most 1.5x.
+- **Rendering runs on your CPU cores**: `clamp(cores - 1, 1, 8)` Workers (one when the browser
+  reports no core count). In Chrome and Edge the GPU renders isotropic stones such as diamond and
+  spinel alongside them; Ray-Traced supports every material class. GPU rendering needs WebGPU, is tested while the page loads (once per graphics card
+  and browser version, the result is remembered) and falls back to the CPU on any problem,
+  saying why (see **GPU start-up test**). A few hundred samples
+  per pixel take tens of seconds to minutes depending on the machine and the view size; the live
+  view traces at most 960 px on an edge and a Retina-class scale factor counts at most 1.5x.
 - **Live samples** 64 to 1024 (default 256); **export** 16 to 4096 samples and up to
   4096 px on the long edge; bounces 4 to 24.
 - **Environment maps**: an `.hdr` up to 64 MiB and 8192 x 4096 texels; each render
@@ -225,17 +287,16 @@ File menu and the tabs.
   the lighting preset and says so.
 - **Memory**: the HDR budget is 1.5 GiB across the render Workers and the analysis Worker;
   a design and its history live in the page's wasm memory (4 GiB address space).
-- **Persistence**: this tab's `sessionStorage` only (a few MB); nothing survives closing the
-  tab, and nothing is ever uploaded.
+- **Persistence**: settings, the guide state and the GPU test result in `localStorage`; a tab's copy of the design in `sessionStorage` (a few MB); the autosaved design in IndexedDB. Nothing is ever uploaded.
 - **Solves** that run more than 60 s in the solve Worker are stopped.
 
 ## Browser support
 
 A current Chrome, Edge, Firefox or Safari (Chrome 96, Firefox 100, Safari 15.2 or newer): the
 wasm needs bulk memory, sign extension, reference types and multivalue, and the page uses
-Web Workers, WebGL2 (Slint's renderer), `sessionStorage` (optional) and Blob downloads. No
-WebGPU, no `SharedArrayBuffer` and no special response headers (COOP / COEP) are needed, so
-any static host works. Touch input arrives as mouse events, so a tablet works for
+Web Workers, WebGL2 (Slint's renderer), `sessionStorage` (optional) and Blob downloads.
+WebGPU is optional, for GPU rendering (Chrome/Edge). No `SharedArrayBuffer`
+and no special response headers (COOP / COEP) are needed, so any static host works. Touch input arrives as mouse events, so a tablet works for
 viewing and tapping but not for Ctrl / Shift gestures or the keyboard shortcuts.
 
 ## Building and serving
@@ -300,7 +361,7 @@ keeps the page working behind a CDN that rewrites scripts.
 3. Smoke test in Chrome and one other browser, with the console open (a single winit
    "Using exceptions for control flow" notice is expected):
    New Design (Standard Round Brilliant) -> the render starts and samples climb ->
-   Solid tab, drag the angle handle -> Diagram tab, click a panel -> File > Save design
+   Solid tab, drag the angle handle -> Diagram tab, click a panel -> File > Save Design (.isdd)
    downloads an `.isdd` file -> reload the tab, the design comes back -> Ctrl+Z / F5 / `?` work ->
    Tilt Curve runs and Cancel keeps the curves -> File > Export PNG at 256 px -> narrow
    the window to phone width and check the File menu and the dialogs still fit.
@@ -320,7 +381,7 @@ winit at start-up. That is expected on every Slint web app, not an error.
 | `src/app/` | the `WebApp` state, entry point, callback wiring, `push_*` UI refresh, persistence, solve, diagnostics |
 | `src/editor/` | the tier table's data (`table`), selection, editing actions (`edit*`), nudge, orbit tools, the unsaved-changes dialog, the inspector, design settings, New Design, Optimize, Retarget, snapshot and the guide (`guide`) |
 | `src/views/` | the Solid and Diagram tabs, including the mouse manipulation (`manip`) |
-| `src/render/` | the live render loop, its settings panel, PNG export and viewport-size tracking |
+| `src/render/` | the live render loop, its settings panel, PNG export, viewport-size tracking and the GPU gate (`gpu_gate`, with `startup` and `status`: the start-up test, its progress card and the "what renders" sentence) |
 | `src/metrics/` | the metrics HUD's scheduling (`hud`) and the Tilt dialog's sweep (`tilt`), both in the analysis Worker |
 | `src/io/` | picker, drag-and-drop, per-kind loaders, `.hdr` check, downloads |
 | `src/workers/` | the lazily created Worker pool (render Workers and the solve Worker when a design first shows on the Render tab or a solve needs them; the analysis Worker on first use) |

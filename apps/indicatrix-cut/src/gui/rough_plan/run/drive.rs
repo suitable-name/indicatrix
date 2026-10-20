@@ -14,10 +14,11 @@ use super::{
 };
 use indicatrix_cut_core::rough_plan::{
     CandidateDesign, CutOrder, FINAL_LAYOUTS, LayoutGroup, PLAIN_SINGLE_FITS, PlanInput, PlanPath,
-    PlanProgress, REFINE_TOP, RoughBlock, RoughLayout, SHAPED_SINGLE_FITS, SHAPED_SINGLE_LAYOUTS,
-    best_layout, build_piece_table_lanes, choose_grid, final_ranking_capped, finish_plan_lanes,
-    flatten_groups, merge_and_rank_capped, own_pool, pareto_front, partial_ranking_capped,
-    plan_alternatives_lanes, plan_design_cap, plan_rough_for_order, rank_indices_capped,
+    PlanProgress, PlanSettings, REFINE_TOP, RoughBlock, RoughLayout, SHAPED_SINGLE_FITS,
+    SHAPED_SINGLE_LAYOUTS, best_layout, build_piece_table_lanes, choose_grid, final_ranking_within,
+    finish_plan_lanes, flatten_groups, merge_and_rank_within, own_pool, pareto_front,
+    partial_ranking_within, plan_alternatives_lanes, plan_design_cap, plan_rough_for_order,
+    rank_indices_within,
     shaped::{
         ShapedAltParams, ShapedCtx, ShapedGrid, grid_poll_events, plan_shaped_alternatives,
         plan_shaped_design_cap, plan_shaped_for_order, refine_shaped_capped,
@@ -55,6 +56,15 @@ fn dp_ticks(cells: [usize; 3], ticks_per_cell: usize) -> usize {
         .iter()
         .map(|order| ticks_per_cell * cells[order.axes()[0]])
         .sum()
+}
+
+/// How many times an order's DP can report its ticks: once without a stone cap, twice with
+/// one (the free DP, then the count DP when the free optimum holds more stones than the cap).
+/// The announced total counts both passes, so a cap that does not bind leaves the second pass
+/// out and the progress stops short of the end of the DP band (about halfway when no order
+/// binds); it moves on at the next stage and is never taken back.
+fn dp_passes(settings: &PlanSettings) -> usize {
+    1 + usize::from(settings.stone_cap().is_some())
 }
 
 /// The `Grid` events of a shaped rough's two piece tables: the size table reports one per
@@ -117,10 +127,10 @@ fn plan_plain_block(
         PLAIN_SINGLE_FITS,
         rough.volume_mm3(),
     ));
-    Some(merge_and_rank_capped(
+    Some(merge_and_rank_within(
         layouts,
         FINAL_LAYOUTS,
-        settings.max_designs_usize(),
+        settings.caps(),
     ))
 }
 
@@ -141,7 +151,9 @@ fn plan_block_layouts(
     }
     let grid = choose_grid(rough, settings);
     progress.note(Note::Grid(grid.cells()[0]));
-    progress.note(Note::Dp(dp_ticks(grid.cells(), PLAIN_TICKS_PER_CELL)));
+    progress.note(Note::Dp(
+        dp_ticks(grid.cells(), PLAIN_TICKS_PER_CELL) * dp_passes(settings),
+    ));
 
     let table = build_piece_table_lanes(&grid, &front, lanes, &mut on_progress)?;
     let mixed = run_orders(lanes, progress, |order, on| {
@@ -201,9 +213,9 @@ fn plan_shaped(
         return Some(Vec::new());
     }
     let settings = input.settings;
-    let max_designs = settings.max_designs_usize();
+    let caps = settings.caps();
     let partial = |groups: &[LayoutGroup], extra: Vec<RoughLayout>| {
-        partial_ranking_capped(groups, extra, max_designs)
+        partial_ranking_within(groups, extra, caps)
     };
     let inset = settings.skin_mm + settings.allowance_mm;
     let (Ok(ctx), Ok(coarse_region)) = (
@@ -259,7 +271,7 @@ fn plan_shaped(
     });
 
     let (flat, group_of) = flatten_groups(&groups);
-    let ranked = rank_indices_capped(&flat, REFINE_TOP, max_designs);
+    let ranked = rank_indices_within(&flat, REFINE_TOP, caps);
     let Some(mut refined) = refine_parallel(ranked.len(), lanes, progress, |slot| {
         let index = ranked[slot];
         let group = &groups[group_of[index]];
@@ -273,7 +285,7 @@ fn plan_shaped(
         return stopped_layouts(progress, || partial(&groups, single_layouts()));
     };
     refined.extend(single_layouts());
-    Some(final_ranking_capped(refined, &flat, &ranked, max_designs))
+    Some(final_ranking_within(refined, &flat, &ranked, caps))
 }
 
 /// What a stage that returned `None` means: the time limit stopped the plan (the layouts
@@ -299,7 +311,9 @@ fn shaped_dp_groups(
     let mut on_progress = |event: PlanProgress| progress.event(event);
     let grid = ctx.choose_grid(settings);
     progress.note(Note::Grid(shaped_grid_events(&grid)));
-    progress.note(Note::Dp(dp_ticks(grid.cells, SHAPED_TICKS_PER_CELL)));
+    progress.note(Note::Dp(
+        dp_ticks(grid.cells, SHAPED_TICKS_PER_CELL) * dp_passes(settings),
+    ));
 
     let size_table = grid.size_table_lanes(settings, front, lanes, &mut on_progress)?;
     let clip = ClipJob {

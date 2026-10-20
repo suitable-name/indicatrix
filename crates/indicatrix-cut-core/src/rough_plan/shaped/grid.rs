@@ -212,8 +212,9 @@ pub const fn piece_count(cells: [usize; 3]) -> usize {
     px * py * pz
 }
 
-/// Evaluates the positional DP operation estimate summed over all 6 cut orders: per order
-/// the bars (`p_a * p_b * p_c`, one split per range of every axis), the slabs (`p_a * p_b`)
+/// Evaluates the positional DP operation estimate summed over all 6 cut orders.
+///
+/// Per order: the bars (`p_a * p_b * p_c`, one split per range of every axis), the slabs (`p_a * p_b`)
 /// and the root (`p_a`), `p_x` being the range count of axis `x`.
 #[must_use]
 pub fn shaped_op_estimate(cells: [usize; 3]) -> f64 {

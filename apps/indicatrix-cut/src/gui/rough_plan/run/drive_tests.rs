@@ -204,6 +204,12 @@ impl Fixture {
         }
     }
 
+    /// The same fixture planning with at most `max_stones` stones per layout in all.
+    fn with_stones(mut self, max_stones: u8) -> Self {
+        self.settings.max_stones = max_stones;
+        self
+    }
+
     fn input(&self) -> PlanInput<'_> {
         PlanInput {
             model: &self.model,
@@ -313,13 +319,16 @@ fn joined<T>(handle: thread::ScopedJoinHandle<'_, T>) -> T {
 /// sequential one bit for bit. The plans are independent and deterministic, so running
 /// them side by side changes only the wall time. The drivers are spawned through the
 /// eager array `map`, so every thread is running before the first is joined; a lazy
-/// iterator would run them one after another.
-fn assert_lanes_match_the_core(fixture: &Fixture) {
-    assert_lane_counts_match_the_core(fixture, LANES);
+/// iterator would run them one after another. Returns the sequential layouts.
+fn assert_lanes_match_the_core(fixture: &Fixture) -> Vec<RoughLayout> {
+    assert_lane_counts_match_the_core(fixture, LANES)
 }
 
 /// [`assert_lanes_match_the_core`] for the lane counts `lane_counts`.
-fn assert_lane_counts_match_the_core<const N: usize>(fixture: &Fixture, lane_counts: [usize; N]) {
+fn assert_lane_counts_match_the_core<const N: usize>(
+    fixture: &Fixture,
+    lane_counts: [usize; N],
+) -> Vec<RoughLayout> {
     let input = &fixture.input();
     let (expected, driven) = thread::scope(|scope| {
         let sequential = scope.spawn(move || plan(input, &mut |_| true));
@@ -329,11 +338,44 @@ fn assert_lane_counts_match_the_core<const N: usize>(fixture: &Fixture, lane_cou
     });
     let expected = expected.expect("the sequential plan finishes");
     assert!(!expected.is_empty(), "the fixture must be plannable");
-    let expected = list_bits(&expected);
+    let expected_bits = list_bits(&expected);
     for (lanes, got) in lane_counts.into_iter().zip(driven) {
         let got = got.expect("the driver finishes");
-        assert_eq!(list_bits(&got), expected, "lanes = {lanes}");
+        assert_eq!(list_bits(&got), expected_bits, "lanes = {lanes}");
     }
+    expected
+}
+
+/// The most stones one layout of `layouts` holds.
+fn most_stones(layouts: &[RoughLayout]) -> usize {
+    layouts
+        .iter()
+        .map(|layout| layout.stones.len())
+        .max()
+        .unwrap_or(0)
+}
+
+/// [`assert_lane_counts_match_the_core`] for `fixture` planning with the stone cap `cap`,
+/// plus the cap itself: the same fixture without a cap lists a layout of more than `cap`
+/// stones (so the cap binds), and the capped plan lists none.
+fn assert_stone_cap_lanes_match_the_core<const N: usize>(
+    fixture: Fixture,
+    cap: u8,
+    lane_counts: [usize; N],
+) {
+    let free = plan(&fixture.input(), &mut |_| true).expect("the free plan finishes");
+    assert!(
+        most_stones(&free) > usize::from(cap),
+        "the cap of {cap} must bind: the free plan holds at most {} stones",
+        most_stones(&free)
+    );
+    let capped = fixture.with_stones(cap);
+    let layouts = assert_lane_counts_match_the_core(&capped, lane_counts);
+    assert!(
+        most_stones(&layouts) <= usize::from(cap),
+        "a layout holds {} stones under a cap of {cap}",
+        most_stones(&layouts)
+    );
 }
 
 #[test]
@@ -349,6 +391,17 @@ fn a_cut_block_plans_like_the_core_for_every_lane_count() {
 #[test]
 fn a_cut_block_of_two_designs_plans_like_the_core_for_every_lane_count() {
     assert_lanes_match_the_core(&cut_block_of_two_designs());
+}
+
+#[test]
+fn a_plain_block_with_a_stone_cap_plans_like_the_core_for_every_lane_count() {
+    assert_stone_cap_lanes_match_the_core(plain_block(), 2, LANES);
+}
+
+#[test]
+fn a_cut_block_with_both_caps_plans_like_the_core_for_every_lane_count() {
+    // At most two of three designs and at most two stones, together.
+    assert_stone_cap_lanes_match_the_core(cut_block_of_two_designs(), 2, LANES);
 }
 
 #[test]
@@ -403,6 +456,11 @@ fn a_mesh_rough_plans_like_the_core_for_one_and_three_lanes() {
             .all(|layout| layout.total_volume_mm3 <= 6000.0),
         "stones must come from the 6000 mm^3 of material"
     );
+}
+
+#[test]
+fn a_mesh_rough_with_a_stone_cap_plans_like_the_core_for_one_and_three_lanes() {
+    assert_stone_cap_lanes_match_the_core(c_shape_mesh(), 3, [1, 3]);
 }
 
 #[test]

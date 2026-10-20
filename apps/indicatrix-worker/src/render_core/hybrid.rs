@@ -152,7 +152,8 @@ pub fn calibrate(
     out: &mut [Vec3],
     cancel: &AtomicBool,
 ) -> CalibrationOutcome {
-    // A concave scene is CPU-only: there is nothing to calibrate a split against.
+    // A scene the GPU cannot trace (see `scene_uses_gpu`) is CPU-only: there is nothing to
+    // calibrate a split against.
     if samples < 3 || !scene_uses_gpu(scene) {
         return CalibrationOutcome::GpuDeclined;
     }
@@ -177,7 +178,14 @@ pub fn calibrate(
 
     // Untimed warm-up sample: real and counted, just not the one whose wall-clock cost
     // feeds the split.
-    match gpu.try_accumulate_cancellable(&gpu_scene, first_sample, 1, out, cancel) {
+    match gpu.try_accumulate_geom_cancellable(
+        &gpu_scene,
+        &scene.tools,
+        first_sample,
+        1,
+        out,
+        cancel,
+    ) {
         GpuAccumulate::Done => {}
         GpuAccumulate::Declined => return CalibrationOutcome::GpuDeclined,
         // `out` is guaranteed untouched, so `consumed: 0` is exact.
@@ -188,7 +196,14 @@ pub fn calibrate(
     }
 
     let start = Instant::now();
-    match gpu.try_accumulate_cancellable(&gpu_scene, first_sample + 1, 1, out, cancel) {
+    match gpu.try_accumulate_geom_cancellable(
+        &gpu_scene,
+        &scene.tools,
+        first_sample + 1,
+        1,
+        out,
+        cancel,
+    ) {
         GpuAccumulate::Done => {}
         GpuAccumulate::Declined => return CalibrationOutcome::GpuDeclined,
         // The warm-up sample already folded into `out`, so `consumed: 1` is exact.
@@ -254,6 +269,23 @@ pub struct JobKey {
     /// `scene.width * scene.height`, bucketed to its enclosing power of two. See
     /// [`job_key`]'s doc comment for why resolution shifts the GPU/CPU throughput ratio.
     resolution_bucket: u32,
+    /// The stone's concave-tool count, bucketed by [`tool_bucket`]: `0` for a stone without
+    /// tools, so the key (and so every cached split) of a plain stone is exactly what it was
+    /// before concave stones ran on the GPU. See [`job_key`]'s doc comment.
+    tool_bucket: u8,
+}
+
+/// The tool-count tag of [`JobKey`]: `0` for no tools, else `1 + floor(log2(count))`
+/// (1 tool: 1; 2-3: 2; 4-7: 3; ... 64: 7; 128: 8), so stones whose tool cost is of the same
+/// order share a calibration and a one-tool groove is not split from a two-tool one.
+#[must_use]
+pub fn tool_bucket(tool_count: usize) -> u8 {
+    if tool_count == 0 {
+        0
+    } else {
+        // `ilog2` of a nonzero usize is below 64, so the sum fits u8.
+        u8::try_from(tool_count.ilog2() + 1).unwrap_or(u8::MAX)
+    }
 }
 
 /// Reduces `mode` to a small, totally-ordered tag for [`JobKey`] -- [`ComputeMode`]
@@ -268,7 +300,7 @@ const fn compute_mode_tag(mode: ComputeMode) -> u8 {
 
 /// Builds the [`JobKey`] for `gpu`/`scene`/`threads`/`compute_mode`'s resource profile.
 ///
-/// Deliberately keyed on only four things:
+/// Deliberately keyed on only five things:
 /// - `compute_mode`: `OnlyGpu`/`OnlyCpu`/`Hybrid` reach entirely different throughput (and
 ///   only `Hybrid` ever calibrates a split at all), so they must never share an entry.
 /// - `gpu`'s identity: a different physical adapter (or none) has different throughput.
@@ -279,8 +311,13 @@ const fn compute_mode_tag(mode: ComputeMode) -> u8 {
 ///   than a full-size export, so the measured GPU/CPU ratio genuinely shifts with
 ///   resolution. Bucketed, not exact, so requests a few pixels apart still share a
 ///   decision.
+/// - `scene`'s concave-tool count ([`tool_bucket`]): the tool carve costs the GPU kernels and
+///   the CPU tracer differently (a divergent per-ray scan against a per-ray interval walk), so
+///   a tool-heavy stone's GPU/CPU split is not a plain stone's, and a split measured on one
+///   must not seed the other. A stone without tools has bucket `0`, which leaves its key
+///   unchanged.
 ///
-/// Deliberately NOT keyed on `scene`'s material, geometry, lighting, environment, or which
+/// Deliberately NOT keyed on `scene`'s material, the planes, lighting, environment, or which
 /// samples are being traced: those shift both engines' per-sample cost together, not
 /// their relative split, and both [`calibrate`] and `stream_emit`'s adaptive ramp already
 /// re-measure per JOB regardless -- a wrong guess there self-corrects within one job
@@ -298,6 +335,7 @@ pub fn job_key(
         gpu_id: std::ptr::from_ref(gpu) as usize,
         threads: super::effective_thread_count(threads),
         resolution_bucket: pixels.max(1).ilog2(),
+        tool_bucket: tool_bucket(scene.tools.len()),
     }
 }
 

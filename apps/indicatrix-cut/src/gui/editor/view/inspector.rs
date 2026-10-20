@@ -15,14 +15,15 @@ use crate::{
         editor::{
             body_color_combo,
             material_lookup::{
-                EditorMaterialLookup, material_guess, traced_gem_material, traced_material_for,
+                EditorMaterialLookup, applied_material_guess, material_guess, traced_gem_material,
+                traced_material_for,
             },
         },
         render::{render_body_color::display_rgb_for_stone, stone_effects},
     },
 };
 use indicatrix::optics::materials::GemMaterial;
-use indicatrix_cut_core::{Design, critical_angle_deg};
+use indicatrix_cut_core::{Design, TierFrosting, critical_angle_deg};
 use indicatrix_editor::material::{body_color_index_for_material, body_color_options};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
@@ -39,8 +40,22 @@ use std::sync::{Arc, Mutex};
 /// `""` -- there is nothing left to guess, and [`super::state::
 /// proportion_verdicts`]-style "guess vs fact" confusion is exactly what this
 /// exists to prevent.
-fn push_material_guess(ui: &MainWindow, design: &Design, n_d: f64) {
-    let (text, name, others) = material_guess(design, n_d).unwrap_or_default();
+///
+/// A material the load applied from the library entry
+/// (`EditorState::applied_library_material`) keeps a badge too, while the design's material
+/// still is that one: it is the design's material (no "Set Material" button, see
+/// `material_guess_applied`), but still labelled as inferred so it is never mistaken for a
+/// cutter's choice.
+fn push_material_guess(ui: &MainWindow, design: &Design, n_d: f64, applied: Option<&str>) {
+    let guess = material_guess(design, n_d);
+    let applied_guess = if guess.is_none() {
+        applied_material_guess(design, n_d, applied)
+    } else {
+        None
+    };
+    ui.global::<EditorModel>()
+        .set_material_guess_applied(applied_guess.is_some());
+    let (text, name, others) = guess.or(applied_guess).unwrap_or_default();
     ui.global::<EditorModel>()
         .set_material_guess_text(text.into());
     ui.global::<EditorModel>()
@@ -260,7 +275,7 @@ pub(super) fn refresh_design_settings(
         .set_effective_ri_text(format!("{n_d:.4}").into());
     ui.global::<EditorModel>()
         .set_critical_angle_text(format!("{:.2}\u{b0}", critical_angle_deg(n_d)).into());
-    push_material_guess(ui, design, n_d);
+    push_material_guess(ui, design, n_d, state.applied_library_material.as_deref());
     push_gear_symmetry_meta(ui, design, delta);
 
     n_d
@@ -528,12 +543,22 @@ pub(in crate::gui::editor) fn sync_stone_from_design(
 /// `Send`) [`crate::EditorTierItem`] instead.
 #[must_use]
 fn selected_tier_chips(design: &Design, selected_tier_index: i32) -> Vec<IndexChipItem> {
-    usize::try_from(selected_tier_index)
-        .ok()
-        .and_then(|idx| design.tiers.get(idx))
-        .map_or_else(Vec::new, |tier| {
-            index_chip_items(&tier.indices, &tier.detached)
-        })
+    let Some(index) = usize::try_from(selected_tier_index).ok() else {
+        return Vec::new();
+    };
+    let Some(tier) = design.tiers.get(index) else {
+        return Vec::new();
+    };
+    let frosting = design.tier_frosting(index);
+    let mut chips = index_chip_items(&tier.indices, &tier.detached);
+    if let Some(frosting) = frosting {
+        // A chip's position is the tier's own `f64` rounded to `f32`, so match by position
+        // in the tier's index list rather than by value.
+        for (chip, &stored) in chips.iter_mut().zip(&tier.indices) {
+            chip.frosted = frosting.covers(stored);
+        }
+    }
+    chips
 }
 
 /// Pushes [`selected_tier_chips`]'s result into `EditorModel.selected_tier_chips`,
@@ -558,6 +583,14 @@ pub(in crate::gui::editor) fn push_selected_tier_chips(ui: &MainWindow, state: &
         .map_or_else(String::new, str::to_string);
     ui.global::<EditorModel>()
         .set_selected_tier_note_text(note_text.into());
+    // How the loaded tier is frosted: the whole tier (the Frosted tick box) or only some facets
+    // (a note under it; the chips mark which).
+    let loaded = usize::try_from(selected).ok();
+    let frosting = loaded.and_then(|index| state.design.tier_frosting(index));
+    ui.global::<EditorModel>()
+        .set_selected_tier_frosted(matches!(frosting, Some(TierFrosting::Tier)));
+    ui.global::<EditorModel>()
+        .set_selected_tier_frosted_partly(matches!(frosting, Some(TierFrosting::Facets(_))));
     let chips = selected_tier_chips(&state.design, selected);
     push_rows(
         &ui.global::<EditorModel>().get_selected_tier_chips(),

@@ -7,6 +7,15 @@
 //! [`TrainingRunner::evaluate`] / [`TrainingRunner::validate`] (episodes on held-out designs) and
 //! the checkpoint methods. Everything else is configuration.
 //!
+//! # Overlap of rollout and update
+//!
+//! The Burn trainer lives on its own update thread (`runner_update.rs`). In imitation mode the
+//! update of iteration `i` trains there while the main thread collects the rollout of iteration
+//! `i + 1`, which acts with the weights of update `i - 1`; PPO waits for its update at once.
+//! The weights each rollout sees are fixed by the iteration index alone, never by timing (the
+//! module docs of `runner_update.rs` give the schedule). Anything that reads the network or the
+//! trainer for another purpose goes through [`TrainingRunner::sync_update`] first.
+//!
 //! # Algorithms
 //!
 //! [`Algorithm::Imitation`] (the default) rolls the policy out with a little exploration noise,
@@ -14,7 +23,7 @@
 //! and trains the model on the growing aggregate of those labelled states (`DAgger`).
 //! [`Algorithm::Ppo`] is the policy-gradient alternative on the same model. Both step the
 //! environment with the run's line search, and both draw the objective weights of every episode
-//! ([`ObjectiveSampling`]), so one model serves every weighting.
+//! ([`ObjectiveSampling`]); the observation carries those weights as task context.
 //!
 //! # Devices
 //!
@@ -28,7 +37,8 @@
 //!
 //! The rest of the runner lives in child modules, which see this module's private items: the
 //! configuration (`runner_config.rs`), the data types (`runner_types.rs`), the environment
-//! wrappers (`runner_env.rs`), the rollout and update (`runner_rollout.rs`), the labelled
+//! wrappers (`runner_env.rs`), the rollout (`runner_rollout.rs`), the update thread
+//! (`runner_update.rs`), the labelled
 //! aggregate (`runner_imitation.rs`), the labelling schedule (`runner_teacher.rs`), the thread
 //! pools (`runner_pool.rs`), the objective sampling (`runner_objective.rs`), the evaluation
 //! machinery (`runner_eval.rs`), the changes to a live run (`runner_setters.rs`), the telemetry
@@ -37,7 +47,7 @@
 // The GUI and the CLI binary both include this file; each uses a different subset of the setters.
 #![allow(dead_code, reason = "shared by two binaries that each use a subset")]
 
-use std::{collections::HashSet, fmt};
+use std::fmt;
 
 use indicatrix_ai::{
     env::{EnvError, GLOBAL_DIM, ObservationError, TIER_DIM},
@@ -50,14 +60,19 @@ use indicatrix_ai::{
         buffer::ReturnNormalizer,
     },
 };
+use indicatrix_cut_core::optimize::ObjectiveFidelity;
 
 use crate::dataset::{DatasetError, DatasetSplit};
-use envs::{Slot, build_env, design_material_name, pick_target};
+use envs::{Slot, build_env, pick_target, sampled_source_material};
 use eval::{OracleCache, OracleKey};
 use imitation::LabelledStates;
+use update::{BuildArgs, InstalledUpdate, Updater};
 
 #[path = "runner_config.rs"]
 pub mod config;
+#[cfg(test)]
+#[path = "runner_device_tests.rs"]
+mod device_tests;
 #[path = "runner_env.rs"]
 mod envs;
 #[path = "runner_eval.rs"]
@@ -81,6 +96,11 @@ mod teacher;
 mod tests;
 #[path = "runner_types.rs"]
 mod types;
+#[path = "runner_update.rs"]
+mod update;
+#[cfg(test)]
+#[path = "runner_update_tests.rs"]
+mod update_tests;
 
 // Only what both binaries use is re-exported; the CLI and the tests take the rest from
 // `config` directly (an unused re-export is a warning in a binary crate).
@@ -89,8 +109,8 @@ pub use config::{
 };
 pub use objective::{Algorithm, ObjectiveSampling, draw_weights, draws_same_material};
 pub use types::{
-    EpisodeSummary, EvalFidelity, EvalPasses, EvalReport, IterationReport, MaterialLabel, Optics,
-    RolloutStats, RunnerStats,
+    EpisodeSummary, EvalCase, EvalFidelity, EvalPasses, EvalReport, IterationReport, MaterialLabel,
+    Optics, RolloutStats, RunnerStats,
 };
 
 /// The episode of `entry` (at `pos` of the train split): its environment with the target
@@ -109,13 +129,21 @@ fn build_slot(
     let design = &split.entries[entry].design;
     let target = pick_target(cfg, seed, design)?;
     let weights = draw_weights(cfg.objectives, seed);
-    let mut env = match build_env(cfg, design, target.as_ref(), weights, None) {
+    let mut env = match build_env(
+        cfg,
+        design,
+        target.as_ref(),
+        weights,
+        Some(cfg.train_fidelity),
+        seed,
+    ) {
         Ok(env) => env,
         Err(error) => return Ok(Err(error)),
     };
     let obs = env.reset(seed);
+    let (source_name, _, _) = sampled_source_material(seed)?;
     let src = MaterialLabel {
-        name: design_material_name(design),
+        name: source_name,
         n_d: env.source_material().n_d,
     };
     let tgt = target.as_ref().map_or_else(
@@ -137,6 +165,8 @@ fn build_slot(
 
 /// Backend label of the GPU trainer.
 pub const GPU_LABEL: &str = "GPU (WGPU)";
+/// Backend label of native CUDA training.
+pub const CUDA_LABEL: &str = "GPU (CUDA)";
 /// Backend label of the CPU trainer.
 pub const CPU_LABEL: &str = "CPU (Flex SIMD)";
 
@@ -219,6 +249,12 @@ pub fn evaluation_threads(designs: usize) -> usize {
     pool::pass_threads(designs)
 }
 
+/// Persistent environment worker pool width (serial fallback reports one).
+#[must_use]
+pub fn cpu_pool_threads() -> usize {
+    pool::pool_threads()
+}
+
 fn build_trainer(
     ppo: &PpoConfig,
     tier: ModelTier,
@@ -238,6 +274,7 @@ fn build_trainer(
     let (trainer, label, warning) = match device {
         DeviceChoice::Cpu => (BurnTrainer::new_cpu(shape, ppo.clone())?, CPU_LABEL, None),
         DeviceChoice::Gpu => (BurnTrainer::new_gpu(shape, ppo.clone())?, GPU_LABEL, None),
+        DeviceChoice::Cuda => (BurnTrainer::new_cuda(shape, ppo.clone())?, CUDA_LABEL, None),
         DeviceChoice::Auto => {
             let (trainer, skipped) = BurnTrainer::new_auto(shape, ppo.clone())?;
             match skipped {
@@ -253,17 +290,35 @@ fn build_trainer(
     Ok((trainer.with_seed(seed), label, warning))
 }
 
+/// The explicit device choice that reproduces the backend `label` names (what an `Auto` choice
+/// resolved to), so the rollout trainer lands on the same device as the update thread's.
+fn device_of_label(label: &str) -> DeviceChoice {
+    match label {
+        GPU_LABEL => DeviceChoice::Gpu,
+        CUDA_LABEL => DeviceChoice::Cuda,
+        _ => DeviceChoice::Cpu,
+    }
+}
+
 /// The training run: vectorized environments, a model and its trainer, statistics.
 pub struct TrainingRunner {
     cfg: RunConfig,
     split: DatasetSplit,
-    trainer: BurnTrainer,
-    /// The pure-Rust twin of the model, exported after every update: validation, `evaluate`
-    /// and the checkpoints read it.
+    /// The update thread, which owns the Burn trainer that updates the model.
+    updater: Updater,
+    /// A second, never-trained trainer on the same device, kept only to turn `net` into the
+    /// rollout copy (`rollout_model`) on the main thread, so no Burn object crosses threads.
+    rollout_trainer: BurnTrainer,
+    /// The pure-Rust twin of the model as of the last installed update: validation, `evaluate`
+    /// and the checkpoints read it (call [`Self::sync_update`] first to include the update in
+    /// flight).
     net: GemstoneSetAttentionNetwork,
     /// The inference copy of the Burn model the rollout acts with (one batched forward per
-    /// pass on the training device); refreshed after every update and every weight change.
+    /// pass on the training device). Refreshed at the wait point of every iteration and after
+    /// every weight change, never by a bare [`Self::sync_update`].
     rollout_model: BurnSetAttention,
+    /// The update installed since the last report (its figures go into the next one).
+    installed_update: Option<InstalledUpdate>,
     /// Softmax buffers reused by the pure network's forward passes (allocated on first use).
     scratch: InferenceScratch,
     slots: Vec<Slot>,
@@ -281,7 +336,6 @@ pub struct TrainingRunner {
     /// across iterations and restarts with the environments; a resumed run re-estimates it.
     normalizer: ReturnNormalizer,
     rng: Prng,
-    bad_entries: HashSet<usize>,
     focus_entry: usize,
     warnings: Vec<String>,
     stats: RunnerStats,
@@ -304,20 +358,36 @@ impl TrainingRunner {
         if split.train.is_empty() {
             return Err(RunnerError::Data("the train split is empty".into()));
         }
-        let (mut trainer, device_label, warning) =
-            build_trainer(&cfg.ppo, cfg.tier, split.max_tiers, cfg.device, cfg.seed)?;
         let net = cfg.tier.init_network(cfg.seed);
-        trainer.load_weights(&net)?;
+        let (updater, built) = Updater::spawn(BuildArgs {
+            ppo: cfg.ppo.clone(),
+            tier: cfg.tier,
+            max_tiers: split.max_tiers,
+            device: cfg.device,
+            seed: cfg.seed,
+            net: net.clone(),
+        })?;
+        let (device_label, warning) = (built.label, built.warning);
+        let (mut rollout_trainer, _, _) = build_trainer(
+            &cfg.ppo,
+            cfg.tier,
+            split.max_tiers,
+            device_of_label(device_label),
+            cfg.seed,
+        )?;
+        rollout_trainer.load_weights(&net)?;
         let focus_entry = split.train[0];
-        let rollout_model = trainer.rollout_model();
+        let rollout_model = rollout_trainer.rollout_model();
         let mut runner = Self {
             rng: Prng::from_stream(cfg.seed, 1),
             aggregate: LabelledStates::new(cfg.label_capacity),
             cfg,
             split,
-            trainer,
+            updater,
+            rollout_trainer,
             net,
             rollout_model,
+            installed_update: None,
             scratch: InferenceScratch::default(),
             slots: Vec::new(),
             buffer: RolloutBuffer::default(),
@@ -325,7 +395,6 @@ impl TrainingRunner {
             free_masks: Vec::new(),
             label_phase: 0,
             normalizer: ReturnNormalizer::new(),
-            bad_entries: HashSet::new(),
             focus_entry,
             warnings: warning.into_iter().collect(),
             stats: RunnerStats::new(),
@@ -429,16 +498,11 @@ impl TrainingRunner {
             return Ok((0, self.focus_entry));
         }
         let n = self.split.train.len();
-        for k in 0..n {
-            let pos = (start + k) % n;
-            let entry = self.split.train[pos];
-            if !self.bad_entries.contains(&entry) {
-                return Ok((pos, entry));
-            }
+        if n == 0 {
+            return Err(RunnerError::Data("the train split is empty".to_owned()));
         }
-        Err(RunnerError::Data(
-            "no design of the train split builds an environment".into(),
-        ))
+        let pos = start % n;
+        Ok((pos, self.split.train[pos]))
     }
 
     /// Starts an episode: a design from the train split at or after `start`, its target
@@ -446,13 +510,21 @@ impl TrainingRunner {
     /// does not build is skipped ([`Self::skip_entry`]) and the next one is tried.
     fn spawn_slot(&mut self, start: usize, seed: u64) -> Result<Slot, RunnerError> {
         let mut start = start;
-        loop {
+        let mut last_error = None;
+        for _ in 0..self.split.train.len() {
             let (pos, entry) = self.choose(start)?;
             match build_slot(&self.cfg, &self.split, pos, entry, seed)? {
                 Ok(slot) => return Ok(slot),
-                Err(error) => start = self.skip_entry(pos, entry, &error)?,
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    start = self.skip_entry(pos, entry, &error)?;
+                }
             }
         }
+        Err(RunnerError::Data(format!(
+            "no sampled training design builds an environment for this target/objective: {}",
+            last_error.unwrap_or_else(|| "empty train split".to_owned())
+        )))
     }
 
     /// Records that the environment of `entry` (at `pos` of the train split) failed to build
@@ -472,7 +544,6 @@ impl TrainingRunner {
         }
         self.warnings
             .push(format!("{SKIPPED_PREFIX}'{title}': {error}"));
-        self.bad_entries.insert(entry);
         Ok(pos + 1)
     }
 
@@ -491,10 +562,29 @@ impl TrainingRunner {
     /// Builds a fresh environment per worker. The new slots replace the old ones only when every
     /// one built, so a failure leaves the run exactly as it was.
     fn rebuild_slots(&mut self) -> Result<(), RunnerError> {
-        let mut fresh = Vec::with_capacity(self.cfg.workers);
-        for w in 0..self.cfg.workers {
-            let seed = self.rng.next_u64();
-            fresh.push(self.spawn_slot(w, seed)?);
+        let n = self.cfg.effective_workers();
+        let starts = (0..n)
+            .map(|w| {
+                let seed = self.rng.next_u64();
+                let (pos, entry) = self.choose(w)?;
+                Ok((pos, entry, seed))
+            })
+            .collect::<Result<Vec<_>, RunnerError>>()?;
+        let cfg = &self.cfg;
+        let split = &self.split;
+        let first_attempts = pool::run_indexed(n, pool::pass_threads(n), |i| {
+            let (pos, entry, seed) = starts[i];
+            (pos, entry, seed, build_slot(cfg, split, pos, entry, seed))
+        });
+        let mut fresh = Vec::with_capacity(n);
+        for (pos, entry, seed, attempt) in first_attempts {
+            match attempt? {
+                Ok(slot) => fresh.push(slot),
+                Err(error) => {
+                    let next = self.skip_entry(pos, entry, &error)?;
+                    fresh.push(self.spawn_slot(next, seed)?);
+                }
+            }
         }
         self.slots = fresh;
         self.clear_rollout();
@@ -516,21 +606,26 @@ impl TrainingRunner {
         self.free_masks.clear();
     }
 
-    /// Takes a fresh inference copy of the trainer's model for the rollout.
-    fn refresh_rollout_model(&mut self) {
-        self.rollout_model = self.trainer.rollout_model();
+    /// Points the rollout copy of the model at the weights of `net` (the installed update).
+    fn refresh_rollout_model(&mut self) -> Result<(), RunnerError> {
+        self.rollout_trainer.load_weights(&self.net)?;
+        self.rollout_model = self.rollout_trainer.rollout_model();
+        Ok(())
     }
 
     /// Rebuilds the environments, then starts the statistics over and empties the labelled
-    /// aggregate. When no environment can be built nothing changes (statistics and aggregate
-    /// included).
+    /// aggregate. The update in flight finishes first and is installed (the weights are kept);
+    /// its figures belong to the statistics that start over and are dropped. When no
+    /// environment can be built nothing changes (statistics and aggregate included).
     fn restart_run(&mut self) -> Result<(), RunnerError> {
-        self.bad_entries.clear();
+        self.sync_update()?;
+        self.refresh_rollout_model()?;
         let previous = std::mem::replace(&mut self.stats, RunnerStats::new());
         self.rebuild_slots().inspect_err(|_| {
             self.stats = previous;
         })?;
         self.aggregate.clear();
+        self.installed_update = None;
         Ok(())
     }
 
@@ -558,6 +653,10 @@ impl TrainingRunner {
     /// which is CPU code, and the network forward of an M-tier model is well under a
     /// millisecond per step.
     ///
+    /// It plays the network as of the last installed update: [`Self::validate`] and
+    /// [`Self::sync_update`] install the update in flight first, a bare `evaluate` (which only
+    /// borrows the runner) does not.
+    ///
     /// # Errors
     ///
     /// [`RunnerError`] for a material or network failure (the first one in entry order); a
@@ -582,26 +681,32 @@ impl TrainingRunner {
         )
     }
 
-    /// Mean score drop over the recent training episodes minus the validation drop; `None`
-    /// until both exist and the validation covered at least [`MIN_GAP_DESIGNS`] designs (fewer
-    /// designs are too noisy to call a diagnosis).
+    /// Mean score drop over the recent training episodes minus the validation drop; `None` until
+    /// both exist, fidelities match and validation covered at least [`MIN_GAP_DESIGNS`] designs.
     ///
     /// Like with like: the training drop comes from episodes that draw their actions, so it is
     /// compared with the drop of the sampled validation episodes
     /// ([`EvalReport::mean_improvement_sampled`]), which carry the same exploration noise. A
     /// report without a sampled pass falls back to the deterministic drop, and the gap then also
-    /// contains the exploration-noise effect. Treat the overfitting threshold as a rule of thumb
-    /// rather than a test.
+    /// contains the exploration-noise effect. Different training and validation fidelities are
+    /// not comparable and produce no gap.
     #[must_use]
     pub fn generalization_gap(&self) -> Option<f32> {
+        if !matches!(
+            (self.cfg.train_fidelity, self.cfg.validation_fidelity),
+            (ObjectiveFidelity::Fast, EvalFidelity::Fast)
+                | (ObjectiveFidelity::Full, EvalFidelity::Full)
+        ) {
+            return None;
+        }
         let train = self.stats.mean_improvement()?;
         let val = self.stats.last_validation.as_ref()?;
         let val_drop = val.mean_improvement_sampled.unwrap_or(val.mean_improvement);
         (val.designs >= MIN_GAP_DESIGNS).then_some(train - val_drop)
     }
 
-    /// Validates on the fixed subset of `count` held-out designs (fast fidelity; callers pass
-    /// [`RunConfig::validation_designs`]) and remembers the result as
+    /// Validates on the fixed subset of `count` held-out designs at configured validation fidelity
+    /// (callers pass [`RunConfig::validation_designs`]) and remembers the result as
     /// [`RunnerStats::last_validation`]. Every design is played three times, in parallel: by the
     /// model (policy mean), by the sampled exploration policy and by the finite-difference
     /// oracle, and the report carries the three drops. The retarget target and the objective
@@ -618,6 +723,8 @@ impl TrainingRunner {
     ///
     /// As [`Self::evaluate`].
     pub fn validate(&mut self, count: usize) -> Result<Option<EvalReport>, RunnerError> {
+        // The update in flight is part of the model being judged.
+        self.sync_update()?;
         let entries = self.validation_entries(count).to_vec();
         if entries.is_empty() {
             return Ok(None);
@@ -632,7 +739,12 @@ impl TrainingRunner {
             sampled: true,
             oracle: cached.is_none(),
         };
-        let mut report = self.evaluate(&entries, EvalFidelity::Fast, self.cfg.seed, passes)?;
+        let mut report = self.evaluate(
+            &entries,
+            self.cfg.validation_fidelity,
+            self.cfg.seed,
+            passes,
+        )?;
         if report.designs > 0 {
             if let Some(drop) = cached {
                 report.mean_improvement_oracle = Some(drop);

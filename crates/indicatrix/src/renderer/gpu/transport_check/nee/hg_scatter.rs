@@ -10,7 +10,7 @@ use crate::{
         polarization::StokesVector,
         raytracer::{
             EnvironmentSource, FacetFinish, build_plane_soa, integrate_channels_to_xyz_families,
-            scattering::{NeeContext, nee_contribution_hg_scatter},
+            scattering::{NeeContext, ShadowAlphas, nee_contribution_hg_scatter},
         },
     },
     renderer::{
@@ -49,8 +49,13 @@ pub struct NeeHgScatterCase {
     _pad1: f32,
     _pad2: f32,
     /// `optics::absorption::channel_absorption_alphas_assigned`'s per-channel
-    /// output, the same array `maybe_scatter_or_extinguish` and `nee_contribution_hg_scatter`
-    /// both read.
+    /// output, the same array `maybe_scatter_or_extinguish` reads. The shadow ray pays
+    /// exactly this array whatever direction it takes: the CPU driver passes it as
+    /// `ShadowAlphas::Fixed` (an isotropic medium's direction-independent coefficients),
+    /// the WGSL kernel takes it as its explicit `alphas` input. The anisotropic
+    /// re-evaluation at the shadow direction (`ShadowAlphas::AssignedMode`) is the
+    /// megakernel's `scatter_alpha_anisotropic` path, covered by the CPU unit tests and
+    /// the frame-level equivalence harness, not by this per-function check.
     alphas: [f32; 8],
     lambdas: [f32; 8],
     stokes: [[f32; 4]; 8],
@@ -295,7 +300,7 @@ fn accumulate_nee_hg_cpu_results(
             case.bounce,
             &stokes_cpu,
             &mut cpu_deposit,
-            &case.alphas,
+            ShadowAlphas::Fixed(&case.alphas),
             case.sigma_s,
             case.absorption_path_scale,
             facet_finishes,

@@ -4,7 +4,8 @@
 //! blocks), saved with `std::fs`, and "shared" or "printed" by writing the file to
 //! `<cache>/share/` and logging its path -- a desktop has no share sheet. The
 //! clipboard, keep-screen-on and open-URL services are log lines. Thermal headroom is
-//! not reported, and the incoming handler is stored but never called.
+//! not reported, and the incoming handler is stored but never called. There is no
+//! credential vault: storing credentials fails and forgetting them is a logged no-op.
 //!
 //! On macOS `rfd` needs its dialogs on the main thread, which this stand-in does not
 //! do; the preview is meant for Windows and Linux hosts.
@@ -149,6 +150,13 @@ impl Platform for DesktopPlatform {
 
     fn thermal_headroom(&self) -> Option<f32> {
         None
+    }
+
+    fn forget_remote_credentials(&self) -> Result<(), PlatformError> {
+        // The preview has no credential vault (`store_remote_credentials` always fails),
+        // so there is never anything stored to delete.
+        tracing::info!("forget credentials (the preview has no vault)");
+        Ok(())
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {

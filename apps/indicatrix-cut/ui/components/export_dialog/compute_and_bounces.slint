@@ -3,6 +3,7 @@ import { ExportModel } from "../../models/export.slint";
 import { SettingsModel } from "../../models/settings.slint";
 import { RemoteWorkerModel } from "../../models/remote_worker.slint";
 import { SegmentPill } from "../pill_button.slint";
+import { WrappedNote } from "wrapped_note.slint";
 
 // A caption with a tooltip, above a row of pills.
 component SectionCaption inherits Rectangle {
@@ -78,7 +79,7 @@ export component ExportComputeAndBounces inherits VerticalLayout {
             }
         }
 
-        if !RemoteWorkerModel.availability.reachable_render_capable: Text {
+        if !RemoteWorkerModel.availability.reachable_render_capable: WrappedNote {
             text: ExportModel.remote_unavailable_reason == "" ? "Checking for the remote..." : ExportModel.remote_unavailable_reason;
             font-size: 11px;
             color: Theme.text-muted;
@@ -115,7 +116,7 @@ export component ExportComputeAndBounces inherits VerticalLayout {
             }
         }
 
-        Text {
+        WrappedNote {
             text: ExportModel.transfer_index == 1
                 ? "The remote renders and tone-maps the whole image and sends one PNG -- far less data, but your own CPU/GPU do not help. Needs a coordinator; a plain worker falls back to full data."
                 : "The remote sends raw radiance, which is merged with your own CPU/GPU's samples.";
@@ -155,7 +156,7 @@ export component ExportComputeAndBounces inherits VerticalLayout {
         // 12 all the way to 1024), but GPU threads run in lockstep, so the few long paths in
         // the tail stall the whole workgroup and this rung range costs noticeably more there
         // than on CPU.
-        if ExportModel.bounce_index >= 4: Text {
+        if ExportModel.bounce_index >= 4: WrappedNote {
             text: "Cheap on CPU, but noticeably steeper on GPU -- lockstep execution makes long paths expensive there.";
             font-size: 11px;
             color: Theme.text-muted;

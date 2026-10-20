@@ -39,6 +39,9 @@ export global DocumentModel {
     callback open();
     callback save();
     callback save-as();
+    // Closes the design and returns to "Start a Design" (Rust asks about unsaved changes
+    // first).
+    callback close-design();
     callback share();
     callback export-asc();
     callback share-asc();
@@ -80,14 +83,4 @@ export global DocumentModel {
     callback create-template(int);
     // "Create" on the Empty form.
     callback create-empty();
-
-    // Closes the New Design page. Returns false when it was not open, so `Shell.handle-back`
-    // can go on to its next step.
-    public function handle-back() -> bool {
-        if (gallery-open) {
-            gallery-open = false;
-            return true;
-        }
-        return false;
-    }
 }

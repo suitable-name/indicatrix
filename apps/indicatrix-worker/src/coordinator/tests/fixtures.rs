@@ -194,6 +194,7 @@ pub fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool 
 /// A 4x4 diamond scene -- cheap enough to trace a few samples in a test.
 pub fn tiny_scene() -> SceneState {
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 4,
         height: 4,
         yaw: 0.4,
@@ -213,5 +214,6 @@ pub fn tiny_scene() -> SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }

@@ -226,22 +226,19 @@ pub fn refresh(ctx: &Ctx) {
     let judged = (key.basis != Basis::Unsolved)
         .then(|| compute(&ctx.state.borrow()))
         .flatten();
-    match judged {
-        Some((verdict, n_d)) => {
-            push_verdict(&ui, &verdict);
-            SLOT.with(|cell| {
-                let mut slot = cell.borrow_mut();
-                slot.key = Some(key);
-                slot.verdict = Some(verdict);
-                slot.generation = Some(key.generation);
-                slot.n_d = n_d;
-            });
-        }
-        None => {
-            // No current solve: the verdict on screen (if any) describes an older design.
-            SLOT.with(|cell| cell.borrow_mut().key = Some(key));
-            ui.global::<VerdictModel>().set_stale(true);
-        }
+    if let Some((verdict, n_d)) = judged {
+        push_verdict(&ui, &verdict);
+        SLOT.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            slot.key = Some(key);
+            slot.verdict = Some(verdict);
+            slot.generation = Some(key.generation);
+            slot.n_d = n_d;
+        });
+    } else {
+        // No current solve: the verdict on screen (if any) describes an older design.
+        SLOT.with(|cell| cell.borrow_mut().key = Some(key));
+        ui.global::<VerdictModel>().set_stale(true);
     }
 }
 
@@ -356,9 +353,7 @@ fn apply_plan(ctx: &Ctx, generation: u64, plan: FixPlan) {
         let Some(state) = app.design.as_mut() else {
             return;
         };
-        if state.session.current_generation() != generation {
-            Err("The design changed while the fix was being planned. Nothing was changed.".into())
-        } else {
+        if state.session.current_generation() == generation {
             let flat_before = state.session.design.tiers.len();
             match state.session.try_apply_mapped(edit, None) {
                 Ok((_, renumbering)) => {
@@ -376,6 +371,8 @@ fn apply_plan(ctx: &Ctx, generation: u64, plan: FixPlan) {
                 }
                 Err(error) => Err(error.to_string()),
             }
+        } else {
+            Err("The design changed while the fix was being planned. Nothing was changed.".into())
         }
     };
     match outcome {

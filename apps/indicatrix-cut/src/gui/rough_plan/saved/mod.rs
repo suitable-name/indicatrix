@@ -39,6 +39,8 @@ mod tests_save;
 mod tests_sections;
 #[cfg(test)]
 mod tests_shape;
+#[cfg(test)]
+mod tests_stone_cap;
 mod transfer;
 
 use self::dto::DesignShape;

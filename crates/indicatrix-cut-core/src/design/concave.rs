@@ -18,6 +18,10 @@ use indicatrix::geometry::plane::tier_is_crown_side;
 
 use super::{ConstraintTier, Design};
 
+mod table_row;
+
+pub use table_row::ConcaveTableRow;
+
 /// A tool's three-letter code in the faceting-diagram standard (plan §1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ConcaveTool {

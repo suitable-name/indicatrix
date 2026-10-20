@@ -124,17 +124,36 @@ impl Design {
         solved: &[SolvedTier],
     ) -> Result<Option<SolidMetrics>, ConcaveResolveError> {
         let (planes, tools, _) = self.geometry_from_solved(solved)?;
-        let flat = measure_solid(&planes);
+        Ok(Self::carved_metrics(
+            measure_solid(&planes),
+            &planes,
+            &tools,
+        ))
+    }
+
+    /// The flat stone's `flat` metrics ([`measure_solid`] of `planes`) with `volume`
+    /// replaced by the volume of the stone carved by `tools` ([`build_solid_mesh_geom`]):
+    /// the one carved measure every yield and carat figure reads
+    /// ([`Self::measure_from_solved_geom`] is this on a design's own geometry).
+    ///
+    /// With no tools this is `flat` itself, bit for bit, and without touching the
+    /// mesh. `None` when `flat` is `None`, or when the tools leave no closed stone.
+    #[must_use]
+    pub fn carved_metrics(
+        flat: Option<SolidMetrics>,
+        planes: &[(DVec3, f64)],
+        tools: &[ToolPrimitive],
+    ) -> Option<SolidMetrics> {
         if tools.is_empty() {
-            return Ok(flat);
+            return flat;
         }
-        Ok(match build_solid_mesh_geom(&planes, &tools) {
+        match build_solid_mesh_geom(planes, tools) {
             SolidStatus::Closed(mesh) => flat.map(|metrics| SolidMetrics {
                 volume: mesh_volume(&mesh),
                 ..metrics
             }),
             _ => None,
-        })
+        }
     }
 
     /// [`Self::planes_from_solved`] restricted to the first `through_tier + 1`
@@ -311,6 +330,10 @@ impl Design {
     /// The tools of the concave tiers among the first `steps`
     /// [`Self::preview_steps`]: the concave half of [`Self::try_planes_after_steps`].
     /// Empty for the rough and for a design without concave tiers.
+    ///
+    /// A concave step's tools are the finished stone's tools for that tier (same `W`, same
+    /// contact points), so the slider shows the groove or dimple the finished stone will
+    /// carry, not a tool re-sized to the half-cut stone.
     ///
     /// # Errors
     ///

@@ -30,10 +30,11 @@ use crate::{
 
 use super::{
     CHUNK_BUDGET_BYTES, GpuFrameError, GpuFrameScene, GpuPipelineKind, REDUCE_SHADER_SRC,
-    WORKGROUP_SIZE,
     bind_groups::{TransportDispatchArgs, build_bind_group},
     classify_material,
-    dispatch::{EnvironmentParams, chunk_pixels_for, environment_params},
+    dispatch::{
+        EnvironmentParams, chunk_pixels_for, count_u32, environment_params, workgroups_for,
+    },
     readback::GpuReduceParams,
     renderer::GpuFrameRenderer,
 };
@@ -225,7 +226,7 @@ impl GpuFrameRenderer {
         };
 
         let bind_group = build_bind_group(&bind_args);
-        let workgroups = (tuples as u32).div_ceil(WORKGROUP_SIZE as u32);
+        let workgroups = workgroups_for(tuples);
         let _ = compute::dispatch(
             &self.ctx.device,
             &self.ctx.queue,
@@ -238,7 +239,7 @@ impl GpuFrameRenderer {
             .as_ref()
             .expect("ensure_pixel_capacity just populated both slots");
         let reduce_params = GpuReduceParams {
-            num_pixels: pixels_this_chunk as u32,
+            num_pixels: count_u32(pixels_this_chunk),
             num_samples: spp,
             _pad0: 0,
             _pad1: 0,
@@ -259,7 +260,7 @@ impl GpuFrameRenderer {
                 (2, &pixel_output.buffer),
             ],
         );
-        let reduce_workgroups = (pixels_this_chunk as u32).div_ceil(WORKGROUP_SIZE as u32);
+        let reduce_workgroups = workgroups_for(pixels_this_chunk);
         let _ = compute::dispatch(
             &self.ctx.device,
             &self.ctx.queue,
@@ -333,7 +334,7 @@ impl<'s, 'a> AsyncCallInputs<'s, 'a> {
     }
 
     /// The camera and transport uniforms for the chunk starting at `first_pixel`.
-    const fn chunk_params(
+    fn chunk_params(
         &self,
         first_pixel: usize,
         pixels_this_chunk: usize,
@@ -361,7 +362,7 @@ impl<'s, 'a> AsyncCallInputs<'s, 'a> {
             num_samples: self.spp,
         };
         let params = GpuTransportParams::new(
-            pixels_this_chunk as u32,
+            count_u32(pixels_this_chunk),
             scene.max_bounces,
             self.sample_offset,
             env_mode,
@@ -373,7 +374,7 @@ impl<'s, 'a> AsyncCallInputs<'s, 'a> {
             light_pitch,
             self.white_balance.to_array(),
         )
-        .with_pixel_offset(first_pixel as u32)
+        .with_pixel_offset(count_u32(first_pixel))
         .with_debug_buffers_disabled()
         .with_studio_use_d65(use_d65)
         .with_studio_model(studio_model)

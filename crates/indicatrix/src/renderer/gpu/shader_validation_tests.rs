@@ -22,6 +22,10 @@ const SHADERS: &[(&str, &str)] = &[
         )),
     ),
     (
+        "whitted.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/whitted.generated.wgsl")),
+    ),
+    (
         "transport_functions.generated.wgsl",
         include_str!(concat!(
             env!("OUT_DIR"),
@@ -76,6 +80,61 @@ const SHADERS: &[(&str, &str)] = &[
         "shading_normal.wgsl",
         include_str!("../shaders/shading_normal.wgsl"),
     ),
+    (
+        "ew_generate.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_generate.generated.wgsl")),
+    ),
+    (
+        "ew_extend.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_extend.generated.wgsl")),
+    ),
+    (
+        "ew_scatter.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_scatter.generated.wgsl")),
+    ),
+    (
+        "ew_nee_hg.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_nee_hg.generated.wgsl")),
+    ),
+    (
+        "ew_surface.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_surface.generated.wgsl")),
+    ),
+    (
+        "ew_arm_frosted.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_arm_frosted.generated.wgsl")),
+    ),
+    (
+        "ew_arm_tir.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_arm_tir.generated.wgsl")),
+    ),
+    (
+        "ew_arm_uni_entry.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_arm_uni_entry.generated.wgsl")),
+    ),
+    (
+        "ew_arm_uni_internal.generated.wgsl",
+        include_str!(concat!(
+            env!("OUT_DIR"),
+            "/ew_arm_uni_internal.generated.wgsl"
+        )),
+    ),
+    (
+        "ew_arm_generic.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_arm_generic.generated.wgsl")),
+    ),
+    (
+        "ew_split_resolve.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_split_resolve.generated.wgsl")),
+    ),
+    (
+        "ew_tail.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_tail.generated.wgsl")),
+    ),
+    (
+        "ew_finalize.generated.wgsl",
+        include_str!(concat!(env!("OUT_DIR"), "/ew_finalize.generated.wgsl")),
+    ),
 ];
 
 fn validate(name: &str, source: &str) -> Result<(), String> {
@@ -103,6 +162,47 @@ fn every_shader_parses_and_validates() {
 "
         )
     );
+}
+
+/// The concave-tool probe (`renderer::gpu::tool_check`) is appended to the megakernel unit
+/// at run time; it must validate against the real bindings and tool functions.
+#[test]
+fn the_tool_probe_appended_to_the_megakernel_parses_and_validates() {
+    let megakernel = SHADERS[0].1;
+    let probe = include_str!("../shaders/tool_probe.wgsl");
+    let source = [megakernel, probe].join("\n");
+    if let Err(message) = validate("spectral_transport + tool_probe.wgsl", &source) {
+        panic!("shader validation failed:\n{message}");
+    }
+}
+
+/// The WGSL twin of the tool packing (`transport_physics/10_concave_tools.wgsl`) and its
+/// Rust producer (`geometry::tool::pack_planes_and_tools`) agree on the record layout and on
+/// the constants the carve shares with the CPU (`intersect_stone::T_FLOOR`, the interval
+/// epsilons), so neither can drift unnoticed.
+#[test]
+fn the_wgsl_tool_record_layout_and_constants_match_the_rust_producer() {
+    let source = include_str!("../shaders/transport_physics/10_concave_tools.wgsl");
+    let constant = |name: &str| -> String {
+        let prefix = format!("const {name}: ");
+        source
+            .lines()
+            .find_map(|line| line.strip_prefix(&prefix))
+            .unwrap_or_else(|| panic!("10_concave_tools.wgsl has no `{prefix}`"))
+            .split('=')
+            .nth(1)
+            .unwrap_or_else(|| panic!("`{name}` has no value"))
+            .trim()
+            .trim_end_matches(';')
+            .to_string()
+    };
+    assert_eq!(
+        constant("CT_RECORD_VECS"),
+        format!("{}u", crate::geometry::tool::TOOL_RECORD_VECS)
+    );
+    assert_eq!(constant("CT_T_FLOOR"), "1e-4");
+    assert_eq!(constant("CT_TANGENT_EPS"), "1e-7");
+    assert_eq!(constant("CT_PARALLEL_EPS"), "1e-7");
 }
 
 /// The zone-table layout echo shader, followed by the table declarations it copies (the
@@ -135,10 +235,25 @@ fn the_zone_kernel_echo_shader_parses_and_validates() {
 }
 
 /// The zoned-absorption units are in the megakernel and wavefront shader text (and their
-/// two anchor patches applied), and never in the Tier 2 per-function unit.
+/// two anchor patches applied), and never in the Tier 2 per-function unit. The Ray-Traced
+/// (`whitted`) unit is not a transport unit and is deliberately absent from the list.
 #[test]
 fn the_generated_transport_shaders_hold_the_zoning_units() {
-    for (name, source) in SHADERS.iter().take(3) {
+    const TRANSPORT_UNITS: [&str; 3] = [
+        "spectral_transport.generated.wgsl",
+        "transport_functions.generated.wgsl",
+        "wavefront_transport.generated.wgsl",
+    ];
+    let units: Vec<_> = SHADERS
+        .iter()
+        .filter(|(name, _)| TRANSPORT_UNITS.contains(name))
+        .collect();
+    assert_eq!(
+        units.len(),
+        TRANSPORT_UNITS.len(),
+        "a transport unit left SHADERS"
+    );
+    for (name, source) in units {
         let expected = !name.starts_with("transport_functions");
         assert_eq!(
             source.contains("fn zoned_interior_absorption("),
@@ -203,6 +318,10 @@ const TRANSPORT_PHYSICS_PIECE_SOURCES: &[(&str, &str)] = &[
         "transport_physics/09_lighting_presets.wgsl",
         include_str!("../shaders/transport_physics/09_lighting_presets.wgsl"),
     ),
+    (
+        "transport_physics/10_concave_tools.wgsl",
+        include_str!("../shaders/transport_physics/10_concave_tools.wgsl"),
+    ),
 ];
 
 /// Every `transport_bounce/*.wgsl` piece, by the name `build.rs`'s
@@ -237,8 +356,28 @@ const TRANSPORT_BOUNCE_PIECE_SOURCES: &[(&str, &str)] = &[
         include_str!("../shaders/transport_bounce/07_camera_and_mode_selection.wgsl"),
     ),
     (
-        "transport_bounce/08_bounce_step.wgsl",
-        include_str!("../shaders/transport_bounce/08_bounce_step.wgsl"),
+        "transport_bounce/08a_index_setup.wgsl",
+        include_str!("../shaders/transport_bounce/08a_index_setup.wgsl"),
+    ),
+    (
+        "transport_bounce/08b_extend_scatter.wgsl",
+        include_str!("../shaders/transport_bounce/08b_extend_scatter.wgsl"),
+    ),
+    (
+        "transport_bounce/08c_surface.wgsl",
+        include_str!("../shaders/transport_bounce/08c_surface.wgsl"),
+    ),
+    (
+        "transport_bounce/08d_arms_frosted_tir_uni_entry.wgsl",
+        include_str!("../shaders/transport_bounce/08d_arms_frosted_tir_uni_entry.wgsl"),
+    ),
+    (
+        "transport_bounce/08e_arms_uni_internal_generic.wgsl",
+        include_str!("../shaders/transport_bounce/08e_arms_uni_internal_generic.wgsl"),
+    ),
+    (
+        "transport_bounce/08f_dispatch_split_tail_step.wgsl",
+        include_str!("../shaders/transport_bounce/08f_dispatch_split_tail_step.wgsl"),
     ),
     (
         "transport_bounce/09_finalize_and_ray_gen.wgsl",
@@ -552,3 +691,8 @@ fn distance_and_nee_stream_salts_match_between_cpu_and_wgsl() {
         );
     }
 }
+
+// The event wavefront checks (kernel binding tables, struct layouts, text invariants) live in
+// their own file to keep this one under the 800-line rule.
+#[path = "shader_validation_ew_tests.rs"]
+mod ew;

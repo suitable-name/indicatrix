@@ -212,8 +212,8 @@ discarding what you typed).
 Once you have an existing tier loaded, the Tier tab shows a row of small
 chips below the form fields, one per index position the tier occupies. If
 the tier has more positions than fit, the row scrolls sideways. Each chip
-carries two small buttons, each at least 20 pixels square, with a hover
-tip:
+carries small buttons, each at least 20 pixels square, with a hover
+tip (the Simple interface keeps only the cross):
 
 - The broken-chain button detaches *that one facet* from its symmetric
   family, leaving the rest of the tier's indices exactly as they were. Once
@@ -221,6 +221,8 @@ tip:
   reattaches the facet. This is separate from, and more precise than, the
   whole-tier Detach/Reattach button below. The Simple interface leaves
   this button out.
+- The snowflake button (Advanced interface) frosts or polishes *that one
+  facet*; see "Frosting a Tier," below. A frosted chip is tinted.
 - The cross button removes just that one facet from the tier.
 
 The whole row of chips is **one Tab stop**, so Tab does not have to walk past
@@ -252,6 +254,22 @@ clicking **+ Add**.
 None of these touch the design until you act on them — unlike the
 Angle/Meets/Name fields above, they apply immediately as their own undoable
 edit, one action at a time.
+
+## Frosting a Tier
+
+A frosted facet is cut with a matte, light-scattering finish instead of a polished
+one. Below the chip rows the Tier tab has a **Finish** row with a **Frosted** tick
+box: tick it to frost every facet of the loaded tier, clear it to polish them
+again. To frost only some facets, use the snowflake button on their chips
+(Advanced interface); the tick box then stays clear and a note reads "Some facets
+of this tier are frosted; they are marked on the facet chips." Each change applies
+at once as one undoable edit. The tier table marks a frosted tier with a small
+frost icon in its row (Chapter 3). The renders show the frosting, the cutting
+sheet says so, and it is saved in the design file and in a Gem Cut Studio export
+(Chapter 11). The tilt curves follow it too (Chapter 14); the live Checks numbers
+and the optimizer's scores still treat every facet as polished. The Stone tab's
+**Frosted Girdle** switch (Chapter 2) is a separate, stone-wide setting for the
+girdle band.
 
 ## Detach and Reattach
 
@@ -521,16 +539,8 @@ alike. The box takes a plain number or a small
 calculation (`0.5`, `-0.25`, `1/4`, `0.3+0.2`), worked out by the app the same
 way as the Angle field, with a decimal point on every computer. If the text
 is empty or cannot be read, a message in the corner says so and nothing
-changes. The offset moves the group the cursor row belongs to, so click one
-of the selected tiers first; otherwise the message says to do that. Like any
-nudge it is one undoable edit.
-
-**Note:** the cyan outline disappears as soon as you actually nudge the
-group (a nudge is itself an edit, and every edit refreshes the tier list) —
-but the selection it represented keeps applying underneath, so a second
-nudge right after still moves the same set of tiers together. Only the
-visible outline needs a fresh Ctrl+click to reappear; the batching itself
-isn't affected.
+changes. The offset moves every ticked tier; you do not have to click a row
+first. Like any nudge it is one undoable edit.
 
 ## Removing a Tier
 

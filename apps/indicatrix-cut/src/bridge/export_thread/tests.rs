@@ -12,6 +12,8 @@ use indicatrix::{
 #[test]
 fn run_export_produces_a_valid_png_for_a_tiny_scene() {
     let scene = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: 0.60,
         pitch: 0.45,
         distance: 2.4,
@@ -31,6 +33,7 @@ fn run_export_produces_a_valid_png_for_a_tiny_scene() {
         head_shadow_deg: 16.0,
     };
     let params = ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 8,
         height: 8,
         samples_per_pixel: 1,
@@ -82,6 +85,8 @@ fn run_export_produces_a_valid_png_for_a_tiny_scene() {
 #[test]
 fn run_export_with_an_hdr_environment_map_still_produces_a_valid_png() {
     let scene = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: 0.60,
         pitch: 0.45,
         distance: 2.4,
@@ -103,6 +108,7 @@ fn run_export_with_an_hdr_environment_map_still_produces_a_valid_png() {
         head_shadow_deg: 16.0,
     };
     let params = ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 8,
         height: 8,
         samples_per_pixel: 1,
@@ -140,6 +146,8 @@ fn run_export_with_an_hdr_environment_map_still_produces_a_valid_png() {
 #[test]
 fn run_export_honors_pre_set_cancellation_and_writes_no_file() {
     let scene = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: 0.60,
         pitch: 0.45,
         distance: 2.4,
@@ -159,6 +167,7 @@ fn run_export_honors_pre_set_cancellation_and_writes_no_file() {
         head_shadow_deg: 16.0,
     };
     let params = ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 8,
         height: 8,
         samples_per_pixel: 64,
@@ -192,6 +201,8 @@ fn run_export_honors_pre_set_cancellation_and_writes_no_file() {
 
 fn tiny_scene() -> SceneSnapshot {
     SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: 0.60,
         pitch: 0.45,
         distance: 2.4,
@@ -218,6 +229,7 @@ fn tiny_scene() -> SceneSnapshot {
 fn srgb_export_is_byte_identical_regardless_of_which_save_png_path_runs() {
     let scene = tiny_scene();
     let params = ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 6,
         height: 5,
         samples_per_pixel: 2,
@@ -280,6 +292,7 @@ fn wide_gamut_export_embeds_an_icc_profile_chunk() {
     for color_space in [ColorSpace::DisplayP3, ColorSpace::Rec2020] {
         let scene = tiny_scene();
         let params = ExportParams {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 6,
             height: 5,
             samples_per_pixel: 2,

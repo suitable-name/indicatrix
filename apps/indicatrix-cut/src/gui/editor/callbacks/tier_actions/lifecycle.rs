@@ -20,7 +20,7 @@ use crate::{
         editor::{
             callbacks::solve_actions::clear_analysis_results,
             loading,
-            material_lookup::nearest_built_in_material,
+            material_lookup::{EditorMaterialLookup, nearest_built_in_material},
             native_io::{self, AfterSave, do_open_native},
             stall_guard::stall_guard,
             state::{
@@ -112,6 +112,10 @@ thread_local! {
 struct LoadedDesignOutcome<'a> {
     loaded: loading::LoadedDesign,
     printed_proportions: Option<indicatrix::geometry::stone_metrics::ExternalProportions>,
+    /// The library entry's persisted material (`diagram_previews.preview_material`), tried
+    /// by [`apply_loaded_design`] when the design itself names none; `None` for a remote
+    /// load, which has none to read.
+    preview_material: Option<String>,
     /// What the success toast calls the design -- see [`apply_loaded_design`]'s own
     /// doc comment.
     label: &'a str,
@@ -142,6 +146,10 @@ struct LoadedDesignOutcome<'a> {
 /// own catalogue title, or the remote branch's bare `.asc` file name -- a remote
 /// fetch (`gui::library::remote::RemoteDesignSource`) never carries the catalogue
 /// title alongside its `.asc` text, only the attachment's own name.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a single ordered state transition; steps share many locals"
+)]
 fn apply_loaded_design(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -151,13 +159,29 @@ fn apply_loaded_design(
     outcome: LoadedDesignOutcome<'_>,
 ) {
     let LoadedDesignOutcome {
-        loaded,
+        mut loaded,
         printed_proportions,
+        preview_material,
         label: loaded_label,
         source_entry_id,
         catalogue_url,
     } = outcome;
     let schedule_ri = loaded.design.meta.refractive_index;
+    // The design carries the material the library shows for its entry, so the Stone tab
+    // is only needed to CHANGE it. Set on the design BEFORE the session is built: no undo
+    // step, and the fresh session is clean (not an unsaved change). A design file that
+    // names a material keeps its own (`apply_library_material` leaves it alone).
+    let applied_library_material = {
+        let ctx = render_ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        indicatrix_editor::loading::apply_library_material(
+            &mut loaded.design,
+            preview_material.as_deref(),
+            &EditorMaterialLookup::new(&ctx.custom_materials),
+        )
+    };
+    let design_names_material = loaded.design.material.name.is_some();
     let mut st = state.borrow_mut();
     // `replace_wholesale`, not a plain `*st = ...` -- see `do_new_design_create`'s
     // matching comment and `EditorState::replace_wholesale`'s own doc comment: this
@@ -201,6 +225,7 @@ fn apply_loaded_design(
         // Same reasoning as `last_pushed_scratch` immediately above -- a freshly
         // replaced `EditorState` has no cached material-combo options yet either.
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
+        applied_library_material,
         has_design: true,
     });
     // A Deep Solve/Optimize verdict computed against the design just replaced no
@@ -255,9 +280,12 @@ fn apply_loaded_design(
         );
     }
     // Suggests the built-in material whose n_D is nearest the schedule RI (within
-    // 0.01) -- never applied automatically, only offered as a banner the user can
-    // dismiss or accept.
-    if let Some((name, ri)) = nearest_built_in_material(schedule_ri, 0.01) {
+    // 0.01) for a design that still names none after the load (the library gave it
+    // nothing to apply): only offered as a banner the user can dismiss or accept. A design
+    // that carries a material has nothing left to suggest.
+    if let Some((name, ri)) =
+        nearest_built_in_material(schedule_ri, 0.01).filter(|_| !design_names_material)
+    {
         // Unrelated pre-existing build break fixed in passing (not part of this
         // session's GPU/display-thread work): the suggestion text is built BEFORE
         // `name` moves into `set_material_suggestion_name` below, not after.
@@ -441,7 +469,15 @@ fn do_load_selected(
             i64::from(entry_id),
             move |ui, result| match result {
                 Ok(remote) => {
-                    match loading::design_from_asc_text(&remote.file_name, &remote.asc_text, None) {
+                    // `.asc` has no notation for frosting: the reply carries it beside the
+                    // text, and it is applied to the design built from that text.
+                    let design =
+                        loading::design_from_asc_text(&remote.file_name, &remote.asc_text, None)
+                            .map(|mut loaded| {
+                                loaded.design.apply_imported_frosting(&remote.frosting);
+                                loaded
+                            });
+                    match design {
                         Ok(loaded) => REMOTE_LOAD_TARGET.with(|cell| {
                             let target = cell.borrow().clone();
                             if let Some(state) = target {
@@ -458,6 +494,9 @@ fn do_load_selected(
                                     LoadedDesignOutcome {
                                         loaded,
                                         printed_proportions: None,
+                                        // The remote reply carries no persisted material:
+                                        // the refractive index names it.
+                                        preview_material: None,
                                         label: &remote.file_name,
                                         // A remote entry id and a local row id occupy
                                         // independent id spaces (`EditorState::
@@ -519,9 +558,16 @@ fn load_local_entry(
     let spawned = std::thread::Builder::new()
         .name("load-selected-read".to_owned())
         .spawn(move || {
-            let read = Database::with_read_connection(crate::gui::DB_PATH, &db, |database| {
-                database.get_diagram_full(i64::from(entry_id))
-            });
+            // The entry's persisted material rides along with the record: the library shows
+            // it, so the design opens carrying it (`apply_library_material`).
+            let (read, preview_material) =
+                Database::with_read_connection(crate::gui::DB_PATH, &db, |database| {
+                    let id = i64::from(entry_id);
+                    (
+                        database.get_diagram_full(id),
+                        database.get_preview_material(id).ok().flatten(),
+                    )
+                });
             let parsed = match read {
                 Ok(Some(full)) => loading::design_from_full_record(&full).map(|loaded| {
                     let printed = loading::external_proportions_from_full_record(&full);
@@ -556,6 +602,7 @@ fn load_local_entry(
                         LoadedDesignOutcome {
                             loaded,
                             printed_proportions,
+                            preview_material,
                             label: &full.title,
                             source_entry_id: Some(full.entry_id),
                             catalogue_url: Some(&full.url),

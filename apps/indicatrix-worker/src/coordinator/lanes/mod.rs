@@ -559,6 +559,9 @@ impl WorkerLane for OwnLane {
                 "the own lane's tracer panicked on this scene".to_string(),
             );
         }
+        if let Some(error) = traced.failed {
+            return ChunkResult::partial(traced.sum, traced.done, error.message);
+        }
         if traced.done < range.samples {
             return ChunkResult::partial(traced.sum, traced.done, "cancelled".to_string());
         }

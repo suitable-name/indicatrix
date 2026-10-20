@@ -4,6 +4,7 @@
 //! Conventions: scores are `ObjectiveWeights::score` figures (lower is better); an episode's
 //! "improvement" is `base score - final score` (never negative: the environments are greedy).
 
+use serde::Serialize;
 use std::collections::VecDeque;
 
 use indicatrix_ai::{
@@ -73,7 +74,7 @@ impl EpisodeSummary {
 pub(super) enum Bucket {
     /// The proposal changed the design.
     Accepted,
-    /// An unsafe angle, no usable mast, a non-finite delta or a wrongly sized action.
+    /// An unsafe angle, no usable mast, invalid action, or preserved meet/constraint violation.
     Unsafe,
     /// The candidate or its tier relations did not solve.
     Unsolvable,
@@ -96,6 +97,7 @@ pub(super) const fn bucket(rejection: Option<StepRejection>) -> Bucket {
             StepRejection::UnsafeAngle
             | StepRejection::NoUsableMast
             | StepRejection::NonFiniteDelta
+            | StepRejection::PreservationViolation
             | StepRejection::WrongActionLength { .. },
         ) => Bucket::Unsafe,
         Some(StepRejection::Unsolvable | StepRejection::RelationsUnsolvable) => Bucket::Unsolvable,
@@ -117,7 +119,7 @@ pub struct RolloutStats {
     pub finished: Vec<EpisodeSummary>,
     /// Steps that changed the design.
     pub accepted: usize,
-    /// Steps rejected as unsafe (angle window, mast, non-finite or wrongly sized action).
+    /// Steps rejected as unsafe (angle window, mast, invalid action, or meet/constraint preservation).
     pub rej_unsafe: usize,
     /// Steps rejected because the candidate or its relations did not solve.
     pub rej_unsolvable: usize,
@@ -190,7 +192,8 @@ impl RolloutStats {
 /// Result of one [`super::TrainingRunner::iterate`].
 #[derive(Debug)]
 pub struct IterationReport {
-    /// PPO update metrics (all zero in imitation mode).
+    /// PPO update metrics (all zero in imitation mode and when no update was installed during
+    /// this iteration).
     pub train: TrainingMetrics,
     /// Mean reward per step of the rollout.
     pub mean_step_reward: f32,
@@ -207,7 +210,8 @@ pub struct IterationReport {
     pub explained_variance: Option<f32>,
     /// Fraction of this rollout's steps that changed the design (0-1).
     pub accepted_frac: f32,
-    /// Imitation update metrics; `None` in PPO mode.
+    /// Imitation update metrics of the update installed during this iteration (see
+    /// [`Self::update_of_iteration`]); `None` in PPO mode and when no update was installed.
     pub imitation: Option<ImitationMetrics>,
     /// Samples of this rollout that got a usable finite-difference label.
     pub labels_this_round: usize,
@@ -217,8 +221,24 @@ pub struct IterationReport {
     pub rollout_secs: f32,
     /// Wall-clock seconds of the rollout spent probing for labels (phase 1 of the passes).
     pub label_secs: f32,
-    /// Wall-clock seconds of the update.
+    /// The update's own wall-clock seconds, measured on the update thread (0 when no update was
+    /// installed during this iteration). In imitation mode it overlaps the rollout.
     pub update_secs: f32,
+    /// Cumulative host milliseconds spent by imitation/PPO packing.
+    pub packing_ms: f32,
+    /// Cumulative host milliseconds spent in imitation/PPO update bodies.
+    pub training_host_ms: f32,
+    /// Host milliseconds spent exporting trained weights to the rollout network.
+    pub weight_export_ms: f32,
+    /// Host milliseconds in the batched rollout forward (not device utilization).
+    pub rollout_forward_ms: f32,
+    /// Seconds the main thread waited for the update thread at the wait point (0 when the
+    /// update had already finished). Near 0: the rollout is the bottleneck; large: the update.
+    pub update_wait_secs: f32,
+    /// The iteration whose rollout the reported update trained on: this one in PPO mode, the
+    /// previous one in imitation mode, `None` when no update was installed (iteration 0, or the
+    /// first one after a restart).
+    pub update_of_iteration: Option<usize>,
     /// Candidate evaluations of this iteration: the steps', the probes' and the oracle's.
     pub evaluations_this_round: usize,
 }
@@ -277,7 +297,8 @@ pub struct RunnerStats {
     pub rej_manufacturability: usize,
     /// Valid-but-not-better rejections in the last rollout.
     pub rej_not_improved: usize,
-    /// The last imitation update's metrics; `None` in PPO mode and before the first update.
+    /// The last installed imitation update's metrics (one iteration behind the rollout); `None`
+    /// in PPO mode and before the first update was installed.
     pub last_imitation: Option<ImitationMetrics>,
     /// Labelled states in the aggregate after the last update.
     pub labelled_samples: usize,
@@ -292,8 +313,16 @@ pub struct RunnerStats {
     pub rollout_secs: f32,
     /// Wall-clock seconds of the last rollout spent probing for labels.
     pub label_secs: f32,
-    /// Wall-clock seconds of the last update.
+    /// Wall-clock seconds of the last installed update (its own duration on the update thread).
     pub update_secs: f32,
+    pub weight_export_secs: f32,
+    /// Host milliseconds spent in batched rollout forwards.
+    pub rollout_forward_ms: f32,
+    /// Seconds the last iteration waited for the update thread.
+    pub update_wait_secs: f32,
+    /// The iteration whose rollout the update installed during the last iteration trained on;
+    /// `None` when none was installed (see `IterationReport::update_of_iteration`).
+    pub update_of_iteration: Option<usize>,
     /// Candidate evaluations of the last iteration.
     pub evaluations_this_round: usize,
 }
@@ -335,6 +364,10 @@ impl RunnerStats {
             rollout_secs: 0.0,
             label_secs: 0.0,
             update_secs: 0.0,
+            weight_export_secs: 0.0,
+            rollout_forward_ms: 0.0,
+            update_wait_secs: 0.0,
+            update_of_iteration: None,
             evaluations_this_round: 0,
         }
     }
@@ -351,9 +384,9 @@ impl RunnerStats {
 /// Evaluation fidelity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvalFidelity {
-    /// The single canonical pose the environments train on (milliseconds per design).
+    /// The single canonical pose used by fast scoring.
     Fast,
-    /// The full tilt sweep (about a second and a half per evaluation).
+    /// The full tilt sweep.
     Full,
 }
 
@@ -364,8 +397,8 @@ pub struct EvalPasses {
     /// Also play one stochastic episode per design: the exploration policy of the run (the
     /// lower bound a trained model must beat).
     pub sampled: bool,
-    /// Also play the finite-difference oracle (the upper bound of what this policy class can do
-    /// per step: the direction rule on the true sensitivities, same line search).
+    /// Also play the finite-difference reference direction on measured sensitivities with the
+    /// same line search. It is not a guaranteed upper bound.
     pub oracle: bool,
 }
 
@@ -406,4 +439,35 @@ pub struct EvalReport {
     pub base_optics: Optics,
     /// Mean optics after.
     pub final_optics: Optics,
+    /// Deterministically ordered per-design outcomes, including objective and material context.
+    pub cases: Vec<EvalCase>,
+}
+
+/// One held-out design outcome and the exact sampled task context.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct EvalCase {
+    pub design_id: i64,
+    pub design_title: String,
+    pub objective: String,
+    pub target_material: String,
+    pub source_material: String,
+    pub seed: u64,
+    pub material_augmentation: String,
+    pub target_augmentation: String,
+    pub lighting: String,
+    pub shape_target: String,
+    pub base_score: Option<f32>,
+    pub final_score: Option<f32>,
+    pub score_drop: Option<f32>,
+    pub accepted: Option<bool>,
+    pub evaluations: usize,
+    pub steps: usize,
+    pub elapsed_seconds: Option<f32>,
+    pub model_seconds: Option<f32>,
+    pub failure: Option<String>,
+    pub classical_base_score: Option<f32>,
+    pub classical_final_score: Option<f32>,
+    pub classical_evaluations: usize,
+    pub classical_seconds: Option<f32>,
+    pub classical_failure: Option<String>,
 }

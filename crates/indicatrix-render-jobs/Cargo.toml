@@ -16,12 +16,10 @@ publish = { workspace = true }
 [dependencies]
 # `SceneState`: the fully resolved scene a job freezes (material, planes, lighting, camera).
 indicatrix-net = { workspace = true, features = ["render"] }
+indicatrix = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-[dev-dependencies]
-# Test scenes: `GemMaterial::diamond()`, `StandardGemCuts::standard_round_brilliant()`.
-indicatrix = { workspace = true, features = ["serde"] }
 
 [lints]
 workspace = true

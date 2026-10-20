@@ -143,7 +143,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # Test-only seams (file dialogs, clipboard, opener) behind the `ui-harness` feature; see
 # `harness_support`.
-slint-harness-hooks = { workspace = true, optional = true }
+uiprobe-hooks = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -172,10 +172,10 @@ physical-color = []
 experimental = ["physical-color"]
 
 # Test-only UI harness (`tests/ui_harness`): compiles `crate::harness_support` (forwards to
-# `slint-harness-hooks`: the file-picker answer queue that replaces the native `rfd` dialog,
+# `uiprobe-hooks`: the file-picker answer queue that replaces the native `rfd` dialog,
 # the clipboard and opener captures, plus the paths the harness asserts are inside its
 # throw-away profile). Never part of a shipped build.
-ui-harness = ["dep:slint-harness-hooks"]
+ui-harness = ["dep:uiprobe-hooks"]
 
 [build-dependencies]
 slint-build = { workspace = true }
@@ -194,8 +194,9 @@ winresource = { workspace = true }
 sha2 = { workspace = true }
 # The UI harness drives the real `MainWindow` through Slint's testing backend (accessibility
 # tree queries, mock time, event-loop pumping). `screenshots` adds the software renderer for
-# `ui_screens`; the other targets keep the mock renderer.
-slint-harness = { workspace = true, features = ["screenshots"] }
+# `ui_screens`; the other targets keep the mock renderer. `recording` adds the video recorder
+# (cursor, ripples, ffmpeg sink, captions) for `tutorial_videos`.
+uiprobe = { workspace = true, features = ["screenshots", "recording"] }
 
 # The three UI targets run only on command, like the GPU equivalence harness: `test = false`
 # keeps them out of `cargo test` / `--tests` / `--all-targets` (so also out of a workspace
@@ -222,6 +223,15 @@ test = false
 [[test]]
 name = "ui_screens"
 path = "tests/ui_screens/main.rs"
+harness = false
+test = false
+required-features = ["ui-harness"]
+
+# Plays every built-in tutorial in the real app and writes one video per tutorial (MP4, captions,
+# chapters) into the workspace's `videos/` folder. Needs ffmpeg on PATH (or `UIPROBE_FFMPEG`).
+[[test]]
+name = "tutorial_videos"
+path = "tests/tutorial_videos/main.rs"
 harness = false
 test = false
 required-features = ["ui-harness"]

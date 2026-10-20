@@ -24,6 +24,15 @@ dropped.)
 
 ## Why Use a Remote Worker
 
+Both Path-Traced and Ray-Traced images can be sent to protocol-29 peers. Ray-Traced
+work carries its engine, AA count and Fire option with the resolved scene; tap ranges
+travel as sample ranges and are never merged with Path-Traced samples. Display-only
+Ray-Traced pictures are tone-mapped without the spectral denoiser. Older peers are
+refused during the handshake; update the viewer, coordinator and joined workers together.
+Protocol 29 also changed how the backdrop is rendered (a lit tray seen through the
+stone's windows, Chapter 2): a peer on the old rule would produce samples that cannot be
+merged with new ones, so it is refused the same way.
+
 Rendering — especially a high-resolution export, or a live view with many
 samples per pixel — is faster on a more powerful machine. A remote worker
 lets you point this app at another computer (or a render server) on your
@@ -152,7 +161,7 @@ Where the choice lives:
 
 Click **Test Connection**. While it runs, the button shows "Testing...".
 On success you'll see something like "Compatible -- coordinator (3
-workers) (protocol v16)" (or "CPU, 16 threads" / a GPU description for a
+workers) (protocol v27)" (or "CPU, 16 threads" / a GPU description for a
 coordinator that renders on its own with `--render` and has no workers
 joined yet, or "library only (no render capacity)" if the remote only
 serves the design library — a coordinator with no joined workers and no
@@ -276,7 +285,9 @@ not even a routine status update — for too long, you'll see a message
 mentioning "worker silent for &lt;N&gt;s." The wait allowed is 8 seconds for an
 ordinary render already underway, or a more generous 30 seconds for the
 very first response of a brand-new job (to allow for a slow warm-up on a
-busy or newly started machine).
+busy or newly started machine). While a large finished picture is on its way
+over a slow link, the app adds the time that picture needs at about 4 MiB per
+second, so a big frame in flight is not counted as silence.
 
 A coordinator that loses every worker able to finish a job reports "All
 remote workers were lost"; the app treats that exactly like a silent

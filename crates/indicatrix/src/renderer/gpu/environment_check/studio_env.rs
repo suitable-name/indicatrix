@@ -6,7 +6,7 @@ use glam::Vec3;
 use crate::{
     optics::raytracer::{
         DEFAULT_HEAD_SHADOW_COSINES, DEFAULT_HEAD_SHADOW_DEG, LightingModel, LightingPreset,
-        TentParams, head_shadow_cosines, sample_studio_environment_with_rig_shadow,
+        TentParams, head_shadow_cosines, sample_studio_environment_with_rig_shadow_tray,
     },
     renderer::gpu::compute,
 };
@@ -25,7 +25,10 @@ pub struct StudioEnvCase {
     light_yaw: f32,
     light_pitch: f32,
     model: f32,
-    _pad1: f32,
+    /// The backdrop tray radiance at exposure 1 (`EnvironmentSource::Studio::backdrop`;
+    /// was `_pad1`); `0.0` = As Lit, the preset's own ground. The twin of the CPU `_tray`
+    /// entry points' `tray` argument.
+    tray: f32,
     /// Was `_pad2` -- nonzero for a case built from a preset where [`LightingPreset::uses_d65`]
     /// is true, mirroring
     /// `optics::raytracer::environment::sample_studio_environment_with_rig`'s own
@@ -155,7 +158,7 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
                                 light_yaw,
                                 light_pitch,
                                 model,
-                                _pad1: 0.0,
+                                tray: 0.0,
                                 use_d65,
                                 observer: observer.to_array(),
                                 _pad2: 0.0,
@@ -183,8 +186,126 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
     }
 
     push_adversarial_rig_cases(&mut cases, &poses);
+    push_tray_cases(&mut cases);
 
     cases
+}
+
+/// Lit-tray cases (`tray > 0`, the backdrop tray radiance at exposure 1): every non-UV
+/// preset at directions below the horizon, inside the `|d.y| < 0.05` blend band (both
+/// edges and the middle) and above it, for three tray radiances (a dim, a white-paper
+/// and a ring-light-bright one), two poses and two exposures, with and without an observer;
+/// the ASET tray additionally exercises the D65 table at both ends of its range. Then
+/// [`push_tray_observer_dip_cases`] puts the head-shadow cone across the horizon.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "the case directions feed the GPU harness; operation order mirrors the WGSL twin"
+)]
+fn push_tray_cases(cases: &mut Vec<StudioEnvCase>) {
+    // `d.y` values: well below, just below, the band edges and middle, just above, well above.
+    let ys = [
+        -0.97f32, -0.7, -0.35, -0.12, -0.06, -0.049, -0.03, 0.0, 0.02, 0.049, 0.06, 0.4, 0.9,
+    ];
+    let azimuths = [0.7f32, 3.9];
+    let trays = [0.05f32, 0.81, 3.2];
+    let poses = [(0.3f32, 0.6f32), (0.85, 0.95)];
+    let exposures = [0.5f32, 1.5];
+    let lambdas = [400.0f32, 450.0, 560.0, 650.0, 700.0];
+    let lit_observer = Vec3::new(0.2, 0.9, -0.3).normalize();
+    let no_observer = [Vec3::ZERO];
+    let lit_observers = [Vec3::ZERO, lit_observer];
+
+    for preset in LightingPreset::ALL
+        .into_iter()
+        .filter(|preset| !preset.is_uv_lamp())
+    {
+        let params = preset.params();
+        let observers: &[Vec3] = if preset.model() == LightingModel::Studio {
+            &no_observer
+        } else {
+            &lit_observers
+        };
+        for &observer in observers {
+            for &(light_yaw, light_pitch) in &poses {
+                for &exposure in &exposures {
+                    for &tray in &trays {
+                        for &y in &ys {
+                            let r = (1.0 - y * y).max(0.0).sqrt();
+                            for &azimuth in &azimuths {
+                                let (sin_a, cos_a) = azimuth.sin_cos();
+                                for &lambda_nm in &lambdas {
+                                    cases.push(StudioEnvCase {
+                                        dir: [r * cos_a, y, r * sin_a],
+                                        lambda_nm,
+                                        temp_k: params.temp_k,
+                                        spot_mult: params.spot_mult,
+                                        exposure,
+                                        light_yaw,
+                                        light_pitch,
+                                        model: preset.model().gpu_id() as f32,
+                                        tray,
+                                        use_d65: f32::from(preset.uses_d65()),
+                                        observer: observer.to_array(),
+                                        _pad2: 0.0,
+                                        head_shadow_outer_cos: DEFAULT_SHADOW.0,
+                                        head_shadow_inner_cos: DEFAULT_SHADOW.1,
+                                        head_shadow_deg: DEFAULT_SHADOW.2,
+                                        _pad3: 0.0,
+                                        tent: params.tent.to_array(),
+                                        tent_flat: params.tent.flat,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if preset.model() != LightingModel::Studio {
+            push_tray_observer_dip_cases(cases, preset);
+        }
+    }
+}
+
+/// Head-shadow cone across the horizon, with a tray: the eye sits 8 degrees above the horizon,
+/// so the 16 degree cone dips below it, and the directions step down the vertical plane
+/// through the eye from inside the cone (above the horizon) to well below the horizon. The
+/// lit models multiply the tray by the same `observer_visibility` as the sky; the default
+/// and a 25 degree shadow are both covered.
+fn push_tray_observer_dip_cases(cases: &mut Vec<StudioEnvCase>, preset: LightingPreset) {
+    let params = preset.params();
+    let (sin_e, cos_e) = 8.0f32.to_radians().sin_cos();
+    let observer = Vec3::new(0.0, sin_e, cos_e);
+    for shadow_deg in [DEFAULT_HEAD_SHADOW_DEG, 25.0] {
+        for elevation in [8.0f32, 2.0, -2.0, -4.0, -8.0, -12.0, -20.0, -50.0] {
+            let (sin_d, cos_d) = elevation.to_radians().sin_cos();
+            for lambda_nm in [450.0f32, 560.0, 650.0] {
+                cases.push(
+                    StudioEnvCase {
+                        dir: [0.0, sin_d, cos_d],
+                        lambda_nm,
+                        temp_k: params.temp_k,
+                        spot_mult: params.spot_mult,
+                        exposure: 1.0,
+                        light_yaw: 0.3,
+                        light_pitch: 0.6,
+                        model: preset.model().gpu_id() as f32,
+                        tray: 0.81,
+                        use_d65: f32::from(preset.uses_d65()),
+                        observer: observer.to_array(),
+                        _pad2: 0.0,
+                        head_shadow_outer_cos: DEFAULT_SHADOW.0,
+                        head_shadow_inner_cos: DEFAULT_SHADOW.1,
+                        head_shadow_deg: DEFAULT_SHADOW.2,
+                        _pad3: 0.0,
+                        tent: params.tent.to_array(),
+                        tent_flat: params.tent.flat,
+                    }
+                    .with_head_shadow(shadow_deg),
+                );
+            }
+        }
+    }
 }
 
 /// Adversarial rig cases for each pose: exactly on the key light's own axis, and exactly at
@@ -206,7 +327,7 @@ fn push_adversarial_rig_cases(cases: &mut Vec<StudioEnvCase>, poses: &[(f32, f32
                 light_yaw,
                 light_pitch,
                 model: 0.0,
-                _pad1: 0.0,
+                tray: 0.0,
                 use_d65: 1.0,
                 observer: [0.0; 3],
                 _pad2: 0.0,
@@ -233,7 +354,7 @@ fn push_adversarial_rig_cases(cases: &mut Vec<StudioEnvCase>, poses: &[(f32, f32
                 light_yaw,
                 light_pitch,
                 model: 0.0,
-                _pad1: 0.0,
+                tray: 0.0,
                 use_d65: 0.0,
                 observer: [0.0; 3],
                 _pad2: 0.0,
@@ -275,7 +396,7 @@ fn push_aset_cases(cases: &mut Vec<StudioEnvCase>) {
                 light_yaw: 0.3,
                 light_pitch: 0.6,
                 model,
-                _pad1: 0.0,
+                tray: 0.0,
                 use_d65,
                 observer: [0.0; 3],
                 _pad2: 0.0,
@@ -347,7 +468,7 @@ fn push_head_shadow_cases(cases: &mut Vec<StudioEnvCase>, preset: LightingPreset
                     light_yaw: 0.3,
                     light_pitch: 0.6,
                     model: preset.model().gpu_id() as f32,
-                    _pad1: 0.0,
+                    tray: 0.0,
                     use_d65: f32::from(preset.uses_d65()),
                     observer: observer.to_array(),
                     _pad2: 0.0,
@@ -418,7 +539,7 @@ pub fn run_studio_env(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
     );
     for (idx, case) in cases.iter().enumerate() {
         let rig = crate::optics::studio_rig::StudioRig::new(case.light_yaw, case.light_pitch);
-        let cpu = sample_studio_environment_with_rig_shadow(
+        let cpu = sample_studio_environment_with_rig_shadow_tray(
             Vec3::from_array(case.dir),
             case.lambda_nm,
             preset_for_case(case),
@@ -426,6 +547,7 @@ pub fn run_studio_env(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
             &rig,
             Vec3::from_array(case.observer),
             head_shadow_cosines(case.head_shadow_deg),
+            case.tray,
         );
         acc.record(case, "radiance", cpu, gpu_out[idx]);
     }

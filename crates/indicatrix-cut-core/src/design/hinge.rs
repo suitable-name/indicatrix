@@ -9,11 +9,13 @@
 //! This module supplies the geometry for that:
 //!
 //! - [`tier_hinges`] finds, for every flat crown or pavilion tier, the pivot point on the
-//!   girdle side of the tier's first live facet in the SOLVED stone: for a facet that
-//!   touches the girdle walls, its extreme wall vertex (the highest one for a crown
-//!   facet, the lowest for a pavilion facet), so the stone's girdle top and bottom stay
-//!   where they are; for any other facet, its vertex nearest the girdle (the midpoint of
-//!   the edge when two vertices tie).
+//!   girdle side of the tier's first live facet in the SOLVED stone. The girdle OUTLINE is
+//!   the contract (owner decision, 2026-10-19): for a facet that touches the girdle walls
+//!   at the ring's maximal radius, the centroid of those outline vertices, so the
+//!   junctions the meet-preservation gate holds stay where they are; for a facet whose
+//!   wall vertices are all inside the maximal radius, its extreme wall vertex (the highest
+//!   one for a crown facet, the lowest for a pavilion facet); for any other facet, its
+//!   vertex nearest the girdle (the midpoint of the edge when two vertices tie).
 //! - [`mast_through`] gives the mast of the plane with a new angle that passes through
 //!   such a point, using the same plane convention as
 //!   `StandardGemCuts::from_asc_schedule`: normal `(sin t cos p, +-cos t, sin t sin p)`
@@ -31,7 +33,7 @@
 //! to which tier and which of them reach the solid's surface. Retarget's validity checks
 //! use them to tell a facet that survived from one that vanished.
 
-use super::Design;
+use super::{Design, girdle_band::corner_resolution};
 use glam::DVec3;
 use indicatrix::geometry::{
     meet_solver::SolvedTier,
@@ -169,16 +171,53 @@ fn extreme_point(points: &[DVec3], highest: bool) -> Option<DVec3> {
     Some((low + high) * 0.5)
 }
 
+/// The centroid of the ring's girdle OUTLINE vertices: the wall vertices (`on_wall`) whose
+/// distance from the centre line is within `resolution` of the ring's maximal radius. `None`
+/// when the ring has no such vertex.
+///
+/// `resolution` is the length below which two points of the solved stone cannot be told apart
+/// ([`corner_resolution`]: 1e-5 of the stone's largest plane offset, the finest length the
+/// mesh resolves). It is relative to the stone's scale, like the mesh's own tolerances, and
+/// about 30 times the measured f32 noise between the vertices of one corner (3e-7 of that
+/// offset, see `girdle_band`'s module docs) and 10 times the mesh's vertex merge.
+fn outline_centroid(ring: &[DVec3], on_wall: &[DVec3], resolution: f64) -> Option<DVec3> {
+    let radius = |v: &DVec3| v.x.hypot(v.z);
+    let max_radius = ring.iter().map(radius).fold(f64::NEG_INFINITY, f64::max);
+    let outline: Vec<DVec3> = on_wall
+        .iter()
+        .copied()
+        .filter(|v| radius(v) >= max_radius - resolution)
+        .collect();
+    if outline.is_empty() {
+        return None;
+    }
+    let count = outline.len() as f64;
+    Some(outline.iter().copied().sum::<DVec3>() / count)
+}
+
 /// The pivot of a facet ring.
 ///
-/// A ring with vertices on a girdle wall pivots at its extreme wall vertex: the highest
-/// for a crown facet, the lowest for a pavilion facet. Those are the vertices that set the
-/// stone's girdle top and bottom, so keeping them keeps the measured girdle thickness. A
-/// ring that touches no wall pivots at its vertex nearest the girdle: the lowest for a
-/// crown facet, the highest for a pavilion facet.
+/// The girdle OUTLINE is the contract (owner decision, 2026-10-19): the junctions at the
+/// stone's maximal radius, and their height, are what the meet-preservation gate holds, so
+/// the hinge keeps them. A ring with wall vertices at the ring's maximal radius (the outline
+/// corners of its girdle edge) pivots at the centroid of those vertices: a convex
+/// combination, so it lies on the facet plane, and for a symmetric facet it is a horizontal
+/// pair or a single corner, so the turned plane keeps the outline exactly.
+///
+/// A ring with wall vertices but none at its maximal radius pivots at its extreme wall
+/// vertex: the highest for a crown facet, the lowest for a pavilion facet. A ring that
+/// touches no wall pivots at its vertex nearest the girdle: the lowest for a crown facet,
+/// the highest for a pavilion facet.
 ///
 /// The flag says whether the ring has a whole edge on a wall (two or more wall vertices).
-fn hinge_of_ring(ring: &[DVec3], side: FacetSide, walls: &[(DVec3, f64)]) -> Option<(DVec3, bool)> {
+///
+/// `resolution` is the stone's [`corner_resolution`], the tolerance for "at the maximal radius".
+fn hinge_of_ring(
+    ring: &[DVec3],
+    side: FacetSide,
+    walls: &[(DVec3, f64)],
+    resolution: f64,
+) -> Option<(DVec3, bool)> {
     let on_wall: Vec<DVec3> = ring
         .iter()
         .copied()
@@ -189,17 +228,18 @@ fn hinge_of_ring(ring: &[DVec3], side: FacetSide, walls: &[(DVec3, f64)]) -> Opt
         })
         .collect();
     if on_wall.is_empty() {
-        extreme_point(ring, side == FacetSide::Pavilion).map(|point| (point, false))
-    } else {
-        extreme_point(&on_wall, side == FacetSide::Crown).map(|point| (point, on_wall.len() >= 2))
+        return extreme_point(ring, side == FacetSide::Pavilion).map(|point| (point, false));
     }
+    let point = outline_centroid(ring, &on_wall, resolution)
+        .or_else(|| extreme_point(&on_wall, side == FacetSide::Crown))?;
+    Some((point, on_wall.len() >= 2))
 }
 
 /// [`tier_hinges`] over planes and a mesh the caller has already built (`planes` from
 /// [`Design::planes_from_solved`], `mesh` from `build_solid_mesh(planes)`).
 ///
 /// Maps a tier's position in [`Design::tiers`] to its hinge. Left out: horizontal tiers
-/// (the table and the culet have no girdle edge to hinge on), girdle tiers, and any tier
+/// (the table and the culet have no girdle corners to hinge on), girdle tiers, and any tier
 /// none of whose facets reach the surface.
 ///
 /// # Panics
@@ -224,6 +264,7 @@ pub fn tier_hinges_in(
         .copied()
         .filter(|(normal, _)| normal.y.abs() <= WALL_NORMAL_Y_EPS)
         .collect();
+    let resolution = corner_resolution(planes);
     let mut hinges = BTreeMap::new();
     for (tier_index, (tier, range)) in design.tiers.iter().zip(&ranges).enumerate() {
         let theta = tier.angle_deg.abs().to_radians();
@@ -239,7 +280,7 @@ pub fn tier_hinges_in(
         let Some((plane, ring)) = first_live else {
             continue;
         };
-        let Some((point, wall_edge)) = hinge_of_ring(ring, side, &walls) else {
+        let Some((point, wall_edge)) = hinge_of_ring(ring, side, &walls, resolution) else {
             continue;
         };
         let Some(&(normal, _)) = planes.get(plane) else {
@@ -275,8 +316,9 @@ pub fn tier_hinges(design: &Design, solved: &[SolvedTier]) -> BTreeMap<usize, Ti
     }
 }
 
-/// [`tier_hinges`] reduced to the points: the midpoint of the girdle-side edge of each flat
-/// tier's first live facet, keyed by the tier's position in [`Design::tiers`].
+/// [`tier_hinges`] reduced to the points: the centroid of the girdle corners (the girdle
+/// outline) of each flat tier's first live facet, keyed by the tier's position in
+/// [`Design::tiers`].
 ///
 /// # Panics
 ///
@@ -365,6 +407,10 @@ mod tests {
         )
     }
 
+    /// The tolerance for "at the ring's maximal radius" of a stone whose largest plane offset
+    /// is 1: `corner_resolution`'s 1e-5 of that.
+    const RES: f64 = 1e-5;
+
     fn tier_named(design: &Design, name: &str) -> usize {
         design
             .tiers
@@ -382,7 +428,7 @@ mod tests {
             DVec3::new(0.8, 0.3, -0.2),
         ];
         assert_eq!(
-            hinge_of_ring(&ring, FacetSide::Crown, &[]),
+            hinge_of_ring(&ring, FacetSide::Crown, &[], RES),
             Some((DVec3::new(1.0, 0.0, 0.0), false))
         );
     }
@@ -394,7 +440,7 @@ mod tests {
             DVec3::new(1.0, 0.1, 0.2),
             DVec3::new(0.6, 0.5, 0.0),
         ];
-        let (hinge, wall_edge) = hinge_of_ring(&ring, FacetSide::Crown, &[]).unwrap();
+        let (hinge, wall_edge) = hinge_of_ring(&ring, FacetSide::Crown, &[], RES).unwrap();
         assert!(
             (hinge - DVec3::new(1.0, 0.1, 0.0)).length() < 1e-12,
             "{hinge}"
@@ -412,7 +458,7 @@ mod tests {
             DVec3::new(0.8, 0.3, -0.2),
         ];
         assert_eq!(
-            hinge_of_ring(&ring, FacetSide::Crown, &wall),
+            hinge_of_ring(&ring, FacetSide::Crown, &wall, RES),
             Some((DVec3::new(1.0, 0.02, 0.0), false))
         );
     }
@@ -424,7 +470,7 @@ mod tests {
             DVec3::new(1.0, -0.1, 0.2),
             DVec3::new(0.0, -0.9, 0.0),
         ];
-        let (hinge, _) = hinge_of_ring(&ring, FacetSide::Pavilion, &[]).unwrap();
+        let (hinge, _) = hinge_of_ring(&ring, FacetSide::Pavilion, &[], RES).unwrap();
         assert!(
             (hinge - DVec3::new(1.0, -0.1, 0.0)).length() < 1e-12,
             "{hinge}"
@@ -433,33 +479,87 @@ mod tests {
 
     #[test]
     fn an_empty_ring_has_no_hinge() {
-        assert_eq!(hinge_of_ring(&[], FacetSide::Crown, &[]), None);
+        assert_eq!(hinge_of_ring(&[], FacetSide::Crown, &[], RES), None);
     }
 
     #[test]
-    fn a_crown_facet_on_a_wall_pivots_at_its_highest_wall_vertex() {
-        // A break facet whose bottom edge lies on the wall x = 1 and slopes up: the
-        // girdle top is its higher end, so that is the pivot.
+    fn a_facet_on_a_wall_pivots_at_the_centroid_of_its_outline_vertices() {
+        // The girdle OUTLINE is the contract (owner decision, 2026-10-19). Both wall
+        // vertices of this ring stand at the ring's maximal radius (hypot(1, 0.2)), so
+        // they are the outline and the pivot is their centroid, whatever their heights.
+        // (The old rule pivoted at the highest, (1, 0.03, 0.2) for the crown facet and
+        // the lowest, (1, -0.03, 0.2) for the pavilion facet.)
         let wall = [(DVec3::X, 1.0)];
-        let ring = [
+        let crown = [
             DVec3::new(1.0, 0.01, -0.2),
             DVec3::new(1.0, 0.03, 0.2),
             DVec3::new(0.7, 0.2, 0.0),
         ];
-        let hinge = hinge_of_ring(&ring, FacetSide::Crown, &wall).unwrap();
-        assert_eq!(hinge, (DVec3::new(1.0, 0.03, 0.2), true));
-    }
-
-    #[test]
-    fn a_pavilion_facet_on_a_wall_pivots_at_its_lowest_wall_vertex() {
-        let wall = [(DVec3::X, 1.0)];
-        let ring = [
+        let (hinge, wall_edge) = hinge_of_ring(&crown, FacetSide::Crown, &wall, RES).unwrap();
+        assert!(
+            (hinge - DVec3::new(1.0, 0.02, 0.0)).length() < 1e-12,
+            "{hinge}"
+        );
+        assert!(wall_edge);
+        let pavilion = [
             DVec3::new(1.0, -0.01, -0.2),
             DVec3::new(1.0, -0.03, 0.2),
             DVec3::new(0.2, -0.8, 0.0),
         ];
-        let hinge = hinge_of_ring(&ring, FacetSide::Pavilion, &wall).unwrap();
-        assert_eq!(hinge, (DVec3::new(1.0, -0.03, 0.2), true));
+        let (hinge, wall_edge) = hinge_of_ring(&pavilion, FacetSide::Pavilion, &wall, RES).unwrap();
+        assert!(
+            (hinge - DVec3::new(1.0, -0.02, 0.0)).length() < 1e-12,
+            "{hinge}"
+        );
+        assert!(wall_edge);
+    }
+
+    #[test]
+    fn only_the_wall_vertices_at_the_maximal_radius_are_the_outline() {
+        // The wall x = 1 meets the ring at two vertices, but only the one at z = 0.2 is at
+        // the ring's maximal radius: it alone is the outline, and the pivot (a corner kept
+        // exactly), though the other wall vertex is higher.
+        let wall = [(DVec3::X, 1.0)];
+        let ring = [
+            DVec3::new(1.0, 0.01, 0.2),
+            DVec3::new(1.0, 0.05, 0.0),
+            DVec3::new(0.7, 0.2, 0.0),
+        ];
+        let (hinge, wall_edge) = hinge_of_ring(&ring, FacetSide::Crown, &wall, RES).unwrap();
+        assert!(
+            (hinge - DVec3::new(1.0, 0.01, 0.2)).length() < 1e-12,
+            "{hinge}"
+        );
+        assert!(wall_edge, "two wall vertices still make a wall edge");
+    }
+
+    #[test]
+    fn corner_vertices_a_few_e_minus_7_apart_in_radius_are_one_outline() {
+        // The two corner vertices of one wall edge differ in radius by the f32 noise of the
+        // planes (measured up to 3e-7 of the stone's size): both are the outline.
+        let wall = [(DVec3::X, 1.0)];
+        let ring = [
+            DVec3::new(1.0, 0.01, -0.2),
+            DVec3::new(1.0, 0.03, 0.200_002),
+            DVec3::new(0.7, 0.2, 0.0),
+        ];
+        let (hinge, _) = hinge_of_ring(&ring, FacetSide::Crown, &wall, RES).unwrap();
+        assert!((hinge.y - 0.02).abs() < 1e-12, "{hinge}");
+    }
+
+    #[test]
+    fn a_ring_whose_wall_vertices_are_inside_its_maximal_radius_keeps_the_extreme_rule() {
+        // A ring vertex off the wall stands farther out than both wall vertices, so the ring
+        // has no outline wall vertex and pivots at its extreme wall vertex as before.
+        let wall = [(DVec3::X, 1.0)];
+        let ring = [
+            DVec3::new(1.0, 0.01, 0.0),
+            DVec3::new(1.0, 0.03, 0.05),
+            DVec3::new(0.99, 0.2, 0.3),
+        ];
+        let (hinge, wall_edge) = hinge_of_ring(&ring, FacetSide::Crown, &wall, RES).unwrap();
+        assert_eq!(hinge, DVec3::new(1.0, 0.03, 0.05));
+        assert!(wall_edge);
     }
 
     #[test]
@@ -470,8 +570,8 @@ mod tests {
             DVec3::new(0.9, 0.1, 0.2),
             DVec3::new(0.6, 0.5, 0.0),
         ];
-        let with_wall = hinge_of_ring(&ring, FacetSide::Crown, &wall);
-        let without = hinge_of_ring(&ring, FacetSide::Crown, &[]);
+        let with_wall = hinge_of_ring(&ring, FacetSide::Crown, &wall, RES);
+        let without = hinge_of_ring(&ring, FacetSide::Crown, &[], RES);
         assert_eq!(with_wall, without);
     }
 

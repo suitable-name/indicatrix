@@ -140,6 +140,9 @@ struct PanelInputs {
     warnings: Vec<(usize, String)>,
     yield_texts: (String, String, String, String),
     planes: Vec<GpuFacetPlane>,
+    /// The frosted planes among `planes` (`Design::frosted_planes_from_solved`); empty for
+    /// every design without frosting, and for a design that does not solve.
+    frosted: Vec<u32>,
     /// The concave tools and placements that go with `planes`; empty for a planar design.
     tools: Vec<ToolPrimitive>,
     placements: Vec<(usize, usize)>,
@@ -204,6 +207,7 @@ fn panel_inputs(
             warnings: manufacturability_warnings_tagged(design, None),
             yield_texts: yield_report_texts(design, custom_sg),
             planes: design_to_gpu_planes(design),
+            frosted: Vec::new(),
             tools,
             placements,
             too_many_planes,
@@ -217,6 +221,7 @@ fn panel_inputs(
         warnings: manufacturability_warnings_tagged(design, Some(solved)),
         yield_texts: yield_report_texts_from_solved(design, solved, custom_sg),
         planes: super::replan::design_to_gpu_planes_from_solved(design, solved),
+        frosted: design.frosted_planes_from_solved(solved),
         tools,
         placements,
         too_many_planes,
@@ -383,6 +388,7 @@ fn solve_and_build_result(
         warnings,
         yield_texts,
         planes,
+        frosted,
         tools,
         placements,
         too_many_planes,
@@ -410,6 +416,7 @@ fn solve_and_build_result(
         warnings,
         yield_texts,
         planes,
+        frosted,
         tools,
         placements,
         solved,

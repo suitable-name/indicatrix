@@ -199,12 +199,14 @@ export global TrainingController {
     in-out property <string> edit_rollout: "";
     in-out property <string> edit_batch: "";
     in-out property <string> edit_epochs: "";
+    in-out property <string> edit_updates: "";
     in-out property <string> edit_lr: "";
     // The applied values (mirror of the worker's configuration).
     in-out property <float> learning_rate: 0.0;
     in-out property <int> batch_size: 0;
     in-out property <int> rollout_size: 0;
     in-out property <int> epochs: 0;
+    in-out property <int> updates_per_round: 0;
     in-out property <int> worker_count: 0;
     in-out property <int> max_workers: 1024;
     in-out property <int> core_count: 0;

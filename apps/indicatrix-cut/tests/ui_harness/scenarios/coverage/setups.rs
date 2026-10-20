@@ -9,8 +9,8 @@ use indicatrix_cut::{
     CompareModel, EditorModel, HelpModel, LibraryModel, MainWindow, RoughPlanModel, harness_support,
 };
 use slint::{ComponentHandle, Model};
-use slint_harness::{backend::wait_until_labeled, timing};
 use std::time::Duration;
+use uiprobe::{backend::wait_until_labeled, timing};
 
 /// Relaunches the app into `setup`.
 ///

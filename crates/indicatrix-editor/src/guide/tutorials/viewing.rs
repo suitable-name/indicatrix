@@ -27,6 +27,7 @@
 
 mod app;
 mod library;
+mod optical;
 mod output;
 mod render;
 mod solid;
@@ -111,6 +112,7 @@ pub fn guides() -> Vec<Guide> {
     let mut guides = Vec::new();
     guides.extend(solid::guides());
     guides.extend(render::guides());
+    guides.push(optical::guide());
     guides.extend(output::guides());
     guides.extend(library::guides());
     guides.extend(app::guides());

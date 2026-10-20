@@ -16,7 +16,8 @@
 //! the [`CHECK_SERIAL`] atomic: every request bumps it, and a worker whose serial no longer
 //! matches stops at its next step.
 //!
-//! - [`apply_gate`] decides whether Apply may go ahead, and with which masts.
+//! - [`apply_gate`] decides whether Apply may go ahead; the exact checked state
+//!   supplies the edit through [`validated_candidate_edit`].
 //! - [`candidate_anchors`] gives the compare view the masts to build its candidate with
 //!   (a comparison of an invalid change is allowed; one still being checked is not).
 //! - [`reset_check`] forgets the slot, for Optimize mode before an option is picked and for
@@ -33,7 +34,7 @@ use indicatrix::{
     geometry::meet_solver::SolvedTier,
     optics::{LightingPreset, materials::GemMaterial},
 };
-use indicatrix_cut_core::{CANONICAL_LIGHTING_PRESET, Design};
+use indicatrix_cut_core::{CANONICAL_LIGHTING_PRESET, Design, Edit};
 use indicatrix_editor::{
     material_lookup::{EditorMaterialLookup, resolved_gem_material},
     retarget::{
@@ -80,12 +81,47 @@ struct CheckSlot {
     /// The analysis of the ORIGINAL stone at one design generation. It does not depend on
     /// the plan, so every slider tick of the same design reuses it.
     analysis: Option<(u64, Arc<AnalysisResult>)>,
+    /// The atomic edit `progress`'s check produced for one design, validated against the
+    /// operation-start network already (on the worker that ran the check, or on the first
+    /// ask). Apply, the compare window and the viewport ghost all want it; the validation is
+    /// a full solve, so it is done once per check, never once per ask. Cleared whenever
+    /// `progress` changes.
+    validated: Option<PrevalidatedEdit>,
+}
+
+/// An edit and the exact design it was validated against: the answer is reused only for an
+/// equal design.
+pub(super) type PrevalidatedEdit = (Design, Edit);
+
+/// The edit of `check` against `design`, validated now. Meant for a worker thread: the
+/// validation is a solve. `None` for a check Apply would refuse.
+pub(super) fn prevalidate(check: &RetargetCheck, design: &Design) -> Option<PrevalidatedEdit> {
+    if !check.allows_apply() {
+        return None;
+    }
+    check
+        .validated_edit(design)
+        .ok()
+        .map(|edit| (design.clone(), edit))
 }
 
 thread_local! {
     static CHECK: RefCell<CheckSlot> = RefCell::new(CheckSlot::default());
     /// Holds the next worker back until requests stop arriving for [`CHECK_DEBOUNCE`].
     static DEBOUNCE: Timer = Timer::default();
+}
+
+/// Install a real shared-engine check without creating a Slint window in unit tests.
+/// This only supplies the worker result; Apply still performs its production gate.
+#[cfg(test)]
+pub(super) fn set_check_for_test(generation: u64, check: Option<RetargetCheck>) {
+    CHECK.with(|cell| {
+        *cell.borrow_mut() = CheckSlot {
+            generation,
+            progress: check.map_or(Progress::Idle, |check| Progress::Done(Box::new(check))),
+            ..CheckSlot::default()
+        };
+    });
 }
 
 /// How long a request waits for a newer one before its worker starts: long enough to skip
@@ -140,8 +176,8 @@ pub(super) fn cached_original_solved(generation: u64) -> Option<Vec<SolvedTier>>
 
 /// Whether Apply may commit the plan built against `generation`.
 pub(super) enum ApplyGate {
-    /// Go ahead with these masts (none when no check applies, or the check could not run).
-    Open(Vec<AnchorChange>),
+    /// The current check permits materializing its exact accepted geometry.
+    Open,
     /// The check is still running.
     Checking,
     /// The check found the retarget invalid; the string is the verdict line.
@@ -151,15 +187,17 @@ pub(super) enum ApplyGate {
 /// [`ApplyGate`] for the plan built against `generation`.
 pub(super) fn apply_gate(generation: u64) -> ApplyGate {
     match status_for(generation) {
-        CheckStatus::Idle => ApplyGate::Open(Vec::new()),
+        CheckStatus::Idle => ApplyGate::Blocked(
+            "No current successful geometry check. Recompute the candidate.".into(),
+        ),
         CheckStatus::Checking => ApplyGate::Checking,
         CheckStatus::Done {
-            anchors,
             allows_apply,
             headline,
+            ..
         } => {
             if allows_apply {
-                ApplyGate::Open(anchors)
+                ApplyGate::Open
             } else {
                 ApplyGate::Blocked(headline)
             }
@@ -195,12 +233,41 @@ pub(super) fn is_invalid(generation: u64) -> bool {
     )
 }
 
-/// The masts of the latest finished check, whatever generation it belongs to. For the
-/// legacy viewport ghost, which has no generation at hand; empty when nothing finished.
+/// The masts of the latest finished check, whatever generation it belongs to; empty when
+/// nothing finished. Only the tests read it now: the viewport ghost takes its masts from the
+/// check's validated edit.
+#[cfg(test)]
 pub(super) fn latest_anchors() -> Vec<AnchorChange> {
     CHECK.with(|cell| match &cell.borrow().progress {
         Progress::Done(check) => check.anchors.clone(),
         Progress::Idle | Progress::Checking => Vec::new(),
+    })
+}
+
+/// Shared final materialization for Shift and Optimize preview/Apply.
+///
+/// The check's edit was validated on a worker when the check finished, so this normally
+/// returns it without solving. Only a design that differs from the one it was validated
+/// against (or a check installed without a prevalidated edit) is validated here, once, and
+/// the answer kept for the next ask.
+pub(super) fn validated_candidate_edit(
+    design: &indicatrix_cut_core::Design,
+) -> Result<indicatrix_cut_core::Edit, String> {
+    CHECK.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        // Field-wise borrows: the check is read while the cache is written.
+        let slot = &mut *slot;
+        let Progress::Done(check) = &slot.progress else {
+            return Err("No current successful geometry check; recompute the candidate.".into());
+        };
+        if let Some((validated_for, edit)) = &slot.validated
+            && validated_for == design
+        {
+            return Ok(edit.clone());
+        }
+        let edit = check.validated_edit(design)?;
+        slot.validated = Some((design.clone(), edit.clone()));
+        Ok(edit)
     })
 }
 
@@ -211,6 +278,7 @@ pub(super) fn reset_check(ui: &MainWindow) {
     CHECK.with(|cell| {
         let mut slot = cell.borrow_mut();
         slot.progress = Progress::Idle;
+        slot.validated = None;
         slot.serial = 0;
     });
     push_check_view(ui, &CheckView::default());
@@ -220,13 +288,22 @@ pub(super) fn reset_check(ui: &MainWindow) {
 /// worker: the Optimize search already judged each option it offers, so picking one just
 /// copies its verdict, masts and optical table into the slot Apply, the comparison and the
 /// compare window read. Supersedes any check still running.
-pub(super) fn set_external_check(ui: &MainWindow, generation: u64, check: RetargetCheck) {
+///
+/// `edit` is the option's edit, validated on the search's worker (see [`prevalidate`]); `None`
+/// leaves the first Apply or comparison to validate it.
+pub(super) fn set_external_check(
+    ui: &MainWindow,
+    generation: u64,
+    check: RetargetCheck,
+    edit: Option<PrevalidatedEdit>,
+) {
     let serial = CHECK_SERIAL.fetch_add(1, AtomicOrdering::SeqCst) + 1;
     DEBOUNCE.with(Timer::stop);
     let view = CheckView::from_check(&check);
     CHECK.with(|cell| {
         let mut slot = cell.borrow_mut();
         slot.progress = Progress::Done(Box::new(check));
+        slot.validated = edit;
         slot.serial = serial;
         slot.generation = generation;
     });
@@ -240,10 +317,11 @@ pub(super) fn current_gem(design: &Design, custom: &[GemMaterial]) -> Option<Gem
         .then(|| resolved_gem_material(material, &EditorMaterialLookup::new(custom)))
 }
 
-/// The verdict for a check that could not run to the end (the worker panicked): the plain
-/// angle edit, as before the check existed.
+/// A check that did not finish never authorizes Apply.
 fn failed_check() -> RetargetCheck {
     RetargetCheck {
+        candidate: None,
+        baseline: None,
         validity: RetargetValidity::unchecked(&InvalidReason::DoesNotSolve(
             "the check stopped unexpectedly".to_string(),
         )),
@@ -280,6 +358,7 @@ pub(super) fn begin_check(
     CHECK.with(|cell| {
         let mut slot = cell.borrow_mut();
         slot.progress = Progress::Checking;
+        slot.validated = None;
         slot.serial = serial;
         slot.generation = generation;
     });
@@ -343,8 +422,15 @@ fn spawn_worker(job: CheckJob) {
             Ok(None) => return,
             Err(_) => (None, failed_check()),
         };
+        // Validate the edit Apply will ask for here, on the worker, so the UI thread never
+        // solves it. Skipped when a newer request has already superseded this one.
+        let edit = if stop() {
+            None
+        } else {
+            prevalidate(&check, &design)
+        };
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            finish_check(&ui, serial, generation, analysis, check);
+            finish_check(&ui, serial, generation, analysis, check, edit);
         });
     });
 }
@@ -356,6 +442,7 @@ fn finish_check(
     generation: u64,
     analysis: Option<Arc<AnalysisResult>>,
     check: RetargetCheck,
+    edit: Option<PrevalidatedEdit>,
 ) {
     // Only Shift mode runs this check; when it is not valid the way out is Optimize.
     let view = CheckView::from_check(&check).with_optimize_hint();
@@ -368,6 +455,7 @@ fn finish_check(
             slot.analysis = Some((generation, analysis));
         }
         slot.progress = Progress::Done(Box::new(check));
+        slot.validated = edit;
         true
     });
     if !current {
@@ -397,6 +485,8 @@ mod tests {
             validity
         };
         RetargetCheck {
+            candidate: None,
+            baseline: None,
             validity,
             anchors: vec![AnchorChange {
                 tier_index: 3,
@@ -416,9 +506,9 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_slot_lets_apply_through_without_masts() {
+    fn an_idle_slot_blocks_apply_without_a_validated_candidate() {
         set(Progress::Idle, 7);
-        assert!(matches!(apply_gate(7), ApplyGate::Open(anchors) if anchors.is_empty()));
+        assert!(matches!(apply_gate(7), ApplyGate::Blocked(_)));
         assert_eq!(candidate_anchors(7), Ok(Vec::new()));
     }
 
@@ -432,10 +522,8 @@ mod tests {
     #[test]
     fn a_valid_check_opens_apply_with_its_masts() {
         set(Progress::Done(Box::new(ready(true))), 7);
-        match apply_gate(7) {
-            ApplyGate::Open(anchors) => assert_eq!(anchors.len(), 1),
-            _ => panic!("a valid check must open Apply"),
-        }
+        assert!(matches!(apply_gate(7), ApplyGate::Open));
+        assert_eq!(candidate_anchors(7).expect("checked masts").len(), 1);
         assert!(!is_invalid(7));
     }
 
@@ -455,7 +543,7 @@ mod tests {
     #[test]
     fn a_result_for_another_generation_never_leaks_its_masts() {
         set(Progress::Done(Box::new(ready(true))), 7);
-        assert!(matches!(apply_gate(8), ApplyGate::Open(anchors) if anchors.is_empty()));
+        assert!(matches!(apply_gate(8), ApplyGate::Blocked(_)));
         assert_eq!(candidate_anchors(8), Ok(Vec::new()));
     }
 
@@ -465,5 +553,37 @@ mod tests {
         assert_eq!(latest_anchors(), Vec::new());
         set(Progress::Done(Box::new(ready(true))), 7);
         assert_eq!(latest_anchors().len(), 1);
+    }
+
+    #[test]
+    fn a_prevalidated_edit_is_returned_without_validating_again() {
+        use indicatrix::geometry::meet_solver::MeetConstraint;
+        use indicatrix_cut_core::{ConstraintTier, PreformSpec, ScheduleMeta};
+        let design = Design::new(
+            PreformSpec::block(2.0, 1.0, 2.0),
+            ScheduleMeta::default(),
+            vec![ConstraintTier {
+                angle_deg: -40.0,
+                name: "P1".to_string(),
+                indices: vec![0.0, 24.0],
+                constraint: MeetConstraint::ScaleReference(0.5),
+                imported_meet: None,
+                original_notes: None,
+                detached: Vec::new(),
+            }],
+        );
+        // This check has no baseline: validating it for real would be refused. Getting the
+        // edit back therefore proves the stored answer was used.
+        set(Progress::Done(Box::new(ready(true))), 7);
+        assert!(validated_candidate_edit(&design).is_err());
+        let edit = Edit::Batch(Vec::new());
+        CHECK.with(|cell| cell.borrow_mut().validated = Some((design.clone(), edit.clone())));
+        assert_eq!(validated_candidate_edit(&design), Ok(edit));
+        // Another design never gets the stored answer.
+        let mut other = design.clone();
+        other.tiers[0].angle_deg = -41.0;
+        assert!(validated_candidate_edit(&other).is_err());
+        // And a refused check prevalidates nothing.
+        assert!(prevalidate(&ready(false), &design).is_none());
     }
 }

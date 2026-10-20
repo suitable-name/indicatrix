@@ -436,14 +436,16 @@ fn retarget_valid(a: &HarnessApp) {
     model.invoke_open();
     pump(250);
     // The dialog's own `can_apply`: a proposal (rows, no anchored-tier error, no solve error, not
-    // busy) whose check is finished and not "invalid" (3).
+    // busy) whose check is finished and came out valid (2). "Invalid" (3) and "could not be
+    // checked" (4) dim Apply too: an unchecked change has no candidate stone, and the engine's
+    // gate refuses it.
     let applicable = wait_until(Duration::from_secs(20), || {
         model.get_rows().row_count() > 0
             && model.get_anchored_tier_errors().row_count() == 0
             && model.get_solve_error().is_empty()
             && !model.get_is_busy()
             && model.get_mode_index() == 0
-            && !matches!(model.get_validity_state(), 0 | 1 | 3)
+            && !matches!(model.get_validity_state(), 0 | 1 | 3 | 4)
     });
     if !applicable {
         println!(

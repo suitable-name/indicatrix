@@ -12,15 +12,20 @@ use crate::{
         ContinuousTierAction, GLOBAL_DIM, GemstoneObservation, GemstoneRlEnv, OBS_LAYOUT_VERSION,
         TIER_DIM,
     },
-    model::{Checkpoint, GemstoneSetAttentionNetwork, TrainingMode, WeightError},
+    model::{
+        CHECKPOINT_SCHEMA_VERSION, Checkpoint, GemstoneSetAttentionNetwork, TrainingMode,
+        WeightError,
+    },
 };
-use indicatrix_cut_core::{ObjectivePreset, ObjectiveWeights};
 use std::path::Path;
 
 /// Rejects a network that cannot read the current observation layout or whose parameters are
 /// inconsistent (a hand-edited or truncated file would otherwise fail inside `forward`).
+///
+/// The layout is checked first, so a network of another token width is named as such
+/// ([`WeightError::DimensionMismatch`] with the layout version) rather than by whichever
+/// structural rule a narrower token happens to break.
 pub(crate) fn check_network(network: &GemstoneSetAttentionNetwork) -> Result<(), InferenceError> {
-    network.validate()?;
     for (what, expected, got) in [
         ("d_tier", TIER_DIM, network.d_tier),
         ("d_global", GLOBAL_DIM, network.d_global),
@@ -34,40 +39,18 @@ pub(crate) fn check_network(network: &GemstoneSetAttentionNetwork) -> Result<(),
             .into());
         }
     }
-    Ok(())
-}
-
-/// Refuses an objective with a face-up tone term, before any environment is built.
-///
-/// The environments do not trace the face-up tone and the observation carries no body color, so
-/// a model cannot optimise for it; the presets Lighten Dark Rough and Intensify Pale Rough are
-/// the ones that weigh it. Every other weighting (the other presets and any custom
-/// windowing, extinction, tilt brilliance and yield weights) passes: the model composes its
-/// direction from the weight fractions of the observation.
-pub(crate) fn ensure_supported_objective(weights: &ObjectiveWeights) -> Result<(), InferenceError> {
-    if weights.tone_weight > 0.0 {
-        return Err(InferenceError::UnsupportedObjective(format!(
-            "the face-up tone term (tone weight {}) is not covered: the models do not see the \
-             body color. The presets \"{}\" and \"{}\" use it; the other presets and custom \
-             weights without a tone term are supported",
-            weights.tone_weight,
-            ObjectivePreset::LightenDark.label(),
-            ObjectivePreset::IntensifyPale.label(),
-        )));
-    }
+    network.validate()?;
     Ok(())
 }
 
 /// Whether a network trained as `trained_for` can run `task`.
 ///
-/// A model serves the task it was trained for. A retarget model also serves the optimizer: the
-/// optimizer is the retarget task with the target equal to the source material, and retarget
-/// training draws exactly that case in a fraction of its episodes. The reverse does not hold: an
-/// optimizer model has never seen two different materials.
+/// A checkpoint only serves the task it was explicitly trained for.
 const fn serves(trained_for: TrainingMode, task: TrainingMode) -> bool {
     matches!(
         (trained_for, task),
-        (TrainingMode::Optimizer, TrainingMode::Optimizer) | (TrainingMode::Retarget, _)
+        (TrainingMode::Optimizer, TrainingMode::Optimizer)
+            | (TrainingMode::Retarget, TrainingMode::Retarget)
     )
 }
 
@@ -77,6 +60,20 @@ pub(crate) fn network_of(
     checkpoint: Checkpoint,
     task: TrainingMode,
 ) -> Result<GemstoneSetAttentionNetwork, InferenceError> {
+    if checkpoint.schema_version != CHECKPOINT_SCHEMA_VERSION {
+        return Err(WeightError::UnsupportedSchema {
+            expected: CHECKPOINT_SCHEMA_VERSION,
+            got: checkpoint.schema_version,
+        }
+        .into());
+    }
+    if checkpoint.obs_layout_version != OBS_LAYOUT_VERSION {
+        return Err(WeightError::ObsLayoutMismatch {
+            expected: OBS_LAYOUT_VERSION,
+            got: checkpoint.obs_layout_version,
+        }
+        .into());
+    }
     if !serves(checkpoint.mode, task) {
         return Err(WeightError::ModeMismatch {
             expected: task,
@@ -114,8 +111,9 @@ pub(crate) struct PolicyRun {
 /// ([`GemstoneSetAttentionNetwork::forward`]: the policy mean is composed from the predicted
 /// per-tier sensitivities and the objective's weight fractions), takes the deterministic action
 /// `tanh(mean) * max_step_deg` and passes it through the kinematic projection
-/// ([`GemstoneSetAttentionNetwork::project_actions`]: pinned and flat tiers stay put, pavilion
-/// tiers keep the critical-angle margin, nothing crosses the girdle). The environment then tries
+/// ([`GemstoneSetAttentionNetwork::project_actions`]: pinned and flat tiers stay put, movable
+/// angles remain sign-preserving within the shared safe interval, nothing crosses the girdle;
+/// critical-angle margin is contextual, not an autonomous correction). The environment then tries
 /// the action at each of the `line_search` scales in turn and keeps the first improving one
 /// ([`GemstoneRlEnv::step_scaled`]); the step counts once whatever the scale count.
 /// `observation` is the environment's current observation.
@@ -191,6 +189,37 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_checkpoints_must_match_schema_and_observation_stamp() {
+        let tier = ModelTier::Small;
+        let network = tier.init_network(41);
+        let mut checkpoint = Checkpoint::new(
+            TrainingMode::Optimizer,
+            tier,
+            OBS_LAYOUT_VERSION,
+            16,
+            0,
+            0,
+            network,
+        );
+        checkpoint.schema_version += 1;
+        assert!(matches!(
+            network_of(checkpoint, TrainingMode::Optimizer),
+            Err(InferenceError::Weights(
+                WeightError::UnsupportedSchema { .. }
+            ))
+        ));
+
+        let mut checkpoint = checkpoint_of(TrainingMode::Optimizer);
+        checkpoint.obs_layout_version += 1;
+        assert!(matches!(
+            network_of(checkpoint, TrainingMode::Optimizer),
+            Err(InferenceError::Weights(
+                WeightError::ObsLayoutMismatch { .. }
+            ))
+        ));
+    }
+
+    #[test]
     fn a_network_with_another_token_width_is_rejected() {
         let network = GemstoneSetAttentionNetwork::new(TIER_DIM + 1, GLOBAL_DIM, 16, 2, 1, 3)
             .expect("valid dimensions");
@@ -236,13 +265,17 @@ mod tests {
     }
 
     #[test]
-    fn a_retarget_checkpoint_also_serves_the_optimizer() {
-        let network = network_of(
-            checkpoint_of(TrainingMode::Retarget),
-            TrainingMode::Optimizer,
-        )
-        .expect("the optimizer is the retarget task with the source as the target");
-        assert_eq!(network, ModelTier::Small.init_network(4));
+    fn a_retarget_checkpoint_does_not_serve_the_optimizer() {
+        assert!(matches!(
+            network_of(
+                checkpoint_of(TrainingMode::Retarget),
+                TrainingMode::Optimizer
+            ),
+            Err(InferenceError::Weights(WeightError::ModeMismatch {
+                expected: TrainingMode::Optimizer,
+                got: TrainingMode::Retarget,
+            }))
+        ));
     }
 
     #[test]
@@ -287,45 +320,6 @@ mod tests {
                 WeightError::DimensionMismatch { .. }
             ))
         ));
-    }
-
-    #[test]
-    fn the_tone_presets_are_refused_and_named() {
-        for preset in [ObjectivePreset::LightenDark, ObjectivePreset::IntensifyPale] {
-            let Err(InferenceError::UnsupportedObjective(why)) =
-                ensure_supported_objective(&preset.weights())
-            else {
-                panic!("{preset:?} weighs the tone and must be refused");
-            };
-            assert!(why.contains("tone"), "{why}");
-            assert!(why.contains("Lighten Dark Rough"), "{why}");
-            assert!(why.contains("Intensify Pale Rough"), "{why}");
-            let shown = InferenceError::UnsupportedObjective(why).to_string();
-            assert!(shown.contains("Lighten Dark Rough") && shown.contains("Intensify Pale Rough"));
-        }
-    }
-
-    #[test]
-    fn every_other_weighting_is_supported() {
-        for preset in [
-            ObjectivePreset::Balanced,
-            ObjectivePreset::Brilliance,
-            ObjectivePreset::LowWindowing,
-            ObjectivePreset::LowExtinction,
-            ObjectivePreset::KeepWeight,
-        ] {
-            assert!(
-                ensure_supported_objective(&preset.weights()).is_ok(),
-                "{preset:?}"
-            );
-        }
-        assert!(ensure_supported_objective(&ObjectiveWeights::default()).is_ok());
-        // A custom yield weight is fine, only the tone term is refused.
-        let custom = ObjectiveWeights {
-            yield_weight: 2.5,
-            ..ObjectiveWeights::default()
-        };
-        assert!(ensure_supported_objective(&custom).is_ok());
     }
 
     // --- the rollout against the simulator ----------------------------------------------------
@@ -373,7 +367,6 @@ mod tests {
         )
         .expect("the policy runs");
         assert!((1..=STEPS).contains(&run.steps), "{run:?}");
-        assert!(run.evaluations >= run.steps, "{run:?}");
         assert!(
             run.evaluations <= run.steps * DEFAULT_LINE_SEARCH.len(),
             "{run:?}"

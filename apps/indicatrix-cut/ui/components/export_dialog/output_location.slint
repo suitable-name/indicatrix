@@ -2,7 +2,9 @@ import { LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { ExportModel } from "../../models/export.slint";
 import { GuideModel } from "../../models/guide.slint";
+import { ViewportModel } from "../../models/viewport.slint";
 import { ActionButton } from "../chip_toggle.slint";
+import { WrappedNote } from "wrapped_note.slint";
 
 // The export directory (chosen once via a native folder picker -- see
 // `ExportModel.export_directory`'s own doc comment -- and just displayed/
@@ -16,6 +18,12 @@ import { ActionButton } from "../chip_toggle.slint";
 // In Simple mode the list of `{placeholders}` and the note about `{preset}` are left out; the
 // template field itself and its "Resolves to" line stay, so the file name can still be set.
 export component ExportOutputLocation inherits VerticalLayout {
+    // The export's own values for the "resolves to" preview (`export_dialog.slint`).
+    in property <int> out_width;
+    in property <int> out_height;
+    in property <int> out_spp;
+    in property <int> out_bounces;
+    in property <int> out_color_space;
     spacing: 6px;
     Rectangle {
         height: output_location_lbl.preferred-height;
@@ -123,7 +131,7 @@ export component ExportOutputLocation inherits VerticalLayout {
     // (empty for that render; the fanned-out preset's own name for each
     // additional file -- see `bridge::export_thread`'s module doc
     // comment). Every other placeholder resolves for every export.
-    if GuideModel.shows_advanced(): Text {
+    if GuideModel.shows_advanced(): WrappedNote {
         text: "{preset} only fills in when preset fan-out below is selected -- it stays empty for this design's own current-view render.";
         font-size: 11px;
         font-italic: true;
@@ -132,13 +140,19 @@ export component ExportOutputLocation inherits VerticalLayout {
         accessible-role: AccessibleRole.text;
     }
 
-    // A live "resolves to" preview, rendered against a fixed
-    // example (see `preview_filename_template`'s own doc comment for why
-    // not the live selected design). Recomputed on every keystroke via
-    // `<=>`-bound `export_filename_template` above changing.
-    property <string> preview_name: ExportModel.preview_filename_template(ExportModel.filename_template);
+    // A live "resolves to" preview of THIS export's file name: the template with the
+    // export's own size, samples, bounces, color space and material (passed in by the dialog)
+    // and the live design and camera. Recomputed whenever any of them or the template changes.
+    property <string> preview_name: ExportModel.preview_filename_template(
+        ExportModel.filename_template,
+        root.out_width,
+        root.out_height,
+        root.out_spp,
+        root.out_bounces,
+        root.out_color_space,
+        ViewportModel.traced_material_name);
     property <string> unknown_placeholders: ExportModel.filename_template_unknown_placeholders(ExportModel.filename_template);
-    Text {
+    WrappedNote {
         text: "Resolves to: " + preview_name;
         font-size: 11px;
         font-weight: 600;
@@ -146,7 +160,7 @@ export component ExportOutputLocation inherits VerticalLayout {
         wrap: word-wrap;
         accessible-role: AccessibleRole.text;
     }
-    if unknown_placeholders != "": Text {
+    if unknown_placeholders != "": WrappedNote {
         text: "Unrecognised placeholder(s), kept literal in the filename: " + unknown_placeholders;
         font-size: 11px;
         font-weight: 600;

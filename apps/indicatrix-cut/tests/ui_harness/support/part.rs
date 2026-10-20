@@ -9,8 +9,8 @@
 //! The runner stores the part before the piece runs; the hosts of the pass (`ctx.rs`,
 //! `secondary.rs`) ask [`admits`] from `SmokeHost::admits`.
 
-use slint_harness::view::Control;
 use std::cell::Cell;
+use uiprobe::view::Control;
 
 thread_local! {
     static PART: Cell<Option<(usize, usize)>> = const { Cell::new(None) };

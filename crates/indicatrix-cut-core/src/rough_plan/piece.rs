@@ -208,6 +208,10 @@ fn op_estimate(cells: [usize; 3]) -> f64 {
 /// The shrink works in 5 % steps on all axes together and may take an axis
 /// below the 8-unit floor (never below 2). Without a stone dimension the DP is cheap, so
 /// the shrink only matters for the shaped planner's own caps (`shaped::grid`).
+///
+/// The grid never depends on the settings' stone cap or design cap: a stone cap is solved on
+/// this same grid (by the count DP of `dp_capped`), so a cap that does not bind changes
+/// nothing.
 #[must_use]
 pub fn choose_grid(rough: &RoughBlock, settings: &PlanSettings) -> Grid {
     let usable = usable_rough(rough, settings.skin_mm);

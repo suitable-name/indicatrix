@@ -156,6 +156,12 @@ it again.
 
 ## The Tutorials, Area by Area
 
+The viewing lessons recognize all five Edit modes: Solid, Path-Traced, Both,
+Diagram and Ray-Traced. Keys 1–4 keep their earlier meanings; 5 selects Ray-Traced.
+Ray-Traced is an image approximation with fixed AA taps; switching to it changes
+neither the solved geometry nor the metrics model. The lesson's highlighted view
+controls remain the way to follow a step that names a particular mode.
+
 Besides the long lessons above, the browser has a short tutorial for each tool. Each one
 starts from a design that suits it (an empty design, one of the two teaching
 templates, or the Standard Round Brilliant), locks everything the current step does not need except Undo, and finishes a

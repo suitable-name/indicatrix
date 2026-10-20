@@ -48,8 +48,8 @@ fn solid_picking() -> Guide {
         )
         .actions([
             "Click the Edit tab above the picture, if it is not open.",
-            "The buttons above the stone choose the view: Solid, Path-traced, Both and Diagram.",
-            "In Solid, Path-traced and Both, drag to turn the stone and scroll to zoom.",
+            "The buttons above the stone choose the view: Solid, Path-Traced, Ray-Traced, Both and Diagram.",
+            "In Solid, Path-Traced, Ray-Traced and Both, drag to turn the stone and scroll to zoom.",
         ])
         .why("The Solid view is quick and independent of the light tracer, so it can follow almost every edit.")
         .highlight("view_modes")
@@ -114,6 +114,18 @@ fn solid_picking() -> Guide {
         .goal(event(TIER_SELECTED), "A tier picked in the list")
         .highlight("tier_table")
         .allow(VIEWPORT_TABLE),
+    )
+    .step(
+        GuideStep::new(
+            "A Ray-Traced picture",
+            "Ray-Traced gives a quick, noise-free picture of the same solved stone.",
+        )
+        .actions(["Click Ray-Traced above the stone."])
+        .check("Ray-Traced is lit, and the picture shows the stone without waiting for noisy samples to converge.")
+        .why("This is an approximation: one refractive index and averaged color, approximate frost and a bounce limit. It leaves out polarization, doubling, haze, zoning and edge rounding. Metrics and tilt curves keep their own analytic tracer.")
+        .goal(Goal::ViewMode(4), "The Ray-Traced view")
+        .highlight("view_modes")
+        .allow(VIEWPORT),
     )
     .step(
         GuideStep::new(
@@ -466,7 +478,7 @@ fn cut_slider() -> Guide {
             "The Cut slider shows the stone as it looks after each tier of the cutting steps.",
         )
         .actions([
-            "Click the Edit tab above the picture, then Solid, Path-traced or Both.",
+            "Click the Edit tab above the picture, then Solid, Path-Traced, Ray-Traced or Both.",
             "The slider is at the left end of the toolbar, with a label beside it that reads Finished.",
         ])
         .why("It appears as soon as the design has a tier. The Diagram does not show it, because the Diagram always draws the finished design.")

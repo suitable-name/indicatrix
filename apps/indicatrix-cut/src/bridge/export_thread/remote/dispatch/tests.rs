@@ -27,6 +27,8 @@ use std::{
 #[test]
 fn scene_state_from_snapshot_carries_the_snapshots_own_bounce_cap_not_a_viewport_default() {
     let snapshot = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: 0.6,
         pitch: 0.45,
         distance: 2.4,
@@ -59,6 +61,8 @@ fn scene_state_from_snapshot_carries_the_snapshots_own_bounce_cap_not_a_viewport
 #[test]
 fn scene_state_from_snapshot_carries_the_snapshots_surface_glare() {
     let snapshot = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: 0.6,
         pitch: 0.45,
         distance: 2.4,
@@ -92,6 +96,8 @@ fn scene_state_from_snapshot_carries_the_snapshots_surface_glare() {
 #[test]
 fn scene_state_from_snapshot_uses_the_explicit_pose_override_not_the_snapshots_own_yaw_pitch() {
     let snapshot = SceneSnapshot {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
+        optical_diagnostics: None,
         yaw: 0.6,
         pitch: 0.45,
         distance: 2.4,

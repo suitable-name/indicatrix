@@ -33,11 +33,14 @@ pub(super) fn save_curves(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    let fingerprint = cache_fingerprint(CacheKind::TiltCurves, material);
-    let stored = db
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .save_tilt_curves(entry_id, curves, now, &fingerprint, expected_updated_at);
+    let guard = db.lock().unwrap_or_else(PoisonError::into_inner);
+    // The fingerprint names the design's stored frosting too, so a frosted design never
+    // reuses curves swept unfrosted; the compare-and-swap below refuses a result swept
+    // before a re-import or save moved the row (and with it the frosting).
+    let frosting = crate::gui::batch::frosting_scan::stored_frosting_hash(&guard, entry_id);
+    let fingerprint = cache_fingerprint(CacheKind::TiltCurves, material.with_frosting(frosting));
+    let stored = guard.save_tilt_curves(entry_id, curves, now, &fingerprint, expected_updated_at);
+    drop(guard);
     match stored {
         Ok(true) => true,
         Ok(false) => {
@@ -197,6 +200,73 @@ mod tests {
             FingerprintMaterial::picked(Some("Sapphire")),
         );
         assert_eq!(missing_with(&db, |_| legacy.clone()), vec![entry_id]);
+    }
+
+    /// Curves swept for a frosted design are stored under a fingerprint that names its
+    /// frosting: the frosting-aware scan finds them current, a polished fingerprint finds
+    /// them stale, and curves stored before the frosting was set go stale once it is.
+    #[test]
+    fn a_frosted_designs_curves_are_stored_under_its_frosting() {
+        use crate::gui::batch::frosting_scan::outdated_ids;
+        use indicatrix_vault::model::frosting::StoredTierFrosting;
+
+        let db = Mutex::new(Database::new(Some(":memory:")).expect("in-memory database opens"));
+        let text = design_file_text(MaterialSelection::none(), None, None);
+        let entry_id = store_design_file(
+            &db.lock().expect("the database lock is not poisoned"),
+            "frosted.isdd",
+            text.into_bytes(),
+        );
+        // The entry has no persisted preview material (no batch ran), which is how the
+        // scan reads it: no name.
+        let material = FingerprintMaterial::picked(None);
+        let scan = || {
+            outdated_ids(
+                &db.lock().expect("the database lock is not poisoned"),
+                |state, frosting| {
+                    cache_fingerprint(
+                        CacheKind::TiltCurves,
+                        FingerprintMaterial::from_state(state).with_frosting(frosting),
+                    )
+                },
+                |db, fingerprint| db.entry_ids_missing_tilt_curves(fingerprint),
+            )
+        };
+        let updated_at = db
+            .lock()
+            .expect("the database lock is not poisoned")
+            .entry_updated_at(entry_id)
+            .expect("the stamp reads");
+
+        // Swept polished, then frosted: the stored curves no longer describe the design.
+        assert!(save_curves(
+            &db,
+            entry_id,
+            &blank_curves(),
+            material,
+            updated_at
+        ));
+        assert_eq!(scan(), Vec::<i64>::new());
+        db.lock()
+            .expect("the database lock is not poisoned")
+            .set_diagram_frosting(entry_id, &[StoredTierFrosting::whole(1)])
+            .expect("frosting stores");
+        assert_eq!(scan(), vec![entry_id], "curves stored unfrosted are stale");
+
+        // Swept again: stored under the frosting, current for the frosted scan only.
+        assert!(save_curves(
+            &db,
+            entry_id,
+            &blank_curves(),
+            material,
+            updated_at
+        ));
+        assert_eq!(scan(), Vec::<i64>::new());
+        assert_eq!(
+            missing_with(&db, scan_fingerprint),
+            vec![entry_id],
+            "a scan that knows no frosting does not take them for current"
+        );
     }
 
     /// A design whose file names no material and no size keeps the refractive-index pick,

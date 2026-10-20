@@ -292,7 +292,7 @@ there is nothing to optimize on it.
 ### Angle Ranges
 
 Each tier the search may move can change by `5°` either way, never past
-`0.5°` or `89.5°`. Press **Angle Ranges...** to see them. The table lists
+`0.5°` or `89.5°`. Press **Angle Ranges...** (it reads **Hide Angle Ranges** while the table is open) to see them. The table lists
 the tier number, its name, its current angle and two fields, **MIN** and
 **MAX**. Type your own limits to make a range narrower or wider; **Reset
 Ranges** puts the defaults back.

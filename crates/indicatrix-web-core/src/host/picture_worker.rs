@@ -15,6 +15,8 @@ use super::{
     handle::WorkerHandle,
     render_callbacks::{Deferred, PictureResult},
 };
+use indicatrix::geometry::tool::ToolPrimitive;
+
 use crate::{
     protocol::{FromWorker, PROTOCOL_VERSION, PictureKind, ToWorker, WorkerRole},
     scene::SceneSpec,
@@ -82,7 +84,7 @@ impl PictureWorker {
     }
 
     /// Asks for `kind` made from `sums` (`sample_count` samples per pixel) of scene
-    /// `scene_id`, described by `spec`.
+    /// `scene_id`, described by `spec` minus `tools`.
     ///
     /// # Errors
     ///
@@ -91,19 +93,23 @@ impl PictureWorker {
         &mut self,
         scene_id: u64,
         spec: &SceneSpec,
+        tools: &[ToolPrimitive],
         sample_count: u32,
         sums: Vec<[f32; 3]>,
         kind: PictureKind,
     ) -> Result<(), String> {
         let mut messages = Vec::with_capacity(2);
         if self.scene_sent != Some(scene_id) {
-            messages.push(ToWorker::SetScene {
+            // The tools go too: the denoiser's guide pass reads them, and a picture of a
+            // concave stone made from the flat stone's guides would filter across its edges.
+            messages.push(ToWorker::scene(
                 scene_id,
-                spec: SceneSpec {
+                SceneSpec {
                     hdr_id: None,
                     ..spec.clone()
                 },
-            });
+                tools,
+            ));
         }
         messages.push(ToWorker::Picture {
             scene_id,
@@ -187,7 +193,13 @@ impl PictureWorker {
             | FromWorker::HdrLoaded { .. }
             | FromWorker::HdrError { .. }
             | FromWorker::Progress { .. }
-            | FromWorker::SolveResult { .. } => {}
+            | FromWorker::SolveResult { .. }
+            | FromWorker::GpuAdapter { .. }
+            | FromWorker::GpuUnavailable { .. }
+            | FromWorker::GpuCompiled { .. }
+            | FromWorker::GpuCompileFailed { .. }
+            | FromWorker::FullPassResult { .. }
+            | FromWorker::GpuLost { .. } => {}
         }
         deferred
     }

@@ -36,7 +36,8 @@ fn a_first_build_payload_still_loads_with_the_same_values() {
     // Fields the first build did not write take the desktop defaults.
     let defaults = RenderSettings::default();
     assert!(r.link_material && r.denoise && r.use_hdr);
-    assert!(!r.frosted_girdle && !r.c_axis_override && !r.gpu_enabled);
+    // GPU rendering is on by default (owner decision 2026-10-19; it was off before).
+    assert!(!r.frosted_girdle && !r.c_axis_override && r.gpu_enabled);
     assert_eq!(r.export, defaults.export);
     // Sanitising changes nothing that was in range.
     assert_eq!(&r.clone().sanitized(), r);
@@ -77,6 +78,7 @@ fn empty_partial_and_out_of_range_payloads_are_repaired() {
     assert_eq!(wild.target_spp, LIVE_SPP_RANGE.1);
     assert_eq!(wild.lighting_preset(), LightingPreset::LightTent);
     assert_eq!(wild.backdrop_index, Backdrop::from_index(9).index());
+    assert_eq!(wild.backdrop_index, Backdrop::White.index());
     assert_eq!(wild.head_shadow_deg, HEAD_SHADOW_RANGE.1);
     assert_eq!(wild.inclusion_sigma_s, 0.0);
     assert_eq!(wild.edge_rounding_radius, EDGE_ROUNDING_RANGE.1);
@@ -369,16 +371,97 @@ fn the_option_lists_match_the_desktop() {
 }
 
 #[test]
-fn gpu_enabled_defaults_to_false_and_round_trips() {
+fn gpu_enabled_defaults_to_true_and_round_trips() {
+    // Owner decision 2026-10-19: GPU rendering is on by default (it was off before).
+    assert!(RenderSettings::default().gpu_enabled);
     let payload = SessionPayload::from_json(FIRST_BUILD_PAYLOAD).expect("parses");
-    assert!(!payload.render.gpu_enabled);
+    assert!(payload.render.gpu_enabled);
 
     let mut updated = payload;
-    updated.render.gpu_enabled = true;
+    updated.render.gpu_enabled = false;
     let json = updated.to_json().expect("writes");
-    assert!(json.contains("\"gpu_enabled\":true"));
+    assert!(json.contains("\"gpu_enabled\":false"));
 
     let back = SessionPayload::from_json(&json).expect("parses");
-    assert!(back.render.gpu_enabled);
+    assert!(!back.render.gpu_enabled);
     assert_eq!(back, updated);
+}
+
+/// A record a build from before settings version 1 wrote, with GPU rendering explicitly off
+/// (every user who ever saved a setting has one like it) and no `settings_version`.
+const PRE_MIGRATION_OFF: &str =
+    r#"{"render":{"material":"Sapphire","gpu_enabled":false,"target_spp":512},"design_name":null}"#;
+
+#[test]
+fn an_old_record_with_the_gpu_off_is_switched_on_once() {
+    let old = SessionPayload::from_json(PRE_MIGRATION_OFF).expect("parses");
+    assert!(!old.render.gpu_enabled, "the stored value is read as it is");
+    assert_eq!(old.settings_version, 0);
+
+    let migrated = old.migrated();
+    assert!(migrated.render.gpu_enabled);
+    assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
+    // Nothing else of the record changed.
+    assert_eq!(migrated.render.material, "Sapphire");
+    assert_eq!(migrated.render.target_spp, 512);
+}
+
+#[test]
+fn a_record_without_the_flag_is_on_after_the_migration() {
+    let old = SessionPayload::from_json(FIRST_BUILD_PAYLOAD).expect("parses");
+    assert!(old.migrated().render.gpu_enabled);
+}
+
+#[test]
+fn no_record_gives_the_gpu_on_and_the_current_version() {
+    let fresh = SessionPayload::default().migrated();
+    assert!(fresh.render.gpu_enabled);
+    assert_eq!(fresh.settings_version, CURRENT_SETTINGS_VERSION);
+}
+
+#[test]
+fn a_user_who_switched_it_off_after_the_migration_stays_off() {
+    // First load of the old record: migrated, then the user switches the GPU off and the page
+    // saves (the page always writes `CURRENT_SETTINGS_VERSION`).
+    let mut payload = SessionPayload::from_json(PRE_MIGRATION_OFF)
+        .expect("parses")
+        .migrated();
+    payload.render.gpu_enabled = false;
+    let stored = payload.to_json().expect("writes");
+    assert!(stored.contains("\"settings_version\":1"), "{stored}");
+
+    // Every later load: parse, migrate. The off stays off, however many times it loads.
+    let mut loaded = SessionPayload::from_json(&stored)
+        .expect("parses")
+        .migrated();
+    assert!(!loaded.render.gpu_enabled);
+    loaded = loaded.migrated();
+    assert!(!loaded.render.gpu_enabled);
+    assert_eq!(loaded, payload);
+}
+
+#[test]
+fn the_migration_runs_once() {
+    let once = SessionPayload::from_json(PRE_MIGRATION_OFF)
+        .expect("parses")
+        .migrated();
+    // A second run is a no-op, even over a hand-edited off.
+    let mut edited = once.clone();
+    edited.render.gpu_enabled = false;
+    assert_eq!(edited.clone().migrated(), edited);
+    assert_eq!(once.clone().migrated(), once);
+}
+
+#[test]
+fn a_record_from_a_newer_build_keeps_its_version_and_its_value() {
+    let newer = SessionPayload {
+        render: RenderSettings {
+            gpu_enabled: false,
+            ..RenderSettings::default()
+        },
+        settings_version: CURRENT_SETTINGS_VERSION + 1,
+        ..SessionPayload::default()
+    };
+    let after = newer.clone().migrated();
+    assert_eq!(after, newer);
 }

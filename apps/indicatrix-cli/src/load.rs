@@ -55,7 +55,30 @@ pub struct Loaded {
     pub source: &'static str,
     /// What the reader noted: a draft flag, converter warnings.
     pub notes: Vec<String>,
+    /// The most decimals a facet record of the schedule writes its mast with ([`mast_decimals`]);
+    /// `None` for a `.isdd` file, which stores no schedule text.
+    pub mast_decimals: Option<usize>,
     kept: Kept,
+}
+
+/// The most decimals any facet record (`a` line) of the `.asc` text `asc_text` writes its mast
+/// with: 5 for `GemCad` 4.x, 8 for `GemCad` 5. A five-decimal mast is quantised to `1e-5`, which
+/// opens a designed meet by a few millionths of the stone. `None` when there is no facet record.
+#[must_use]
+pub fn mast_decimals(asc_text: &str) -> Option<usize> {
+    asc_text
+        .lines()
+        .filter_map(|line| {
+            let mut tokens = line.split_whitespace();
+            if tokens.next()? != "a" {
+                return None;
+            }
+            let mast = tokens.nth(1)?;
+            Some(mast.split_once('.').map_or(0, |(_, fraction)| {
+                fraction.chars().take_while(char::is_ascii_digit).count()
+            }))
+        })
+        .max()
 }
 
 /// The design's display name: its first non-blank header line, else `file_name` without its
@@ -92,6 +115,7 @@ impl Loaded {
             file_name: file_name.to_string(),
             source,
             notes,
+            mast_decimals: None,
             kept,
         }
     }
@@ -221,24 +245,27 @@ fn from_asc(file_name: &str, bytes: &[u8]) -> Result<Loaded, CliError> {
             "{file_name}: not a readable .asc cutting schedule: {error}"
         ))
     })?;
-    Ok(Loaded::new(
+    let mut opened = Loaded::new(
         loaded.design,
         file_name,
         ".asc",
         Vec::new(),
         Kept::default(),
-    ))
+    );
+    opened.mast_decimals = mast_decimals(&text);
+    Ok(opened)
 }
 
 fn from_foreign(file_name: &str, kind: InputFileKind, bytes: &[u8]) -> Result<Loaded, CliError> {
     let converted = convert_foreign_design(file_name, kind, bytes)
         .map_err(|error| CliError::design(format!("{file_name}: {error}")))?;
-    let loaded = design_from_asc_text(&converted.asc_file_name, &converted.asc_text, None)
+    let mut loaded = design_from_asc_text(&converted.asc_file_name, &converted.asc_text, None)
         .map_err(|error| {
             CliError::design(format!(
                 "{file_name}: the converted schedule does not parse: {error}"
             ))
         })?;
+    loaded.design.apply_imported_frosting(&converted.frosting);
     let notes = converted
         .warnings
         .iter()
@@ -249,13 +276,9 @@ fn from_foreign(file_name: &str, kind: InputFileKind, bytes: &[u8]) -> Result<Lo
     } else {
         ".gcs"
     };
-    Ok(Loaded::new(
-        loaded.design,
-        file_name,
-        source,
-        notes,
-        Kept::default(),
-    ))
+    let mut opened = Loaded::new(loaded.design, file_name, source, notes, Kept::default());
+    opened.mast_decimals = mast_decimals(&converted.asc_text);
+    Ok(opened)
 }
 
 fn from_native(file_name: &str, bytes: &[u8]) -> Result<Loaded, CliError> {

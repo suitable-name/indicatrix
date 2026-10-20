@@ -31,6 +31,8 @@ pub const MAX_EXPORT_BOUNCES: u32 = 128;
 /// User-chosen parameters of one export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExportParams {
+    /// The image-forming tracer, independent of compute target.
+    pub engine: indicatrix::renderer::engine::EngineSpec,
     /// Image width in pixels.
     pub width: u32,
     /// Image height in pixels.
@@ -147,6 +149,7 @@ pub fn validate_export_params(
     }
 
     Ok(ExportParams {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width,
         height,
         samples_per_pixel,
@@ -201,6 +204,7 @@ mod tests {
         assert_eq!(
             validate_export_params(1920, 1080, 256, 12).unwrap(),
             ExportParams {
+                engine: indicatrix::renderer::engine::EngineSpec::default(),
                 width: 1920,
                 height: 1080,
                 samples_per_pixel: 256,
@@ -210,6 +214,7 @@ mod tests {
         assert_eq!(
             validate_export_params(3840, 2160, 64, 128).unwrap(),
             ExportParams {
+                engine: indicatrix::renderer::engine::EngineSpec::default(),
                 width: 3840,
                 height: 2160,
                 samples_per_pixel: 64,

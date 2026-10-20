@@ -343,35 +343,7 @@ fn start_worker_side(
              and a worker certificate)"
         ),
         tls::Transport::Tls { config, .. } => {
-            let worker_bind = derived_addr(
-                args.worker_bind.as_deref(),
-                bind_addr,
-                crate::cli::WORKER_PORT_OFFSET,
-                "--worker-bind",
-                args.allow_remote,
-            )?;
-            let auth = tls::worker_auth(args)?;
-            let worker_limiter = ConnectionLimiter::new(args.max_connections);
-            let registry = coordinator::Registry::new(liveness);
-            coordinator::Registry::spawn_liveness(&registry);
-            let addr = coordinator::spawn_worker_listener(coordinator::WorkerListenerConfig {
-                bind_addr: worker_bind,
-                tls_config: Arc::clone(config),
-                auth: auth.clone(),
-                limiter: worker_limiter,
-                max_connections: args.max_connections,
-                registry: Arc::clone(&registry),
-            })?;
-            // Derived from the CONFIGURED worker address (an ephemeral port 0 stays 0).
-            side.enroll_addr = start_enrollment(
-                args,
-                args.worker_enroll_bind.as_deref(),
-                worker_bind,
-                1,
-                Some(&auth),
-            )?;
-            side.addr = Some(addr);
-            side.registry = Some(registry);
+            open_worker_port(args, bind_addr, config, liveness, &mut side)?;
         }
     }
     let own = args.render.then(|| coordinator::OwnLaneSetup {
@@ -400,6 +372,7 @@ fn start_worker_side(
         args.jobs_per_viewer,
     )
     .with_assets(assets.clone());
+    let jobs = start_job_service(args, db_path, assets.as_ref(), &gpu);
     if let Some(pin) = coordinator.interactive_pin() {
         tracing::info!(
             "indicatrix-worker serve: live-view requests that take joined workers use worker {:?} \
@@ -417,9 +390,75 @@ fn start_worker_side(
         registry: side.registry.clone(),
         coordinator,
         assets,
+        jobs,
         payload: args.payload_encoding,
     };
     Ok((side, render))
+}
+
+/// `worker` builds: opens the worker port with its own limiter, the registry with its
+/// liveness thread, and the worker enrollment listener, recording them in `side`.
+#[cfg(feature = "worker")]
+fn open_worker_port(
+    args: &ServeArgs,
+    bind_addr: SocketAddr,
+    config: &Arc<rustls::ServerConfig>,
+    liveness: coordinator::LivenessConfig,
+    side: &mut WorkerSide,
+) -> Result<(), String> {
+    let worker_bind = derived_addr(
+        args.worker_bind.as_deref(),
+        bind_addr,
+        crate::cli::WORKER_PORT_OFFSET,
+        "--worker-bind",
+        args.allow_remote,
+    )?;
+    let auth = tls::worker_auth(args)?;
+    let worker_limiter = ConnectionLimiter::new(args.max_connections);
+    let registry = coordinator::Registry::new(liveness);
+    coordinator::Registry::spawn_liveness(&registry);
+    let addr = coordinator::spawn_worker_listener(coordinator::WorkerListenerConfig {
+        bind_addr: worker_bind,
+        tls_config: Arc::clone(config),
+        auth: auth.clone(),
+        limiter: worker_limiter,
+        max_connections: args.max_connections,
+        registry: Arc::clone(&registry),
+    })?;
+    // Derived from the CONFIGURED worker address (an ephemeral port 0 stays 0).
+    side.enroll_addr = start_enrollment(
+        args,
+        args.worker_enroll_bind.as_deref(),
+        worker_bind,
+        1,
+        Some(&auth),
+    )?;
+    side.addr = Some(addr);
+    side.registry = Some(registry);
+    Ok(())
+}
+
+/// `worker` builds: opens the durable job service and starts its executor on the own lane
+/// (only with `--render`), one job at a time on its own thread.
+#[cfg(feature = "worker")]
+fn start_job_service(
+    args: &ServeArgs,
+    db_path: &std::path::Path,
+    assets: Option<&Arc<crate::assets::AssetCache>>,
+    gpu: &Arc<indicatrix::renderer::gpu_backend::GpuBackend>,
+) -> Option<Arc<crate::jobs::JobService>> {
+    if !args.render {
+        return None;
+    }
+    crate::jobs::JobService::open_configured(db_path, assets.cloned()).inspect(|service| {
+        if let Err(error) = service.spawn_executor(crate::jobs::RenderLane {
+            prefer_gpu: args.compute_mode != ComputeMode::OnlyCpu,
+            gpu: Arc::clone(gpu),
+            threads: args.threads,
+        }) {
+            tracing::warn!("indicatrix-worker serve: the job executor did not start ({error})");
+        }
+    })
 }
 
 /// A representative scene for [`crate::render_core::hybrid::calibrate_now`]'s start-up
@@ -435,6 +474,7 @@ fn probe_scene() -> indicatrix_net::SceneState {
         optics::{materials::GemMaterial, raytracer::LightingPreset},
     };
     indicatrix_net::SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 512,
         height: 512,
         yaw: 0.4,
@@ -454,6 +494,7 @@ fn probe_scene() -> indicatrix_net::SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 

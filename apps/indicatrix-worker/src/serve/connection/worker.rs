@@ -11,6 +11,7 @@ use crate::{
     assets::AssetCache,
     cli::ComputeMode,
     coordinator::{Coordinator, Registry, ViewerSession, viewer_render_capability},
+    jobs::JobService,
     render_core,
     serve::library::LibraryHandle,
     stream_emit::{self, TimeoutRead, TimeoutWrite, is_stream_timeout},
@@ -64,6 +65,8 @@ pub struct ViewerContext<'a> {
     /// `RenderCapability::hdr = false`. On a coordinator this is the same cache its
     /// [`Coordinator`] holds jobs' maps through (`Coordinator::with_assets`).
     pub assets: Option<&'a AssetCache>,
+    /// The durable job service (v25); `None` refuses job requests (no own render lane).
+    pub jobs: Option<&'a Arc<JobService>>,
 }
 
 /// Handles one connection end to end, always on the CPU.
@@ -125,6 +128,7 @@ pub fn handle_connection_with_gpu<S: Read + Write + TimeoutRead + TimeoutWrite>(
             cert_role: None,
             coordinator: None,
             assets: None,
+            jobs: None,
         },
     )
 }
@@ -258,6 +262,7 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
             own_lane: ctx.own_lane,
             session: session.as_ref(),
             assets: ctx.assets,
+            jobs: ctx.jobs,
         },
     )
 }
@@ -419,6 +424,14 @@ fn serve_library_only_connection<S: Read + Write + TimeoutRead>(
                 stream,
                 &StreamEvent::Error(no_render_capacity("render a batch", r.request_id)),
                 None,
+            )?,
+            // v25: a library-only pairing keeps no durable jobs; an upload's payload is consumed.
+            ClientMessage::Job(request) => crate::jobs::refuse(
+                stream,
+                &request,
+                NO_RENDER_CAPACITY_CODE,
+                "this connection was paired as library-only (HELLO reported no indicatrix build) and \
+                 cannot keep durable jobs",
             )?,
             ClientMessage::Ping { nonce } => write_pong(stream, nonce)?,
             // A library-only pairing advertised no zoning capability; nothing renders here.

@@ -4,10 +4,13 @@
 
 use super::fixtures::populated_temp_db;
 use crate::serve::library::handle_request;
-use indicatrix_net::library::{LibraryRequest, LibraryResponse};
+use indicatrix_net::library::{FrostedTierWire, LibraryRequest, LibraryResponse};
 use indicatrix_vault::{
     db::sqlite::Database,
-    model::{detail::FacetingDiagramDetail, entry::FacetingDiagramEntry, file::AttachedFile},
+    model::{
+        detail::FacetingDiagramDetail, entry::FacetingDiagramEntry, file::AttachedFile,
+        frosting::StoredTierFrosting,
+    },
 };
 
 #[test]
@@ -304,11 +307,108 @@ fn fetch_design_source_returns_the_attached_asc_files_exact_text() {
             entry_id,
             file_name: "round-brilliant.asc".to_string(),
             asc_text: asc_text.to_string(),
+            frosting: Vec::new(),
         }
     );
 
     drop(ro);
     std::fs::remove_file(&path).ok();
+}
+
+/// Saves a library entry called `title` whose only attachment is `{title}.asc`, and returns its
+/// id.
+fn save_asc_entry(db: &Database, title: &str) -> i64 {
+    let entry_id = db
+        .save_diagram_entry(
+            &FacetingDiagramEntry {
+                title: title.to_string(),
+                url: format!("https://example.test/diagram/{title}"),
+                design_id: String::new(),
+            },
+            "facetdiagrams.org",
+        )
+        .unwrap();
+    let detail = FacetingDiagramDetail {
+        page_url: format!("https://example.test/diagram/{title}"),
+        attached_files: vec![AttachedFile {
+            name: format!("{title}.asc"),
+            url: String::new(),
+            content: b"GemCad 5.0\nR1  c 41.0 96\n".to_vec(),
+        }],
+        ..Default::default()
+    };
+    db.save_diagram_detail(&detail, entry_id).unwrap();
+    entry_id
+}
+
+/// The stored frosting of `entry_id` as `FetchDesign` carries it in the record and as
+/// `FetchDesignSource` carries it beside the `.asc` text, in that order.
+fn fetched_frosting(db: &Database, entry_id: i64) -> (Vec<FrostedTierWire>, Vec<FrostedTierWire>) {
+    let response = handle_request(&LibraryRequest::FetchDesign { entry_id }, db);
+    let LibraryResponse::Design(record) = response else {
+        panic!("expected Design, got {response:?}");
+    };
+    let response = handle_request(&LibraryRequest::FetchDesignSource { entry_id }, db);
+    let LibraryResponse::DesignSource { frosting, .. } = response else {
+        panic!("expected DesignSource, got {response:?}");
+    };
+    (record.frosting, frosting)
+}
+
+/// A library design with a stored frosting: `FetchDesign` carries it in the record and
+/// `FetchDesignSource` beside the `.asc` text, both read through a read-only connection (how
+/// the worker serves); a design without any reads as unfrosted on both.
+#[test]
+fn the_stored_frosting_reaches_a_remote_client_through_both_fetches() {
+    let path = std::env::temp_dir().join(format!(
+        "indicatrix-worker-library-frosting-test-{}-{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path_str = path.to_str().unwrap();
+    let db = Database::new(Some(path_str)).unwrap();
+    let frosted_id = save_asc_entry(&db, "Frosted");
+    let polished_id = save_asc_entry(&db, "Polished");
+    db.set_diagram_frosting(
+        frosted_id,
+        &[
+            StoredTierFrosting::whole(0),
+            StoredTierFrosting {
+                tier: 2,
+                facets: vec![1, 3],
+            },
+        ],
+    )
+    .unwrap();
+    drop(db);
+
+    let expected = vec![
+        FrostedTierWire {
+            tier: 0,
+            facets: Vec::new(),
+        },
+        FrostedTierWire {
+            tier: 2,
+            facets: vec![1, 3],
+        },
+    ];
+    let ro = Database::open_read_only(path_str).unwrap();
+
+    let (in_record, beside_source) = fetched_frosting(&ro, frosted_id);
+    assert_eq!(in_record, expected);
+    assert_eq!(beside_source, expected);
+
+    let (in_record, beside_source) = fetched_frosting(&ro, polished_id);
+    assert_eq!(in_record, []);
+    assert_eq!(beside_source, []);
+
+    drop(ro);
+    std::fs::remove_file(&path).ok();
+    std::fs::remove_file(path.with_extension("sqlite-wal")).ok();
+    std::fs::remove_file(path.with_extension("sqlite-shm")).ok();
 }
 
 /// A design with SOME attachment but no `.asc` among them (the `populated_temp_db`

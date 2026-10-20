@@ -180,8 +180,9 @@ decimal mark.
 - The figures are the quick **table-up** score, under one lighting rig. A design that
   wins here can still lose in the full render; confirm a choice with the Tilt
   Performance graph (Chapter 2), or tick the tilt option.
-- The tools of **concave tiers** (Chapter 16) are not part of the figures: the stone is
-  scored on its flat facets, as Optimize does.
+- The tools of **concave tiers** (Chapter 16) are part of the figures: a design with
+  them is scored on the stone with its tools cut out, as the Compare window does. The
+  tier you sweep is always a flat one.
 - The rows are not saved with the design and are gone when the dialog closes. Save the
   CSV if you want them later.
 - A sweep tries at most 200 angles, and a tier that follows a relation, a table, a culet

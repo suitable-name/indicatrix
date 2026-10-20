@@ -40,6 +40,7 @@ pub mod concave;
 mod construct;
 pub mod cutting_order;
 mod export;
+mod frosting;
 pub mod girdle_band;
 pub mod hinge;
 pub mod labelling;
@@ -55,14 +56,16 @@ mod tier;
 mod tier_id;
 
 pub use concave::{
-    ConcaveTier, ConcaveTierError, ConcaveTool, TierRef, ToolMotion, UnknownToolCode,
+    ConcaveTableRow, ConcaveTier, ConcaveTierError, ConcaveTool, TierRef, ToolMotion,
+    UnknownToolCode,
 };
 pub use construct::FreshDesignSpec;
 pub(crate) use export::meet_name_is_asc_safe;
 pub use export::{
     CONCAVE_FOOTNOTE_MARKER, ConcaveResolveError, FlatAndTools, ToolPlacements,
-    concave_facet_footnote, concave_frame, concave_tool_footnote,
+    concave_facet_footnote, concave_frame, concave_tool_footnote, resolve_tiers_on_planes,
 };
+pub use frosting::{TierFrosting, TierFrostingMap};
 pub use girdle_band::{GirdleBand, KNIFE_EDGE_GAP, girdle_band_in};
 pub use hinge::{
     FacetSide, SolidFacets, TierFacets, TierHinge, mast_through, solid_facets_in,
@@ -284,6 +287,17 @@ pub struct Design {
     /// stored on the tiers; a session keeps them equal to what the relations give
     /// (see `indicatrix_editor::session`).
     pub tier_relations: TierRelationMap,
+    /// The frosted tiers and facets, keyed by the tier's [`TierId`] (like
+    /// [`Self::tier_targets`]): a tier absent from the map is polished -- see
+    /// [`TierFrosting`]. Empty for every design that has none, which keeps such a design's
+    /// behavior (and its file's and its scenes' bytes) unchanged. Real authored content, so
+    /// it participates in `PartialEq`, by tier position.
+    ///
+    /// Only [`crate::edit::Edit::SetTierFrosting`] changes it (plus `RemoveTier`, which drops
+    /// the removed tier's own entry, and a gear remap, which moves the facet positions). It
+    /// changes no geometry. Carried by the native design file's tier records (`frosted`,
+    /// `frosted_facets`); `.asc` has no field for it.
+    pub tier_frosting: TierFrostingMap,
     /// The per-design stone render effects (inclusion haze, crystal-axis orientation,
     /// frosted girdle, edge rounding) -- see [`StoneRenderEffects`]. Authored content,
     /// so it participates in `PartialEq`; changed only through
@@ -396,5 +410,6 @@ impl PartialEq for Design {
             && self.material == other.material
             && self.tier_targets_by_position() == other.tier_targets_by_position()
             && self.tier_relations_eq(other)
+            && self.tier_frosting_eq(other)
     }
 }

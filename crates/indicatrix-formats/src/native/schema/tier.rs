@@ -87,6 +87,21 @@ pub struct TierTable {
     /// before relations existed loads as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle_relation: Option<String>,
+    /// Whether every facet of this tier is frosted (a diffusely scattering finish instead of
+    /// a polished one) -- mirrors `indicatrix_cut_core::design::TierFrosting::Tier`.
+    /// `#[serde(default, skip_serializing_if = ...)]` so a polished tier never grows the
+    /// key (a design without frosting keeps its bytes) and a file saved before frosting
+    /// could be authored loads as polished. No version bump: a build that predates the key
+    /// parks it in [`Self::unknown`] and writes it back unchanged, exactly as it does for
+    /// [`ConcaveTierTable::concave_tier_id`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frosted: bool,
+    /// The index-wheel positions of the frosted facets of a tier that is frosted only in
+    /// part -- mirrors `indicatrix_cut_core::design::TierFrosting::Facets`. Empty when the
+    /// tier is polished or [`Self::frosted`] as a whole (then not written). Same serde and
+    /// version rules as [`Self::frosted`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frosted_facets: Vec<f64>,
     /// See [`PreformTable::unknown`]'s doc comment -- the same rule, per tier.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
@@ -169,8 +184,19 @@ impl TierTable {
             tier_id: None,
             target: None,
             angle_relation: None,
+            frosted: false,
+            frosted_facets: Vec::new(),
             unknown: toml::Table::new(),
         }
+    }
+
+    /// Attaches [`Self::frosted`] and [`Self::frosted_facets`] -- see those fields' own doc
+    /// comments.
+    #[must_use]
+    pub fn with_frosting(mut self, frosted: bool, frosted_facets: Vec<f64>) -> Self {
+        self.frosted = frosted;
+        self.frosted_facets = frosted_facets;
+        self
     }
 
     /// Attaches [`Self::angle_relation`] -- see that field's own doc comment.

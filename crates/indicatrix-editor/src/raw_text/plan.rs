@@ -498,6 +498,13 @@ fn assemble(
         tier_notes: BTreeMap::new(),
         tier_targets: BTreeMap::new(),
         tier_relations: BTreeMap::new(),
+        // Frosting is not in the text: it follows its tier by id, wherever the tier goes.
+        tier_frosting: design
+            .tier_frosting
+            .iter()
+            .filter(|(id, _)| new_ids.contains(id))
+            .map(|(id, frosting)| (*id, frosting.clone()))
+            .collect(),
     };
     let label_of = |id: TierId| {
         merged

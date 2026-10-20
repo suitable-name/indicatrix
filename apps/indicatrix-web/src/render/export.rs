@@ -3,7 +3,7 @@
 //!
 //! # Pipeline
 //!
-//! 1. The live scene (`live::live_scene`, the same `SceneSpec` the view renders) at
+//! 1. The live scene (`live::live_geometry`, the same `SceneSpec` and concave tools the view renders) at
 //!    the export size: the view's aspect with the chosen long edge
 //!    (`display::export_size`, at most 4096 px).
 //! 2. The live render pauses: the pool gets the export scene (`set_scene`, so stale
@@ -48,6 +48,7 @@ pub const MAX_DENOISE_PIXELS: u64 = 2048 * 2048;
 
 /// A running export.
 struct ExportJob {
+    ray: bool,
     scene_id: u64,
     spp: u32,
     width: u32,
@@ -74,6 +75,7 @@ fn read_dialog(ui: &AppWindow) -> ExportSettings {
     ExportSettings {
         long_edge: u32::try_from(model.get_export_long_edge()).unwrap_or(1),
         spp: u32::try_from(model.get_export_spp()).unwrap_or(0),
+        ray_taps: model.get_export_ray_taps(),
         color_space: model.get_export_color_space(),
         denoise: model.get_export_denoise(),
     }
@@ -81,8 +83,9 @@ fn read_dialog(ui: &AppWindow) -> ExportSettings {
 
 fn push_dialog(ui: &AppWindow, export: &ExportSettings) {
     let model = ui.global::<RenderModel>();
-    model.set_export_long_edge(export.long_edge as i32);
-    model.set_export_spp(export.spp as i32);
+    model.set_export_long_edge(export.long_edge.cast_signed());
+    model.set_export_spp(export.spp.cast_signed());
+    model.set_export_ray_taps(export.ray_taps);
     model.set_export_color_space(export.color_space);
     model.set_export_denoise(export.denoise);
 }
@@ -100,7 +103,10 @@ fn planned_size(ctx: &Ctx, export: &ExportSettings) -> (u32, u32) {
 fn push_size_text(ctx: &Ctx, ui: &AppWindow, export: &ExportSettings) {
     let (width, height) = planned_size(ctx, export);
     let mut text = format!("{width} x {height} px, the view's aspect");
-    if export.denoise && u64::from(width) * u64::from(height) > MAX_DENOISE_PIXELS {
+    if export.denoise
+        && ctx.state.borrow().settings.engine_spec().denoises()
+        && u64::from(width) * u64::from(height) > MAX_DENOISE_PIXELS
+    {
         text.push_str(" -- too large to denoise (up to 2048 x 2048)");
     }
     ui.global::<RenderModel>().set_export_size_text(text.into());
@@ -169,7 +175,10 @@ fn start(ctx: &Ctx) {
     let export = store_dialog(ctx, &ui);
     schedule_save(ctx);
     let (width, height) = planned_size(ctx, &export);
-    if export.denoise && u64::from(width) * u64::from(height) > MAX_DENOISE_PIXELS {
+    if export.denoise
+        && ctx.state.borrow().settings.engine_spec().denoises()
+        && u64::from(width) * u64::from(height) > MAX_DENOISE_PIXELS
+    {
         set_status(
             ctx,
             "Denoise is available up to 2048 x 2048 pixels: lower the long edge or turn denoise off.",
@@ -193,16 +202,19 @@ fn begin(ctx: &Ctx, export: &ExportSettings) {
             return;
         }
     };
-    let live_spec = match live::live_scene(ctx, &pool) {
-        Ok(spec) => spec,
+    let (live_spec, tools) = match live::live_geometry(ctx, &pool) {
+        Ok(geometry) => geometry,
         Err(reason) => {
             set_status(ctx, &format!("Cannot export: {reason}"), 0.0);
             return;
         }
     };
     let (width, height) = planned_size(ctx, export);
-    let spp = clamp_export_spp(export.spp);
-    let unix_seconds = (js_sys::Date::now() / 1000.0).max(0.0) as u64;
+    let engine = ctx.state.borrow().settings.export_engine_spec();
+    let spp = engine.target_samples(clamp_export_spp(export.spp));
+    // A clock reading, floored at zero (`from_secs_f64` takes a non-negative, finite value).
+    let unix_seconds =
+        std::time::Duration::from_secs_f64((js_sys::Date::now() / 1000.0).max(0.0)).as_secs();
     let file_name = export_file_name(&live_spec.material.name, width, height, spp, unix_seconds);
     let spec = indicatrix_web_core::scene::SceneSpec {
         width,
@@ -212,12 +224,13 @@ fn begin(ctx: &Ctx, export: &ExportSettings) {
     // The job exists before `set_scene`, so its progress is routed here.
     JOB.with(|job| {
         *job.borrow_mut() = Some(ExportJob {
+            ray: engine.is_ray(),
             scene_id: u64::MAX,
             spp,
             width,
             height,
             color_space: export.color_space,
-            denoise: export.denoise,
+            denoise: export.denoise && engine.denoises(),
             file_name,
             started_ms: now_ms(),
             encoding: false,
@@ -225,24 +238,33 @@ fn begin(ctx: &Ctx, export: &ExportSettings) {
     });
     live::forget_scene();
     let render = pool.render();
-    render.set_scene(spec);
+    render.set_scene_with_engine(spec, tools, engine);
     let scene_id = render.scene_id();
     JOB.with(|job| {
         if let Some(job) = job.borrow_mut().as_mut() {
             job.scene_id = scene_id;
         }
     });
+    super::gpu_gate::admit_if_ready(ctx, &pool);
     render.start(spp);
     set_running(ctx, true);
-    set_status(ctx, &format!("Rendering 0/{spp} spp..."), 0.0);
+    set_status(
+        ctx,
+        &if engine.is_ray() {
+            super::live_ray::progress(0, spp)
+        } else {
+            format!("Rendering 0/{spp} spp...")
+        },
+        0.0,
+    );
 }
 
 /// A pass of the export merged.
 pub(super) fn on_progress(ctx: &Ctx, acc: &Accumulator) {
-    let Some((spp, started, encoding)) = JOB.with(|job| {
+    let Some((spp, started, encoding, ray)) = JOB.with(|job| {
         job.borrow()
             .as_ref()
-            .map(|j| (j.spp, j.started_ms, j.encoding))
+            .map(|j| (j.spp, j.started_ms, j.encoding, j.ray))
     }) else {
         return;
     };
@@ -261,7 +283,11 @@ pub(super) fn on_progress(ctx: &Ctx, acc: &Accumulator) {
     let seconds = (now_ms() - started) / 1000.0;
     set_status(
         ctx,
-        &format!("Rendering {samples}/{spp} spp \u{b7} {seconds:.0} s"),
+        &if ray {
+            super::live_ray::progress(samples, spp)
+        } else {
+            format!("Rendering {samples}/{spp} spp \u{b7} {seconds:.0} s")
+        },
         samples as f32 / spp.max(1) as f32,
     );
     let done = crate::workers::existing().is_some_and(|p| p.render().is_done());

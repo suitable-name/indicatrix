@@ -112,6 +112,9 @@ fn wire_pointer(window: &AppWindow, state: &Shared) {
         }
         if let Ok(mut app) = shared.try_borrow_mut() {
             app.viewport.touch.set_pinch(phase < 2);
+            if phase >= 2 {
+                crate::design::render::on_touch_released(&app);
+            }
         }
         act(&window, &shared, |viewport, env| viewport.pinch(event, env));
     });
@@ -216,7 +219,14 @@ fn note_pointer(state: &Shared, kind: i32) {
     };
     match kind {
         0 => app.viewport.touch.set_pointer(true),
-        1 | 3 => app.viewport.touch.set_pointer(false),
+        1 | 3 => {
+            app.viewport.touch.set_pointer(false);
+            // A drag that moved the camera owes a trace: have it start once the pose rests.
+            // (The light drag asks for itself, after its final refresh.)
+            if !app.viewport.light_drag.on {
+                crate::design::render::on_touch_released(&app);
+            }
+        }
         _ => {}
     }
 }
@@ -245,8 +255,16 @@ fn light_drag(window: &AppWindow, state: &Shared, kind: i32, x: f32, y: f32) -> 
     };
     if let Some((dx, dy)) = moved {
         render_view::drag_light(&mut state.borrow_mut(), dx, dy);
-        // The settings changed: the Light tab, the render view and the trace follow.
+        // Only the render view's overlay while the finger moves: the core cancels the
+        // trace and starts nothing until the finger lifts, and the last traced picture
+        // stays. Refreshing every surface per move is what the release does, once.
+        crate::design::render::push(window, &state.borrow());
+    } else if matches!(kind, 1 | 3) {
+        // The finger lifted: the Light tab and the trace follow the final light.
         crate::design::refresh(window, state);
+        if let Ok(app) = state.try_borrow() {
+            crate::design::render::on_touch_released(&app);
+        }
     }
     true
 }

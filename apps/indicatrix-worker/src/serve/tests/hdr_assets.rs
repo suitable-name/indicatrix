@@ -109,6 +109,7 @@ fn run(input: Vec<u8>, assets: Option<&AssetCache>) -> (Welcome, Cursor<Vec<u8>>
             cert_role: None,
             coordinator: None,
             assets,
+            jobs: None,
         },
     )
     .unwrap();

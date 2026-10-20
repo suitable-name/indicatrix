@@ -16,6 +16,7 @@ use std::{
 use glam::Vec3;
 use indicatrix::{
     color::metrics::{MetricsCache, SweepProgress},
+    geometry::tool::ToolPrimitive,
     renderer::env_map::{EnvironmentMap, environment_from_hdr_bytes},
 };
 use indicatrix_cut_core::optimize::SearchStage;
@@ -26,17 +27,20 @@ use crate::{
     hdr::web_hdr_limits,
     protocol::{FromWorker, PROTOCOL_VERSION, PictureKind, ToWorker, WorkerRole},
     render::{ChunkRange, trace_chunk_abortable},
-    scene::{OwnedScene, SceneSpec},
+    scene::{GeometrySceneSpec, OwnedScene, SceneSpec},
     solve::{
         ProgressReport, SolveHooks, SolveRequest, SolveResponse, handle_solve_with,
-        run_metrics_with_map, sweep_fraction, sweep_status,
+        run_metrics_with_geometry, run_metrics_with_map, sweep_fraction, sweep_status,
     },
 };
 
+mod engine;
 #[cfg(test)]
 mod hdr_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tool_tests;
 
 /// How often a running search's progress reaches the page at most (a stage change is
 /// always reported): a search reports after every tier decision, far more often than a
@@ -168,6 +172,16 @@ impl WorkerHandler {
                 .err()
                 .map(|reply| *reply)
                 .or_else(|| self.set_scene(scene_id, &spec)),
+            ToWorker::SetEngine { scene_id, engine } => self.set_engine(scene_id, engine),
+            ToWorker::SetGeometryScene {
+                scene_id,
+                spec,
+                tools,
+            } => self
+                .require(WorkerRole::Render, "SetGeometryScene")
+                .err()
+                .map(|reply| *reply)
+                .or_else(|| self.set_geometry_scene(scene_id, spec, tools)),
             ToWorker::HdrMap { id, bytes } => Some(
                 self.require_one_of(&[WorkerRole::Render, WorkerRole::Solve], "HdrMap")
                     .err()
@@ -242,27 +256,20 @@ impl WorkerHandler {
                         |reply| *reply,
                     ),
             ),
-            ToWorker::GpuCompile { .. } => Some(
-                self.require(WorkerRole::Gpu, "GpuCompile")
-                    .err()
-                    .map_or_else(
-                        || FromWorker::Error {
-                            message: "GpuCompile is not handled by CPU worker".into(),
-                        },
-                        |reply| *reply,
-                    ),
-            ),
-            ToWorker::TraceFullPass { .. } => Some(
-                self.require(WorkerRole::Gpu, "TraceFullPass")
-                    .err()
-                    .map_or_else(
-                        || FromWorker::Error {
-                            message: "TraceFullPass is not handled by CPU worker".into(),
-                        },
-                        |reply| *reply,
-                    ),
-            ),
+            ToWorker::GpuCompile { .. } => Some(self.gpu_only_reply("GpuCompile")),
+            ToWorker::TraceFullPass { .. } => Some(self.gpu_only_reply("TraceFullPass")),
         }
+    }
+
+    /// The reply to a GPU-only message (`what`) sent to this CPU Worker: the role error if
+    /// the Worker is not a GPU Worker, else the note that the CPU Worker does not handle it.
+    fn gpu_only_reply(&self, what: &str) -> FromWorker {
+        self.require(WorkerRole::Gpu, what).err().map_or_else(
+            || FromWorker::Error {
+                message: format!("{what} is not handled by CPU worker"),
+            },
+            |reply| *reply,
+        )
     }
 
     /// The reply to a [`ToWorker::Picture`]: the picture, or why it could not be made.
@@ -321,6 +328,13 @@ impl WorkerHandler {
                 params,
                 self.hdr.as_ref().map(|(id, map)| (*id, map.as_ref())),
             ),
+            // The same, for a concave stone (the cache key includes the tools).
+            SolveRequest::MetricsWithTools { params, tools } => run_metrics_with_geometry(
+                &mut self.metrics_cache,
+                params,
+                self.hdr.as_ref().map(|(id, map)| (*id, map.as_ref())),
+                tools,
+            ),
             _ => run_solve_job(job_id, design_toml, request, start, &env),
         };
         FromWorker::SolveResult {
@@ -358,16 +372,21 @@ impl WorkerHandler {
             height,
             camera: scene.camera(),
             planes: scene.planes(),
+            tools: scene.tools(),
             n_d: scene.material().dispersion.n_d(),
             sample_count,
             sum: &sum,
         };
         match kind {
+            PictureKind::DenoisedLive if !scene.engine().denoises() => {
+                Ok(crate::display::live_rgba(&sum, sample_count))
+            }
             PictureKind::DenoisedLive => Ok(self.denoiser.denoised_rgba(&frame)),
             PictureKind::Png {
                 color_space,
                 denoise,
             } => {
+                let denoise = denoise && scene.engine().denoises();
                 let mean = denoise.then(|| self.denoiser.denoised_mean(&frame));
                 if denoise {
                     self.denoiser.clear();
@@ -442,6 +461,34 @@ impl WorkerHandler {
                 scene_id,
                 message: error.to_string(),
             }),
+        }
+    }
+
+    /// [`Self::set_scene`] for a concave stone: `spec`'s planes minus `tools`
+    /// ([`GeometrySceneSpec::build`] validates every tool before anything is built, so a bad
+    /// tool list leaves no scene at all rather than a flat one).
+    fn set_geometry_scene(
+        &mut self,
+        scene_id: u64,
+        spec: SceneSpec,
+        tools: Vec<ToolPrimitive>,
+    ) -> Option<FromWorker> {
+        self.scene = None;
+        let uses_hdr = spec.hdr_id.is_some();
+        let hdr = match (spec.hdr_id, &self.hdr) {
+            (Some(wanted), Some((held, map))) if wanted == *held => Some(Arc::clone(map)),
+            _ => None,
+        };
+        match (GeometrySceneSpec { scene: spec, tools }).build(hdr) {
+            Ok(scene) => {
+                self.scene = Some(CachedScene {
+                    scene_id,
+                    scene,
+                    uses_hdr,
+                });
+                None
+            }
+            Err(message) => Some(FromWorker::SceneError { scene_id, message }),
         }
     }
 

@@ -244,6 +244,155 @@ fn marks_made_before_the_design_got_an_id_are_adopted() {
     assert!(rows[3].done);
 }
 
+// ---- removing marks ---------------------------------------------------------------------
+
+/// The names of the files in the progress folder of `state`, sorted.
+fn progress_file_names(state: &AppState) -> Vec<String> {
+    let dir = progress_dir(&state.platform().app_dirs().files);
+    let mut names = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[test]
+fn reset_clears_marks_that_are_only_changed_ones() {
+    let mut state = unsolved_template();
+    state.document.metadata.id = "00000000-0000-4000-8000-0000000000bb".to_owned();
+    solve_now(&mut state);
+    let before = plan(&state).expect("plan");
+    let step = before
+        .steps
+        .iter()
+        .find(|step| step.tier == TierRef::Flat(CROWN))
+        .expect("the crown step");
+    sync_progress(&state);
+    state.cutting.progress.set_done(step, true);
+    set_angle_from_text(&mut state, CROWN, "33").expect("edit");
+    solve_now(&mut state);
+    let standing = summary(&state).expect("summary");
+    assert_eq!((standing.done, standing.changed), (0, 1));
+    assert!(
+        state.cutting.progress.has_marks(),
+        "a mark whose step changed is still stored"
+    );
+    assert_eq!(progress_file_names(&state).len(), 1);
+
+    state.cutting.progress.reset();
+
+    assert!(!state.cutting.progress.has_marks());
+    assert_eq!(progress_file_names(&state), [] as [String; 0]);
+    assert_eq!(summary(&state).expect("summary").changed, 0);
+}
+
+#[test]
+fn reset_also_removes_the_file_the_marks_were_adopted_from() {
+    let mut state = solved_template();
+    let steps = plan(&state).expect("plan").steps.clone();
+    sync_progress(&state);
+    state.cutting.progress.set_done(&steps[3], true);
+    assert_eq!(progress_file_names(&state).len(), 1, "the text-keyed file");
+
+    // The first save stamps an id; the text (and so the legacy key) is unchanged.
+    state.document.metadata.id = "00000000-0000-4000-8000-0000000000cc".to_owned();
+    state.cutting = CuttingState::default();
+    sync_progress(&state);
+    assert!(
+        state.cutting.progress.has_marks(),
+        "the marks of the text key are adopted"
+    );
+    state.cutting.progress.set_done(&steps[4], true);
+    assert_eq!(
+        progress_file_names(&state).len(),
+        2,
+        "the id file joins the text file"
+    );
+
+    state.cutting.progress.reset();
+
+    let left = progress_file_names(&state);
+    assert!(left.is_empty(), "left behind: {left:?}");
+    // A restart does not read the old marks back.
+    state.cutting = CuttingState::default();
+    assert_eq!(summary(&state).expect("summary").done, 0);
+    assert!(!state.cutting.progress.has_marks());
+}
+
+#[test]
+fn delete_all_removes_every_designs_marks_and_the_folder() {
+    let state = solved_template();
+    let steps = plan(&state).expect("plan").steps.clone();
+    sync_progress(&state);
+    state.cutting.progress.set_done(&steps[0], true);
+    let dir = progress_dir(&state.platform().app_dirs().files);
+    // Another design's marks, and a temp file a crash left beside them.
+    std::fs::write(
+        dir.join("id-another.json"),
+        r#"{"version":1,"marks":{"k":"s"}}"#,
+    )
+    .expect("writes");
+    std::fs::write(dir.join("id-another.json.tmp"), "{").expect("writes");
+    assert_eq!(stored_progress_count(&state), 2);
+
+    assert_eq!(delete_all_progress(&state), 2);
+
+    assert_eq!(stored_progress_count(&state), 0);
+    assert!(!dir.exists(), "the folder goes with its last file");
+    assert!(!state.cutting.progress.has_marks());
+    assert_eq!(state.cutting.progress.done_count(&steps), 0);
+
+    // Marking a step again starts the folder anew.
+    state.cutting.progress.set_done(&steps[1], true);
+    assert_eq!(stored_progress_count(&state), 1);
+    assert!(state.cutting.progress.is_done(&steps[1]));
+}
+
+#[test]
+fn deleting_all_progress_with_none_stored_is_fine() {
+    let state = unsolved_template();
+    assert_eq!(stored_progress_count(&state), 0);
+    assert_eq!(delete_all_progress(&state), 0);
+}
+
+#[test]
+fn the_file_names_of_a_design_are_its_id_key_and_its_text_key() {
+    let mut state = unsolved_template();
+    let design = &state.session.design;
+    let plain = progress_file_stems("", design);
+    assert_eq!(plain.len(), 1);
+    assert!(
+        plain[0].starts_with("sha-") && plain[0].len() == "sha-".len() + 64,
+        "{plain:?}"
+    );
+    let with_id = progress_file_stems(" 8f2c-AA01 ", design);
+    assert_eq!(with_id, ["id-8f2c-AA01", plain[0].as_str()]);
+
+    // They are the names the open design's own marks are filed under.
+    assert_eq!(super::key::progress_keys(&state).into_stems(), plain);
+    state.document.metadata.id = "8f2c-AA01".to_owned();
+    assert_eq!(super::key::progress_keys(&state).into_stems(), with_id);
+}
+
+#[test]
+fn removing_progress_files_names_them_and_ignores_missing_ones() {
+    let state = unsolved_template();
+    let files = state.platform().app_dirs().files.clone();
+    let dir = progress_dir(&files);
+    std::fs::create_dir_all(&dir).expect("creates");
+    std::fs::write(dir.join("id-a.json"), "{}").expect("writes");
+    std::fs::write(dir.join("id-b.json"), "{}").expect("writes");
+
+    remove_progress_files(&files, &["id-a".to_owned(), "id-missing".to_owned()]);
+
+    assert_eq!(progress_file_names(&state), ["id-b.json"]);
+}
+
 // ---- the sheet and the picture ----------------------------------------------------------
 
 #[test]

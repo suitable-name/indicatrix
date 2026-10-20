@@ -5,6 +5,29 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
+/// The one `wgpu::InstanceDescriptor` every native acquisition path uses.
+///
+/// `wgpu` defaults to `Backends::all()`, which includes GL. On Windows, Linux and macOS GL is
+/// excluded on purpose (decision 2026-10-20): wgpu-hal 30.0.1 `unwrap`s inside the GL
+/// context's teardown (`gles/wgl.rs:173`, and the same shape in `gles/egl.rs`), on whichever
+/// thread drops the last reference, so a probe cannot make it safe. GL would also add almost
+/// nothing: Windows always has DX12 (and WARP), macOS Metal, and only old Linux hardware
+/// without a Vulkan driver or lavapipe lacks Vulkan; there the CPU tracer renders. Desktop
+/// targets therefore get `Backends::PRIMARY` (Vulkan/Metal/DX12). Android keeps GLES and
+/// wasm32 its browser backends. `WGPU_BACKEND=gl` is the explicit, at-your-own-risk opt-in.
+pub(in crate::renderer::gpu) fn instance_descriptor() -> wgpu::InstanceDescriptor {
+    #[cfg_attr(
+        any(target_os = "android", target_arch = "wasm32"),
+        allow(unused_mut, reason = "backends are only narrowed on desktop targets")
+    )]
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    {
+        descriptor.backends = wgpu::Backends::PRIMARY;
+    }
+    descriptor.with_env()
+}
+
 /// Why [`GpuContext::acquire`] could not obtain a usable GPU.
 ///
 /// Both variants carry the underlying `wgpu` error's `Debug` output as a `String`
@@ -23,8 +46,8 @@ impl fmt::Display for GpuAcquireError {
         match self {
             Self::NoAdapter(msg) => write!(
                 f,
-                "no wgpu adapter is available on this system (no compatible GPU/driver \
-                 found via any backend): {msg}"
+                "no wgpu adapter is available on this system (backends tried: Vulkan, DX12, \
+                 Metal; set WGPU_BACKEND=gl to try OpenGL at your own risk): {msg}"
             ),
             Self::RequestDevice(msg) => write!(f, "failed to acquire a wgpu device: {msg}"),
         }
@@ -41,7 +64,7 @@ pub const MEGAKERNEL_STORAGE_BUFFERS: u32 = 11;
 
 /// Storage buffers the wavefront `wavefront_bounce` kernel binds in one stage
 /// (`wavefront_transport.wgsl`).
-pub const WAVEFRONT_STORAGE_BUFFERS: u32 = 19;
+pub const WAVEFRONT_STORAGE_BUFFERS: u32 = 27;
 
 /// Total uniform + storage buffer bindings `wavefront_bounce`'s auto-derived pipeline
 /// layout reaches in one stage (`wavefront_transport.wgsl`).
@@ -76,6 +99,7 @@ const MAX_REQUESTED_STORAGE_BUFFERS_PER_STAGE: u32 = 32;
 const MAX_REQUESTED_BUFFERS_AND_ACCEL_PER_STAGE: u32 = 40;
 
 /// A live `wgpu` adapter/device/queue, acquired once and reused by every self-test.
+#[derive(Clone)]
 pub struct GpuContext {
     /// wgpu instance.
     pub instance: wgpu::Instance,
@@ -129,6 +153,13 @@ impl GpuContext {
         pollster::block_on(Self::acquire_async())
     }
 
+    /// Asynchronously acquires a `wgpu` adapter/device/queue.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuAcquireError::NoAdapter`] if no backend/driver can produce an adapter, or
+    /// [`GpuAcquireError::RequestDevice`] if device creation failed.
+    //
     // `pub(crate)`: wasm32-only `GpuFrameRenderer::new_async` awaits this directly
     // instead of `pollster::block_on` (which parks the OS thread, unavailable on wasm32).
     //
@@ -144,9 +175,8 @@ impl GpuContext {
                       handles); wasm32-unknown-unknown has no second thread regardless"
         )
     )]
-    pub(crate) async fn acquire_async() -> Result<Self, GpuAcquireError> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    pub async fn acquire_async() -> Result<Self, GpuAcquireError> {
+        let instance = wgpu::Instance::new(instance_descriptor());
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -242,5 +272,31 @@ impl GpuContext {
             validation_error_seen,
             last_uncaptured_error,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GpuAcquireError;
+
+    /// Desktop targets never create a GL instance unless `WGPU_BACKEND` asks for one: the GL
+    /// teardown in wgpu-hal 30.0.1 can abort the process (see [`instance_descriptor`]).
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    #[test]
+    fn instance_descriptor_excludes_gl_on_desktop() {
+        if std::env::var_os("WGPU_BACKEND").is_some() {
+            return;
+        }
+        let descriptor = super::instance_descriptor();
+        assert!(!descriptor.backends.contains(wgpu::Backends::GL));
+        assert!(descriptor.backends.contains(wgpu::Backends::PRIMARY));
+    }
+
+    /// The no-adapter message names the backends tried and the GL opt-in.
+    #[test]
+    fn the_no_adapter_message_names_the_backends_and_the_opt_in() {
+        let text = GpuAcquireError::NoAdapter("none".to_owned()).to_string();
+        assert!(text.contains("Vulkan, DX12"), "{text}");
+        assert!(text.contains("WGPU_BACKEND=gl"), "{text}");
     }
 }

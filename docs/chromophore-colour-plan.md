@@ -882,9 +882,10 @@ C1) at the 5.0 mm reference path.
    unset; 7 mm equals the 1-unit swatch); the resolved scale for a physics
    material with no girdle size equals 7.0/model_width within 1e-6 relative;
    the built-in sanity test (§2.4) passes ΔE₀₀ ≤ 3 for ≥ 6 of the 8 listed
-   built-ins. **Status (data_version 4): not met** (3 of 8; 5 of 8 within 3.5 since the
-   2026-10-12 beryl Mn bounds). The
-   ≥ 6/8 test stays `#[ignore]`d with the per-built-in reasons and
+   built-ins. **Status (2026-10-19, after the measured color refits): met.** 6 of 8 are
+   within ΔE₀₀ 3: Ruby 1.00, Sapphire 0.22, Emerald 1.01, Peridot 0.15, Aquamarine 0.75
+   and Citrine 2.41. Tanzanite (7.27) and Amethyst (11.25) still differ from the primary-data
+   recipes. The ≥ 6/8 test is no longer ignored, and
    `criterion_6_built_in_colors_vs_primary_data_recipes_are_pinned` pins the 8 values.
 7. **Undo.** Pick → edit an amount → undo: recipe equals the solved recipe
    exactly (field-wise equality). 50 consecutive undo steps work; the 51st

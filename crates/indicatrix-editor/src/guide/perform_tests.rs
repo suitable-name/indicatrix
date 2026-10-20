@@ -675,3 +675,14 @@ fn the_steps_that_only_skip_are_listed() {
         "most action steps have a recipe: {skipped} of {total} only skip"
     );
 }
+
+#[test]
+fn ray_traced_view_recipe_is_valid_and_unknown_modes_remain_invalid() {
+    assert_eq!(Perform::ViewMode(4).problem(), None);
+    assert!(Perform::ViewMode(5).problem().is_some());
+    assert!(Perform::ViewMode(-1).problem().is_some());
+    assert_eq!(
+        default_perform(&Goal::ViewMode(4)),
+        Some(Perform::ViewMode(4))
+    );
+}

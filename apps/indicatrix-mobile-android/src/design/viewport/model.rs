@@ -6,6 +6,7 @@ use indicatrix_mobile_core::{
     viewport::{
         HandleOverlay, ViewportState,
         frame::{WAITING_STATUS, max_edge_for},
+        render_view,
     },
 };
 use slint::ComponentHandle;
@@ -35,6 +36,7 @@ pub(super) fn push(window: &AppWindow, state: &AppState) {
     let model = window.global::<ViewportModel>();
 
     model.set_view_mode(viewport.mode.index());
+    model.set_live_solid(render_view::live_solid(state));
     push_picture(&model, viewport);
     push_handles(&model, viewport, selected);
     push_tools(&model, viewport);

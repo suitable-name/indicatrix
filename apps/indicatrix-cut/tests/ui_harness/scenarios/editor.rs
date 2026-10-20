@@ -15,8 +15,8 @@ use crate::support::{
 };
 use indicatrix_cut::{EditorModel, HistoryModel, MainWindow, RawTextModel, TemplateGalleryModel};
 use slint::{ComponentHandle, Model};
-use slint_harness::AccessibleRole;
 use std::time::Duration;
+use uiprobe::AccessibleRole;
 
 /// Which gallery card of the "Shapes" section to pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +62,7 @@ pub(super) fn tier_signature(ui: &MainWindow) -> String {
 pub(super) fn open_new_design_dialog(app: &HarnessApp) -> bool {
     let ui = app.ui();
     let editor = ui.global::<EditorModel>();
-    if !editor.get_new_dialog_open() && !(click(app, "File") && click(app, "New Design...")) {
+    if !(editor.get_new_dialog_open() || (click(app, "File") && click(app, "New Design..."))) {
         // GAP: the File menu item is not reachable by label; the flag it sets is driven.
         editor.set_new_dialog_open(true);
         pump(100);

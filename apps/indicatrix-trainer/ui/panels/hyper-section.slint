@@ -40,6 +40,11 @@ export component HyperSection inherits Section {
         InfoRow { label: "Rollout Steps"; value: TrainingController.rollout_size > 0 ? TrainingController.rollout_size : "—"; }
         InfoRow { label: "Mini-batch"; value: TrainingController.batch_size > 0 ? TrainingController.batch_size : "—"; }
         InfoRow { label: "Epochs"; value: TrainingController.epochs > 0 ? TrainingController.epochs : "—"; }
+        InfoRow {
+            label: "Updates per Round";
+            value: TrainingController.worker_count > 0
+                ? (TrainingController.updates_per_round > 0 ? "" + TrainingController.updates_per_round : "0 (full epochs)") : "—";
+        }
         InfoRow { label: "Learning Rate"; value: TrainingController.learning_rate > 0 ? TrainingController.learning_rate : "—"; }
         Button {
             text: "Edit…";
@@ -68,8 +73,13 @@ export component HyperSection inherits Section {
         }
         Field {
             label: "Epochs";
-            hint: "Passes over the collected labels per update, at least 1.";
+            hint: "Full passes over all labelled states per round, at least 1. Used only when Updates per Round is 0.";
             value <=> TrainingController.edit_epochs;
+        }
+        Field {
+            label: "Updates per Round";
+            hint: "Mini-batches trained per round from the labelled states. 0 trains full epochs over all of them (slower as they accumulate).";
+            value <=> TrainingController.edit_updates;
         }
         Field {
             label: "Learning Rate";

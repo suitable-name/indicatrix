@@ -50,6 +50,7 @@ pub(super) fn apply_loaded_settings(
     loaded: &SettingsFile,
 ) {
     let s = &loaded.settings;
+    super::startup_ray::apply(ui, render_ctx, s);
     // The upload compression setting has no UI mirror: the connection layer reads it.
     crate::bridge::remote::remote_render::set_payload_choice(s.payload_encoding);
     // Parse the persisted lighting-rig label back into its enum at this one
@@ -252,6 +253,11 @@ fn apply_loaded_ui_mirrors(
     ui.global::<SettingsModel>()
         .set_preview_size_val(s.preview_size as f32);
     ui.global::<SettingsModel>()
+        .set_thumbnail_renderer_index(i32::from(s.thumbnail_renderer.index()));
+    ui.global::<SettingsModel>()
+        .set_thumbnail_backdrop_index(s.thumbnail_backdrop.index());
+    crate::bridge::preview_render::set_thumbnail_backdrop_index(s.thumbnail_backdrop.index());
+    ui.global::<SettingsModel>()
         .set_preview_spp_val(s.preview_spp as f32);
     ui.global::<SettingsModel>()
         .set_bounce_index(bounces_index(s.max_bounces));
@@ -410,6 +416,7 @@ pub(in crate::gui) fn apply_render_output_settings(
     render_ctx: &Arc<Mutex<RenderContext>>,
     s: &crate::settings::model::AppSettings,
 ) {
+    super::startup_ray::apply(ui, render_ctx, s);
     {
         let mut ctx = RenderContext::lock(render_ctx);
         ctx.target_samples = s.target_samples;
@@ -432,6 +439,9 @@ pub(in crate::gui) fn apply_render_output_settings(
     settings.set_target_samples_exponent(count_to_exponent(s.target_samples) as f32);
     settings.set_resolution_index(resolution_index(s.render_width, s.render_height));
     settings.set_preview_size_val(s.preview_size as f32);
+    settings.set_thumbnail_renderer_index(i32::from(s.thumbnail_renderer.index()));
+    settings.set_thumbnail_backdrop_index(s.thumbnail_backdrop.index());
+    crate::bridge::preview_render::set_thumbnail_backdrop_index(s.thumbnail_backdrop.index());
     settings.set_preview_spp_val(s.preview_spp as f32);
     settings.set_bounce_index(bounces_index(s.max_bounces));
     settings.set_local_preview_scale_index(local_preview_scale_index(s.local_preview_scale));

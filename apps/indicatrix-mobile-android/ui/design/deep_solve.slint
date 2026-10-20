@@ -1,0 +1,67 @@
+import { Shell } from "../models.slint";
+import { LineEdit, ProgressIndicator } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { PrimaryButton, TextButton } from "../shell/buttons.slint";
+
+export global DeepSolveModel {
+    in-out property <bool> open: false;
+    in property <bool> available: false;
+    in property <string> hint;
+    in property <bool> running: false;
+    in property <bool> can-pin: false;
+    in property <string> status;
+    in property <[string]> tiers;
+    in-out property <string> vol;
+    in-out property <string> lw;
+    in-out property <string> cw;
+    in-out property <string> pw;
+    in-out property <string> hw;
+    callback show();
+    callback close();
+    callback start();
+    callback cancel();
+    callback save-targets();
+    callback pin(int);
+}
+
+component TargetField inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> value;
+    Text { text: root.label; color: Theme.on-surface-variant; }
+    LineEdit { text <=> root.value; enabled: !DeepSolveModel.running; }
+}
+
+export component DeepSolveScreen inherits Rectangle {
+    background: Theme.surface;
+    TouchArea { }
+    VerticalLayout {
+        TopBar { title: "Deep Solve"; show-back: true; back-clicked => { Shell.request-back(); } }
+        PageScroll {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: Theme.space-md;
+                spacing: Theme.space-md;
+                Text { text: DeepSolveModel.hint; wrap: word-wrap; color: Theme.on-surface; }
+                Text { text: "Printed targets: enter external published figures, never measurements of this candidate. Blank fields are omitted."; wrap: word-wrap; color: Theme.on-surface-variant; }
+                TargetField { label: "Vol/W³"; value <=> DeepSolveModel.vol; }
+                TargetField { label: "L/W"; value <=> DeepSolveModel.lw; }
+                TargetField { label: "C/W"; value <=> DeepSolveModel.cw; }
+                TargetField { label: "P/W"; value <=> DeepSolveModel.pw; }
+                TargetField { label: "H/W"; value <=> DeepSolveModel.hw; }
+                TextButton { text: "Use entered printed targets"; enabled: !DeepSolveModel.running; clicked => { DeepSolveModel.save-targets(); } }
+                PrimaryButton { text: "Run Deep Solve"; enabled: DeepSolveModel.available && !DeepSolveModel.running; clicked => { DeepSolveModel.start(); } }
+                if DeepSolveModel.running: ProgressIndicator { indeterminate: true; }
+                if DeepSolveModel.running: TextButton { text: "Cancel search"; clicked => { DeepSolveModel.cancel(); } }
+                Text { text: DeepSolveModel.status; wrap: word-wrap; color: Theme.on-surface; }
+                for tier[index] in DeepSolveModel.tiers: TextButton {
+                    text: tier;
+                    enabled: DeepSolveModel.can-pin;
+                    clicked => { DeepSolveModel.pin(index); }
+                }
+                Text { text: "Pinning is an explicit edit. Undo restores the prior meet constraint. After pinning, rerun verification for the changed design."; wrap: word-wrap; color: Theme.on-surface-variant; }
+            }
+        }
+    }
+}

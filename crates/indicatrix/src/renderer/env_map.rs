@@ -243,6 +243,16 @@ impl EnvironmentMap {
         self.height
     }
 
+    /// The map's texels, row-major `[r, g, b]`, `width() * height()` entries.
+    ///
+    /// Read-only. Exposed so a front end can ship the EFFECTIVE map to a render server
+    /// (`indicatrix_net::messages::envmap_asset`), which rebuilds it with
+    /// [`Self::from_rgb`] and so holds the bit-identical map.
+    #[must_use]
+    pub const fn texels(&self) -> &[[f32; 3]] {
+        self.pixels.as_slice()
+    }
+
     /// Row-major `[r, g, b]` texel buffer, `width() * height()` entries -- exposed so
     /// `renderer::env_map_gpu::HdrEnvGpuData::upload` can build the
     /// `vec4<f32>`-padded storage buffer `spectral_transport.wgsl`'s `hdr_texels`

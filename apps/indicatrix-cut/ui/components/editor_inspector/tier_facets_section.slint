@@ -1,4 +1,4 @@
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { EditorModel } from "../../models/editor.slint";
 import { TierTableModel } from "../../models/tier_table.slint";
@@ -133,20 +133,21 @@ export component TierFacetsSection inherits VerticalLayout {
                         // arbitrary expression -- the ternary is computed
                         // here first, then interpolated as a single value
                         // below.
-                        property <string> chip_tooltip: chip.detached
+                        property <string> chip_tooltip: (chip.detached
                             ? "Position " + chip.label + ", detached from its symmetric family."
-                            : "Position " + chip.label + ".";
+                            : "Position " + chip.label + ".")
+                            + (chip.frosted ? " Frosted." : "");
                         // The keyboard cursor, while the strip has focus.
                         property <bool> ringed: chip_strip.has-focus && idx == root.chip_at;
                         background: chip.detached ? Theme.bg-input : Theme.bg-card-hover;
                         border-radius: Theme.radius-sm;
-                        border-width: self.ringed ? 2px : (chip.detached ? 1px : 0px);
+                        border-width: self.ringed ? 2px : ((chip.detached || chip.frosted) ? 1px : 0px);
                         // Dashed-looking (via a muted, thin border) and
                         // dimmed text is the "looks different" a
                         // detached facet needs -- Slint has no native
                         // dashed-stroke property, so a solid but
                         // visually distinct treatment stands in for it.
-                        border-color: self.ringed ? Theme.accent-cyan-hover : Theme.text-muted;
+                        border-color: self.ringed ? Theme.accent-cyan-hover : (chip.frosted ? Theme.accent-cyan : Theme.text-muted);
                         accessible-role: AccessibleRole.list-item;
                         accessible-label: self.chip_tooltip;
                         accessible-item-selectable: true;
@@ -158,7 +159,7 @@ export component TierFacetsSection inherits VerticalLayout {
                                 text: chip.label;
                                 font-size: 10px;
                                 font-weight: 600;
-                                color: chip.detached ? Theme.text-muted : Theme.text-primary;
+                                color: chip.frosted ? Theme.accent-cyan : (chip.detached ? Theme.text-muted : Theme.text-primary);
                                 horizontal-alignment: center;
                             }
                             // Two 20x20 buttons (icons, not text glyphs: the UI font has no
@@ -178,6 +179,19 @@ export component TierFacetsSection inherits VerticalLayout {
                                     clicked => {
                                         root.chip_cursor = idx;
                                         EditorModel.facet_toggle_detach(root.loaded_tier_index, chip.position);
+                                    }
+                                }
+                                if root.advanced: CompactIcon {
+                                    enabled: root.unlocked && root.selection_is_loaded;
+                                    reachable: false;
+                                    icon: @image-url("../../icons/frost.svg");
+                                    tint: chip.frosted ? Theme.accent-cyan : Theme.text-secondary;
+                                    hint: chip.frosted
+                                        ? "Make the facet at position " + chip.label + " polished again."
+                                        : "Frost the facet at position " + chip.label + ": it is cut with a matte, light-scattering finish. See the glossary.";
+                                    clicked => {
+                                        root.chip_cursor = idx;
+                                        EditorModel.toggle_facet_frosted(root.loaded_tier_index, chip.position);
                                     }
                                 }
                                 compact-icon-label := CompactIcon {
@@ -259,6 +273,33 @@ export component TierFacetsSection inherits VerticalLayout {
                 hint: "Move every facet of this tier down by that many teeth (to lower index numbers). You can type a number or a small calculation.";
                 clicked => { TierTableModel.rotate_tier(root.loaded_tier_index, root.rotate_by_text, -1); }
             }
+        }
+    }
+
+    // Finish of this tier: applies immediately, not staged, and is one undo step. Only shown for
+    // saved tiers. A tier frosted facet by facet (Advanced, the chips' frost buttons) shows its
+    // facets on the chips and says so under the tick box.
+    VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: frost_lbl.preferred-height;
+            Tooltip { text: @markdown("A frosted tier is cut with a matte, light-scattering finish instead of a polished one. The renders show it frosted, the cutting sheet says so, and it is saved in the design file and in a Gem Cut Studio export. See the glossary."); }
+            frost_lbl := Text { text: "Finish"; font-size: 10px; color: Theme.text-muted; }
+        }
+        CheckBox {
+            enabled: root.unlocked && root.selection_is_loaded;
+            text: "Frosted";
+            checked <=> EditorModel.selected_tier_frosted;
+            accessible-label: "Frosted Tier";
+            accessible-description: "Cut every facet of this tier with a frosted finish instead of a polished one.";
+            toggled => { EditorModel.set_tier_frosted(root.loaded_tier_index, self.checked); }
+        }
+        if EditorModel.selected_tier_frosted_partly: Text {
+            text: "Some facets of this tier are frosted; they are marked on the facet chips.";
+            font-size: 10px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
         }
     }
 

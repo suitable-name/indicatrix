@@ -314,9 +314,11 @@ fn decode_message(error: &EnvMapError) -> String {
     }
 }
 
-/// Decodes `file`, downscales it to at most 2048 x 1024, writes the stored copy in
-/// `dirs.files/hdr` and builds the sampler. Slow: run it on a worker thread, then hand the
-/// result to [`install`] on the UI thread.
+/// Decodes `file` into a stored, sampler-ready map.
+///
+/// It downscales to at most 2048 x 1024, writes the stored copy in `dirs.files/hdr` and
+/// builds the sampler. Slow: run it on a worker thread, then hand the result to
+/// [`install`] on the UI thread.
 ///
 /// # Errors
 ///

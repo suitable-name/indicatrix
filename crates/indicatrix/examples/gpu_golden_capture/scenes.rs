@@ -1,10 +1,12 @@
-//! Golden capture scenes: fixed list of 10 scenes used for GPU golden image capture
+//! Golden capture scenes: fixed list of 11 scenes (10 without the `zoning` feature) used for GPU golden image capture
 //! and equivalence verification against baseline megakernel runs.
 //!
 //! Every scene returns a [`SceneBundle`] specifying:
 //! - 64x64 resolution
 //! - 64 samples per pixel (spp)
 //! - 12 maximum bounces (except Scene 10, which forces 3 max bounces to test survivors)
+//! - Scene 11 is the only scene that combines an HDR environment with scattering: Studio
+//!   scenes have next-event estimation off, so scenes 5 and 6 cannot see NEE or MIS bugs.
 //! - Sample offset 0
 //! - Standard round brilliant cut (57 facets)
 //! - Standard camera pose: `Camera::new(0.35, 0.28, 5.0, 18.0)`
@@ -130,7 +132,7 @@ pub fn scene_01_diamond_daylight() -> SceneBundle {
     }
 }
 
-/// Scene 2: Spinel, studio lit preset 4 (WindowDaylight).
+/// Scene 2: Spinel, studio lit preset 4 (`WindowDaylight`).
 #[must_use]
 pub fn scene_02_spinel_preset4() -> SceneBundle {
     SceneBundle {
@@ -187,7 +189,7 @@ pub fn scene_04_biaxial() -> SceneBundle {
     }
 }
 
-/// Scene 5: One scattering material (Ruby with scattering_sigma_s = 1.0, g = 0.3).
+/// Scene 5: One scattering material (Ruby with `scattering_sigma_s` = 1.0, g = 0.3).
 #[must_use]
 pub fn scene_05_scattering() -> SceneBundle {
     SceneBundle {
@@ -270,6 +272,20 @@ pub fn scene_08_moissanite_dispersion() -> SceneBundle {
 
 /// Scene 9: Zoned stone only if built with `cfg(feature = "zoning")` (skip otherwise or return None).
 #[must_use]
+#[cfg_attr(
+    feature = "zoning",
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the scene exists only with the `zoning` feature; the caller's signature is the same either way"
+    )
+)]
+#[cfg_attr(
+    not(feature = "zoning"),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "without `zoning` the body is a bare `None`; with it the scene is built at run time"
+    )
+)]
 pub fn scene_09_zoned() -> Option<SceneBundle> {
     #[cfg(feature = "zoning")]
     {
@@ -313,10 +329,34 @@ pub fn scene_10_diamond_max_bounces_3() -> SceneBundle {
     }
 }
 
-/// Returns the fixed list of all available scenes (scenes 1-8, scene 9 if enabled, and scene 10).
+/// Scene 11: Ruby with scattering under the synthetic HDR map. HDR turns next-event
+/// estimation on, so this is the only scene that exercises the scattering NEE deposit
+/// and its MIS carry (Studio scenes have NEE off).
+#[must_use]
+pub fn scene_11_scattering_hdr() -> SceneBundle {
+    SceneBundle {
+        name: "scene11_ruby_scattering_hdr",
+        description: "Ruby with Scattering under Synthetic HDR Map (sigma_s = 1.0, g = 0.3)",
+        camera: default_camera(),
+        width: DEFAULT_WIDTH,
+        height: DEFAULT_HEIGHT,
+        planes: StandardGemCuts::standard_round_brilliant(),
+        facet_finishes: Vec::new(),
+        material: GemMaterial::by_name("Ruby")
+            .expect("Ruby is a built-in material")
+            .with_scattering(1.0, 0.3),
+        max_bounces: DEFAULT_MAX_BOUNCES,
+        spp: DEFAULT_SPP,
+        sample_offset: DEFAULT_SAMPLE_OFFSET,
+        environment: SceneEnvironment::Hdr(synthetic_harness_hdr_map()),
+    }
+}
+
+/// Returns the fixed list of all available scenes (scenes 1-8, scene 9 if enabled,
+/// scene 10 and scene 11): 11 scenes with the `zoning` feature, 10 without.
 #[must_use]
 pub fn all_scenes() -> Vec<SceneBundle> {
-    let mut scenes = Vec::with_capacity(10);
+    let mut scenes = Vec::with_capacity(11);
     scenes.push(scene_01_diamond_daylight());
     scenes.push(scene_02_spinel_preset4());
     scenes.push(scene_03_zircon());
@@ -329,5 +369,36 @@ pub fn all_scenes() -> Vec<SceneBundle> {
         scenes.push(scene_09);
     }
     scenes.push(scene_10_diamond_max_bounces_3());
+    scenes.push(scene_11_scattering_hdr());
     scenes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_names_are_unique_and_count_matches_the_documentation() {
+        let scenes = all_scenes();
+        let expected = if cfg!(feature = "zoning") { 11 } else { 10 };
+        assert_eq!(scenes.len(), expected);
+        let mut names: Vec<_> = scenes.iter().map(|s| s.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), scenes.len(), "scene names must be unique");
+    }
+
+    #[test]
+    fn hdr_scattering_scene_really_combines_hdr_and_scattering() {
+        let s = scene_11_scattering_hdr();
+        assert!(matches!(s.environment, SceneEnvironment::Hdr(_)));
+        assert!(s.material.scattering_sigma_s > 0.0);
+    }
+
+    #[test]
+    fn event_comparison_covers_frosted_and_uniaxial_scenes() {
+        let scenes = all_scenes();
+        assert!(scenes.iter().any(|s| !s.facet_finishes.is_empty()));
+        assert!(scenes.iter().any(|s| s.name == "scene03_zircon"));
+    }
 }

@@ -142,6 +142,8 @@ impl RemoteAvailability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StillOutput {
+    /// Image-forming renderer; missing settings keep the spectral path tracer.
+    pub engine: indicatrix::renderer::engine::EngineSpec,
     /// `ExportModel.selected_size_preset`: 0 = 1080p, 1 = 4K, 2 = custom.
     pub size_preset: i32,
     /// Custom width in pixels (used when `size_preset == 2`).
@@ -164,6 +166,13 @@ pub struct StillOutput {
 impl Default for StillOutput {
     fn default() -> Self {
         Self {
+            engine: indicatrix::renderer::engine::EngineSpec {
+                ray: indicatrix::renderer::engine::RayOptions {
+                    aa_taps: 16,
+                    fire: true,
+                },
+                ..Default::default()
+            },
             size_preset: 0,
             custom_width: 1920,
             custom_height: 1080,
@@ -182,6 +191,8 @@ impl Default for StillOutput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TiltVideoOutput {
+    /// Image-forming renderer; missing settings keep the spectral path tracer.
+    pub engine: indicatrix::renderer::engine::EngineSpec,
     /// `TiltVideoExportModel.resolution_preset` (an index into
     /// `gui::tilt::video_export::params::RESOLUTION_PRESETS`, or the custom index).
     pub resolution_preset: i32,
@@ -209,6 +220,13 @@ pub const DEFAULT_TILT_VIDEO_FILENAME_TEMPLATE: &str =
 impl Default for TiltVideoOutput {
     fn default() -> Self {
         Self {
+            engine: indicatrix::renderer::engine::EngineSpec {
+                ray: indicatrix::renderer::engine::RayOptions {
+                    aa_taps: 16,
+                    fire: true,
+                },
+                ..Default::default()
+            },
             resolution_preset: 8,
             custom_width: 512,
             custom_height: 512,
@@ -237,6 +255,8 @@ impl OutputSettings {
     /// dialog with an impossible slider position.
     #[must_use]
     pub fn sanitised(mut self) -> Self {
+        self.still.engine.ray = self.still.engine.ray.sanitized();
+        self.tilt_video.engine.ray = self.tilt_video.engine.ray.sanitized();
         let image_dim = |v: u32| v.clamp(16, 32768);
         self.still.size_preset = self.still.size_preset.clamp(0, 2);
         self.still.custom_width = image_dim(self.still.custom_width);

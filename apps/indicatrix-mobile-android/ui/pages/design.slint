@@ -13,6 +13,7 @@
 // places them.
 import { ProgressIndicator } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { Navigation } from "../navigation.slint";
 import { Icons } from "../icons.slint";
 import { Shell } from "../models.slint";
 import { EmptyState } from "../shell/empty_state.slint";
@@ -22,6 +23,7 @@ import { SidePane } from "../shell/side_pane.slint";
 import { Icon } from "../shell/icon.slint";
 import { StateLayer } from "../shell/state_layer.slint";
 import { ListRow } from "../shell/list_row.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
 import { DocumentModel } from "../design/document_model.slint";
 import { RenderModel } from "../design/render/render_model.slint";
 import { ExportSheet } from "../design/render/export_sheet.slint";
@@ -33,6 +35,12 @@ import { TiersTab } from "../design/tiers/tiers_tab.slint";
 import { StoneTab } from "../design/props/stone_tab.slint";
 import { LightTab } from "../design/props/light_tab.slint";
 import { ChecksTab } from "../design/props/checks_tab.slint";
+import { HistoryModel, HistoryScreen } from "../design/history.slint";
+import { ConcaveModel, ConcaveScreen } from "../design/concave.slint";
+import { DeepSolveModel, DeepSolveScreen } from "../design/deep_solve.slint";
+import { VariantsModel, VariantsScreen } from "../design/variants.slint";
+import { OptimizeModel, OptimizeScreen } from "../design/optimization.slint";
+import { RetargetModel, RetargetScreen } from "../design/retarget.slint";
 
 // The verdict of the design as a small colored pill (good / check / problem).
 component VerdictChip inherits Rectangle {
@@ -359,7 +367,7 @@ component WideBody inherits Rectangle {
 }
 
 export component DesignPage inherits Rectangle {
-    property <bool> menu-open: false;
+    property <bool> menu-open <=> Navigation.design-menu-open;
     // The selected tab lives in `PropsModel` so the preview's `--tab` flag can set it.
     property <int> tab <=> PropsModel.design-tab;
     property <bool> pane-collapsed: false;
@@ -430,7 +438,7 @@ export component DesignPage inherits Rectangle {
             x: parent.width - self.width - Theme.space-sm;
             y: Theme.top-bar-height - Theme.space-sm;
             width: min(parent.width - 2 * Theme.space-sm, 280px);
-            height: menu-rows.preferred-height;
+            height: min(menu-rows.preferred-height, max(0px, parent.height - self.y - Theme.space-sm));
             background: Theme.surface-high;
             border-radius: Theme.radius-md;
             clip: true;
@@ -440,7 +448,37 @@ export component DesignPage inherits Rectangle {
 
             TouchArea { }
 
-            menu-rows := VerticalLayout {
+            PageScroll {
+              menu-rows := VerticalLayout {
+                ListRow {
+                    title: "Session History";
+                    clicked => {
+                        root.menu-open = false;
+                        HistoryModel.show();
+                    }
+                }
+                ListRow {
+                    title: "Saved Variants";
+                    clicked => {
+                        root.menu-open = false;
+                        VariantsModel.show();
+                    }
+                }
+                ListRow {
+                    title: "Optimize";
+                    clicked => { root.menu-open = false; OptimizeModel.show(); }
+                }
+                ListRow {
+                    title: "Retarget For Material";
+                    clicked => { root.menu-open = false; RetargetModel.show(); }
+                }
+                ListRow {
+                    title: "Deep Solve";
+                    clicked => {
+                        root.menu-open = false;
+                        DeepSolveModel.show();
+                    }
+                }
                 ListRow {
                     title: "Save";
                     clicked => {
@@ -480,10 +518,25 @@ export component DesignPage inherits Rectangle {
                         DocumentModel.open();
                     }
                 }
+
+                ListRow {
+                    title: "Close Design";
+                    clicked => {
+                        root.menu-open = false;
+                        DocumentModel.close-design();
+                    }
+                }
+              }
             }
         }
     }
 
     // The export sheet of the Render view covers the whole page, the menu included.
     if RenderModel.export-open && DocumentModel.has-design: ExportSheet { }
+    if HistoryModel.open && DocumentModel.has-design: HistoryScreen { }
+    if ConcaveModel.open && DocumentModel.has-design: ConcaveScreen { }
+    if DeepSolveModel.open && DocumentModel.has-design: DeepSolveScreen { }
+    if OptimizeModel.open && DocumentModel.has-design: OptimizeScreen { }
+    if RetargetModel.open && DocumentModel.has-design: RetargetScreen { }
+    if VariantsModel.open && DocumentModel.has-design: VariantsScreen { }
 }

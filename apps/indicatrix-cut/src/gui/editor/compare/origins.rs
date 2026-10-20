@@ -9,7 +9,7 @@ use crate::{
     gui::editor::{
         callbacks::{self, RetargetCompareInputs, RetargetKeepGuard},
         state::EditorState,
-        view::build_optimize_preview_design,
+        view::try_build_optimize_preview_design,
     },
 };
 use indicatrix::optics::materials::GemMaterial;
@@ -110,20 +110,41 @@ pub(super) struct OpenRequest {
 }
 
 /// The custom-catalogue materials the live viewport resolves against.
-fn custom_materials(render_ctx: &Arc<Mutex<RenderContext>>) -> Vec<GemMaterial> {
-    render_ctx
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .custom_materials
-        .as_ref()
-        .clone()
+fn custom_materials(render_ctx: &Arc<Mutex<RenderContext>>) -> (Vec<GemMaterial>, Vec<String>) {
+    let ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
+    let fluorescent = ctx
+        .custom_material_fluorescence
+        .iter()
+        .filter(|(name, glow)| {
+            !glow.is_empty()
+                && ctx
+                    .custom_material_physics
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(name))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    (ctx.custom_materials.as_ref().clone(), fluorescent)
 }
 
 /// One side's inputs, its traced material resolved against `custom`.
-fn side(design: Design, label: String, custom: &[GemMaterial]) -> SideInput {
+fn side(
+    design: Design,
+    label: String,
+    custom: &[GemMaterial],
+    fluorescent: &[String],
+) -> SideInput {
     let material = resolve_side_material(&design, custom);
     let metrics_material = resolve_metrics_material(&design, custom);
+    let ray_fluorescent = !design.material.has_body_color_override()
+        && design.material.body_color_bands_override.is_none()
+        && material.as_ref().is_ok_and(|m| {
+            fluorescent
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&m.name))
+        });
     SideInput {
+        ray_fluorescent,
         design,
         label,
         material,
@@ -143,13 +164,18 @@ pub(super) fn retarget_request(
     render_ctx: &Arc<Mutex<RenderContext>>,
 ) -> Result<OpenRequest, String> {
     let inputs: RetargetCompareInputs = callbacks::retarget_compare_inputs(ui, st, render_ctx)?;
-    let custom = custom_materials(render_ctx);
+    let (custom, fluorescent) = custom_materials(render_ctx);
     Ok(OpenRequest {
         reference: ReferenceOffer::default(),
         origin: CompareOrigin::Retarget,
         guard: KeepGuard::Retarget(Box::new(inputs.guard)),
-        before: side(inputs.current, "Current Design".to_string(), &custom),
-        after: side(inputs.candidate, inputs.after_label, &custom),
+        before: side(
+            inputs.current,
+            "Current Design".to_string(),
+            &custom,
+            &fluorescent,
+        ),
+        after: side(inputs.candidate, inputs.after_label, &custom, &fluorescent),
     })
 }
 
@@ -204,8 +230,8 @@ pub(super) fn optimize_request(
     if generation != st.generation.load(AtomicOrdering::Relaxed) {
         return Err("The design changed since Optimize ran -- re-run Optimize first.".to_string());
     }
-    let candidate = build_optimize_preview_design(&st.design, &outcome);
-    let custom = custom_materials(render_ctx);
+    let candidate = try_build_optimize_preview_design(&st.design, &outcome)?;
+    let (custom, fluorescent) = custom_materials(render_ctx);
     let (before_design, before_label, offer) =
         pick_before(&st.design, callbacks::original_for_compare(), reference);
     Ok(OpenRequest {
@@ -215,8 +241,13 @@ pub(super) fn optimize_request(
             outcome: Box::new(outcome),
             generation,
         },
-        before: side(before_design, before_label, &custom),
-        after: side(candidate, "Optimize Candidate".to_string(), &custom),
+        before: side(before_design, before_label, &custom, &fluorescent),
+        after: side(
+            candidate,
+            "Optimize Candidate".to_string(),
+            &custom,
+            &fluorescent,
+        ),
     })
 }
 
@@ -231,13 +262,23 @@ pub(super) fn snapshot_request(
 ) -> Result<OpenRequest, String> {
     let (snapshot, label) = callbacks::snapshot_for_compare()
         .ok_or_else(|| "No snapshot taken yet -- use Snapshot Design first.".to_string())?;
-    let custom = custom_materials(render_ctx);
+    let (custom, fluorescent) = custom_materials(render_ctx);
     Ok(OpenRequest {
         reference: ReferenceOffer::default(),
         origin: CompareOrigin::Snapshot,
         guard: KeepGuard::Snapshot,
-        before: side(snapshot, format!("Snapshot \"{label}\""), &custom),
-        after: side(st.design.clone(), "Current Design".to_string(), &custom),
+        before: side(
+            snapshot,
+            format!("Snapshot \"{label}\""),
+            &custom,
+            &fluorescent,
+        ),
+        after: side(
+            st.design.clone(),
+            "Current Design".to_string(),
+            &custom,
+            &fluorescent,
+        ),
     })
 }
 
@@ -247,13 +288,13 @@ pub(super) fn variants_request(
     first: VariantSide,
     second: VariantSide,
 ) -> OpenRequest {
-    let custom = custom_materials(render_ctx);
+    let (custom, fluorescent) = custom_materials(render_ctx);
     OpenRequest {
         reference: ReferenceOffer::default(),
         origin: CompareOrigin::Variants,
         guard: KeepGuard::Variants,
-        before: side(first.design, first.label, &custom),
-        after: side(second.design, second.label, &custom),
+        before: side(first.design, first.label, &custom, &fluorescent),
+        after: side(second.design, second.label, &custom, &fluorescent),
     }
 }
 

@@ -1,5 +1,5 @@
 //! Desktop UI harness for `indicatrix-cut` (custom `main`, `harness = false`), on the published
-//! `slint-harness` crate.
+//! `uiprobe` crate.
 //!
 //! Drives the real `MainWindow` with all its Rust wiring on Slint's testing backend, inside a
 //! throw-away profile, and collects every problem into `target/ui-harness/report.md` (plus
@@ -20,14 +20,6 @@ mod coverage_allow;
 mod scenarios;
 mod support;
 
-use slint_harness::{
-    Harness, Jobs,
-    backend::require_debug_info,
-    coverage::{Coverage, GateRule},
-    profile::{Profile as HarnessProfile, request_abort},
-    report::{Finding, Format},
-    take_panics,
-};
 use std::{
     cell::{Cell, RefCell},
     process::ExitCode,
@@ -39,13 +31,21 @@ use support::{
     profile::print_shutdown_summary,
     sweep_options,
 };
+use uiprobe::{
+    Harness, Jobs,
+    backend::require_debug_info,
+    coverage::{Coverage, GateRule},
+    profile::{Profile as HarnessProfile, request_abort},
+    report::{Finding, Format},
+    take_panics,
+};
 
 /// The app, shared by the scenario closures and the teardown (one UI thread).
 type SharedApp = Rc<RefCell<HarnessApp>>;
 
 /// A scenario body as the crate runs it, spelled out so a closure is inferred for every lifetime
 /// of the crate context.
-type ScenarioBody = dyn FnMut(&mut slint_harness::Ctx<'_>) -> Result<(), Finding>;
+type ScenarioBody = dyn FnMut(&mut uiprobe::Ctx<'_>) -> Result<(), Finding>;
 
 fn main() -> ExitCode {
     // Every process (the parent and each worker runs this `main`): the live viewport traces
@@ -65,8 +65,8 @@ fn main() -> ExitCode {
         .sizes([DEFAULT_SIZE, MINIMUM_SIZE])
         // Most of a run is waiting on the app's threads and on timeouts, not CPU: worker
         // processes (each its own profile) run scenarios side by side while cores are idle.
-        // `SLINT_HARNESS_JOBS=serial` restores the one-process run (e.g. to compare against a
-        // serial baseline); `SLINT_HARNESS_JOBS_MAX` caps the workers.
+        // `UIPROBE_JOBS=serial` restores the one-process run (e.g. to compare against a
+        // serial baseline); `UIPROBE_JOBS_MAX` caps the workers.
         .jobs(Jobs::Auto)
         .sweep_options(sweep_options())
         .coverage(
@@ -79,7 +79,7 @@ fn main() -> ExitCode {
                     "add a table row in scenarios/coverage/ or an allow-list entry with a reason",
                 ),
         )
-        .report_dir(slint_harness::target_dir!().join("ui-harness"))
+        .report_dir(uiprobe::target_dir!().join("ui-harness"))
         .formats([Format::Markdown]);
 
     let app: SharedApp = Rc::new(RefCell::new(HarnessApp::empty()));

@@ -7,7 +7,7 @@
 use crate::{MainWindow, RetargetCandidateItem, RetargetModel, RetargetRowItem};
 use indicatrix_cut_core::{MaterialSelection, ResolvedMaterial};
 use indicatrix_editor::retarget::{
-    search::{CandidateKind, SearchCandidate, SearchReport},
+    search::{CandidateKind, CandidateRole, SearchCandidate, SearchReport},
     validity::ValidityStatus,
 };
 use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel};
@@ -38,18 +38,34 @@ pub(super) struct CandidateRowView {
     pub(super) verdict: String,
 }
 
+/// The words for what an option is best at.
+const fn role_text(role: CandidateRole) -> &'static str {
+    match role {
+        CandidateRole::BestOptics => "Best optics within limits",
+        CandidateRole::Closest => "Closest to original",
+        CandidateRole::Balanced => "Balanced",
+    }
+}
+
 /// The list rows for `candidates` (best first, as the report orders them).
 pub(super) fn candidate_row_views(candidates: &[SearchCandidate]) -> Vec<CandidateRowView> {
     candidates
         .iter()
         .enumerate()
         .map(|(index, candidate)| {
-            let label = match candidate.kind {
+            let origin = match candidate.kind {
                 CandidateKind::Shift => "Shift result".to_string(),
                 CandidateKind::Partial { percent } => {
                     format!("Part of the Shift change ({percent} %)")
                 }
                 CandidateKind::Optimized => "Searched angles".to_string(),
+            };
+            // The role comes from the search's own frontier selection, not from the position
+            // in the list: an option that is neither the best, the closest nor the balanced
+            // one is named by its origin alone.
+            let label = match candidate.role.filter(|_| candidate.preservation.is_some()) {
+                Some(role) => format!("{} - {origin}", role_text(role)),
+                None => origin,
             };
             let verdict = if candidate.validity.status == ValidityStatus::Valid {
                 "Valid"

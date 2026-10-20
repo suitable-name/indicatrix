@@ -50,11 +50,16 @@ mod codec;
 mod contribution;
 mod encoding;
 mod encoding_matrix;
+/// The float environment-map asset (v25) -- see this module's own doc comment.
+pub mod envmap_asset;
 /// The `ErrorMsg::code` vocabulary -- see this module's own "Modules" doc section.
 pub mod error_codes;
 #[cfg(feature = "render")]
 mod final_image;
 mod hello;
+/// Durable server jobs (v25) -- see this module's own doc comment.
+#[cfg(feature = "render")]
+pub mod job;
 #[cfg(feature = "render")]
 mod render;
 mod stream;
@@ -93,6 +98,13 @@ pub use encoding::{
 #[cfg(feature = "render")]
 pub use final_image::{FinalImageRequest, FinalOutput, WireColorSpace};
 pub use hello::{Backend, Hello, PeerRole, RenderCapability, Welcome, WorkerRegistration};
+#[cfg(feature = "render")]
+pub use job::{
+    JobId, JobInfo, JobPhase, JobRequest, JobResponse, JobSubmit, MAX_JOB_LABEL_CHARS,
+    MAX_JOB_LIST, MAX_JOB_RESULT_LEN, MAX_JOB_SAMPLES, derive_job_id, job_id_hex, parse_job_id_hex,
+    read_job_response, read_job_result, write_job_asset, write_job_request, write_job_response,
+    write_job_result,
+};
 #[cfg(feature = "render")]
 pub use render::{PreviewConfig, RenderRequest, RequestIntent, StreamConfig, TransferMode};
 pub use stream::{
@@ -158,7 +170,8 @@ pub use zoning::{
 ///     hash of `indicatrix`'s crate VERSION, a release-process promise nothing enforces,
 ///     so a viewer and worker whose physics differ but whose version didn't get bumped
 ///     could pair silently. `source_hash` is a content hash of the actual `indicatrix`
-///     source tree; see [`crate::handshake`] for how the two fields are checked together.
+///     source tree, carried for diagnostics only and never compared; see
+///     [`crate::handshake`].
 /// 13: `LibraryRequest::Search` gained `order` (`SortOrderWire`) and `tag_filter`:
 ///     without them, the library panel's sort selector and tag chip are silently
 ///     ignored in remote mode, even though
@@ -221,12 +234,45 @@ pub use zoning::{
 ///     (indices 10 to 13) appended; see `messages::batch`. `BatchItemDone` carries a raw PNG payload
 ///     frame. Nothing existing changed shape, but a peer on 23 would fail to decode the new
 ///     indices outright, so the bump turns that into a handshake refusal.
+/// 25: the float environment-map asset and durable server jobs. An asset named by
+///     `SceneEnvironment::Hdr` may now be an `IXENVMAP` v1 float asset
+///     (`messages::envmap_asset`) as well as a Radiance `.hdr` file, told apart by its magic;
+///     `RenderCapability::hdr == true` at v25 means the server decodes both. A v24 server
+///     would try to read the float asset as Radiance and fail, so the bump makes the
+///     difference a handshake refusal. Durable jobs append `ClientMessage::Job` (index 10,
+///     `render`-gated) and the separate reply type `JobResponse` (`messages::job`); no
+///     existing message changed shape.
+/// 26: authored frosting. `SceneState::frosted_planes` appended (`Vec<u32>`, the ascending
+///     indices of the planes a design frosts; always present on the wire, an empty `Vec` for a
+///     design without frosting). The worker marks exactly those planes `Frosted`
+///     (`indicatrix::geometry::facet_finishes_with_frosted`), so a peer on 25 would misalign the
+///     scene and render a frosted design polished. Job files embed the scene and carry the
+///     field with a serde default, so a job saved before it reads as unfrosted. The library
+///     protocol carries a library design's frosting under the same bump:
+///     `library::DesignRecord::frosting` and `LibraryResponse::DesignSource::frosting`
+///     (`Vec<library::FrostedTierWire>`, tier position and facet slots, appended as the last
+///     field of each), so a mirror and a remote editor open keep it.
+/// 27: turn-aware Retarget bounds (owner decisions 2026-10-19), bumped together with the
+///     browser worker protocol (`indicatrix-web-core` 22). No message of this protocol changed
+///     shape: nothing here carries `indicatrix_cut_core`'s `PreservationPolicy`, whose
+///     `bounds_follow_turn` field and request-measured turn allowance are the change. The
+///     bump pairs peers built on the same side of that rule, so a viewer and a worker from
+///     different days are refused at the handshake instead of disagreeing about which
+///     retarget results are valid.
 ///
 /// A `render` build appends `ClientMessage::ZoningPayload` (index 9) WITHOUT a bump: it is
 /// sent only to a peer whose `WELCOME` carried the zoning capability marker, which a peer
 /// sends only in reply to a `HELLO` that carried the marker -- so a peer without the
 /// extension never sees the message or the marker. See the `zoning` module.
-pub const PROTOCOL_VERSION: u16 = 24;
+/// 28: deterministic Ray-Traced image engines; `SceneState` appends `EngineSpec`.
+/// 29: the backdrop is a lit tray (backdrop-consistency campaign, 2026-10-20). The meaning of
+///     `SceneState::backdrop` changed, not its shape: it is now the radiance at exposure 1 of the
+///     surface below the girdle plane, seen by every escape (primary misses and exits at any
+///     bounce), with `0.0` = the preset's own ground; before it was a card only the camera ray
+///     saw. A peer on 28 would merge dark-window samples with lit-window samples, so the bump
+///     pairs peers on the same side of the tray rule (the v27 precedent). The browser worker
+///     protocol moves with it (24).
+pub const PROTOCOL_VERSION: u16 = 29;
 
 #[cfg(test)]
 mod tests {
@@ -238,7 +284,14 @@ mod tests {
     /// 23: absorption units (`GemMaterial::absorption_unit`; scattering unscaled).
     /// 24: batched preview requests (`ClientMessage::BatchRenderRequest` and the four
     ///     `StreamEvent::Batch*` events).
+    /// 25: the float environment-map asset and durable server jobs
+    ///     (`ClientMessage::Job`, `JobResponse`).
+    /// 26: authored frosting (`SceneState::frosted_planes`).
+    /// 27: turn-aware Retarget bounds, paired with the browser worker protocol's 22 (no
+    ///     message of this protocol changed shape).
+    /// 28: `SceneState::engine` appended for deterministic Ray-Traced taps.
+    /// 29: the backdrop is a lit tray (`SceneState::backdrop` changed meaning, not shape).
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 24);
+        assert_eq!(super::PROTOCOL_VERSION, 29);
     }
 }

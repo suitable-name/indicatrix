@@ -14,7 +14,12 @@
 //!
 //! [`cost_probe`] (`#[cfg(test)]`, `#[ignore]`d: `cargo test -p indicatrix-cut-core
 //! --release --lib cost_probe -- --ignored --nocapture`) measures one full objective
-//! evaluation end to end. Measured numbers (release, single-threaded, this machine):
+//! evaluation end to end. Measured numbers (release, single-threaded, this machine).
+//! They predate the meet-preserving gate: a *proposal* is now a bounded projection
+//! (see "Varying anchored tiers" below), which pays many solves, one validation and
+//! one finite-difference probe per variable per iteration (the budget is pinned by
+//! `meet_preservation::tests::projection_retains_a_nonzero_coupled_authored_deformation`),
+//! so the per-evaluation figures below are a floor for a proposal, not its cost:
 //!
 //! | fixture | tiers | solve | Fast metrics | Full metrics (724 samples) |
 //! |---|---|---|---|---|
@@ -57,7 +62,10 @@
 //! authored scale references, so [`optimize_design`] on a freshly-imported design
 //! returns an [`OptimizeOutcome`] with zero evaluations and an unchanged score --
 //! an honest "nothing to do here yet", not an error. (A request can opt in to the
-//! other answer, see "Varying anchored tiers" below.)
+//! other answer, see "Varying anchored tiers" below: with
+//! [`OptimizeOptions::vary_anchored`] a pinned horizontal tier or a relation
+//! follower contributes a depth variable, so such a design runs evaluations and can
+//! return mast changes without any angle change.)
 //!
 //! Two further exclusions apply to every tier, whatever its constraint. A
 //! **horizontal** tier (`|angle| < 1e-9`: the table at `+0.0`, the culet at `-0.0`)
@@ -76,20 +84,18 @@
 //!
 //! # Varying anchored tiers (opt-in)
 //!
-//! With [`OptimizeOptions::vary_anchored`] on, a `ScaleReference` tier that has a
-//! *hinge* in [`OptimizeOptions::anchor_hinges`] is free too, which is what makes an
-//! imported design (every tier pinned) searchable at all. The hinge is the point of the
-//! tier's first facet that stays put when the facet turns, normally a vertex it shares
-//! with a neighbour; the caller supplies the points (the optimizer does not derive
-//! them). Whenever such a tier's angle changes its mast is recomputed so the plane
-//! still passes through the hinge: `mast = n . hinge`, with `n` the facet normal
-//! `(sin(theta) cos(phi), +-cos(theta), sin(theta) sin(phi))` built exactly as the
-//! schedule path builds it (`phi` from the tier's first index and the gear reference
-//! angle; the tier's cheater offset included). The changed masts come back as
-//! [`MastChange`]s next to the [`AngleChange`]s. A tier with a tier target is never
-//! varied this way: the solver takes its mast from the target. Every `ScaleReference`
-//! tier stays a `ScaleReference` tier, so the block anchors the solver needs are
-//! never lost.
+//! With [`OptimizeOptions::vary_anchored`] on, pinned tiers with authorized hinges can
+//! supply angle and depth variables. Horizontal pinned depths and relation-follower
+//! depths can also participate, while follower angles remain relation-owned. Explicit
+//! dimensional targets, unselected tiers and vertical girdle depths remain locked.
+//! Hinges seed local proposals; bounded coupled projection preserves the complete
+//! original junction network rather than fixing just one point per moving plane.
+//! A common axial-affine family proposes coordinated motion before coordinate steps.
+//! Every accepted state is re-solved and checked against all original supports, live
+//! surfaces, protected edges and cyclic boundary order. Separate hard shape limits
+//! constrain Optimize and the more conservative Retarget policy.
+//! Accepted angle and mast changes travel together through scoring, previews, worker
+//! messages and one atomic Apply. Ordinary meet-derived authoring stays derived.
 //!
 //! # Bounds, guards and candidates
 //!
@@ -199,8 +205,9 @@
 //! `OptimizeConfig` is `Copy` and is stored in `indicatrix-editor`'s `RetargetMode`
 //! (also `Copy`), and the web crates build [`OptimizeOutcome`] by full struct literal;
 //! the extended request and answer therefore live in their own types
-//! ([`OptimizeOptions`], [`OptimizeResult`]) and the old types and functions are
-//! unchanged. See [`options`]'s module docs.
+//! ([`OptimizeOptions`], [`OptimizeResult`]) and the old types keep their shape. Their
+//! behaviour did change with the meet-preserving gate: every accepted state is checked
+//! against the captured network and stamped with provenance. See [`options`]'s module docs.
 //!
 //! # Coordinate descent stalls on diagonal ridges
 //!
@@ -252,7 +259,10 @@
 //! tells the caller which start its thread's lane is on; [`OptimizeResult::starts_run`]
 //! and [`OptimizeResult::best_start`] say what ran and what won.
 //! [`inclusive_max_evaluations_for`] extends the honest evaluation total with the
-//! screening draws and one polish budget per polished start.
+//! screening draws and one polish budget per polished start. The polish budget is a hard
+//! cap and never more starts than [`effective_starts`] are polished (extra waves can leave
+//! more states than that), so a run exceeds the figure by at most the coordinate stage's
+//! own soft overshoot (one candidate pair) per descent.
 //!
 //! # Module layout
 //!
@@ -270,13 +280,26 @@
 
 mod apply;
 mod candidate;
+mod constrained;
+mod families;
+pub use constrained::{
+    ProjectionReport, project_preserved_design, project_preserved_design_controlled,
+    project_preserved_design_report,
+};
 mod guard;
+mod materialize;
 mod multistart;
+pub use materialize::{MaterializeError, materialize_preserved_changes};
 mod objective;
 mod options;
 mod polish;
 mod pool;
 mod preset;
+mod provenance;
+pub use provenance::{
+    OptimizationProvenance, authoring_identity, materialize_candidate, materialize_outcome,
+};
+mod scored_stone;
 mod search;
 mod space;
 #[cfg(test)]
@@ -290,8 +313,10 @@ pub use candidate::{
 pub use indicatrix::color::metrics::FaceUpTone;
 pub use objective::{
     CANONICAL_LIGHT_PITCH, CANONICAL_LIGHT_YAW, CANONICAL_LIGHTING_PRESET, ObjectiveComponents,
-    ObjectiveFidelity, ObjectiveWeights, ToneGoal, evaluate_objective, evaluate_objective_threaded,
-    evaluate_objective_under, evaluate_objective_under_threaded, evaluate_objective_with_tone,
+    ObjectiveFidelity, ObjectiveWeights, ToneGoal, evaluate_objective,
+    evaluate_objective_geom_under, evaluate_objective_geom_under_threaded,
+    evaluate_objective_threaded, evaluate_objective_under, evaluate_objective_under_threaded,
+    evaluate_objective_with_tone, evaluate_objective_with_tone_geom_under_threaded,
     evaluate_objective_with_tone_under, evaluate_objective_with_tone_under_threaded,
 };
 pub use options::{MastChange, OptimizeCandidate, OptimizeOptions, OptimizeResult, ShapeTarget};

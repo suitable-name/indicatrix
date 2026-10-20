@@ -10,11 +10,16 @@
 //! time anything needs it, and again after the design was replaced. Its methods take
 //! `&self` (the state sits behind a `RefCell` of its own) so a front end can read marks
 //! from the `&AppState` that a push receives.
+//!
+//! Removing marks is the other half of the job: [`ProgressStore::reset`] clears the open
+//! design's marks, [`ProgressStore::delete_all`] every design's, and the free functions
+//! [`remove_files`] and [`count`] work on the folder without a bound store (a deleted
+//! library design's files, the "how many" of a confirmation).
 
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -52,6 +57,10 @@ pub(super) struct Binding {
 struct Inner {
     binding: Option<Binding>,
     path: Option<PathBuf>,
+    /// The file of the design's text hash, when `path` is an id file: the marks the design
+    /// had before it got an id are read from it, so a reset has to remove it too. It follows
+    /// every edit of the text, so it is renewed by each binding.
+    legacy: Option<PathBuf>,
     marks: BTreeMap<String, String>,
     progress: Progress,
 }
@@ -74,27 +83,37 @@ impl ProgressStore {
         self.inner.borrow().path.is_some()
     }
 
+    /// Whether the open design has any mark stored: a done mark, a mark whose step changed
+    /// since, or a mark of a step the design no longer has. A reset has something to clear
+    /// exactly when this is true.
+    #[must_use]
+    pub fn has_marks(&self) -> bool {
+        !self.inner.borrow().marks.is_empty()
+    }
+
     /// Binds the store to the design `binding` names: its marks are read from the file
     /// `key` names (or, when that file does not exist yet, from the file `legacy` names,
     /// the marks the design had before it got an id). Binding to the file the store is
     /// already bound to only records the new binding.
     pub(super) fn bind(&self, binding: Binding, key: &str, legacy: Option<&str>) {
         let path = binding.dir.join(format!("{key}.json"));
+        let legacy_path = legacy.map(|legacy| binding.dir.join(format!("{legacy}.json")));
         let mut inner = self.inner.borrow_mut();
         if inner.path.as_ref() != Some(&path) {
             let marks = if path.is_file() {
                 load(&path)
             } else {
-                legacy
-                    .map(|legacy| binding.dir.join(format!("{legacy}.json")))
+                legacy_path
+                    .as_ref()
                     .filter(|legacy_path| legacy_path.is_file())
-                    .map(|legacy_path| load(&legacy_path))
+                    .map(|legacy_path| load(legacy_path))
                     .unwrap_or_default()
             };
             inner.progress = Progress::from_marks(marks.clone());
             inner.marks = marks;
             inner.path = Some(path);
         }
+        inner.legacy = legacy_path;
         inner.binding = Some(binding);
     }
 
@@ -148,7 +167,6 @@ impl ProgressStore {
 
     /// How much of `steps` is done, from 0 to 1.
     #[must_use]
-    #[allow(clippy::cast_precision_loss, reason = "step counts are tiny")]
     pub fn progress_fraction(&self, steps: &[CuttingStep]) -> f32 {
         if steps.is_empty() {
             return 0.0;
@@ -162,17 +180,28 @@ impl ProgressStore {
         self.inner.borrow().progress.resume_position(steps)
     }
 
-    /// Removes every mark of the open design and deletes its file.
+    /// Removes every mark of the open design and deletes its files: the one it is stored
+    /// in and, for a design with an id, the one of its text hash that its marks may have
+    /// been adopted from (left in place, the next binding would read the marks back).
     pub fn reset(&self) {
         let mut inner = self.inner.borrow_mut();
         inner.marks.clear();
         inner.progress.clear();
-        if let Some(path) = &inner.path
-            && let Err(error) = fs::remove_file(path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(%error, path = %path.display(), "the done marks could not be removed");
+        for path in inner.path.iter().chain(inner.legacy.iter()) {
+            remove_logged(path);
         }
+    }
+
+    /// Forgets the marks of the open design and deletes every progress file in `dir`, the
+    /// ones of all other designs included. Returns how many designs' files were deleted. The
+    /// folder goes with its last file; marking a step again creates it anew.
+    pub(super) fn delete_all(&self, dir: &Path) -> usize {
+        {
+            let mut inner = self.inner.borrow_mut();
+            inner.marks.clear();
+            inner.progress.clear();
+        }
+        remove_all(dir)
     }
 
     /// Applies `changes` to the marks and writes the file.
@@ -199,6 +228,77 @@ impl ProgressStore {
     }
 }
 
+/// Deletes the files `stems` name in `dir` (`<stem>.json`, and a temp file a crash left
+/// beside it). A file that is not there is fine; any other failure is logged.
+pub(super) fn remove_files(dir: &Path, stems: &[String]) {
+    for stem in stems {
+        remove_logged(&dir.join(format!("{stem}.json")));
+    }
+}
+
+/// How many progress files (one per design) `dir` holds.
+pub(super) fn count(dir: &Path) -> usize {
+    fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|entry| is_progress_file(&entry.path()))
+            .count()
+    })
+}
+
+/// Deletes every file in `dir` and then `dir` itself, and returns how many of them were
+/// progress files. A file that cannot be deleted is logged and left.
+fn remove_all(dir: &Path) -> usize {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            if error.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(%error, dir = %dir.display(), "the done marks could not be listed");
+            }
+            return 0;
+        }
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => removed += usize::from(is_progress_file(&path)),
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "a done-marks file could not be removed");
+            }
+        }
+    }
+    // Best effort: the folder stays when something in it could not be deleted.
+    let _ = fs::remove_dir(dir);
+    removed
+}
+
+/// Whether `path` is the file of one design's marks (and not a temp file).
+fn is_progress_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "json")
+}
+
+/// The temp file [`save`] writes before it renames it over `path`.
+fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension("json.tmp")
+}
+
+/// Deletes `path` and the temp file beside it. A missing file is fine; any other failure
+/// is logged.
+fn remove_logged(path: &Path) {
+    for target in [path.to_path_buf(), temp_path(path)] {
+        if let Err(error) = fs::remove_file(&target)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, path = %target.display(), "the done marks could not be removed");
+        }
+    }
+}
+
 /// The marks in `path`; an unreadable or corrupt file reads as no marks.
 fn load(path: &Path) -> BTreeMap<String, String> {
     let text = match fs::read_to_string(path) {
@@ -219,10 +319,10 @@ fn load(path: &Path) -> BTreeMap<String, String> {
 
 /// Writes `marks` to `path` through a temp file and a rename. An empty set removes the
 /// file instead.
-fn save(path: &Path, marks: &BTreeMap<String, String>) -> std::io::Result<()> {
+fn save(path: &Path, marks: &BTreeMap<String, String>) -> io::Result<()> {
     if marks.is_empty() {
         return match fs::remove_file(path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
         };
     }
@@ -233,8 +333,8 @@ fn save(path: &Path, marks: &BTreeMap<String, String>) -> std::io::Result<()> {
         version: FILE_VERSION,
         marks: marks.clone(),
     };
-    let text = serde_json::to_string_pretty(&stored).map_err(std::io::Error::other)?;
-    let temp = path.with_extension("json.tmp");
+    let text = serde_json::to_string_pretty(&stored).map_err(io::Error::other)?;
+    let temp = temp_path(path);
     fs::write(&temp, text)?;
     fs::rename(&temp, path)
 }

@@ -11,12 +11,13 @@ use super::{
     evaluate::evaluate_gem_optical_metrics_geom,
     lighting::{HEMISPHERE_DIRECTIONS, hemisphere_direction},
     profile::evaluate_angular_profile_geom,
+    visibility::head_shadow_cone_cos,
 };
 use crate::{
     geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
     optics::{
         materials::GemMaterial,
-        raytracer::{EnvironmentSource, LightingPreset},
+        raytracer::{EnvironmentSource, LightingModel, LightingPreset},
     },
     render_setup::hash_geometry,
     renderer::env_map::EnvironmentMap,
@@ -56,7 +57,10 @@ fn material_fingerprint(material: &GemMaterial) -> u64 {
 /// The part of an [`EnvironmentSource`] the metrics depend on.
 ///
 /// The exposure and backdrop of a studio environment are left out: neither changes which
-/// directions count as illuminated, so changing them must not recompute anything.
+/// directions count as illuminated, so changing them must not recompute anything. The
+/// head-shadow size is in as the cosine of the cone the metrics actually apply: the lit
+/// models follow the scene's slider, so a change moves their scores, while a `Studio` rig
+/// (and an HDR map) always uses the fixed cone and keeps one key.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum EnvironmentKey {
     /// An analytic studio rig: the preset selects the radiance model, the pose places its
@@ -65,6 +69,8 @@ enum EnvironmentKey {
         preset: LightingPreset,
         light_yaw: f32,
         light_pitch: f32,
+        /// Bits of `head_shadow_cone_cos` for this preset and head-shadow size.
+        head_shadow_cos_bits: u32,
     },
     /// A loaded HDR panorama, by [`map_fingerprint`].
     Hdr(u64),
@@ -82,6 +88,11 @@ impl EnvironmentKey {
                 preset,
                 light_yaw,
                 light_pitch,
+                head_shadow_cos_bits: head_shadow_cone_cos(
+                    preset.model() == LightingModel::Studio,
+                    environment.head_shadow_deg(),
+                )
+                .to_bits(),
             },
             EnvironmentSource::HdrMap(map) => Self::Hdr(map_fingerprint(map)),
         }
@@ -333,6 +344,22 @@ mod tests {
                 .with_surface_glare(0.0)),
             "exposure, backdrop and surface glare do not change the metrics"
         );
+        // A lit model follows the scene's head-shadow size, so it is part of the key; a
+        // Studio rig ignores it, so the same change must not invalidate anything.
+        assert_ne!(
+            key(LightingPreset::LightTent
+                .studio(1.0, 0.85, 0.95)
+                .with_head_shadow(30.0)),
+            key(LightingPreset::LightTent.studio(1.0, 0.85, 0.95)),
+            "a lit model's head shadow must invalidate the metrics cache"
+        );
+        assert_eq!(
+            key(LightingPreset::RingLights
+                .studio(1.0, 0.85, 0.95)
+                .with_head_shadow(30.0)),
+            key(LightingPreset::RingLights.studio(1.0, 0.85, 0.95)),
+            "a Studio rig ignores the head shadow"
+        );
     }
 
     /// An HDR map is part of the key by content, and is not mistaken for a studio rig.
@@ -458,5 +485,45 @@ mod tests {
             compute_or_reuse_metrics(&mut cache, &planes, &material, 0.6, 0.4, environment);
         assert_eq!(metric_bits(&pose), metric_bits(&m));
         assert!(cache.as_ref().is_some_and(|c| c.profile.is_some()));
+    }
+
+    /// Orbiting changes the pose but not the profile's inputs, so the profile is served from
+    /// the entry (its stored key still names the pose it was first computed for) and equals
+    /// the direct call; a head-shadow change under a lit model does recompute it.
+    #[test]
+    fn profile_is_reused_across_poses_under_the_same_lighting() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::diamond();
+        let tent = LightingPreset::LightTent.studio(1.0, 0.85, 0.95);
+        let mut cache = None;
+        let geom = StoneGeometry::planes_only(&planes);
+        let (_, b0, e0, w0) =
+            compute_or_reuse_metrics_geom(&mut cache, geom, &material, 0.60, 0.45, tent);
+        let (_, b1, e1, w1) =
+            compute_or_reuse_metrics_geom(&mut cache, geom, &material, 0.75, 0.30, tent);
+        assert_eq!(profile_bits(&(b0, e0, w0)), profile_bits(&(b1, e1, w1)));
+        let stored = cache.as_ref().and_then(|c| c.profile.as_ref()).unwrap();
+        assert_eq!(
+            stored.0.yaw.to_bits(),
+            0.60f32.to_bits(),
+            "the second pose must reuse the profile instead of recomputing it"
+        );
+
+        let (_, b2, e2, w2) = compute_or_reuse_metrics_geom(
+            &mut cache,
+            geom,
+            &material,
+            0.75,
+            0.30,
+            tent.with_head_shadow(30.0),
+        );
+        let direct = evaluate_angular_profile(&planes, &material, tent.with_head_shadow(30.0));
+        assert_eq!(profile_bits(&(b2, e2, w2)), profile_bits(&direct));
+        let stored = cache.as_ref().and_then(|c| c.profile.as_ref()).unwrap();
+        assert_eq!(
+            stored.0.yaw.to_bits(),
+            0.75f32.to_bits(),
+            "a new head shadow under a lit model must recompute the profile"
+        );
     }
 }

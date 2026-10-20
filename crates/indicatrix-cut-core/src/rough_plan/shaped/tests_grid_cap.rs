@@ -37,6 +37,29 @@ fn the_grid_does_not_depend_on_the_design_cap() {
 }
 
 #[test]
+fn the_shaped_grid_does_not_depend_on_the_stone_cap() {
+    for extents in [[20.0; 3], [40.0, 25.0, 8.0], [100.0, 100.0, 2.0]] {
+        let reference = choose_shaped_grid_at([0.0; 3], extents, &settings(3));
+        for max_stones in [0, 1, 5, 99] {
+            let capped = PlanSettings {
+                max_stones,
+                ..settings(3)
+            };
+            assert_eq!(
+                choose_shaped_grid_at([0.0; 3], extents, &capped),
+                reference,
+                "{extents:?} stones={max_stones}"
+            );
+            assert_eq!(
+                choose_shaped_grid_capped([0.0; 3], extents, &capped, SHAPED_MESH_PIECE_CAP),
+                choose_shaped_grid_capped([0.0; 3], extents, &settings(3), SHAPED_MESH_PIECE_CAP),
+                "{extents:?} stones={max_stones} (mesh cap)"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_plain_chooser_is_the_capped_one_at_the_plain_cap() {
     for extents in [
         [20.0; 3],

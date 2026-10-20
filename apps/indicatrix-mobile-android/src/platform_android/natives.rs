@@ -9,10 +9,9 @@
 //! id `0` is the incoming-files channel ("Open with", "Share to"), which uses the same
 //! two pick calls without a request.
 
-#![allow(
-    non_snake_case,
-    reason = "JNI export names are fixed by the JVM's name mangling"
-)]
+// The JNI export names are fixed by the JVM's name mangling and are not snake case, but
+// rustc's `non_snake_case` skips `#[no_mangle]` functions with a foreign ABI, so no
+// lint attribute is needed (an `expect` here would be unfulfilled).
 
 use indicatrix_mobile_core::platform::PickedFile;
 use jni::{

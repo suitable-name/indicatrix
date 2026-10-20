@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
     stats::IterationMetricPoint,
-    trainer_worker::runner::GPU_LABEL,
+    trainer_worker::runner::{CUDA_LABEL, GPU_LABEL},
     ui_state::{DatasetInfo, ProgressSnapshot, WorkerEvent},
 };
 
@@ -166,7 +166,7 @@ impl Gui {
         match result {
             Ok(label) => {
                 self.with_c(|c| {
-                    c.set_use_gpu(label == GPU_LABEL);
+                    c.set_use_gpu(label == GPU_LABEL || label == CUDA_LABEL);
                     c.set_device_name(label.into());
                     c.set_device_known(true);
                 });

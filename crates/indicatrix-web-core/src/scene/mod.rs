@@ -18,7 +18,8 @@
 //!    frosted-girdle toggle.
 //! 3. **Camera.** `Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG)`.
 //! 4. **Environment.** An HDR map when one is loaded, else
-//!    `preset.studio(exposure, light_yaw, light_pitch).with_backdrop(backdrop.level())`.
+//!    `preset.studio(exposure, light_yaw, light_pitch).with_backdrop(backdrop.resolve(preset,
+//!    light_yaw, light_pitch))` (the lit tray's radiance under that preset and pose).
 //!
 //! The one deliberate difference: an unresolvable material is a [`SceneError`] here,
 //! where the desktop suspends its render loop on the same condition
@@ -51,6 +52,10 @@ use indicatrix_cut_core::{
 use indicatrix_editor::material_lookup::{EditorMaterialLookup, traced_gem_material};
 use indicatrix_formats::native::{ColorRecipeDto, CustomMaterialSnapshot};
 use serde::{Deserialize, Serialize};
+
+mod engine;
+mod geometry;
+pub use geometry::{GeometrySceneSpec, validate_tools};
 
 #[cfg(test)]
 mod physics_flag_tests;
@@ -358,7 +363,7 @@ pub struct LightingSpec {
     pub light_yaw: f32,
     /// Light pitch in radians.
     pub light_pitch: f32,
-    /// `render_setup::Backdrop::index` (0 as lit, 1 grey, 2 white).
+    /// `render_setup::Backdrop::index` (0 as lit, 1 grey, 2 white, 3 black).
     pub backdrop_index: i32,
     /// Head-shadow radius in degrees of the lit presets (`0.0` off, default `16.0`,
     /// `EnvironmentSource::Studio::head_shadow_deg`); appended in protocol v11.
@@ -416,10 +421,13 @@ impl LightingSpec {
     /// The analytic studio environment the desktop builds for these settings (the
     /// render thread's order: backdrop, surface glare, head shadow).
     #[must_use]
-    pub const fn studio_environment(&self) -> EnvironmentSource<'static> {
+    pub fn studio_environment(&self) -> EnvironmentSource<'static> {
         self.preset()
             .studio(self.exposure, self.light_yaw, self.light_pitch)
-            .with_backdrop(self.backdrop().level())
+            .with_backdrop(
+                self.backdrop()
+                    .resolve(self.preset(), self.light_yaw, self.light_pitch),
+            )
             .with_surface_glare(self.surface_glare)
             .with_head_shadow(self.head_shadow_deg)
     }
@@ -600,6 +608,14 @@ enum OwnedEnvironment {
 /// Also owns the plane `SoA` arena the tracer's intersection scan needs
 /// ([`Self::plane_soa`]), built once per scene rather than once per chunk.
 pub struct OwnedScene {
+    engine: indicatrix::renderer::engine::EngineSpec,
+    ray_prep: std::sync::OnceLock<
+        Result<
+            indicatrix::renderer::whitted::WhittedPrep<'static>,
+            indicatrix::renderer::whitted::WhittedDecline,
+        >,
+    >,
+    tools: Vec<indicatrix::geometry::tool::ToolPrimitive>,
     planes: Vec<GpuFacetPlane>,
     finishes: Vec<FacetFinish>,
     material: GemMaterial,
@@ -649,6 +665,9 @@ impl OwnedScene {
         };
         let plane_soa = build_plane_soa(&planes);
         Ok(Self {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
+            ray_prep: std::sync::OnceLock::new(),
+            tools: Vec::new(),
             planes,
             finishes,
             material,
@@ -689,6 +708,7 @@ impl OwnedScene {
     /// Replaces the scene's fluorescence (empty for none).
     #[must_use]
     pub fn with_fluorescence(mut self, fluorescence: Fluorescence) -> Self {
+        self.ray_prep.take();
         self.fluorescence = fluorescence;
         self
     }

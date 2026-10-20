@@ -29,10 +29,26 @@ dispersion and more fire (diamond is about 55, a crown glass about 64). The
 Material Editor shows it live when you type a refractive-index curve as
 coefficients (Chapter 6).
 
+**AA tap** — One fixed sub-pixel ray position used by Ray-Traced to smooth facet
+and silhouette boundaries. Off uses one central tap; 4×, 8× and 16× use fixed prefixes
+of the same deterministic sequence. AA does not add missing optical physics.
+
+**Ray-Traced** — The deterministic lightweight renderer: Fresnel-weighted RGB
+reflection/refraction chains, calibrated absorption tint, optional three-index Fire,
+and approximate frost. It finishes after its fixed taps without denoising and omits
+polarization, birefringent doubling, haze, zoning and edge rounding.
+Path-Traced remains the spectral engine; metrics keep a separate analytic tracer.
+
 **Anchor** — A tier whose scale is stated directly (Meets: **Exact Scale
 Value**) rather than derived from meeting other facets. Every block (crown,
 pavilion, girdle) needs at least one anchor, or its overall size has
 nothing to be measured against.
+
+**Backdrop** — The lit tray under the stone: a matte surface of a chosen reflectance
+(**White** 90 %, **Grey** 18 %, **Black** 2 %) lying under the stone out to the horizon
+and lit by the lighting rig, or **As Lit**, the lighting's own ground (nothing below the
+girdle for the Grading tray). It is seen around the stone and through its windows
+alike; an HDR environment map ignores it. It never changes the metrics (Chapter 2).
 
 **Block** — One of the three vertical sections of a stone: crown,
 pavilion, or girdle. A tier's block is determined by its angle, not by
@@ -140,7 +156,8 @@ of the Stone tab (Chapter 2).
 
 **Lighting rig** — One of the thirteen ways of lighting the stone in the live view
 and in renders: the lit models (light tent, grading tray and others), the Studio rigs
-and the daylight rigs. Picked in the Lighting & Environment tab (Chapter 2). A rig is
+and the daylight rigs.
+Picked in the Lighting & Environment tab (Chapter 2). A rig is
 only the lights; **Saved lighting** stores a rig together with everything else about
 the look.
 
@@ -232,7 +249,7 @@ solved masts, taken by **Snapshot Design**, for diffing against with
 (Chapter 14).
 
 **Saved lighting** — A named, complete lighting look: the lighting rig, light
-direction, exposure, surface glare, backdrop, head shadow, the HDR environment map if
+direction, exposure, surface glare, backdrop (a lit tray), head shadow, the HDR environment map if
 any and optionally the camera pose. Seven come with the app; your own are added to the
 list and can be marked "usable for" export (Chapters 2 and 9). Formerly "Lighting
 Presets".

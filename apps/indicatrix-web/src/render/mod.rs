@@ -14,20 +14,23 @@
 //! - [`open_export_dialog`] from File > Export PNG.
 
 mod export;
+pub mod gpu_gate;
 mod live;
+mod live_ray;
 mod panel;
 pub mod viewport;
 
 use crate::{AppWindow, app::Ctx};
 
 pub use export::open_export_dialog;
-pub use live::{hdr_lights_viewport, optics_scene};
+pub use live::{hdr_lights_viewport, optics_geometry};
 
 /// Wires the render panel, the export dialog and the worker actions, pushes the
 /// panel's initial values and schedules the first sync (which runs once start-up has
 /// restored the design). Call once at start-up, after `app::callbacks::wire`.
 pub fn wire(ui: &AppWindow, ctx: &Ctx) {
     live::install(ctx);
+    gpu_gate::init(ctx);
     panel::wire(ui, ctx);
     export::wire(ui, ctx);
     panel::push_panel(ui, &ctx.state.borrow().settings);

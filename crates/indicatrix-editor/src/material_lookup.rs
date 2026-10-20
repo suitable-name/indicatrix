@@ -369,6 +369,33 @@ pub fn material_guess(design: &Design, n_d: f64) -> Option<(String, String, Stri
     Some((text, name, others_text))
 }
 
+/// The inferred-material badge for a material the editor applied itself when a library
+/// design opened (`crate::loading::apply_library_material`).
+///
+/// It returns the same three strings as [`material_guess`], so the badge still says the
+/// material was inferred, not chosen.
+///
+/// `applied` is the name the load applied. The badge shows only while the design's
+/// material still IS that name; any other pick (or a cleared material) retires it, so a
+/// choice made in the Stone tab is never labelled a guess. `None` when nothing was applied.
+#[must_use]
+pub fn applied_material_guess(
+    design: &Design,
+    n_d: f64,
+    applied: Option<&str>,
+) -> Option<(String, String, String)> {
+    let applied = applied?;
+    let current = design.material.name.as_deref()?;
+    if !current.eq_ignore_ascii_case(applied) {
+        return None;
+    }
+    let text = format!("{current}? (from library, RI {n_d:.2})");
+    let note = "Applied from the library entry when this design was opened. Pick another \
+                material in the Stone tab to change it."
+        .to_owned();
+    Some((text, current.to_owned(), note))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -816,5 +843,24 @@ mod tests {
         assert_eq!(name, "");
         let reason = unresolved.expect("an unresolvable name must refuse, not substitute");
         assert!(reason.contains("Deleted Custom Garnet"));
+    }
+
+    // --- applied_material_guess ---
+
+    #[test]
+    fn the_applied_guess_badge_shows_only_while_the_material_is_the_applied_one() {
+        let mut design = fresh_design();
+        design.material.name = Some("Sapphire".to_string());
+        let (text, name, _) =
+            applied_material_guess(&design, 1.76, Some("sapphire")).expect("badge shows");
+        assert_eq!(name, "Sapphire");
+        assert!(text.starts_with("Sapphire?"), "{text}");
+        // A different pick retires it; nothing applied shows none.
+        design.material.name = Some("Ruby".to_string());
+        assert_eq!(
+            applied_material_guess(&design, 1.76, Some("Sapphire")),
+            None
+        );
+        assert_eq!(applied_material_guess(&design, 1.76, None), None);
     }
 }

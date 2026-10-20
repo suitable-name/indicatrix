@@ -11,6 +11,7 @@
 //
 // Only the globals named in the `export` below are visible to Rust.
 import { Palette } from "std-widgets.slint";
+import { Navigation } from "navigation.slint";
 import { Theme } from "theme.slint";
 import { Shell, Prefs, About } from "models.slint";
 import { NavBar, NavRail } from "shell/nav.slint";
@@ -20,8 +21,15 @@ import { InfoSheetHost } from "shell/info.slint";
 import { LibraryPage } from "pages/library.slint";
 import { DesignPage } from "pages/design.slint";
 import { CutPage } from "pages/cut.slint";
+import { RemoteModel, JobRow } from "pages/remote.slint";
 import { MorePage } from "pages/more.slint";
 import { DocumentModel, TemplateCardData } from "design/document_model.slint";
+import { HistoryModel } from "design/history.slint";
+import { ConcaveModel } from "design/concave.slint";
+import { DeepSolveModel } from "design/deep_solve.slint";
+import { VariantsModel } from "design/variants.slint";
+import { OptimizeModel, OptimizeRange } from "design/optimization.slint";
+import { RetargetModel } from "design/retarget.slint";
 import { NewDesignPage } from "design/new_design_page.slint";
 import { ViewportModel } from "design/viewport/viewport_model.slint";
 import { TiersModel, TierRowData, TierChipData, AnglePresetData } from "design/tiers/tiers_model.slint";
@@ -31,9 +39,16 @@ import { CuttingModeScreen } from "cut/cutting_mode.slint";
 import { RenderModel } from "design/render/render_model.slint";
 import { LibraryModel, LibraryCardData, TagChipData } from "library/library_model.slint";
 
-export { Shell, Prefs, About }
+export { Shell, Prefs, About, Navigation }
 export { RenderModel, LibraryModel, LibraryCardData, TagChipData }
 export { DocumentModel, TemplateCardData, ViewportModel }
+export { HistoryModel }
+export { ConcaveModel }
+export { DeepSolveModel }
+export { VariantsModel }
+export { OptimizeModel, OptimizeRange }
+export { RetargetModel }
+export { RemoteModel, JobRow }
 export { TiersModel, TierRowData, TierChipData, AnglePresetData }
 export { PropsModel, MaterialItem, LightingItem, WarningItem, ProportionItem }
 export { CutModel, CutRowData }
@@ -133,31 +148,7 @@ export component AppWindow inherits Window {
 
         key-pressed(event) => {
             if (event.text == Key.Back || event.text == Key.Escape) {
-                // Order: a dialog or info sheet on top of everything, then the New
-                // Design page, then the Tiers tab's overlays, then the shell's steps.
-                if (Shell.dialog-visible || Shell.info-visible) {
-                    return Shell.handle-back() ? accept : reject;
-                }
-                if (CutModel.mode-open) {
-                    CutModel.mode-close();
-                    return accept;
-                }
-                if (DocumentModel.handle-back()) {
-                    return accept;
-                }
-                if (RenderModel.handle-back()) {
-                    return accept;
-                }
-                if (TiersModel.overlay-open) {
-                    TiersModel.dismiss-overlays();
-                    return accept;
-                }
-                if (Shell.destination == 0 && LibraryModel.handle-back()) {
-                    return accept;
-                }
-                if (Shell.handle-back()) {
-                    return accept;
-                }
+                return Navigation.commit(Navigation.target, Navigation.version) ? accept : reject;
             }
             return reject;
         }

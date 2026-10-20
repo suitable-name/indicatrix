@@ -203,8 +203,19 @@ pub(super) fn design_from_attachment(
         );
     }
     let lw_ratio = full.lw_ratio.as_deref();
+    // `.asc` has no notation for frosting. The rows the library stored with the entry (what a
+    // `.gcs` import or a saved design file recorded) win; a `.gcs` attachment that is read
+    // here states its own.
+    let frosting = if full.frosting.is_empty() {
+        file.frosting
+    } else {
+        indicatrix_vault::model::frosting::StoredTierFrosting::to_gcs(&full.frosting)
+    };
     let loaded = design_from_asc_text(&file.asc_file_name, &file.asc_text, lw_ratio)
-        .map(AttachedDesign::without_snapshot)
+        .map(|mut loaded| {
+            loaded.design.apply_imported_frosting(&frosting);
+            AttachedDesign::without_snapshot(loaded)
+        })
         .map_err(AttachmentError::plain);
     Some(loaded.map_err(|e| {
         if e.concave {
@@ -349,7 +360,118 @@ mod tests {
             shape_category: None,
             angle_settings: Vec::new(),
             attached_files: Vec::new(),
+            frosting: Vec::new(),
         }
+    }
+
+    /// A frosted standard round brilliant as `.gcs` bytes: tier 1 whole, tier 3 at its facet
+    /// slots 1 and 3.
+    fn frosted_gcs() -> (
+        Vec<u8>,
+        Vec<(usize, indicatrix_formats::gcs::GcsTierFrosting)>,
+    ) {
+        use indicatrix_cut_core::{ConstraintTier, PreformSpec, ScheduleMeta};
+        use indicatrix_formats::gcs::GcsTierFrosting;
+        let design = Design::new(
+            PreformSpec::block(2.0, 1.0, 2.0),
+            ScheduleMeta::standard_round_brilliant(),
+            ConstraintTier::standard_round_brilliant(),
+        );
+        let schedule = design.to_asc_schedule().expect("the design exports");
+        let frosting = vec![
+            (1, GcsTierFrosting::Whole),
+            (3, GcsTierFrosting::Facets(vec![1, 3])),
+        ];
+        let text = indicatrix_formats::gcs::to_gcs_string_with_frosting(&schedule, &frosting)
+            .expect("the schedule writes as .gcs");
+        (text.into_bytes(), frosting)
+    }
+
+    /// The frosting the editor's design must carry for [`frosted_gcs`].
+    fn assert_frosted_like_the_gcs(design: &Design) {
+        use indicatrix_cut_core::TierFrosting;
+        assert_eq!(design.tier_frosting(1), Some(&TierFrosting::Tier));
+        let slots: Vec<f64> = [1_usize, 3]
+            .iter()
+            .map(|&slot| design.tiers[3].indices[slot])
+            .collect();
+        assert_eq!(design.tier_frosting(3), Some(&TierFrosting::Facets(slots)));
+        assert_eq!(design.tier_frosting.len(), 2, "no other tier is frosted");
+    }
+
+    /// The library import of a `.gcs` (the converted `.asc` first, the original beside it, the
+    /// frosting in the side table) opens in the editor with the tier and the facets frosted;
+    /// the polished twin opens polished.
+    #[test]
+    fn a_library_design_imported_from_a_frosted_gcs_opens_with_its_frosting() {
+        use crate::gui::library::local::{ForeignFormat, convert_foreign_design};
+        use indicatrix_vault::{
+            db::sqlite::Database,
+            local::{LOCAL_SOURCE_ID, apply_imported_extras, import_asc},
+        };
+        let (gcs, stated) = frosted_gcs();
+        let converted = convert_foreign_design(ForeignFormat::Gcs, &gcs).expect("converts");
+        assert_eq!(converted.frosting, stated);
+
+        // What `gui::library::local::import::pipeline` does with it.
+        let mut parsed = import_asc("rb.gcs", &converted.asc_text, None)
+            .expect("the converted text parses")
+            .with_frosting(&converted.frosting);
+        parsed.detail.attached_files[0].name = "rb.asc".to_string();
+        parsed.detail.attached_files.push(AttachedFile {
+            name: "rb.gcs".to_string(),
+            url: String::new(),
+            content: gcs,
+        });
+        let db = Database::new(Some(":memory:")).expect("an in-memory database");
+        let id = db
+            .save_design(&parsed.entry, &parsed.detail, LOCAL_SOURCE_ID)
+            .expect("saves");
+        apply_imported_extras(&db, id, &parsed.extras).expect("applies the frosting");
+
+        let full = db.get_diagram_full(id).expect("reads").expect("a row");
+        assert!(!full.frosting.is_empty(), "the row carries the frosting");
+        // The first `.asc` is what opens (and cannot state frosting): the stored rows apply.
+        let names: Vec<&str> = full
+            .attached_files
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(names, ["rb.asc", "rb.gcs"]);
+        let loaded = design_from_full_record(&full).expect("opens");
+        assert_frosted_like_the_gcs(&loaded.design);
+
+        // The same record with no stored rows (a library from before the side table) opens
+        // polished from the `.asc`, as it always did.
+        let mut old = full.clone();
+        old.frosting.clear();
+        let loaded = design_from_full_record(&old).expect("opens");
+        assert!(loaded.design.tier_frosting.is_empty());
+    }
+
+    /// A record whose only design file is a `.gcs` states its frosting itself: it applies when
+    /// no stored rows exist, and the stored rows win when they do.
+    #[test]
+    fn a_gcs_only_record_applies_its_own_frosting_unless_rows_are_stored() {
+        use indicatrix_vault::model::frosting::StoredTierFrosting;
+        let (gcs, _) = frosted_gcs();
+        let mut full = empty_full_record();
+        full.attached_files.push(AttachedFile {
+            name: "rb.gcs".to_string(),
+            url: String::new(),
+            content: gcs,
+        });
+        let loaded = design_from_full_record(&full).expect("opens");
+        assert_frosted_like_the_gcs(&loaded.design);
+
+        full.frosting = vec![StoredTierFrosting::whole(0)];
+        let loaded = design_from_full_record(&full).expect("opens");
+        assert_eq!(
+            loaded.design.tier_frosting.len(),
+            1,
+            "the stored rows replace it"
+        );
+        assert!(loaded.design.tier_is_frosted(0));
     }
 
     #[test]

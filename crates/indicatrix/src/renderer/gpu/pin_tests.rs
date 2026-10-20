@@ -133,7 +133,7 @@ fn cpu_accumulate_diamond_light_tent_pin() {
     assert_pinned(
         "diamond, light tent",
         &scene,
-        [0xc464_d298_6d52_47d5, 0x9ebb_4ae1_6688_88ea],
+        [0x99c7_1f3d_943d_7cdb, 0x1fef_e51e_0af8_0595],
     );
 }
 
@@ -166,7 +166,7 @@ fn cpu_accumulate_zircon_frosted_daylight_pin() {
     assert_pinned(
         "zircon, frosted girdle, daylight",
         &scene,
-        [0x232a_34f3_590e_09ef, 0xeded_a667_de32_1145],
+        [0xe793_581d_1104_ca5e, 0x3955_8896_2698_7c23],
     );
 }
 

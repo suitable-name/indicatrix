@@ -107,3 +107,11 @@ fn a_coefficient_material_needs_its_own_event() {
         vec![read(), event(events::COEFFICIENT_MATERIAL_SAVED), read()],
     );
 }
+
+#[test]
+fn optical_diagnostics_has_five_explicit_interpretation_checkpoints() {
+    walk(
+        "viewing-optical-diagnostics",
+        vec![read(), read(), read(), read(), read()],
+    );
+}

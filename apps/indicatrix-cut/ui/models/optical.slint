@@ -1,0 +1,28 @@
+// Separate diagnostic state; changing presentation never resets beauty accumulation.
+export global OpticalModel {
+    in-out property <bool> enabled: false;
+    in-out property <bool> panel_open: false;
+    in-out property <bool> windowing: true;
+    in-out property <bool> extinction: false;
+    in-out property <bool> brilliance: false;
+    in-out property <bool> fire: false;
+    in-out property <bool> scintillation: false;
+    in-out property <float> opacity: 0.45;
+    in-out property <bool> map_mode: false;
+    in-out property <bool> include_still: false;
+    in-out property <bool> include_video: false;
+    in property <bool> ready: false;
+    in property <image> image;
+    in property <float> aspect: 1.0;
+    in property <int> status_code: 0;
+    in property <float> progress: 0.0;
+    in property <string> status: "Off";
+    in property <string> limitations: "Analytical light paths at this viewing angle.";
+    in property <string> summary: "";
+    in property <string> hover_text: "";
+    // The viewport's pointer-down and size handlers call this; layer, opacity and map-mode
+    // changes do not (the controller's tick republishes those without blanking the layer).
+    callback invalidate();
+    callback refresh();
+    callback hover(float, float);
+}

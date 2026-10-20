@@ -17,10 +17,10 @@
 //!   context token plus the mean of the real tier tokens.
 //! - The policy `mean` is composed from the sensitivities and the objective's weight fractions
 //!   (global-token entries `WEIGHT_FRACTION_INDEX..+N_COMPONENTS`):
-//!   `g_k = sum_c frac[c] * sens[k][c]`, `g_max = max over real tiers of |g_k|`,
-//!   `mean_k = -MEAN_BOUND * g_k / (g_max + SLOPE_EPS)`, in pre-squash units. The pure twin
+//!   `g_k = sum_c frac[c] * sens[k][c]`, `g_max = max over real mobile tiers of |g_k|`,
+//!   `mean_k = -MEAN_BOUND * (g_k / max(g_max, SLOPE_NORM_FLOOR))`, in pre-squash units. The pure twin
 //!   accumulates `g_k` with `mul_add`, the tensor version with a broadcast product and a sum over the
-//!   four entries in index order, so the two may differ in the last ulp (tests compare them to `1e-5`).
+//!   seven entries in index order, so the two may differ in the last ulp (tests compare them to `1e-5`).
 //! - `log_std` is **state-independent**: three learnable raw values (crown, pavilion, other),
 //!   selected per tier by the block feature (input token entry 3) and squashed by
 //!   `LOG_STD_MIN + (LOG_STD_MAX - LOG_STD_MIN) * sigmoid(raw)` (the pure twin's `bounded_log_std`).
@@ -39,8 +39,8 @@
 //! [`BurnSetAttention::forward_host`] (in `burn_model_host`, with [`HostPolicyBatch`]) packs the
 //! flat observations of the whole pass, runs one forward over the batch without gradient tracking
 //! (on `Module::valid()` of the model, which `BurnTrainer::rollout_model` also hands out) and
-//! reads the means, log-stds and values back to the host, one transfer each, trimmed to every
-//! sample's real tiers.
+//! concatenates means, log-stds and values into one tensor, reads it back in one transfer and
+//! trims each sample to its real tiers.
 //!
 //! The numbers of that pass are the device's: a GPU's f32 kernels differ from the pure-Rust twin
 //! in the last bits (about `1e-4` per entry end to end), so a rollout is reproducible on one
@@ -60,7 +60,7 @@ use burn::{
 use super::TrainError;
 pub use super::burn_model_host::HostPolicyBatch;
 use crate::{
-    env::{MEAN_BOUND, N_COMPONENTS, SLOPE_EPS, WEIGHT_FRACTION_INDEX},
+    env::{MEAN_BOUND, MOBILITY_INDEX, N_COMPONENTS, SLOPE_NORM_FLOOR, WEIGHT_FRACTION_INDEX},
     model::{
         GemstoneSetAttentionNetwork, LOG_STD_MAX, LOG_STD_MIN,
         policy::{BLOCK_TYPE_INDEX, LOG_STD_SLOTS, log_std_raw_init},
@@ -236,63 +236,6 @@ fn burn_layernorm(
     Ok(out)
 }
 
-/// Convert a Burn linear layer into the pure-Rust layer (`[out, in]` row-major weights).
-fn pure_linear(l: &Linear, what: &str) -> Result<crate::model::Linear, TrainError> {
-    let [in_features, out_features] = l.weight.val().dims();
-    let w = host_vec(l.weight.val())?;
-    if w.len() != in_features * out_features {
-        return Err(TrainError::ShapeMismatch(format!(
-            "{what}: read back {} weights for a {in_features}x{out_features} layer",
-            w.len()
-        )));
-    }
-    let mut weights = vec![0.0f32; w.len()];
-    for inp in 0..in_features {
-        for out in 0..out_features {
-            weights[out * in_features + inp] = w[inp * out_features + out];
-        }
-    }
-    let biases = match &l.bias {
-        Some(b) => host_vec(b.val())?,
-        None => vec![0.0; out_features],
-    };
-    if biases.len() != out_features {
-        return Err(TrainError::ShapeMismatch(format!(
-            "{what}: read back {} biases for {out_features} outputs",
-            biases.len()
-        )));
-    }
-    Ok(crate::model::Linear {
-        weights,
-        biases,
-        in_features,
-        out_features,
-    })
-}
-
-/// Convert a Burn `LayerNorm` into the pure-Rust `LayerNorm`; `eps` is the epsilon the model
-/// recorded for it (Burn does not expose its own).
-fn pure_layernorm(
-    ln: &LayerNorm,
-    eps: f32,
-    what: &str,
-    dim: usize,
-) -> Result<crate::model::LayerNorm, TrainError> {
-    let gamma = host_vec(ln.gamma.val())?;
-    let beta = match &ln.beta {
-        Some(b) => host_vec(b.val())?,
-        None => vec![0.0; dim],
-    };
-    if gamma.len() != dim || beta.len() != dim {
-        return Err(TrainError::ShapeMismatch(format!(
-            "{what}: read back gamma {} / beta {} for dim {dim}",
-            gamma.len(),
-            beta.len()
-        )));
-    }
-    Ok(crate::model::LayerNorm { gamma, beta, eps })
-}
-
 /// Reject a pure-Rust head that is not a `d_in -> d_out` layer (the layer conversion alone only
 /// checks that the arrays agree with the layer's own declared shape).
 fn expect_head(
@@ -320,13 +263,17 @@ fn composed_mean(
     sensitivities: Tensor<3>,
     fractions: Tensor<3>,
     tier_mask: Tensor<2>,
+    mobile_mask: Tensor<2>,
 ) -> Tensor<2> {
     let [batch, n_tiers, _] = sensitivities.dims();
     let slopes = (sensitivities * fractions)
         .sum_dim(2)
         .reshape([batch, n_tiers]);
-    let g_max = (slopes.clone().abs() * tier_mask).max_dim(1);
-    slopes.mul_scalar(-MEAN_BOUND) / g_max.add_scalar(SLOPE_EPS)
+    let actionable = tier_mask * mobile_mask;
+    let g_max = (slopes.clone().abs() * actionable.clone())
+        .max_dim(1)
+        .clamp(SLOPE_NORM_FLOOR, f32::MAX);
+    (slopes / g_max * -MEAN_BOUND) * actionable
 }
 
 impl BurnSetAttention {
@@ -416,15 +363,15 @@ impl BurnSetAttention {
     }
 
     /// The dimension rules of [`Self::new`].
-    fn check_dims(
+    pub(super) fn check_dims(
         d_tier: usize,
         d_global: usize,
         d_model: usize,
         num_heads: usize,
     ) -> Result<(), TrainError> {
-        if d_tier == 0 || d_global == 0 || d_model == 0 || num_heads == 0 {
+        if d_tier <= MOBILITY_INDEX || d_global == 0 || d_model == 0 || num_heads == 0 {
             return Err(TrainError::InvalidConfig(
-                "d_tier, d_global, d_model and num_heads must be >= 1".into(),
+                "d_tier must carry the mobility feature and d_global, d_model and num_heads must be >= 1".into(),
             ));
         }
         if d_tier <= BLOCK_TYPE_INDEX {
@@ -546,6 +493,12 @@ impl BurnSetAttention {
                 WEIGHT_FRACTION_INDEX..WEIGHT_FRACTION_INDEX + N_COMPONENTS,
             ])
             .reshape([batch, 1, N_COMPONENTS]);
+        let mobile_mask = tier_inputs
+            .clone()
+            .slice([0..batch, 0..n_tiers, MOBILITY_INDEX..MOBILITY_INDEX + 1])
+            .reshape([batch, n_tiers])
+            .greater_elem(0.5f32)
+            .float();
 
         // 1. Embed global context token
         let ctx_raw = self.global_proj.forward(global_inputs);
@@ -592,7 +545,7 @@ impl BurnSetAttention {
         // 6. Sensitivity head on the normalised tier tokens, composed into the policy mean with the
         //    weight fractions; log std was built from the input blocks
         let sensitivities = self.sens_head.forward(tier_toks);
-        let mean = composed_mean(sensitivities.clone(), fractions, tier_mask);
+        let mean = composed_mean(sensitivities.clone(), fractions, tier_mask, mobile_mask);
 
         BurnForward {
             mean,
@@ -668,83 +621,8 @@ impl BurnSetAttention {
         let bounded = sigmoid(self.log_std_raw.val())
             .mul_scalar(LOG_STD_MAX - LOG_STD_MIN)
             .add_scalar(LOG_STD_MIN);
-        let slot = |k: usize| bounded.clone().slice([k..k + 1]).reshape([1, 1]);
+        let slot = |k: usize| bounded.clone().narrow(0, k, 1).reshape([1, 1]);
         crown * slot(0) + pavilion * slot(1) + other * slot(2)
-    }
-
-    /// Exports trained Burn weights into the zero-dependency pure-Rust `GemstoneSetAttentionNetwork`.
-    ///
-    /// # Errors
-    ///
-    /// [`TrainError::Tensor`] when a parameter cannot be read back to the host and
-    /// [`TrainError::ShapeMismatch`] when a read-back array has the wrong length. The caller keeps its
-    /// previous network in either case.
-    pub fn export_to_set_attention(&self) -> Result<GemstoneSetAttentionNetwork, TrainError> {
-        let tier_proj = pure_linear(&self.tier_proj, "tier_proj")?;
-        let global_proj = pure_linear(&self.global_proj, "global_proj")?;
-
-        let mut attn_layers = Vec::with_capacity(self.num_layers);
-        let mut pre_attn_norms = Vec::with_capacity(self.num_layers);
-        let mut post_attn_norms = Vec::with_capacity(self.num_layers);
-        let mut mlp_blocks = Vec::with_capacity(self.num_layers);
-
-        for l in 0..self.num_layers {
-            attn_layers.push(crate::model::MultiHeadAttention {
-                q_proj: pure_linear(&self.attn_q[l], "attn q")?,
-                k_proj: pure_linear(&self.attn_k[l], "attn k")?,
-                v_proj: pure_linear(&self.attn_v[l], "attn v")?,
-                out_proj: pure_linear(&self.attn_out[l], "attn out")?,
-                dim: self.d_model,
-                num_heads: self.num_heads,
-            });
-            pre_attn_norms.push(pure_layernorm(
-                &self.pre_attn_norms[l],
-                self.pre_attn_eps[l],
-                "pre-attn norm",
-                self.d_model,
-            )?);
-            post_attn_norms.push(pure_layernorm(
-                &self.post_attn_norms[l],
-                self.post_attn_eps[l],
-                "post-attn norm",
-                self.d_model,
-            )?);
-            mlp_blocks.push(crate::model::MlpBlock {
-                fc1: pure_linear(&self.mlp_fc1[l], "mlp fc1")?,
-                fc2: pure_linear(&self.mlp_fc2[l], "mlp fc2")?,
-            });
-        }
-
-        let log_std_raw = host_vec(self.log_std_raw.val())?;
-        let log_std_raw = <[f32; LOG_STD_SLOTS]>::try_from(log_std_raw).map_err(|v| {
-            TrainError::ShapeMismatch(format!(
-                "log_std_raw: read back {} values, expected {LOG_STD_SLOTS}",
-                v.len()
-            ))
-        })?;
-
-        Ok(GemstoneSetAttentionNetwork {
-            tier_proj,
-            global_proj,
-            attn_layers,
-            pre_attn_norms,
-            post_attn_norms,
-            mlp_blocks,
-            final_norm: pure_layernorm(
-                &self.final_norm,
-                self.final_eps,
-                "final norm",
-                self.d_model,
-            )?,
-            critic_head: pure_linear(&self.critic_head, "critic head")?,
-            sens_head: pure_linear(&self.sens_head, "sens head")?,
-            gain_head: pure_linear(&self.gain_head, "gain head")?,
-            log_std_raw,
-            d_model: self.d_model,
-            num_heads: self.num_heads,
-            d_tier: self.d_tier,
-            d_global: self.d_global,
-        })
     }
 }
 

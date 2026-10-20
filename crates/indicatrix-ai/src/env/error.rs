@@ -5,8 +5,9 @@ use std::fmt;
 
 /// Why an environment could not be built from a design and a configuration.
 ///
-/// The constructors fail loudly: an unsolvable, open, unscorable, frozen or dead (no light
-/// returned face-up) base design would otherwise train silently on a constant reward.
+/// Constructors reject unsolvable, open, unscorable or frozen designs and designs whose
+/// immutable preservation baseline cannot be captured. A no-light base design is valid and is
+/// scored normally.
 #[derive(Debug)]
 pub enum EnvError {
     /// The base design does not solve into masts.
@@ -15,14 +16,13 @@ pub enum EnvError {
     NotClosed,
     /// The base design is a closed solid but its optical score is not a finite number.
     NonFiniteScore,
+    /// The immutable preservation baseline could not be captured from the base design.
+    InvalidBaseline(String),
     /// No tier of the base design can move: every tier is horizontal, vertical, driven by a
     /// relation, or pinned without a hinge to turn about (see
     /// `OptimizerEnvConfig::vary_anchored`).
     NoMovableTiers,
-    /// The base design returns no light face-up (tilt brilliance 0 %), so no move can change
-    /// its score: every step would cost the step cost and teach nothing. A dead stone was
-    /// measured at 7 ms per step with a score that no move changed; the trainer skips such a
-    /// design and reports the skip.
+    /// Legacy compatibility variant. Current constructors do not reject no-light designs.
     NoLightReturn,
     /// A configuration value is out of range; the text names it.
     InvalidConfig(&'static str),
@@ -35,6 +35,9 @@ impl fmt::Display for EnvError {
             Self::NotClosed => f.write_str("the base design does not bound a closed solid"),
             Self::NonFiniteScore => {
                 f.write_str("the base design's optical score is not a finite number")
+            }
+            Self::InvalidBaseline(reason) => {
+                write!(f, "the base design has no valid preservation baseline: {reason}")
             }
             Self::NoMovableTiers => f.write_str("the base design has no tier the policy can move"),
             Self::NoLightReturn => f.write_str(
@@ -63,6 +66,15 @@ mod tests {
         assert_eq!(
             EnvError::NoLightReturn.to_string(),
             "the base design returns no light face-up (tilt brilliance 0 %): nothing to optimise"
+        );
+    }
+
+    #[test]
+    fn invalid_baseline_error_preserves_the_capture_diagnostic() {
+        let error = EnvError::InvalidBaseline("fixture capture failure".to_owned());
+        assert_eq!(
+            error.to_string(),
+            "the base design has no valid preservation baseline: fixture capture failure"
         );
     }
 }

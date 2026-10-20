@@ -1,7 +1,8 @@
-//! The self-contained design file: one text file, extension `.isdd` (Indicatrix Suite
-//! Design Document; files saved as `.indicatrix` before are read the same way),
-//! carrying a WHOLE faceting design with no paired `.asc` and no machine-local
-//! reference.
+//! The self-contained design file: one text file, extension `.isdd`.
+//!
+//! `.isdd` stands for Indicatrix Suite Design Document; files saved as `.indicatrix`
+//! before are read the same way. The file carries a WHOLE faceting design with no
+//! paired `.asc` and no machine-local reference.
 //!
 //! # Format
 //!
@@ -39,8 +40,11 @@
 //!
 //! Every `[[tiers]]` entry is self-describing: its name, meet constraint, detached
 //! values, angle, index-wheel positions, imported meet, original notes, free-text
-//! note, cheater offset, authoring target, optional angle relation and its stable
-//! `tier_id`. Nothing about a
+//! note, cheater offset, authoring target, optional angle relation, optional frosting
+//! (`frosted = true` for the whole tier, or `frosted_facets = [..]` with the index-wheel
+//! positions of single frosted facets; neither is written for a polished tier, and neither
+//! changes the file version -- a build that predates them keeps them in the tier's `unknown`
+//! table and writes them back) and its stable `tier_id`. Nothing about a
 //! tier lives anywhere else in the file, so no value is ever matched to a tier by its
 //! array position: reordering the entries moves each tier's note, offset and target
 //! with it. `angle_deg` and `indices` are required; `tier_id` is expected and unique

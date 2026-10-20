@@ -18,6 +18,11 @@ pub(super) fn push(window: &AppWindow, state: &AppState) {
     let solved = state.solve.current_tiers(generation).is_some();
 
     model.set_status_text(status_line(state).into());
+    model.set_backend(state.settings.render.backend.index());
+    model.set_engine(i32::from(
+        state.settings.render.engine_spec().engine.index(),
+    ));
+    model.set_backend_report(state.render.backend_report().into());
     if let Some(fraction) = progress_fraction(&status) {
         model.set_progress(if solved { fraction } else { 0.0 });
     }

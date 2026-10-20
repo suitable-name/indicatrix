@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use indicatrix::{
     color::metrics::{
         GemOpticalMetrics, PROFILE_AZIMUTHS_DEG, evaluate_full_axis_profile_at_azimuth,
-        evaluate_gem_optical_metrics,
+        evaluate_full_axis_profile_at_azimuth_finished_threaded, evaluate_gem_optical_metrics,
     },
     optics::materials::GemMaterial,
     render_setup::{MaterialOverrides, apply_material_overrides, resolve_material_with_override},
@@ -215,7 +215,15 @@ fn metrics_params_ignore_everything_that_does_not_change_the_numbers() {
         TiltParams::from_scene(&spec),
         TiltParams::from_scene(&overridden)
     );
-    // ...and neither depends on the other's inputs: the camera is not a tilt input.
+    // ...and neither depends on the other's inputs: the camera is not a tilt input. The facet
+    // finishes ARE a tilt input (a frosted facet scatters light, owner decision 2026-10-19),
+    // though not a metrics one (checked above).
+    assert_ne!(
+        TiltParams::from_scene(&spec),
+        TiltParams::from_scene(&other),
+        "frosting the girdle changes the tilt request"
+    );
+    other.finishes = spec.finishes.clone();
     assert_eq!(
         TiltParams::from_scene(&spec),
         TiltParams::from_scene(&other)
@@ -444,8 +452,9 @@ fn the_tilt_material_is_sized_by_the_stone_width_like_the_desktop() {
     assert_ne!(params, TiltParams::from_scene(&other));
 }
 
-/// The tilt sweep is the desktop dialog's four `evaluate_full_axis_profile_at_azimuth`
-/// calls, under the bare resolved material: the request's overrides change nothing.
+/// The tilt sweep is the desktop dialog's four `evaluate_full_axis_profile_at_azimuth_finished_threaded`
+/// calls, under the bare resolved material and the scene's facet finishes: the request's
+/// overrides change nothing.
 #[test]
 fn the_tilt_sweep_equals_the_four_direct_axis_profiles() {
     let template = TEMPLATES
@@ -486,13 +495,17 @@ fn the_tilt_sweep_equals_the_four_direct_axis_profiles() {
 
     let bare = resolve_material_with_override(&GemMaterial::all_materials(), &[], None, "Sapphire")
         .expect("built-in");
+    // The scene's finishes (the fixture frosts the girdle) are part of the stone the sweep
+    // scores, exactly as the desktop dialog's sweep takes them.
+    let finishes = resolve_finishes(&spec.finishes, &planes).expect("a girdle list fits");
     assert_eq!(result.axes.len(), PROFILE_AZIMUTHS_DEG.len());
     for (axis, &azimuth) in result.axes.iter().zip(&PROFILE_AZIMUTHS_DEG) {
-        let (b, e, w) = evaluate_full_axis_profile_at_azimuth(
-            &planes,
+        let (b, e, w) = evaluate_full_axis_profile_at_azimuth_finished_threaded(
+            FinishedStone::new(StoneGeometry::planes_only(&planes), &finishes),
             &bare,
             azimuth,
             LightingPreset::LightTent.studio(1.0, 0.84, 0.93),
+            None,
         );
         assert_eq!(axis.azimuth_deg.to_bits(), azimuth.to_bits());
         let profile = axis.to_profile().expect("181 points each");
@@ -513,6 +526,70 @@ fn the_tilt_sweep_equals_the_four_direct_axis_profiles() {
     assert!(reports.windows(2).all(|w| w[1].done == w[0].done + 1));
     assert_eq!((reports[0].axis, reports[723].axis), (0, 3));
     assert!(!cancel.load(Ordering::Relaxed));
+}
+
+/// The first axis of a tilt response, as the three curves' bits.
+fn first_axis_bits(response: SolveResponse) -> Vec<u32> {
+    let SolveResponse::TiltCurves(result) = response else {
+        panic!("expected tilt curves, got {response:?}");
+    };
+    let profile = result.axes[0].to_profile().expect("181 points each");
+    profile
+        .brilliance
+        .iter()
+        .chain(&profile.extinction)
+        .chain(&profile.windowing)
+        .map(|v| v.to_bits())
+        .collect()
+}
+
+/// An all-polished stone is the plain `evaluate_full_axis_profile_at_azimuth` sweep, bit for bit
+/// (an empty finish list changes nothing), and the frosted girdle the fixture's scene carries
+/// moves the curves: the request's finishes reach the sweep.
+#[test]
+fn the_tilt_sweep_honours_the_finishes_and_a_polished_stone_is_the_plain_sweep() {
+    let design = template_design(1);
+    let (spec, planes) = scene_of(&design, MaterialSpec::catalogue("Diamond"));
+    assert_eq!(spec.finishes, FinishSpec::FrostedGirdle);
+    let mut polished = spec.clone();
+    polished.finishes = FinishSpec::AllPolished;
+
+    let plain = {
+        let bare =
+            resolve_material_with_override(&GemMaterial::all_materials(), &[], None, "Diamond")
+                .expect("built-in");
+        let (b, e, w) = evaluate_full_axis_profile_at_azimuth(
+            &planes,
+            &bare,
+            PROFILE_AZIMUTHS_DEG[0],
+            LightingPreset::LightTent.studio(1.0, 0.84, 0.93),
+        );
+        b.iter()
+            .chain(&e)
+            .chain(&w)
+            .map(|v| v.to_bits())
+            .collect::<Vec<u32>>()
+    };
+    let swept_polished = first_axis_bits(no_hooks(|hooks| {
+        run_tilt(&TiltParams::from_scene(&polished), hooks)
+    }));
+    assert_eq!(swept_polished, plain, "no frosting is the plain sweep");
+
+    let swept_frosted = first_axis_bits(no_hooks(|hooks| {
+        run_tilt(&TiltParams::from_scene(&spec), hooks)
+    }));
+    assert_ne!(
+        swept_frosted, swept_polished,
+        "a frosted girdle moves the curves"
+    );
+
+    // A finish list longer than the planes is a failed request, not a flat answer.
+    let mut too_long = polished;
+    too_long.finishes = FinishSpec::PerFacet(vec![true; planes.len() + 1]);
+    assert!(matches!(
+        no_hooks(|hooks| run_tilt(&TiltParams::from_scene(&too_long), hooks)),
+        SolveResponse::AnalysisFailed { .. }
+    ));
 }
 
 #[test]

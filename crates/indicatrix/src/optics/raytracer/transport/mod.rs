@@ -31,10 +31,15 @@ use crate::{
 };
 use glam::Vec3;
 
+mod attributed;
 mod bounce;
 mod inner;
+mod path_events;
 #[cfg(test)]
 mod tests;
+
+pub use attributed::trace_spectral_ray_attributed_soa_geom;
+pub use path_events::{ExitEvent, PathEvents};
 
 // bounce.rs -- `scattering::try_scatter_step`'s own trailing Russian-roulette call
 // needs this too, so it is re-exported at `pub(super)` (raytracer + descendants),

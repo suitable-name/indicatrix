@@ -20,6 +20,7 @@ pub(super) fn scene(width: u32, height: u32) -> SceneState {
         optics::{materials::GemMaterial, raytracer::LightingPreset},
     };
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width,
         height,
         yaw: 0.4,
@@ -39,6 +40,7 @@ pub(super) fn scene(width: u32, height: u32) -> SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 

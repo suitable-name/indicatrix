@@ -5,6 +5,7 @@ export global SolidPreviewModel {
     in property <image> image;
     in property <bool> has_solid: false;
     in property <string> status: "";
+    // Edit modes: 0 Solid, 1 Path-Traced, 2 Both, 3 Diagram, 4 Ray-Traced.
     in-out property <int> view_mode: 0;
     // Sized by `gui::editor::view::refresh_viewport` to the rasterizer's actual
     // logical viewport size (not the render resolution); `SolidViewportView` pushes

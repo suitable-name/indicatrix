@@ -153,6 +153,7 @@ fn build_tier_row(
         kind: TierRowKind::Flat,
         tool_line: String::new(),
         relation_text: design.relation_text(index).unwrap_or_default(),
+        frosting_text: design.tier_frosting_text(index),
     }
 }
 
@@ -490,6 +491,7 @@ pub fn tier_items(design: &Design, n_d: f64) -> Vec<TierRow> {
                 }
                 DesignSolveError::Mismatch(_)
                 | DesignSolveError::Solve(_)
+                | DesignSolveError::Preservation(_)
                 | DesignSolveError::Target(_) => BTreeMap::new(),
             };
             let blocked_detail = if matches!(err, DesignSolveError::MissingAnchor(_)) {

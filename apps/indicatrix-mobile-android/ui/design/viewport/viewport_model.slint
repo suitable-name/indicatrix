@@ -22,6 +22,10 @@ export global ViewportModel {
     in property <length> image-y: 0px;
     in property <length> image-width: 0px;
     in property <length> image-height: 0px;
+    // The Render mode shows the Solid raster at the live pose instead of the traced
+    // picture: the camera is being dragged, or the traced picture of the new pose has not
+    // landed yet.
+    in property <bool> live-solid: false;
     // A picture is being drawn.
     in property <bool> busy: false;
     // One line over the picture: the drag or Slice hint, else why the picture is stale.

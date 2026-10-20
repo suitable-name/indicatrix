@@ -230,7 +230,8 @@ pub enum CheckState {
     Valid,
     /// The retargeted stone failed; Apply is disabled.
     Invalid,
-    /// The current design could not be compared; Apply stays available.
+    /// The current design could not be compared, so there is no candidate stone; Apply is
+    /// disabled.
     Unchecked,
 }
 
@@ -251,7 +252,7 @@ impl CheckState {
     /// `true` when the dialog's Apply button may be enabled.
     #[must_use]
     pub const fn allows_apply(self) -> bool {
-        matches!(self, Self::None | Self::Valid | Self::Unchecked)
+        matches!(self, Self::Valid)
     }
 }
 

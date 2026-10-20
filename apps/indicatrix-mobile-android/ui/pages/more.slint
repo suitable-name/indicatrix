@@ -7,6 +7,7 @@ import { TopBar } from "../shell/top_bar.slint";
 import { PageScroll } from "../shell/page_scroll.slint";
 import { ListRow } from "../shell/list_row.slint";
 import { Icon } from "../shell/icon.slint";
+import { RemotePage } from "remote.slint";
 import { PreferencesPage } from "preferences.slint";
 import { AboutPage } from "about.slint";
 import { LicensesPage } from "licenses.slint";
@@ -118,10 +119,21 @@ component MoreMenu inherits Rectangle {
                 }
             }
 
+            if DocumentModel.recent-titles.length > 0: ListRow {
+                icon: Icons.close;
+                title: "Clear Recent Items";
+                supporting: "Empty this list; the designs themselves stay";
+                clicked => {
+                    // The answer arrives as dialog 1003 (`src/design/document/library.rs`,
+                    // `DIALOG_CLEAR_RECENT`).
+                    Shell.show-dialog(1003, "Clear Recent Items?", "The list of recently opened designs will be emptied. The designs themselves are not deleted.", "Clear", "Cancel");
+                }
+            }
+
             ListRow {
                 icon: Icons.remote;
                 title: "Remote";
-                supporting: "Render and browse on your desktop";
+                supporting: "Render on your desktop, manage server jobs";
                 clicked => {
                     Shell.more-page = 4;
                 }
@@ -186,15 +198,7 @@ export component MorePage inherits Rectangle {
 
     if Shell.more-page == 3: LicensesPage { }
 
-    if Shell.more-page == 4: PlaceholderPage {
-        title: "Remote";
-        icon: Icons.remote;
-        heading: "Remote Rendering Comes Later";
-        body: "Connect to your desktop to render large images and browse its library. This arrives in a later version.";
-        back-clicked => {
-            Shell.handle-back();
-        }
-    }
+    if Shell.more-page == 4: RemotePage { }
 
     if Shell.more-page == 5: PlaceholderPage {
         title: "Help";
@@ -202,7 +206,7 @@ export component MorePage inherits Rectangle {
         heading: "Help Is on the Way";
         body: "The manual, a first-run walkthrough and tutorials arrive in a later version.";
         back-clicked => {
-            Shell.handle-back();
+            Shell.request-back();
         }
     }
 }

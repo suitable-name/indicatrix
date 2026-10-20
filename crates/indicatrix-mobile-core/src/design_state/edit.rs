@@ -121,6 +121,7 @@ fn tracked<R>(state: &mut AppState, run: impl FnOnce(&mut AppState) -> (R, Dirty
     let (result, scope) = run(state);
     let after = state.session.current_generation();
     if after != before {
+        state.operations.invalidate();
         state.solve.note_edit(before, after, scope);
     }
     result
@@ -137,6 +138,7 @@ const fn tier_count(state: &AppState) -> usize {
 pub fn select_tier(state: &mut AppState, tier: Option<usize>, select_mode: bool) {
     let count = tier_count(state);
     state.selected_tier = tier.filter(|&index| index < count);
+    state.session.selected_concave = None;
     if !select_mode {
         state.session.multi_selected.clear();
     }
@@ -568,6 +570,14 @@ fn follow_selection(state: &mut AppState, change: &EditChange, renumbering: &Tie
         .filter(|&row| row < flat_after);
 }
 
+/// Makes the custom-material catalogue follow an undo or redo (a variant opened with
+/// another definition of a custom material changed it as part of its step).
+fn follow_recipes(state: &mut AppState) {
+    if crate::recipe_steps::sync(state) {
+        state.operations.invalidate();
+    }
+}
+
 /// Undoes the last step; the selection follows its tier.
 ///
 /// # Errors
@@ -578,6 +588,7 @@ pub fn undo(state: &mut AppState) -> EditOutcome {
         let outcome = match state.session.undo_mapped() {
             Ok(Some((change, renumbering))) => {
                 follow_selection(state, &change, &renumbering);
+                follow_recipes(state);
                 Ok(Edited::applied_with(history_notice("Undid", &hint)))
             }
             Ok(None) => Ok(Edited::unchanged("Nothing to undo.")),
@@ -597,6 +608,7 @@ pub fn redo(state: &mut AppState) -> EditOutcome {
         let outcome = match state.session.redo_mapped() {
             Ok(Some((change, renumbering))) => {
                 follow_selection(state, &change, &renumbering);
+                follow_recipes(state);
                 Ok(Edited::applied_with(history_notice("Redid", &hint)))
             }
             Ok(None) => Ok(Edited::unchanged("Nothing to redo.")),

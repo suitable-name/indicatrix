@@ -30,7 +30,11 @@ fn clamp_like_avx2(x: f32) -> f32 {
 /// One lane of the polynomial exponential; the scalar fallback and the
 /// reference the vector path is tested bit-identical against, including for
 /// NaN and infinite inputs (see [`clamp_like_avx2`]).
-fn exp_lane(x: f32) -> f32 {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "re-exported as `pub(crate)` from `simd` for renderer::whitted; `pub(super)` cannot be re-exported wider"
+)]
+pub(crate) fn exp_lane(x: f32) -> f32 {
     let x = clamp_like_avx2(x);
     let n = x.mul_add(EXP_LOG2E, 0.5).floor();
     let x = n.mul_add(-EXP_C1, x);

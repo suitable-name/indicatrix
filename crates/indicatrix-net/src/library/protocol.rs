@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     filter::{AttributeRangesWire, RangeFilterWire, SortOrderWire},
-    record::{DesignRecord, DesignSummary},
+    record::{DesignRecord, DesignSummary, FrostedTierWire},
 };
 use crate::messages::ErrorMsg;
 
@@ -152,10 +152,16 @@ pub enum LibraryResponse {
     /// per-message [`crate::framing::MAX_FRAME_LEN`] wire cap every other reply
     /// (including [`Self::Attachment`]) already carries -- no separate bespoke size
     /// limit is layered on top, matching [`Self::Attachment`]'s own precedent.
+    ///
+    /// `frosting` (v26) is what the design states as frosted, by tier position and facet
+    /// slot of the schedule `asc_text` describes: `.asc` cannot carry it, so it travels
+    /// beside the text (a client builds the design from `asc_text`, then applies it with
+    /// `Design::apply_imported_frosting`). Appended last; empty for a design without frosting.
     DesignSource {
         entry_id: i64,
         file_name: String,
         asc_text: String,
+        frosting: Vec<FrostedTierWire>,
     },
     /// `entry_id` names a real catalogue entry (unlike [`Self::NotFound`], reused when
     /// `entry_id` itself doesn't exist), but it has no attached `.asc` file to fetch --

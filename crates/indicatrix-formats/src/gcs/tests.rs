@@ -9,6 +9,8 @@ use super::{
 };
 use crate::asc::{AscSchedule, AscTier};
 
+mod asymmetric;
+mod frosting;
 mod hostile;
 
 /// A real excerpt of `attached_files` id 1124 (detail 553), `"L1000-h0724-

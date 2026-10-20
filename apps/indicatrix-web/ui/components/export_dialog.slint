@@ -1,6 +1,7 @@
 import { SpinBox, ComboBox, CheckBox, Button } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { RenderModel } from "render_model.slint";
+import { Pills } from "render_settings_panel.slint";
 
 // One labelled row.
 component Row inherits HorizontalLayout {
@@ -85,7 +86,7 @@ export component ExportDialog inherits Rectangle {
                 color: Theme.text-muted;
                 horizontal-alignment: right;
             }
-            Row {
+            if RenderModel.engine == 0: Row {
                 label: "Samples per Pixel";
                 SpinBox {
                     horizontal-stretch: 1;
@@ -95,6 +96,19 @@ export component ExportDialog inherits Rectangle {
                     step-size: 16;
                     value <=> RenderModel.export-spp;
                     edited => { RenderModel.export-edited(); }
+                }
+            }
+            if RenderModel.engine == 1: VerticalLayout {
+                spacing: 4px;
+                Text { text: "Ray-Traced · Anti-Aliasing"; color: Theme.text-secondary; font-size: 11px; }
+                Pills {
+                    enabled: !RenderModel.export-running;
+                    labels: ["Off", "4×", "8×", "16×"];
+                    selected: RenderModel.export-ray-taps == 1 ? 0 : RenderModel.export-ray-taps == 4 ? 1 : RenderModel.export-ray-taps == 8 ? 2 : 3;
+                    chosen(index) => {
+                        RenderModel.export-ray-taps = index == 0 ? 1 : index == 1 ? 4 : index == 2 ? 8 : 16;
+                        RenderModel.export-edited();
+                    }
                 }
             }
             Row {
@@ -107,7 +121,7 @@ export component ExportDialog inherits Rectangle {
                     selected => { RenderModel.export-edited(); }
                 }
             }
-            CheckBox {
+            if RenderModel.engine == 0: CheckBox {
                 enabled: !RenderModel.export-running;
                 text: "Denoise (the live view's filter)";
                 checked <=> RenderModel.export-denoise;

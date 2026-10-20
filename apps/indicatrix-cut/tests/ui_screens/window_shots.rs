@@ -10,7 +10,7 @@ use indicatrix_cut::{
     CompareModel, CompareWindow, LibraryModel, RoughPlanModel, RoughPlannerWindow, harness_support,
 };
 use slint::{ComponentHandle, Model};
-use slint_harness::screenshot::Shot;
+use uiprobe::screenshot::Shot;
 
 /// The Compare window's preferred size, logical pixels.
 const COMPARE_SIZE: (u32, u32) = (1100, 780);
@@ -26,7 +26,7 @@ const CUT_EDGES: [i32; 5] = [1, 3, 5, 7, 9];
 const PLANNER_SHAPE: &str = "oval";
 
 /// Runs Optimize, picks the best candidate and opens the Compare window from the tab.
-fn open_compare(sc: &mut Sc<'_, '_>) -> Result<CompareWindow, String> {
+fn open_compare(sc: &Sc<'_, '_>) -> Result<CompareWindow, String> {
     run_optimize(sc)?;
     pick_best_candidate(sc);
     let ui = sc.ui();

@@ -258,13 +258,17 @@ fn optimize_design_never_worsens_the_score_and_never_touches_a_pinned_tier_on_a_
     }
 }
 
-/// `apply_optimize_outcome` must go through `History` -- an applied optimization
-/// is undoable as a single [`crate::edit::Edit::Batch`] step, exactly like any
-/// other edit, rather than one `Ctrl+Z` per tier.
+/// An outcome without provenance is not certified against any original network, so
+/// `apply_optimize_outcome` refuses it before `History` sees it: the design is
+/// untouched and there is nothing to undo. (That a certified outcome goes through
+/// `History` as one undoable [`crate::edit::Edit::Batch`] is covered by
+/// `meet_preservation::tests::stale_identity_and_hand_constructed_damage_fail_before_history_changes`
+/// and `applying_the_result_is_one_exact_undo_step`.)
 #[test]
-fn apply_optimize_outcome_is_undoable_through_history() {
+fn an_uncertified_single_tier_outcome_cannot_enter_history() {
     let design = rbc_445();
     let outcome = OptimizeOutcome {
+        provenance: None,
         before: ObjectiveComponents {
             windowing_pct: 10.0,
             extinction_pct: 10.0,
@@ -291,24 +295,23 @@ fn apply_optimize_outcome_is_undoable_through_history() {
     };
     let mut history = History::new();
     let mut design = design;
-    let original_angle = design.tiers[7].angle_deg;
-    let applied =
-        apply_optimize_outcome(&mut history, &mut design, &outcome).expect("apply must succeed");
-    assert_eq!(applied, 1);
-    assert!((design.tiers[7].angle_deg - (original_angle + 1.0)).abs() < 1e-9);
-    assert!(history.undo(&mut design).unwrap());
-    assert!((design.tiers[7].angle_deg - original_angle).abs() < 1e-9);
+    let before = design.clone();
+    assert!(apply_optimize_outcome(&mut history, &mut design, &outcome).is_err());
+    assert_eq!(design, before);
+    assert!(!history.can_undo());
 }
 
-/// An Optimize outcome touching several tiers must undo as
-/// ONE `Ctrl+Z`, not one press per changed tier. Applies a two-tier outcome and
-/// checks that a single [`History::undo`] restores BOTH angles at once.
+/// An uncertified outcome touching several tiers is refused as a whole: neither
+/// tier changes and no history step is recorded. (The positive counterpart, that a
+/// certified multi-tier result undoes as ONE `Ctrl+Z` restoring every angle at once,
+/// is `applying_the_result_is_one_exact_undo_step` in `search_results`.)
 #[test]
-fn apply_optimize_outcome_multi_tier_change_is_one_undo_step() {
+fn an_uncertified_multi_tier_outcome_is_rejected_atomically() {
     let design = rbc_445();
     let original_a = design.tiers[7].angle_deg; // tier "A"
     let original_b = design.tiers[8].angle_deg; // tier "B"
     let outcome = OptimizeOutcome {
+        provenance: None,
         before: ObjectiveComponents {
             windowing_pct: 10.0,
             extinction_pct: 10.0,
@@ -342,17 +345,10 @@ fn apply_optimize_outcome_multi_tier_change_is_one_undo_step() {
     };
     let mut history = History::new();
     let mut design = design;
-    let applied =
-        apply_optimize_outcome(&mut history, &mut design, &outcome).expect("apply must succeed");
-    assert_eq!(applied, 2);
-    assert!((design.tiers[7].angle_deg - (original_a + 1.0)).abs() < 1e-9);
-    assert!((design.tiers[8].angle_deg - (original_b - 0.5)).abs() < 1e-9);
-    // One History entry covers both tiers: a single undo restores both angles.
-    assert!(history.undo(&mut design).unwrap());
-    assert!((design.tiers[7].angle_deg - original_a).abs() < 1e-9);
-    assert!((design.tiers[8].angle_deg - original_b).abs() < 1e-9);
-    // Nothing left to undo -- the batch really was ONE step, not two.
-    assert!(!history.undo(&mut design).unwrap());
+    let before = design.clone();
+    assert!(apply_optimize_outcome(&mut history, &mut design, &outcome).is_err());
+    assert_eq!(design, before);
+    assert!(!history.can_undo());
 }
 
 /// An [`AngleChange`] naming a tier index that no longer
@@ -364,6 +360,7 @@ fn apply_optimize_outcome_rejects_out_of_range_index_without_mutating_design() {
     let original_a = design.tiers[7].angle_deg;
     let tier_count = design.tiers.len();
     let outcome = OptimizeOutcome {
+        provenance: None,
         before: ObjectiveComponents {
             windowing_pct: 10.0,
             extinction_pct: 10.0,
@@ -429,6 +426,7 @@ fn apply_optimize_outcome_rejects_a_stale_change_after_move_tier_without_mutatin
     );
 
     let outcome = OptimizeOutcome {
+        provenance: None,
         before: ObjectiveComponents {
             windowing_pct: 10.0,
             extinction_pct: 10.0,

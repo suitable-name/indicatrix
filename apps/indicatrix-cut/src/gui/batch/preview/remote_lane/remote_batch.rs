@@ -246,9 +246,11 @@ impl Run<'_, '_> {
         // with the connection.
         let sendable = match self.client.as_ref() {
             Some(client) if !client.takes_zoning() => {
-                let (zoned, plain): (Vec<_>, Vec<_>) = sendable
-                    .into_iter()
-                    .partition(|(_, batch_item, ..)| batch_item.scene.material.zoning.is_some());
+                let (zoned, plain): (Vec<_>, Vec<_>) =
+                    sendable.into_iter().partition(|(_, batch_item, ..)| {
+                        !batch_item.scene.engine.is_ray()
+                            && batch_item.scene.material.zoning.is_some()
+                    });
                 for (item, ..) in zoned {
                     warn!(
                         entry_id = item.entry_id,
@@ -290,7 +292,10 @@ impl Run<'_, '_> {
                 continue;
             };
             let job = PreviewJob {
+                engine: ctx.engine,
                 planes: &design.planes,
+                tools: &design.tools,
+                frosted: &design.frosted,
                 material: &design.material,
                 size: ctx.preview_size,
                 spp: ctx.preview_spp,

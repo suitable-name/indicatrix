@@ -40,6 +40,19 @@ fn tier(seed: usize, index: usize) -> TierFeature {
         index_frac: index as f32 / 8.0,
         azimuth_sin: v(4),
         azimuth_cos: v(5),
+        is_mobile: 1.0,
+        orbit_sin_2: v(6),
+        orbit_cos_2: v(7),
+        orbit_sin_4: v(8),
+        orbit_cos_4: v(9),
+        live_area_fraction: v(10).abs(),
+        live_centroid_x: v(11),
+        live_centroid_y: v(12),
+        live_centroid_z: v(13),
+        geometry_available: 1.0,
+        constraint_kind: 0.5,
+        relation_driven: 0.0,
+        target_driven: 0.0,
     }
 }
 
@@ -48,9 +61,9 @@ fn tier(seed: usize, index: usize) -> TierFeature {
 fn observation(seed: usize, tiers: usize) -> GemstoneObservation {
     let g = |k: usize| val(seed * 977 + 1000 + k);
     let weight_fractions = [
-        [0.4, 0.3, 0.2, 0.1],
-        [0.25, 0.25, 0.5, 0.0],
-        [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0],
+        [0.4, 0.3, 0.2, 0.1, 0.0, 0.0, 0.0],
+        [0.25, 0.25, 0.5, 0.0, 0.0, 0.0, 0.0],
+        [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0, 0.0, 0.0, 0.0],
     ][seed % 3];
     GemstoneObservation {
         tiers: (0..tiers).map(|index| tier(seed, index)).collect(),
@@ -70,6 +83,25 @@ fn observation(seed: usize, tiers: usize) -> GemstoneObservation {
             best_score_so_far: g(12).abs() * 50.0,
             progress_ratio: g(13).abs(),
             base_score: g(14).abs() * 60.0,
+            task_kind: (seed % 2) as f32,
+            tone_lighter_loss_pct: g(15).abs() * 100.0,
+            tone_deeper_loss_pct: g(16).abs() * 100.0,
+            shape_distance_pct: g(17).abs() * 20.0,
+            shape_target_table_pct: g(18).abs() * 80.0,
+            shape_target_ratio: g(19).abs(),
+            shape_weight: g(20).abs(),
+            probe_scale_deg: g(21).abs() * 5.0,
+            action_step_deg: g(22).abs() * 10.0,
+            fidelity: (seed % 2) as f32,
+            yield_available: 1.0,
+            shape_target_available: 1.0,
+            absorption_450: g(23).abs(),
+            absorption_550: g(24).abs(),
+            absorption_650: g(25).abs(),
+            absorption_path_scale: g(26).abs(),
+            scattering_sigma_s: g(27).abs(),
+            lighting_index: (seed % 4) as f32 / 3.0,
+            tone_available: 1.0,
             weight_fractions,
         },
     }
@@ -116,7 +148,7 @@ fn forward_host_matches_the_pure_twin_on_full_and_padded_samples() {
     // The objective's weight fractions travel in the flat state, where the composition reads them.
     for (state, observation) in states.iter().zip(&observations) {
         assert_eq!(
-            state[WEIGHT_FRACTION_INDEX..WEIGHT_FRACTION_INDEX + 4],
+            state[WEIGHT_FRACTION_INDEX..WEIGHT_FRACTION_INDEX + crate::env::N_COMPONENTS],
             observation.global.weight_fractions
         );
     }
@@ -235,12 +267,12 @@ fn malformed_batches_are_errors_not_panics() {
     // An empty batch is an empty answer.
     assert_eq!(run(&[], &[]).unwrap(), HostPolicyBatch::default());
     // A tier count equal to the padded width is fine, so is a single sample.
-    let full = run(&[good.clone()], &[MAX_TIERS]).unwrap();
+    let full = run(std::slice::from_ref(&good), &[MAX_TIERS]).unwrap();
     assert_eq!(full.means[0].len(), MAX_TIERS);
 
     // The two lists disagree.
     assert!(matches!(
-        run(&[good.clone()], &[3, 3]),
+        run(std::slice::from_ref(&good), &[3, 3]),
         Err(TrainError::ShapeMismatch(_))
     ));
     assert!(matches!(
@@ -253,7 +285,7 @@ fn malformed_batches_are_errors_not_panics() {
     for n in [0, MAX_TIERS + 1, usize::MAX] {
         assert!(
             matches!(
-                run(&[good.clone()], &[n]),
+                run(std::slice::from_ref(&good), &[n]),
                 Err(TrainError::ShapeMismatch(_))
             ),
             "n = {n}"

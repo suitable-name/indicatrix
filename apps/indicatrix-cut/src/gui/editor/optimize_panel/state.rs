@@ -38,13 +38,12 @@ impl StoredRun {
             .map(|candidate| candidate_outcome(&self.result.outcome, candidate))
     }
 
-    /// The candidate that `outcome` was built from: the one with the same angle changes.
-    /// Candidates differ in at least one angle, so this is unambiguous.
+    /// The candidate that `outcome` was built from. Equal angles alone are not an
+    /// identity: candidates may differ only in pinned depths or their source design.
     pub fn candidate_for(&self, outcome: &OptimizeOutcome) -> Option<&OptimizeCandidate> {
-        self.result
-            .candidates
-            .iter()
-            .find(|candidate| candidate.changes == outcome.changes)
+        self.result.candidates.iter().find(|candidate| {
+            candidate.changes == outcome.changes && candidate.provenance == outcome.provenance
+        })
     }
 }
 
@@ -199,6 +198,8 @@ mod tests {
 
     fn candidate(to_deg: f64, score: f32) -> OptimizeCandidate {
         OptimizeCandidate {
+            provenance: None,
+            preservation_baseline: None,
             changes: vec![AngleChange {
                 index: 1,
                 from_deg: -41.0,
@@ -218,6 +219,7 @@ mod tests {
         StoredRun {
             result: OptimizeResult {
                 outcome: OptimizeOutcome {
+                    provenance: None,
                     before: components(),
                     before_score: 10.0,
                     before_yield_loss_pct: 6.0,

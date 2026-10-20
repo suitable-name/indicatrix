@@ -163,6 +163,7 @@ impl Gui {
             c.set_edit_rollout(c.get_rollout_size().to_string().into());
             c.set_edit_batch(c.get_batch_size().to_string().into());
             c.set_edit_epochs(c.get_epochs().to_string().into());
+            c.set_edit_updates(c.get_updates_per_round().to_string().into());
             c.set_edit_lr(format_learning_rate(c.get_learning_rate()).into());
             c.set_hyper_error("".into());
             c.set_hyper_editing(true);
@@ -177,6 +178,7 @@ impl Gui {
             rollout_size: c.get_edit_rollout().to_string(),
             mini_batch: c.get_edit_batch().to_string(),
             epochs: c.get_edit_epochs().to_string(),
+            updates_per_round: c.get_edit_updates().to_string(),
             learning_rate: c.get_edit_lr().to_string(),
         });
         let Some(input) = input else {

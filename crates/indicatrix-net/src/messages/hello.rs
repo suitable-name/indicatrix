@@ -13,8 +13,8 @@
 //! # `build_hash` vs `source_hash`
 //!
 //! Both [`Hello`] and [`Welcome`] carry two independent `indicatrix` identity fields --
-//! see `crate::handshake`'s module doc comment for the full two-level check
-//! [`crate::handshake::verify_compatible`] runs against them.
+//! see `crate::handshake`'s module doc comment. [`crate::handshake::verify_compatible`]
+//! compares only `build_hash`; `source_hash` is diagnostic only and never compared.
 //!
 //! # Roles (v14)
 //!
@@ -368,10 +368,10 @@ mod tests {
     fn hello_and_welcome_bytes_are_the_pre_zoning_layout() {
         let mut hello = Hello::viewer(PROTOCOL_VERSION, [1, 2, 3, 4, 5, 6, 7, 8], [8; 8]);
         hello.accept_encodings = vec![PayloadEncoding::Raw];
-        let mut expected_hello = vec![0x18, 1, 2, 3, 4, 5, 6, 7, 8];
+        let mut expected_hello = vec![0x1D, 1, 2, 3, 4, 5, 6, 7, 8];
         expected_hello.extend_from_slice(&[8; 8]);
         expected_hello.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]);
-        assert_eq!(PROTOCOL_VERSION, 24, "the hand-written bytes assume v24");
+        assert_eq!(PROTOCOL_VERSION, 29, "the hand-written bytes assume v29");
         assert_eq!(postcard::to_allocvec(&hello).unwrap(), expected_hello);
 
         let welcome = Welcome {
@@ -386,7 +386,7 @@ mod tests {
             #[cfg(feature = "render")]
             zoning: false,
         };
-        let mut expected_welcome = vec![0x18];
+        let mut expected_welcome = vec![0x1D];
         expected_welcome.extend_from_slice(&[9; 8]);
         expected_welcome.extend_from_slice(&[10; 8]);
         expected_welcome.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x00]);

@@ -50,7 +50,11 @@ mod entry {
                 return;
             }
         };
-        let array = Uint8Array::new_with_length(bytes.len() as u32);
+        let Ok(length) = u32::try_from(bytes.len()) else {
+            web_sys::console::error_1(&"indicatrix worker: reply over 4 GiB".into());
+            return;
+        };
+        let array = Uint8Array::new_with_length(length);
         array.copy_from(&bytes);
         let buffer = array.buffer();
         if let Err(error) = scope().post_message_with_transfer(&buffer, &Array::of1(&buffer)) {

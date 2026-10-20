@@ -132,7 +132,7 @@ export component DesignViewport inherits Rectangle {
 
     // The picture.
     Image {
-        visible: ViewportModel.has-frame && ViewportModel.view-mode != 2;
+        visible: ViewportModel.has-frame && (ViewportModel.view-mode != 2 || ViewportModel.live-solid);
         x: ViewportModel.image-x;
         y: ViewportModel.image-y;
         width: ViewportModel.image-width;
@@ -142,7 +142,11 @@ export component DesignViewport inherits Rectangle {
     }
 
     // The rendered picture of the Render mode (fills the viewport, below the gestures).
-    if ViewportModel.view-mode == 2: RenderPicture { }
+    // It stays in the tree (hidden) while the live Solid raster is on show, so the traced
+    // frame is ready the moment the raster gives way to it.
+    if ViewportModel.view-mode == 2: RenderPicture {
+        visible: !ViewportModel.live-solid;
+    }
 
     // The gesture layer: Slint turns two fingers into pinch events and releases the
     // first finger, so one handler plus one touch area see everything.

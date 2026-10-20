@@ -306,7 +306,7 @@ fn keyboard() -> Guide {
             "File: Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as.",
             "History: Ctrl+Z undo, Ctrl+Y redo. Solving: F5.",
             "Tabs: Ctrl+1, Ctrl+2 and Ctrl+3 switch the three top tabs, and Ctrl+E toggles Live Render and Edit.",
-            "Solid viewport: 1, 2, 3 and 4 switch the view mode, and S toggles Slice.",
+            "Solid viewport: 1, 2, 3, 4 and 5 switch the view mode, and S toggles Slice.",
             "Everywhere: Ctrl+K opens the palette, Ctrl+, Preferences, F1 help for the screen, Esc backs out, and ? shows every shortcut.",
         ])
         .why("A key that types a character does nothing while you are typing in a text box, so a comma in a name stays a comma.")
@@ -329,7 +329,7 @@ fn keyboard() -> Guide {
     .step(
         GuideStep::new(
             "And back",
-            "The keys 1 to 4 are Solid, Path-traced, Both and Diagram.",
+            "The keys 1 to 5 are Solid, Path-Traced, Both, Diagram and Ray-Traced.",
         )
         .actions(["Press 1 for the Solid view."])
         .check("The Solid view shows the stone.")

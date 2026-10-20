@@ -96,6 +96,7 @@
 use indicatrix::renderer::gpu::GpuContext;
 
 mod common;
+mod event_wavefront_checks;
 mod frosted_girdle_and_edge_rounding;
 mod lighting_and_pipeline_checks;
 mod nee_and_g7_checks;
@@ -106,6 +107,7 @@ mod phase4_biaxial;
 mod scattering_and_absorption;
 mod summary;
 
+use event_wavefront_checks::run_event_wavefront_pipeline_checks;
 use frosted_girdle_and_edge_rounding::{
     run_task2_edge_rounding_checks, run_task2_frosted_girdle_checks,
 };
@@ -143,6 +145,7 @@ fn run_all_groups(ctx: &GpuContext) -> bool {
         ("kernel_specialisation", run_all_specialisation_checks(ctx)),
         ("hdr_nee", run_finding_g7_nee_checks(ctx)),
         ("zoned_absorption", run_zoning_checks(ctx)),
+        ("event_wavefront", run_event_wavefront_pipeline_checks(ctx)),
     ];
     for (name, passed) in results {
         summary::record_group(name, passed);

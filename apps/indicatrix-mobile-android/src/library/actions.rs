@@ -6,6 +6,7 @@
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
+    rc::Rc,
     sync::Arc,
 };
 
@@ -222,8 +223,10 @@ pub(super) fn ask_delete_selected(window: &AppWindow) {
         return;
     }
     let body = format!(
-        "{} will be removed from this device's library. This cannot be undone.",
-        designs(ids.len())
+        "{} will be removed from this device's library, together with the cutting progress and \
+         recent items kept for {}. This cannot be undone.",
+        designs(ids.len()),
+        if ids.len() == 1 { "it" } else { "them" },
     );
     window.global::<Shell>().invoke_show_dialog(
         DIALOG_DELETE,
@@ -241,13 +244,74 @@ pub(super) fn handle_dialog_result(window: &AppWindow, id: i32, confirmed: bool)
             let ids =
                 runtime::with(|rt| std::mem::take(&mut rt.pending_delete)).unwrap_or_default();
             if confirmed && !ids.is_empty() {
-                let text = format!("Deleted {}", designs(ids.len()));
-                run_write(window, text, move |handle| handle.delete(&ids));
+                run_delete(window, ids);
             }
             true
         }
         DIALOG_IMPORT_FAILED => true,
         _ => false,
+    }
+}
+
+/// Deletes `ids` on the queue. Back on the UI thread the app state forgets the entries that
+/// are gone (their recent items, an autosave of them, the open design's link to them), the
+/// list reloads and the user is told.
+fn run_delete(window: &AppWindow, ids: Vec<EntryId>) {
+    let queued = runtime::with(|rt| {
+        let (Some(handle), Some(queue)) = (rt.handle.clone(), rt.queue.as_ref()) else {
+            return false;
+        };
+        let weak = rt.weak.clone();
+        queue.submit(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| handle.delete(&ids)))
+                .unwrap_or_else(|_| Err("The change stopped unexpectedly.".to_owned()));
+            // Not `ids`: a delete that stopped early left the later entries in place.
+            let gone = catch_unwind(AssertUnwindSafe(|| handle.missing(&ids))).unwrap_or_default();
+            let delivered = weak.upgrade_in_event_loop(move |window| {
+                delete_done(&window, &result, &gone);
+            });
+            if let Err(error) = delivered {
+                tracing::debug!(%error, "a library delete was dropped: the UI thread is gone");
+            }
+        });
+        true
+    });
+    if queued != Some(true) {
+        toast::show(window, "The library is not open.");
+    }
+}
+
+/// A delete finished on the queue; `gone` are the entries that no longer exist.
+fn delete_done(window: &AppWindow, result: &Result<(), String>, gone: &[EntryId]) {
+    let shared = runtime::with(|rt| Rc::clone(&rt.shared));
+    let detached = shared
+        .as_ref()
+        .is_some_and(|shared| forget_deleted(shared, gone));
+    write_done(window, result, &deleted_text(gone.len(), detached));
+    if let Some(shared) = shared {
+        // The More page's recent items, the Save rows and the Cut page follow the state.
+        crate::design::refresh(window, &shared);
+    }
+}
+
+/// Lets the app state forget the deleted entries `gone`. Returns whether the open design
+/// was one of them.
+fn forget_deleted(shared: &Shared, gone: &[EntryId]) -> bool {
+    let Ok(mut app) = shared.try_borrow_mut() else {
+        tracing::warn!("the app state was busy; the deleted designs were not forgotten");
+        return false;
+    };
+    app.forget_deleted_entries(gone)
+}
+
+/// What the snackbar says after `count` designs were deleted; `detached` says that the open
+/// design was one of them and stays open, now as an unsaved design.
+fn deleted_text(count: usize, detached: bool) -> String {
+    let deleted = format!("Deleted {}", designs(count));
+    if detached {
+        format!("{deleted}. The design you have open stays open and is now unsaved.")
+    } else {
+        deleted
     }
 }
 
@@ -422,4 +486,19 @@ pub(super) fn apply_tags(window: &AppWindow) {
 /// Opens a design: the shared document code asks about unsaved changes and installs it.
 pub(super) fn open_entry(window: &AppWindow, state: &Shared, id: EntryId) {
     crate::design::document::open_library_entry(window, state, id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_delete_message_counts_and_names_the_open_design() {
+        assert_eq!(deleted_text(1, false), "Deleted 1 design");
+        assert_eq!(deleted_text(3, false), "Deleted 3 designs");
+        assert_eq!(
+            deleted_text(1, true),
+            "Deleted 1 design. The design you have open stays open and is now unsaved."
+        );
+    }
 }

@@ -6,6 +6,7 @@ members = [
     "apps/indicatrix-mobile-android",
     "apps/indicatrix-web",
     "apps/indicatrix-web-compute",
+    "apps/indicatrix-web-gpu",
     "apps/indicatrix-worker",
     "crates/indicatrix",
     "crates/indicatrix-cut-core",
@@ -20,6 +21,10 @@ members = [
     "crates/indicatrix-vault",
     "crates/indicatrix-web-core",
 ]
+# `vendor/` holds a patched copy of a crates.io package (see `[patch.crates-io]` below). It is
+# a path dependency inside the workspace directory, which cargo would otherwise take in as a
+# member; it stays a plain dependency.
+exclude = ["vendor"]
 # indicatrix: a physically-based spectral gemstone renderer and faceting-design
 # library. `indicatrix` is the spectral path tracer at the center; `indicatrix-formats` reads and
 # writes GemCAD-style `.asc` cutting instructions; `indicatrix-vault` is the local
@@ -40,7 +45,7 @@ members = [
 # `crates/indicatrix-mobile-core`, its UI-free core (app state, compute threads, platform trait).
 
 [workspace.package]
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -58,9 +63,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 # Pinned exactly: crates/indicatrix's SIMD twins (simd/triple_solve.rs, used by
 # geometry/meet_solver/candidates.rs) follow glam 0.34.1's scalar DMat3 sequence
 # (determinant = x_axis.dot(y_axis.cross(z_axis)); inverse = cofactor columns scaled
-# by 1/determinant, transposed) bit for bit. glam 0.33.8 reordered it ("align with
-# Mat4", #828/#836/#837). Bumping glam means re-deriving those twins and
-# re-verifying every solver golden, not just editing this line.
+# by 1/determinant, transposed) bit for bit. 
 glam = "=0.34.1"
 # `default-features = false` MUST live here, not in the members: a member
 # inheriting a workspace dependency may only ADD features, never remove them,
@@ -122,9 +125,9 @@ socket2 = { version = "0.6.5", features = ["all"] }
 # `apps/indicatrix-web` names the trimmed wasm set.
 slint = { version = "1.18.1", default-features = false }
 slint-build = "1.18.1"
-# The UI harness, crates.io, own repository github.com/suitable-name/slint-harness
-slint-harness = "=0.18.5"
-slint-harness-hooks = "0.1"
+# The UI harness (formerly slint-harness), crates.io, own repository github.com/suitable-name/uiprobe
+uiprobe = "=0.18.8"
+uiprobe-hooks = "0.1"
 # `rcgen::CertificateParams::not_before`/`not_after` are `time::OffsetDateTime` --
 # needed directly (not re-exported by `rcgen`) to set certificate validity windows,
 # including the clock-skew backdating in `pki::not_before_with_skew_slack`.
@@ -153,19 +156,19 @@ log = "0.4"
 log-panics = { version = "2", features = ["with-backtrace"] }
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.8.1" }
-indicatrix = { path = "crates/indicatrix", version = "0.8.1" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.8.1" }
-indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.8.1" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.8.1" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.8.1" }
-indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.8.1" }
-indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.8.1" }
-indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.8.1" }
-indicatrix-update = { path = "crates/indicatrix-update", version = "0.8.1" }
-indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.8.1" }
-indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.8.1" }
-indicatrix-mobile-core = { path = "crates/indicatrix-mobile-core", version = "0.8.1" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.9.0" }
+indicatrix = { path = "crates/indicatrix", version = "0.9.0" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.9.0" }
+indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.9.0" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.9.0" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.9.0" }
+indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.9.0" }
+indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.9.0" }
+indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.9.0" }
+indicatrix-update = { path = "crates/indicatrix-update", version = "0.9.0" }
+indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.9.0" }
+indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.9.0" }
+indicatrix-mobile-core = { path = "crates/indicatrix-mobile-core", version = "0.9.0" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -174,10 +177,15 @@ nursery = { level = "warn", priority = -1 }
 # arithmetic of the renderer and the solvers; their precision loss above 2^24 / 2^53 is
 # understood and harmless here. Every other cast lint is on.
 cast_precision_loss = { level = "allow" }
+# Exact float equality is intentional here: the tests pin bit-identical results (CPU/GPU twins,
+# deterministic solves, golden values), and production code that compares floats does so on
+# purpose (unchanged-value checks, sentinels). A comparison that needs a tolerance says so
+# with an explicit epsilon, never with `==`.
+float_cmp = { level = "allow" }
 
 [profile.release]
 codegen-units = 1
-debug = false
+debug = "line-tables-only"
 lto = true
 opt-level = 3
 strip = "symbols"
@@ -310,3 +318,7 @@ opt-level = 3
 
 [profile.test.package.indicatrix-cut-core]
 opt-level = 3
+
+# Pinned Slint Android Back ownership switch; see package PATCH.md.
+[patch.crates-io]
+i-slint-backend-android-activity = { path = "vendor/slint-android-activity-1.18.1" }

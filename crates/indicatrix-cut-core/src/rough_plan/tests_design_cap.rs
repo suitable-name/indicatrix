@@ -10,7 +10,7 @@ use super::{
 
 /// The six orders' mixed DP over the Pareto front of `designs`: the grid, the layouts and the
 /// best one, as the planner computes them before the design-cap chain.
-fn mixed_best(
+pub(super) fn mixed_best(
     rough: &RoughBlock,
     settings: &PlanSettings,
     designs: &[CandidateDesign],
@@ -75,7 +75,7 @@ fn with_several_designs_and_a_cap_of_one_every_layout_is_one_design_of_many_ston
 }
 
 /// A rough and designs whose unconstrained mixed best layout uses at least three designs.
-fn three_design_fixture() -> (RoughBlock, Vec<CandidateDesign>) {
+pub(super) fn three_design_fixture() -> (RoughBlock, Vec<CandidateDesign>) {
     let rough = RoughBlock {
         x_mm: 14.0,
         y_mm: 11.0,

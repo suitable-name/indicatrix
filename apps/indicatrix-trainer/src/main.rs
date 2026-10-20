@@ -11,6 +11,9 @@ mod stats;
 mod trainer_worker;
 mod ui_state;
 
+// `stats.rs` is shared with the CLI binary, which declares `runner` at its crate root.
+use trainer_worker::runner;
+
 use slint::ComponentHandle;
 
 slint::include_modules!();

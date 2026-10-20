@@ -87,7 +87,8 @@ export component TierTableRow inherits Rectangle {
     accessible-role: AccessibleRole.list-item;
     accessible-label: "Tier " + (root.item.index + 1) + ", " + (root.item.name == "" ? "unnamed" : root.item.name)
         + ", angle " + root.item.angle_deg + ", " + root.item.block
-        + (root.item.kind == 1 ? ", concave" : "") + (root.item.multi_selected ? ", in the selection" : "");
+        + (root.item.kind == 1 ? ", concave" : "") + (root.item.frosting_text != "" ? ", " + root.item.frosting_text : "")
+        + (root.item.multi_selected ? ", in the selection" : "");
     accessible-item-selectable: true;
     accessible-item-selected: root.item.index == EditorModel.selected_tier_index;
     accessible-action-default => {
@@ -294,14 +295,35 @@ export component TierTableRow inherits Rectangle {
                             // close paths (Enter, focus loss, Escape).
                             closed() => { root.request_focus_return(); }
                         }
-                        Text {
+                        HorizontalLayout {
                             horizontal-stretch: 1;
                             min-width: root.col_name_min_width;
-                            text: root.item.name == "" ? "(unnamed)" : root.item.name;
-                            font-size: 11px;
-                            color: Theme.text-secondary;
-                            overflow: elide;
-                            vertical-alignment: center;
+                            spacing: 4px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.item.name == "" ? "(unnamed)" : root.item.name;
+                                font-size: 11px;
+                                color: Theme.text-secondary;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            // The frost mark: the tier (or some of its facets) is cut frosted.
+                            if root.item.frosting_text != "": Rectangle {
+                                width: 12px;
+                                horizontal-stretch: 0;
+                                accessible-role: AccessibleRole.text;
+                                accessible-label: root.item.frosting_text;
+                                Image {
+                                    source: @image-url("../../icons/frost.svg");
+                                    colorize: Theme.accent-cyan;
+                                    width: 11px;
+                                    height: 11px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    image-fit: contain;
+                                }
+                                Tooltip { text: @markdown("\{root.item.frosting_text}. Frosted facets are cut with a matte, light-scattering finish."); }
+                            }
                         }
                         Text {
                             horizontal-stretch: 1;

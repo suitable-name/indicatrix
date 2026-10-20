@@ -2,7 +2,8 @@
 //!
 //! Every built-in template pins all of its tiers, so the quick tests here cover what a
 //! template does through the handlers (Optimize has nothing free; Retarget's Shift mode
-//! is identical to `build_proposal`). The two tests that run a real search cost a
+//! runs the desktop's check and carries the masts it moved, or refuses in the check's own
+//! words). The two tests that run a real search cost a
 //! `Full`-fidelity tilt sweep each (over a minute unoptimized), so they are `#[ignore]`d
 //! like the equivalent tests in `indicatrix-cut-core`: run them with
 //! `cargo test -p indicatrix-web-core -- --ignored`.
@@ -19,11 +20,17 @@ use indicatrix::geometry::meet_solver::{
     Block, MeetConstraint, classify_blocks, meet_tier_inputs_from_asc,
 };
 use indicatrix_cut_core::{
-    ConstraintTier, FreshDesignSpec, PreformSpec, ScheduleMeta, templates::TEMPLATES,
+    CANONICAL_LIGHTING_PRESET, ConstraintTier, FreshDesignSpec, History, PreformSpec, ScheduleMeta,
+    meet_preservation::{MeetPreservationBaseline, PreservationPolicy},
+    templates::TEMPLATES,
 };
 use indicatrix_editor::{
     EditorSession,
-    retarget::view::{resolved_material_from_selection, retarget_view},
+    retarget::{
+        apply_with_anchors,
+        check::{CheckInputs, check_retarget},
+        view::{resolved_material_from_selection, retarget_view},
+    },
 };
 
 /// "RBC-445" (PC 13.156): a small, genuinely meet-derived design, the same fixture the
@@ -172,6 +179,7 @@ fn the_default_params_are_the_desktops_default_config() {
 #[test]
 fn an_outcome_round_trips_through_its_plain_data() {
     let outcome = OptimizeOutcome {
+        provenance: None,
         before: ObjectiveComponents {
             windowing_pct: 12.5,
             extinction_pct: 8.0,
@@ -231,7 +239,12 @@ fn every_template_pins_all_its_tiers_so_optimize_says_nothing_is_free() {
 }
 
 #[test]
-fn shift_retarget_through_the_handler_equals_build_proposal_on_every_template() {
+fn shift_retarget_through_the_handler_applies_or_refuses_in_the_checks_words_on_every_template() {
+    // Every template pins all of its tiers, so none of them can take an angle-only change: the
+    // handler runs the desktop's check and either answers with rows, the masts the projection
+    // moved and a verdict that Apply can commit as one validated edit, or refuses in the
+    // check's words and offers no rows at all.
+    let mut applied = 0_usize;
     for (i, template) in TEMPLATES.iter().enumerate() {
         let design = template_design(i32::try_from(i).expect("a template index fits i32") + 1);
         let toml = design_to_toml(&design).expect("encodes");
@@ -249,35 +262,222 @@ fn shift_retarget_through_the_handler_equals_build_proposal_on_every_template() 
                     custom_materials: Vec::new(),
                 },
             ));
+            assert!(got.anchored_errors.is_empty(), "{}", template.name);
+            assert!(!got.validity_headline.is_empty(), "{}", template.name);
 
+            if !got.solve_error.is_empty() {
+                // Refused: the verdict, and nothing to apply.
+                assert!(
+                    got.solve_error.starts_with(&got.validity_headline),
+                    "{}: {}",
+                    template.name,
+                    got.solve_error
+                );
+                assert!(
+                    got.rows.is_empty() && got.anchors.is_empty(),
+                    "{}: a refused change offers no rows",
+                    template.name
+                );
+                continue;
+            }
+
+            // Accepted: the page rebuilds the proposal from the rows and applies it with the
+            // transported masts; the edit validates and the original meets survive.
+            applied += 1;
             let target = resolved_material_from_selection(&params.target.into(), &[]);
-            let crown = CrownShift {
-                fraction,
-                scale_by_ratio: ratio,
-                follow_pavilion: follow,
-            };
-            let direct =
-                retarget::build_proposal(&design, &target, crown, RetargetMode::Shift, &[])
-                    .expect("Shift never fails");
-            let direct_rows: Vec<RetargetRowData> =
-                direct.rows.iter().map(RetargetRowData::from).collect();
-            assert_eq!(got.rows, direct_rows, "{} rows", template.name);
-            assert_eq!(got.notes, direct.notes, "{} notes", template.name);
-            assert!(got.anchored_errors.is_empty() && got.solve_error.is_empty());
-
-            // The page rebuilds the proposal from the rows: same edit as the direct one.
             let rebuilt = got
                 .to_proposal(target)
                 .expect("a template has pavilion and crown tiers");
-            assert_eq!(rebuilt.rows, direct.rows, "{} rebuilt rows", template.name);
-            assert_eq!(
-                retarget::apply(&design, &rebuilt),
-                retarget::apply(&design, &direct),
-                "{} edit",
-                template.name
-            );
+            let edit = apply_with_anchors(&design, &rebuilt, &got.to_anchors())
+                .unwrap_or_else(|error| panic!("{}: {error}", template.name));
+            let mut after = design.clone();
+            History::new()
+                .apply(&mut after, edit)
+                .expect("the batch applies");
+            MeetPreservationBaseline::capture(&design)
+                .expect("a template captures")
+                .validate(&after, PreservationPolicy::RETARGET)
+                .unwrap_or_else(|error| panic!("{}: {error}", template.name));
         }
     }
+    assert_ne!(
+        applied, 0,
+        "at least one template change must be valid by Shift on the worker"
+    );
+}
+
+/// The standard brilliant as a 1.72 stone with every tier pinned, like an imported design.
+fn pinned_brilliant_at_172() -> Design {
+    let mut design = Design::new(
+        PreformSpec::block(2.0, 1.0, 4.0),
+        ScheduleMeta::standard_round_brilliant(),
+        ConstraintTier::standard_round_brilliant(),
+    );
+    design.material = MaterialSelection {
+        refractive_index_override: Some(1.72),
+        ..MaterialSelection::none()
+    };
+    design.ensure_tier_ids();
+    design
+}
+
+/// 1.72 to 1.7681 with a third of the shift on the crown: valid by Shift alone on the desktop.
+fn sapphire_shift() -> RetargetParams {
+    RetargetParams {
+        target: MaterialSelectionData {
+            refractive_index_override: Some(1.7681),
+            ..MaterialSelectionData::default()
+        },
+        ..shift_params(0.33, false, false)
+    }
+}
+
+#[test]
+fn a_pinned_design_shifts_through_the_worker_and_keeps_its_meets() {
+    let design = pinned_brilliant_at_172();
+    let params = sapphire_shift();
+    let toml = design_to_toml(&design).expect("encodes");
+    let got = retargeted(handle_solve(
+        &toml,
+        &SolveRequest::Retarget {
+            params: params.clone(),
+            custom_materials: Vec::new(),
+        },
+    ));
+    assert_eq!(got.solve_error, "");
+    assert_eq!(got.anchored_errors.len(), 0);
+    assert_ne!(got.rows, Vec::new(), "the shift must offer rows");
+    assert_ne!(
+        got.anchors,
+        Vec::new(),
+        "a pinned design's masts move with its angles"
+    );
+    assert!(
+        got.validity_headline.starts_with("Valid"),
+        "{}",
+        got.validity_headline
+    );
+
+    // It is the desktop's own check, transported.
+    let target = resolved_material_from_selection(&params.target.clone().into(), &[]);
+    let plan = retarget::build_plan(
+        &design,
+        &target,
+        CrownShift {
+            fraction: params.crown_fraction,
+            scale_by_ratio: params.scale_crown_by_ratio,
+            follow_pavilion: params.crown_follows_pavilion,
+        },
+        &[],
+    );
+    let direct = check_retarget(&CheckInputs {
+        girdle: None,
+        design: &design,
+        plan: &plan,
+        current_gem: None,
+        lighting: CANONICAL_LIGHTING_PRESET,
+    });
+    assert!(direct.allows_apply(), "{}", direct.validity.headline());
+    assert_eq!(got.validity_headline, direct.validity.headline());
+    assert_eq!(got.to_anchors(), direct.anchors);
+    let candidate = direct
+        .candidate
+        .as_ref()
+        .expect("a valid check has a candidate");
+    for row in &got.rows {
+        assert_eq!(
+            candidate.tiers[row.tier_index as usize].angle_deg.to_bits(),
+            row.new_angle.to_bits(),
+            "row {} carries the checked angle",
+            row.name
+        );
+    }
+
+    // What the page does on Apply: rebuild the proposal, apply it with the masts.
+    let rebuilt = got
+        .to_proposal(target)
+        .expect("rows come back as a proposal");
+    let edit = apply_with_anchors(&design, &rebuilt, &got.to_anchors())
+        .expect("the transported rows and masts are preserved");
+    let mut applied = design.clone();
+    History::new()
+        .apply(&mut applied, edit)
+        .expect("the batch applies");
+    assert_eq!(&applied, candidate, "Apply reproduces the checked state");
+    let facts = MeetPreservationBaseline::capture(&design)
+        .expect("the original captures")
+        .validate(&applied, PreservationPolicy::RETARGET)
+        .expect("the original meets survive");
+    assert!(facts.original_meets > 0);
+}
+
+#[test]
+fn the_same_rows_without_the_masts_are_refused_on_a_pinned_design() {
+    // Why the answer carries the masts: the angles alone detach the meets of a pinned design.
+    let design = pinned_brilliant_at_172();
+    let params = sapphire_shift();
+    let got = retargeted(no_hooks(|hooks| run_retarget(&design, &params, &[], hooks)));
+    let target = resolved_material_from_selection(&params.target.into(), &[]);
+    let rebuilt = got
+        .to_proposal(target)
+        .expect("rows come back as a proposal");
+    assert!(
+        apply_with_anchors(&design, &rebuilt, &[]).is_err(),
+        "angles alone must not be offered as an edit on a pinned design"
+    );
+}
+
+#[test]
+fn a_design_that_does_not_solve_is_refused_in_the_checks_words() {
+    let mut design = pinned_brilliant_at_172();
+    for tier in &mut design.tiers {
+        tier.constraint = MeetConstraint::MeetExisting;
+    }
+    let got = retargeted(no_hooks(|hooks| {
+        run_retarget(&design, &sapphire_shift(), &[], hooks)
+    }));
+    assert!(got.rows.is_empty() && got.anchors.is_empty());
+    assert!(
+        got.solve_error.starts_with("Could not check this change"),
+        "{}",
+        got.solve_error
+    );
+    assert!(got.solve_error.starts_with(&got.validity_headline));
+}
+
+#[test]
+fn a_raised_cancel_flag_ends_a_shift_check_without_rows() {
+    let design = pinned_brilliant_at_172();
+    let cancel = AtomicBool::new(true);
+    let hooks = SolveHooks {
+        cancel: &cancel,
+        on_progress: &|_| {},
+        on_sweep: &|_| {},
+    };
+    let got = retargeted(run_retarget(&design, &sapphire_shift(), &[], &hooks));
+    assert!(got.rows.is_empty() && got.anchors.is_empty());
+    assert!(got.solve_error.contains("cancelled"), "{}", got.solve_error);
+}
+
+#[test]
+fn anchor_changes_round_trip_through_their_plain_data() {
+    let anchors = vec![
+        AnchorChange {
+            tier_index: 3,
+            old_mast: 0.61,
+            new_mast: 0.625,
+        },
+        AnchorChange {
+            tier_index: 11,
+            old_mast: 0.4,
+            new_mast: 0.3875,
+        },
+    ];
+    let data = RetargetResultData {
+        anchors: anchors.iter().map(AnchorChangeData::from).collect(),
+        ..RetargetResultData::default()
+    };
+    assert_eq!(data.to_anchors(), anchors);
 }
 
 #[test]
@@ -304,38 +504,30 @@ fn optimize_mode_retarget_refuses_anchored_tiers_exactly_like_the_desktop_view()
 }
 
 #[test]
-fn only_the_named_tiers_stay_free_and_the_rest_are_pinned_at_their_masts() {
+fn selecting_tiers_restricts_variables_without_replacing_authored_meets() {
     let design = rbc_445();
-    let solved = design.solve().expect("the fixture solves");
-    let free_before = free_tier_indices(&design);
-    assert!(free_before.len() >= 2, "{free_before:?}");
-    let keep = free_before[0];
+    let before = design.clone();
+    let free = free_tier_indices(&design);
+    assert!(free.len() >= 2);
     let params = OptimizeParams {
-        only_tiers: Some(vec![u32::try_from(keep).expect("a tier index fits u32")]),
-        ..OptimizeParams::default()
+        only_tiers: Some(vec![u32::try_from(free[0]).expect("tier index")]),
+        ..Default::default()
     };
-    let restricted = restricted_design(&design, &params).expect("solves");
-    assert_eq!(free_tier_indices(&restricted), vec![keep]);
-    for &i in &free_before[1..] {
-        assert!(matches!(
-            restricted.tiers[i].constraint,
-            MeetConstraint::ScaleReference(mast) if mast.to_bits() == solved[i].mast.to_bits()
-        ));
+    assert_eq!(
+        indicatrix_cut_core::free_tier_indices_with(&design, &optimize_options(&params)),
+        vec![free[0]]
+    );
+    for only_tiers in [None, Some(Vec::new())] {
+        let params = OptimizeParams {
+            only_tiers,
+            ..Default::default()
+        };
+        assert_eq!(
+            indicatrix_cut_core::free_tier_indices_with(&design, &optimize_options(&params)),
+            free
+        );
     }
-    // No restriction, or an empty one, leaves the design alone.
-    let plain = OptimizeParams::default();
-    assert_eq!(
-        restricted_design(&design, &plain).expect("ok").tiers,
-        design.tiers
-    );
-    let empty = OptimizeParams {
-        only_tiers: Some(Vec::new()),
-        ..OptimizeParams::default()
-    };
-    assert_eq!(
-        restricted_design(&design, &empty).expect("ok").tiers,
-        design.tiers
-    );
+    assert_eq!(design, before);
 }
 
 /// A real search through a Worker handler: streams progress, and its result equals the
@@ -389,7 +581,7 @@ fn an_optimize_search_through_the_worker_equals_a_direct_call() {
     let mut selection = design.material.clone();
     let defaulted = default_optimize_material_ri(&design, &mut selection, &[]);
     let material = resolved_gem_material(&selection, &EditorMaterialLookup::new(&[]));
-    let direct = optimize_design(
+    let direct = indicatrix_cut_core::optimize_design(
         &design,
         &material,
         &params.config(),

@@ -22,6 +22,7 @@
 
 mod apply;
 mod apply_concave;
+mod apply_frosting;
 mod apply_shift;
 mod edit_type;
 mod history;

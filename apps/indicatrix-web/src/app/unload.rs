@@ -1,11 +1,11 @@
 //! The leave-the-page guard: while the design has unsaved changes, closing or reloading
 //! the tab makes the browser ask first (`beforeunload`).
 //!
-//! The autosave (`super::persist`: `sessionStorage` for a reload, IndexedDB two seconds
+//! The autosave (`super::persist`: `sessionStorage` for a reload, `IndexedDB` two seconds
 //! after the last change for a restart) is a safety net, not a save: it can lag the last
 //! edit, and the browser may evict it. A downloaded file is the only copy that is surely
 //! kept -- so the guard asks whenever the design is dirty, not only when closing. It is
-//! unchanged by the IndexedDB autosave.
+//! unchanged by the `IndexedDB` autosave.
 
 use super::{Ctx, diagnostics::console_warn};
 use wasm_bindgen::{JsCast, closure::Closure};

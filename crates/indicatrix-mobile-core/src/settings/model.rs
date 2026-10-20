@@ -39,17 +39,54 @@ pub enum RenderQuality {
     Fine,
 }
 
-/// What the camera sees behind the stone (mirrors `indicatrix::render_setup::Backdrop`,
-/// which has no serde support).
+/// Execution policy. Automatic never uploads a scene or selects remote compute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RenderBackend {
+    #[default]
+    Automatic,
+    DeviceCpu,
+    DeviceGpu,
+    Remote,
+}
+
+impl RenderBackend {
+    #[must_use]
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::Automatic => 0,
+            Self::DeviceCpu => 1,
+            Self::DeviceGpu => 2,
+            Self::Remote => 3,
+        }
+    }
+    #[must_use]
+    pub const fn from_index(index: i32) -> Option<Self> {
+        match index {
+            0 => Some(Self::Automatic),
+            1 => Some(Self::DeviceCpu),
+            2 => Some(Self::DeviceGpu),
+            3 => Some(Self::Remote),
+            _ => None,
+        }
+    }
+}
+
+/// The surface the stone lies on: a tray lit by the lighting rig, seen around the stone and
+/// through its windows.
+///
+/// Mirrors `indicatrix::render_setup::Backdrop`, which has no serde support. Stored by
+/// variant name; new variants are appended so older files stay valid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Backdrop {
     /// The environment's own ground, as lit.
     AsLit,
-    /// A neutral grey card (the desktop default).
-    #[default]
+    /// An 18 % grey card.
     Grey,
-    /// A white light box.
+    /// White paper, 90 % reflectance (the default, like the desktop's).
+    #[default]
     White,
+    /// Black velvet, 2 % reflectance (appended last so stored names stay valid).
+    Black,
 }
 
 /// How much of a remote render the phone receives.
@@ -80,6 +117,10 @@ pub enum LibrarySort {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenderSettings {
+    /// Image engine (0 Path-Traced, 1 Ray-Traced); unknown values keep old settings usable.
+    #[serde(default)]
+    pub engine: u8,
+    pub backend: RenderBackend,
     /// The overall quality tier.
     pub quality: RenderQuality,
     /// Maximum light bounces per path.
@@ -99,6 +140,8 @@ pub struct RenderSettings {
 impl Default for RenderSettings {
     fn default() -> Self {
         Self {
+            engine: 0,
+            backend: RenderBackend::Automatic,
             quality: RenderQuality::Normal,
             bounces: 8,
             denoise: true,
@@ -106,6 +149,25 @@ impl Default for RenderSettings {
             live_spp_large: 128,
             export_cap_px: 1024,
             export_cap_spp: 256,
+        }
+    }
+}
+
+impl RenderSettings {
+    /// Fixed deterministic quality without changing the stored spectral sample targets.
+    #[must_use]
+    pub const fn engine_spec(&self) -> indicatrix::renderer::engine::EngineSpec {
+        use indicatrix::renderer::engine::{EngineSpec, RayOptions, RenderEngine};
+        EngineSpec {
+            engine: RenderEngine::from_index(self.engine),
+            ray: RayOptions {
+                aa_taps: match self.quality {
+                    RenderQuality::Draft => 1,
+                    RenderQuality::Normal => 4,
+                    RenderQuality::Fine => 8,
+                },
+                fire: true,
+            },
         }
     }
 }
@@ -122,7 +184,7 @@ pub struct LightingSettings {
     pub azimuth_deg: f32,
     /// Light pitch (elevation) in degrees.
     pub elevation_deg: f32,
-    /// What the camera sees behind the stone.
+    /// The tray the stone lies on, lit by the rig (see [`Backdrop`]).
     pub backdrop: Backdrop,
     /// Angular radius of the viewer's head shadow in degrees (0 is off).
     pub head_shadow_deg: f32,
@@ -145,7 +207,7 @@ impl Default for LightingSettings {
             exposure: 1.0,
             azimuth_deg: 48.0,
             elevation_deg: 72.0,
-            backdrop: Backdrop::Grey,
+            backdrop: Backdrop::White,
             head_shadow_deg: 16.0,
             surface_glare_pct: default_surface_glare_pct(),
         }
@@ -166,6 +228,10 @@ pub struct RemoteSettings {
     pub cadence_ms: u32,
     /// Whether this phone has been enrolled with the worker.
     pub enrolled: bool,
+    /// Whether a remote session may run on a metered mobile-data connection. Off by
+    /// default: a lighting-map upload and `FullData` frames are many megabytes. A network
+    /// whose metering the platform cannot tell is treated as unmetered.
+    pub allow_metered: bool,
 }
 
 impl Default for RemoteSettings {
@@ -176,6 +242,7 @@ impl Default for RemoteSettings {
             transfer: RemoteTransfer::DisplayOnly,
             cadence_ms: 500,
             enrolled: false,
+            allow_metered: false,
         }
     }
 }
@@ -291,5 +358,25 @@ impl MobileSettings {
         self.recent.retain(|old| !old.kind.same_target(&item.kind));
         self.recent.insert(0, item);
         self.recent.truncate(MAX_RECENT);
+    }
+
+    /// Empties [`Self::recent`] and returns how many entries it held. The designs the
+    /// entries pointed at are untouched.
+    pub fn clear_recent(&mut self) -> usize {
+        let held = self.recent.len();
+        self.recent.clear();
+        held
+    }
+
+    /// Removes the entries of [`Self::recent`] that point at the library entries `ids` and
+    /// returns how many it removed. Call it when those entries are deleted: a line left in
+    /// the list would still carry the deleted design's title (in `settings.toml` too) and
+    /// could open nothing.
+    pub fn forget_library_entries(&mut self, ids: &[i64]) -> usize {
+        let before = self.recent.len();
+        self.recent.retain(|item| {
+            !matches!(item.kind, RecentKind::Library { entry_id } if ids.contains(&entry_id))
+        });
+        before - self.recent.len()
     }
 }

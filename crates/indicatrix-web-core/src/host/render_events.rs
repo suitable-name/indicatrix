@@ -12,6 +12,7 @@ use super::{
     now_ms,
     render_callbacks::Deferred,
     render_pool::{InFlight, Inner, MAX_AUTO_RESTARTS, SlotState},
+    slot_u32,
     watchdog::silence_limit_ms,
 };
 use crate::{
@@ -38,7 +39,7 @@ impl Inner {
                 let init = ToWorker::Init {
                     protocol_version: PROTOCOL_VERSION,
                     role: WorkerRole::Render,
-                    worker_index: index as u32,
+                    worker_index: slot_u32(index),
                 };
                 if let Err(error) = slot.handle.post(&init) {
                     slot.state = SlotState::Failed;
@@ -91,7 +92,13 @@ impl Inner {
             | FromWorker::Progress { .. }
             | FromWorker::SolveResult { .. }
             | FromWorker::Picture { .. }
-            | FromWorker::PictureFailed { .. } => {}
+            | FromWorker::PictureFailed { .. }
+            | FromWorker::GpuAdapter { .. }
+            | FromWorker::GpuUnavailable { .. }
+            | FromWorker::GpuCompiled { .. }
+            | FromWorker::GpuCompileFailed { .. }
+            | FromWorker::FullPassResult { .. }
+            | FromWorker::GpuLost { .. } => {}
         }
         deferred
     }
@@ -234,6 +241,18 @@ impl Inner {
         for index in hung {
             deferred.absorb(self.crash_slot(index, "it stopped answering"));
         }
+        let silent_gpu = self.gpu.as_ref().is_some_and(|slot| {
+            slot.ledger.is_busy()
+                && slot.state == SlotState::Ready
+                && now - slot.last_heard_ms > silence_limit_ms(frame_pixels, 1)
+        });
+        if silent_gpu {
+            self.fail_gpu_slot("GPU worker timed out", &mut deferred);
+            deferred
+                .errors
+                .push("The GPU render worker timed out and was stopped.".to_string());
+            deferred.absorb(self.schedule());
+        }
         deferred
     }
 
@@ -250,11 +269,11 @@ impl Inner {
             }
         }
         if let Some(spec) = &self.spec {
-            let message = ToWorker::SetScene {
-                scene_id: self.scene_id,
-                spec: spec.clone(),
-            };
+            let message = ToWorker::scene(self.scene_id, spec.clone(), &self.tools);
             if let Err(error) = slot.handle.post(&message) {
+                deferred.errors.push(error);
+            }
+            if let Err(error) = self.post_engine_to(&slot.handle) {
                 deferred.errors.push(error);
             }
         }

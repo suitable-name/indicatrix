@@ -360,6 +360,9 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
     // receives `render_ctx`/`preview_state`/`solid_last_solved` alongside `ui`/`state`.
     setup_facet_remove_callback(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_facet_toggle_detach_callback(ui, state, render_ctx, preview_state, solid_last_solved);
+    // Frosted tier and frosted facet: one undo step each, no replan (see `frosting`).
+    super::frosting::setup_set_tier_frosted_callback(ui, state, render_ctx, solid_last_solved);
+    super::frosting::setup_toggle_facet_frosted_callback(ui, state, render_ctx, solid_last_solved);
     setup_facet_add_callback(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_tier_rotate_indices_callback(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_tier_mirror_indices_callback(ui, state, render_ctx, preview_state, solid_last_solved);

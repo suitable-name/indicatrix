@@ -19,31 +19,51 @@
 //!   the current light (the dialog's sweep never uses the HDR map, so neither does this
 //!   one) and the resolved material sized by the stone width ([`tilt_material_spec`]; the
 //!   desktop sizes it with `material_for_stone`) -- the dialog states that inclusions, c-axis
-//!   orientation, edge rounding and the frosted girdle are not applied to it, so the
-//!   request's other overrides are dropped here.
+//!   orientation and edge rounding are not applied to it, so the request's other overrides are
+//!   dropped here. The facet finishes are applied: the request carries them
+//!   ([`TiltParams::finishes`], the frosted girdle and the design's frosted facets) and the
+//!   sweep scores the frosted stone, as the desktop dialog now does (a frosted facet scatters
+//!   light, so the curves of a frosted design are not its polished ones). The current-view
+//!   metrics still score every facet polished.
 //!
 //! Neither request carries a design: the caller sends the stone's planes and the settings
 //! it renders with (see [`MetricsParams::from_scene`]), and the message's `design_toml` is
 //! ignored (send an empty string).
+//!
+//! # Concave stones
+//!
+//! Like the desktop, both are scored on the stone WITH its cutting tools
+//! (`StoneGeometry { planes, tools }`, tools from `Design::tools_for_scoring`). The tools
+//! travel with the request ([`SolveRequest::MetricsWithTools`] / `TiltWithTools`, built by
+//! [`SolveRequest::metrics`] / [`SolveRequest::tilt`], which keep the planar variants -- and
+//! so the planar bytes -- when there are no tools). [`MetricsJob`] / [`TiltJob`] pair the
+//! params with the tools for the page's "are these the numbers on screen" comparison.
 
 use std::sync::atomic::Ordering;
 
 use indicatrix::{
     color::metrics::{
-        AxisProfile, GemOpticalMetrics, MetricsCache, PROFILE_AZIMUTHS_DEG, SweepProgress,
-        compute_or_reuse_pose_metrics, evaluate_all_axes_profiles_stepped, total_evaluations,
+        AxisProfile, FinishedStone, GemOpticalMetrics, MetricsCache, PROFILE_AZIMUTHS_DEG,
+        SweepProgress, compute_or_reuse_pose_metrics_geom,
+        evaluate_all_axes_profiles_stepped_finished_threaded, total_evaluations,
     },
-    geometry::plane::GpuFacetPlane,
+    geometry::{
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
     optics::raytracer::{EnvironmentSource, LightingPreset},
     renderer::env_map::EnvironmentMap,
 };
 use serde::{Deserialize, Serialize};
 
-use super::{SolveHooks, SolveResponse};
+use super::{SolveHooks, SolveRequest, SolveResponse};
 use crate::scene::{
-    MaterialOverridesSpec, MaterialSpec, PlaneData, SceneSpec, resolve_scene_material,
+    FinishSpec, MaterialOverridesSpec, MaterialSpec, PlaneData, SceneSpec, resolve_finishes,
+    resolve_scene_material, validate_tools,
 };
 
+#[cfg(test)]
+mod concave_tests;
 #[cfg(test)]
 mod tests;
 
@@ -73,7 +93,8 @@ pub struct MetricsParams {
 impl MetricsParams {
     /// The metrics inputs of the frame `spec` renders: its planes, material, camera pose,
     /// lighting preset, light direction and HDR map. Two scenes that differ only in
-    /// exposure, size, bounces or finishes give equal params, so those changes recompute
+    /// exposure, size, bounces or finishes give equal params (the metrics score every facet
+    /// polished; the tilt sweep, [`TiltParams`], does take the finishes), so those changes recompute
     /// nothing; another map (or none) gives different ones, which is what makes a new
     /// map recompute. The preset and light stay in the params under a map too: they are
     /// what a Worker without that map scores under.
@@ -175,7 +196,7 @@ impl MetricsResultData {
     }
 }
 
-/// What a tilt-sweep job needs: the stone, the material and the light.
+/// What a tilt-sweep job needs: the stone, its facet finishes, the material and the light.
 ///
 /// The camera is not an input (the sweep moves it itself) and the material's render-time
 /// overrides are ignored (see the module doc comment), except the stone size.
@@ -192,6 +213,9 @@ pub struct TiltParams {
     pub light_yaw: f32,
     /// Light pitch in radians.
     pub light_pitch: f32,
+    /// The facet finishes the sweep scores (appended last, protocol 21): a frosted facet
+    /// scatters light, so the curves of a frosted stone are not its polished ones.
+    pub finishes: FinishSpec,
 }
 
 impl TiltParams {
@@ -199,7 +223,8 @@ impl TiltParams {
     /// left at their defaults, since the sweep ignores them, except the stone size
     /// ([`tilt_material_spec`]): two scenes that differ only in the inclusions, axis or edge
     /// rounding give equal params, so changing those does not stale the curves, while a new
-    /// stone width (which changes the absorption the sweep scores) does.
+    /// stone width (which changes the absorption the sweep scores) does, and so does a change
+    /// of the facet finishes (the frosted-girdle setting, the design's frosted facets).
     #[must_use]
     pub fn from_scene(spec: &SceneSpec) -> Self {
         Self {
@@ -208,7 +233,64 @@ impl TiltParams {
             preset_index: spec.lighting.preset_index,
             light_yaw: spec.lighting.light_yaw,
             light_pitch: spec.lighting.light_pitch,
+            finishes: spec.finishes.clone(),
         }
+    }
+}
+
+/// A current-view metrics job for a stone with its concave tools.
+///
+/// It is the wire [`MetricsParams`] plus the tools. The page keys "are these the numbers on
+/// screen" on the whole job, so a concave edit that changes only the tools recomputes the HUD.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricsJob {
+    /// The stone's planes, material, pose and HDR map.
+    pub params: MetricsParams,
+    /// The stone's resolved cutting tools in cutting order (empty for a flat stone).
+    pub tools: Vec<ToolPrimitive>,
+}
+
+impl MetricsJob {
+    /// The job of the frame `spec` renders, cut by `tools`.
+    #[must_use]
+    pub fn from_scene(spec: &SceneSpec, tools: &[ToolPrimitive]) -> Self {
+        Self {
+            params: MetricsParams::from_scene(spec),
+            tools: tools.to_vec(),
+        }
+    }
+
+    /// The request that carries this job ([`SolveRequest::metrics`]).
+    #[must_use]
+    pub fn request(&self) -> SolveRequest {
+        SolveRequest::metrics(self.params.clone(), &self.tools)
+    }
+}
+
+/// A tilt-sweep job for a stone with its concave tools: the wire [`TiltParams`] plus the
+/// tools. The Tilt dialog marks its curves stale when either changes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TiltJob {
+    /// The stone's planes, material and light.
+    pub params: TiltParams,
+    /// The stone's resolved cutting tools in cutting order (empty for a flat stone).
+    pub tools: Vec<ToolPrimitive>,
+}
+
+impl TiltJob {
+    /// The job of the frame `spec` renders, cut by `tools`.
+    #[must_use]
+    pub fn from_scene(spec: &SceneSpec, tools: &[ToolPrimitive]) -> Self {
+        Self {
+            params: TiltParams::from_scene(spec),
+            tools: tools.to_vec(),
+        }
+    }
+
+    /// The request that carries this job ([`SolveRequest::tilt`]).
+    #[must_use]
+    pub fn request(&self) -> SolveRequest {
+        SolveRequest::tilt(self.params.clone(), &self.tools)
     }
 }
 
@@ -298,6 +380,24 @@ pub fn run_metrics_with_map(
     params: &MetricsParams,
     held: Option<(u64, &EnvironmentMap)>,
 ) -> SolveResponse {
+    run_metrics_with_geometry(cache, params, held, &[])
+}
+
+/// The metrics of the stone with its concave `tools` (the desktop's `display_geometry`
+/// stone).
+///
+/// With no tools this is [`run_metrics_with_map`]. A tool list that does not validate (see
+/// `validate_tools`) is an [`SolveResponse::AnalysisFailed`], never a flat answer.
+#[must_use]
+pub fn run_metrics_with_geometry(
+    cache: &mut Option<MetricsCache>,
+    params: &MetricsParams,
+    held: Option<(u64, &EnvironmentMap)>,
+    tools: &[ToolPrimitive],
+) -> SolveResponse {
+    if let Err(message) = validate_tools(tools) {
+        return failed(message);
+    }
     let planes = match stone_planes(&params.planes) {
         Ok(planes) => planes,
         Err(message) => return failed(message),
@@ -315,9 +415,12 @@ pub fn run_metrics_with_map(
             ScoredUnder::Preset(params.preset_index),
         ),
     };
-    let metrics = compute_or_reuse_pose_metrics(
+    let metrics = compute_or_reuse_pose_metrics_geom(
         cache,
-        &planes,
+        StoneGeometry {
+            planes: &planes,
+            tools,
+        },
         &material,
         params.yaw,
         params.pitch,
@@ -348,6 +451,20 @@ pub fn tilt_material_spec(material: &MaterialSpec) -> MaterialSpec {
 /// right after) ends the sweep with [`SolveResponse::Cancelled`].
 #[must_use]
 pub fn run_tilt(params: &TiltParams, hooks: &SolveHooks<'_>) -> SolveResponse {
+    run_tilt_with_geometry(params, hooks, &[], None)
+}
+
+/// Geometry-aware tilt with an explicit worker cap for externally governed jobs.
+#[must_use]
+pub fn run_tilt_with_geometry(
+    params: &TiltParams,
+    hooks: &SolveHooks<'_>,
+    tools: &[ToolPrimitive],
+    threads: Option<usize>,
+) -> SolveResponse {
+    if let Err(message) = validate_tools(tools) {
+        return failed(message);
+    }
     let planes = match stone_planes(&params.planes) {
         Ok(planes) => planes,
         Err(message) => return failed(message),
@@ -357,10 +474,23 @@ pub fn run_tilt(params: &TiltParams, hooks: &SolveHooks<'_>) -> SolveResponse {
         Ok(material) => material,
         Err(error) => return failed(error.to_string()),
     };
-    let swept = evaluate_all_axes_profiles_stepped(
-        &planes,
+    // The finishes the render of this stone uses (empty for an all-polished one, which is the
+    // plain sweep bit for bit); a list longer than the planes is a failed request.
+    let finishes = match resolve_finishes(&params.finishes, &planes) {
+        Ok(finishes) => finishes,
+        Err(error) => return failed(error.to_string()),
+    };
+    let swept = evaluate_all_axes_profiles_stepped_finished_threaded(
+        FinishedStone::new(
+            StoneGeometry {
+                planes: &planes,
+                tools,
+            },
+            &finishes,
+        ),
         &material,
         job_environment(params.preset_index, params.light_yaw, params.light_pitch),
+        threads,
         &mut |progress| {
             (hooks.on_sweep)(progress);
             !hooks.cancel.load(Ordering::Relaxed)

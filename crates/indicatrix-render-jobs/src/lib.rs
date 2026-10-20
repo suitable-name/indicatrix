@@ -31,7 +31,7 @@ pub mod state;
 pub use codec::{JobFileError, from_text, to_text};
 pub use job::{
     ComputeChoice, JobColorSpace, JobKind, LocalEngines, RenderJobFile, StillJob, TiltVideoJob,
-    TransferChoice,
+    TransferChoice, format_for_engine,
 };
 pub use run::{FailureKind, JobOutcome, JobProgress, JobSink};
 pub use state::JobState;

@@ -7,8 +7,8 @@
 
 use indicatrix_ai::{
     env::{
-        ContinuousTierAction, GlobalFeature, MEAN_BOUND, N_COMPONENTS, TierFeature,
-        WEIGHT_FRACTION_INDEX,
+        ContinuousTierAction, GlobalFeature, MAX_SAFE_CANDIDATE_ANGLE_DEG, MEAN_BOUND,
+        MOBILITY_INDEX, N_COMPONENTS, TierFeature, WEIGHT_FRACTION_INDEX,
     },
     model::{
         GaussianPolicy, GemstoneSetAttentionNetwork, LOG_STD_MAX, LOG_STD_MIN, Linear, MlpBlock,
@@ -19,24 +19,26 @@ use indicatrix_ai::{
 const D_TIER: usize = TierFeature::FEATURE_DIM;
 const D_GLOBAL: usize = GlobalFeature::FEATURE_DIM;
 
-/// Slack on the `+-MEAN_BOUND` bound of the composed mean: the division by `g_max + SLOPE_EPS`
-/// can land one `f32` rounding step above the exact quotient.
+/// Slack on the `+-MEAN_BOUND` bound of the composed mean for `f32` rounding.
 const MEAN_SLACK: f32 = 1e-5;
 
-/// A global token whose weight fractions (the last four entries) are `fractions`.
+/// A global token whose weight fractions (the last seven entries) are `fractions`.
 fn global_token_with(fractions: [f32; N_COMPONENTS]) -> Vec<f32> {
     let mut token = vec![0.3; D_GLOBAL];
     token[WEIGHT_FRACTION_INDEX..WEIGHT_FRACTION_INDEX + N_COMPONENTS].copy_from_slice(&fractions);
     token
 }
 
-/// `n` tier tokens that differ from tier to tier.
+/// `n` mobile tier tokens that differ from tier to tier. The mobility flag is set: an immobile
+/// tier takes part in attention but gets no mean, so the composition would read zero there.
 fn varied_tier_tokens(n: usize) -> Vec<Vec<f32>> {
     (0..n)
         .map(|i| {
-            (0..D_TIER)
+            let mut token: Vec<f32> = (0..D_TIER)
                 .map(|j| ((i * D_TIER + j) as f32 * 0.37).sin())
-                .collect()
+                .collect();
+            token[MOBILITY_INDEX] = 1.0;
+            token
         })
         .collect()
 }
@@ -57,6 +59,19 @@ fn tier(angle_deg: f32, block_type: f32, pinned: bool) -> TierFeature {
         index_frac: 0.0,
         azimuth_sin: 0.0,
         azimuth_cos: 1.0,
+        is_mobile: if pinned { 0.0 } else { 1.0 },
+        orbit_sin_2: 0.0,
+        orbit_cos_2: 1.0,
+        orbit_sin_4: 0.0,
+        orbit_cos_4: 1.0,
+        live_area_fraction: 1.0,
+        live_centroid_x: 0.0,
+        live_centroid_y: 0.0,
+        live_centroid_z: 0.0,
+        geometry_available: 1.0,
+        constraint_kind: 0.0,
+        relation_driven: 0.0,
+        target_driven: 0.0,
     }
 }
 
@@ -295,15 +310,17 @@ fn test_new_rejects_invalid_dimensions() {
 }
 
 #[test]
-fn test_kinematic_projection_pins_crown_and_pavilion_use_signed_convention() {
+fn test_kinematic_projection_pins_tiers_keeps_signs_and_leaves_the_critical_angle_to_the_score() {
     let crit_angle = 39.0f32;
     let tiers = [
         tier(0.0, 1.0, true),     // pinned table
         tier(35.0, 1.0, false),   // movable crown
-        tier(-40.2, -1.0, false), // pavilion just above critical + margin (40.0), stored negative
+        tier(-40.2, -1.0, false), // pavilion just above the critical angle, stored negative
     ];
 
-    // delta[2] = +0.6 would make the pavilion -39.6 (|a| = 39.6 < 40.0): shallower than the safety floor.
+    // delta[2] = +0.6 makes the pavilion -39.6, shallower than the critical angle plus the
+    // one-degree margin. The margin is context for the policy, not a kinematic bound: whether a
+    // shallow pavilion pays off is the material score's verdict, so the step passes through.
     let mut action = ContinuousTierAction::new(vec![0.5, 0.4, 0.6]);
     GemstoneSetAttentionNetwork::project_actions(&mut action, &tiers, crit_angle, 0.75);
 
@@ -312,17 +329,17 @@ fn test_kinematic_projection_pins_crown_and_pavilion_use_signed_convention() {
         (action.deltas_deg[1] - 0.4).abs() < 1e-9,
         "valid crown step passes through"
     );
-    let resulting = f64::from(-40.2f32) + action.deltas_deg[2];
     assert!(
-        resulting.abs() >= f64::from(crit_angle) + 1.0 - 1e-9,
-        "|pavilion| = {}",
-        resulting.abs()
+        (action.deltas_deg[2] - 0.6).abs() < 1e-12,
+        "the pavilion step passes through, got {}",
+        action.deltas_deg[2]
     );
+    let resulting = f64::from(-40.2f32) + action.deltas_deg[2];
     assert!(resulting < 0.0, "pavilion sign must never flip");
     assert!(
-        (action.deltas_deg[2] - 0.2).abs() < 1e-5,
-        "clamped to the floor, got {}",
-        action.deltas_deg[2]
+        resulting.abs() < f64::from(crit_angle) + 1.0,
+        "|pavilion| = {} is inside the margin: the projection does not enforce it",
+        resulting.abs()
     );
 }
 
@@ -347,16 +364,21 @@ fn test_projection_does_not_force_pavilion_to_max_step() {
 
 #[test]
 fn test_projection_clamps_to_upper_bounds_and_step_limit() {
-    // Deep pavilion at -84.8 asked to go deeper by 0.75: capped at -85.
+    // The shared safe maximum (cut-core's `MAX_SAFE_CANDIDATE_ANGLE_DEG`, 89.5 degrees) bounds
+    // both blocks: a deep pavilion 0.3 degrees short of it asked to go 0.75 deeper is capped
+    // there, as is a crown 0.2 degrees short of it.
+    let max = MAX_SAFE_CANDIDATE_ANGLE_DEG;
+    let pavilion = -(max - 0.3) as f32;
+    let crown = (max - 0.2) as f32;
     let tiers = [
-        tier(-84.8, -1.0, false),
-        tier(79.9, 1.0, false),
+        tier(pavilion, -1.0, false),
+        tier(crown, 1.0, false),
         tier(20.0, 1.0, false),
     ];
     let mut action = ContinuousTierAction::new(vec![-5.0, 5.0, -5.0]);
     GemstoneSetAttentionNetwork::project_actions(&mut action, &tiers, 39.0, 0.75);
-    assert!((-84.8 + action.deltas_deg[0] - -85.0f64).abs() < 1e-4);
-    assert!((79.9 + action.deltas_deg[1] - 80.0f64).abs() < 1e-4);
+    assert!((f64::from(pavilion) + action.deltas_deg[0] + max).abs() < 1e-4);
+    assert!((f64::from(crown) + action.deltas_deg[1] - max).abs() < 1e-4);
     // Large crown request is limited to one step.
     assert!((action.deltas_deg[2] + 0.75).abs() < 1e-12);
 }
@@ -373,7 +395,7 @@ fn test_projection_zeroes_non_finite_and_unmatched_deltas() {
 fn test_forward_full_exposes_the_sensitivities_the_mean_is_composed_from() {
     let net = small_net();
     let tokens = varied_tier_tokens(6);
-    let fractions = [0.4, 0.3, 0.2, 0.1];
+    let fractions = [0.4, 0.3, 0.2, 0.1, 0.0, 0.0, 0.0];
     let global = global_token_with(fractions);
 
     let full = net.forward_full(&tokens, &global).expect("valid tokens");
@@ -398,15 +420,18 @@ fn test_the_weight_fractions_in_the_global_token_steer_the_mean() {
     let net = small_net();
     let tokens = varied_tier_tokens(6);
     let pure = [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
     ];
     let mut means = Vec::new();
     for fractions in pure
         .into_iter()
-        .chain([[1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0]])
+        .chain([[1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0, 0.0, 0.0, 0.0]])
     {
         let full = net
             .forward_full(&tokens, &global_token_with(fractions))
@@ -421,9 +446,9 @@ fn test_the_weight_fractions_in_the_global_token_steer_the_mean() {
         assert!((peak - MEAN_BOUND).abs() < 1e-3, "{fractions:?}: {peak}");
         means.push(full.policy.mean);
     }
-    // One network, four weightings, four different directions.
-    for i in 0..4 {
-        for j in (i + 1)..4 {
+    // One network, seven one-hot weightings, seven different directions.
+    for i in 0..7 {
+        for j in (i + 1)..7 {
             assert_ne!(means[i], means[j], "weightings {i} and {j}");
         }
     }
@@ -435,7 +460,10 @@ fn test_a_network_with_no_sensitivities_has_a_zero_mean() {
     net.sens_head.weights.fill(0.0);
     net.sens_head.biases.fill(0.0);
     let (policy, value) = net
-        .forward(&varied_tier_tokens(5), &global_token_with([0.25; 4]))
+        .forward(
+            &varied_tier_tokens(5),
+            &global_token_with([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0, 0.0, 0.0, 0.0]),
+        )
         .expect("valid tokens");
     assert_eq!(policy.mean, vec![0.0; 5]);
     assert!(value.is_finite());
@@ -443,15 +471,16 @@ fn test_a_network_with_no_sensitivities_has_a_zero_mean() {
 
 #[test]
 fn test_a_constant_sensitivity_network_turns_every_tier_one_way() {
-    // Zero weights and bias `[b, 0, 0, 0]`: every tier has the windowing sensitivity `b`.
+    // Zero weights and bias `[b, 0, ...]`: every tier has the windowing sensitivity `b`.
     let constant = |bias: f32| {
         let mut net = small_net();
         net.sens_head.weights.fill(0.0);
-        net.sens_head.biases.copy_from_slice(&[bias, 0.0, 0.0, 0.0]);
+        net.sens_head.biases.fill(0.0);
+        net.sens_head.biases[0] = bias;
         net
     };
     let tokens = varied_tier_tokens(4);
-    let windowing_only = global_token_with([1.0, 0.0, 0.0, 0.0]);
+    let windowing_only = global_token_with([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
 
     // A positive windowing slope means "lower the angle": every tier at -MEAN_BOUND.
     let (down, _) = constant(0.7)
@@ -469,7 +498,10 @@ fn test_a_constant_sensitivity_network_turns_every_tier_one_way() {
     }
     // An objective that ignores windowing has nothing to descend.
     let (silent, _) = constant(0.7)
-        .forward(&tokens, &global_token_with([0.0, 1.0, 0.0, 0.0]))
+        .forward(
+            &tokens,
+            &global_token_with([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        )
         .expect("valid tokens");
     assert_eq!(silent.mean, vec![0.0; 4]);
 

@@ -323,7 +323,7 @@ fn run_on(
     }
     // Zoning guard: see `persistent::dispatch_render`.
     if crate::bridge::remote::zoned_scene_refusal(
-        request.scene().material.zoning.is_some(),
+        !request.scene().engine.is_ray() && request.scene().material.zoning.is_some(),
         welcome.zoning,
     )
     .is_err()

@@ -266,7 +266,7 @@ pub fn classify_box_in(
 pub struct BuildClipParams<'a> {
     /// The unit grid over the rough.
     pub grid: &'a ShapedGrid,
-    /// Candidate designs.
+    /// Candidate Designs.
     pub front: &'a [CandidateDesign],
     /// Non-bounding-box cut/prism/pebble planes.
     pub non_box_planes: &'a [(DVec3, f64)],

@@ -106,24 +106,26 @@ export component RetargetDialog inherits Rectangle {
 
     // A proposal exists and nothing is busy.
     property <bool> has_proposal: RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0 && RetargetModel.solve_error == "" && !RetargetModel.is_busy;
-    // `validity_state` (see `RetargetModel`): 1 = still checking, 3 = not valid. Compare
-    // waits for the check (its candidate needs the checked facet heights) but still
-    // works on an invalid change, so the cutter can see what goes wrong; Apply needs a
-    // finished check that did not fail. In Optimize mode there is nothing to compare or
-    // apply until the cutter has picked one of the options a search found: the table lists
-    // only the Shift angles the search starts from.
+    // `validity_state` (see `RetargetModel`): 1 = still checking, 3 = not valid, 4 = could not
+    // be checked. Compare waits for the check (its candidate needs the checked facet heights)
+    // but still works on an invalid change, so the cutter can see what goes wrong; Apply needs
+    // a finished check that came out valid (an unchecked one has no candidate stone to apply,
+    // and the engine's gate refuses it, so the button is dimmed too). In Optimize mode there
+    // is nothing to compare or apply until the cutter has picked one of the options a search
+    // found: the table lists only the Shift angles the search starts from.
     property <bool> can_compare: root.has_proposal && RetargetModel.validity_state != 1 && (RetargetModel.mode_index == 0 || RetargetModel.selected_candidate >= 0);
     // Read by `global_dialogs.slint`'s Return handler, so Return applies exactly when the
     // Apply button is enabled and never reaches `RetargetModel.apply()` while it is dimmed.
-    out property <bool> can_apply: root.can_compare && RetargetModel.validity_state != 3;
+    out property <bool> can_apply: root.can_compare && RetargetModel.validity_state != 3 && RetargetModel.validity_state != 4;
     // Why Apply is not available yet, in plain words (the tooltip of the dimmed button).
     property <string> apply_hint: root.can_apply
         ? "Apply the new angles, the adjusted facet heights and the new material as one edit you can undo, then solve the design again."
         : (RetargetModel.is_busy ? "Wait for the search to finish, or cancel it."
         : (RetargetModel.validity_state == 1 ? "Wait: the change is still being checked."
         : (RetargetModel.validity_state == 3 ? "The change is not valid, so it cannot be applied. The reasons are listed above."
+        : (RetargetModel.validity_state == 4 ? "The change could not be checked, so it cannot be applied."
         : (RetargetModel.mode_index == 1 ? "Search, then pick one of the options first."
-        : "There is no change to apply."))));
+        : "There is no change to apply.")))));
     // A hidden (Simple mode) setting is off its default.
     property <bool> advanced_note_visible: !GuideModel.shows_advanced() && RetargetModel.advanced_in_use(RetargetModel.crown_fraction, RetargetModel.scale_crown_by_ratio, RetargetModel.objective_index, RetargetModel.range_index, RetargetModel.effort_index, RetargetModel.crown_follows_pavilion, RetargetModel.keep_look, RetargetModel.girdle_allowance);
 
@@ -402,7 +404,13 @@ export component RetargetDialog inherits Rectangle {
                                             current-index <=> RetargetModel.target_material_index;
                                             enabled: !RetargetModel.is_busy;
                                             accessible-label: "Target Material";
-                                            selected(val) => { RetargetModel.proposal_changed(); }
+                                            // Picking a material drops a custom n_D: the field is an
+                                            // override, and a number left from the design's own
+                                            // override would otherwise beat the material picked.
+                                            selected(val) => {
+                                                RetargetModel.target_ri_override_text = "";
+                                                RetargetModel.proposal_changed();
+                                            }
                                         }
                                     }
                                     TipBox {

@@ -65,6 +65,7 @@ fn record() -> FullDiagramRecord {
         gem_file: Some("capps.gem".to_string()),
         shape_category: Some("5".to_string()),
         angle_settings: Vec::new(),
+        frosting: Vec::new(),
         attached_files: vec![
             AttachedFile {
                 name: "capps.asc".to_string(),

@@ -49,7 +49,8 @@ impl Design {
             // A non-finite angle/index/mast anywhere in the design -- surfaced
             // as a real error here too, never silently solved through.
             Err(
-                e @ (DesignSolveError::MissingAnchor(_)
+                e @ (DesignSolveError::Preservation(_)
+                | DesignSolveError::MissingAnchor(_)
                 | DesignSolveError::Target(_)
                 | DesignSolveError::Solve(SolveError::NonFiniteInput { .. })),
             ) => Err(e),
@@ -163,7 +164,8 @@ impl Design {
             }
             // See the matching arm on `Self::solve`.
             Err(
-                e @ (DesignSolveError::MissingAnchor(_)
+                e @ (DesignSolveError::Preservation(_)
+                | DesignSolveError::MissingAnchor(_)
                 | DesignSolveError::Target(_)
                 | DesignSolveError::Solve(SolveError::NonFiniteInput { .. })),
             ) => Err(e),

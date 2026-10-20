@@ -36,7 +36,13 @@ fn two_tier_design() -> Design {
 /// A hand-built analysis of a two-tier stone: a table that is alive and a crown main
 /// with eight live facets, a 2 % girdle and a 56 % table.
 fn good_analysis() -> StoneAnalysis {
+    let authored = two_tier_design();
+    let baseline =
+        indicatrix_cut_core::meet_preservation::MeetPreservationBaseline::capture(&authored)
+            .expect("the synthetic manufacturing metrics still need real geometry validation");
     StoneAnalysis {
+        preservation: Some(std::sync::Arc::new(baseline)),
+        authored: Some(std::sync::Arc::new(authored)),
         solved: Vec::new(),
         planes: Vec::new(),
         ranges: Vec::new(),
@@ -80,6 +86,38 @@ fn identical_stones_are_valid() {
     let original = good_analysis();
     let reasons = judge(&design, &original, &Ok(good_analysis()));
     assert_eq!(reasons, Vec::new());
+}
+
+#[test]
+fn judging_the_stone_alone_never_asks_for_the_original_meets() {
+    // An original analysed without a baseline (`analyze(.., false)`) cannot judge meets: the
+    // full gate says so, the stone-only gate (the verdict's Add a table) does not, and both
+    // still report a real stone fault.
+    let design = two_tier_design();
+    let original = StoneAnalysis {
+        preservation: None,
+        ..good_analysis()
+    };
+    let missing = judge(&design, &original, &Ok(good_analysis()));
+    assert!(
+        matches!(missing.as_slice(), [InvalidReason::Preservation(_)]),
+        "{missing:?}"
+    );
+    assert_eq!(
+        judge_stone(&design, &original, &Ok(good_analysis())),
+        Vec::new()
+    );
+
+    let mut candidate = good_analysis();
+    candidate.girdle_percent = None;
+    assert_eq!(
+        judge_stone(&design, &original, &Ok(candidate)),
+        vec![InvalidReason::GirdleGone]
+    );
+    assert_eq!(
+        judge_stone(&design, &original, &Err(InvalidReason::NotClosed)),
+        vec![InvalidReason::NotClosed]
+    );
 }
 
 #[test]

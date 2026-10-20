@@ -19,7 +19,7 @@ use glam::Vec3;
 use indicatrix::{
     geometry::tool::StoneGeometry,
     optics::raytracer::{Camera, DEFAULT_FOV_DEG, EnvironmentSource},
-    renderer::gpu_backend::{GpuBackend, GpuSceneRef, scene_routes_to_gpu},
+    renderer::gpu_backend::{GpuBackend, GpuSceneRef, scene_routes_to_gpu_with_tools},
 };
 use lanes::{RenderJob, render_on_ctx};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -31,6 +31,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// `GpuSceneRef` wiring must never drift between the two, or local and remote (or a
 /// local-share render and `render_accumulation`'s own local lane) would light the stone
 /// differently.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the scoped context borrows the frozen scene, pose and both independent GPU backends"
+)]
 fn with_export_ctx<R>(
     scene: &SceneSnapshot,
     cam_yaw: f32,
@@ -38,7 +42,9 @@ fn with_export_ctx<R>(
     width: u32,
     height: u32,
     gpu: &GpuBackend,
-    f: impl FnOnce(&ExportCtx<'_>) -> R,
+    ray_gpu: Option<&indicatrix::renderer::gpu_backend::whitted::WhittedGpuBackend>,
+    cancel: &AtomicBool,
+    f: impl FnOnce(Result<&ExportCtx<'_>, String>) -> R,
 ) -> R {
     let camera = Camera::new(cam_yaw, cam_pitch, scene.distance, DEFAULT_FOV_DEG);
 
@@ -77,12 +83,14 @@ fn with_export_ctx<R>(
     // sweeping many frames retries the GPU on every frame even after a panic on an
     // earlier one, rather than writing it off for the rest of the sweep.
     let gpu_retired = AtomicBool::new(false);
-    // A stone with tools is the CPU tracer's alone (the WGSL kernels know nothing of
-    // them): swapping in a backend with no device makes every GPU attempt below decline,
-    // which each batch already answers by tracing the full share on the CPU, exactly as
-    // a build without the `gpu` feature does.
+    // A scene the GPU cannot trace (fluorescence, a UV lamp, more tools than the kernels
+    // trace; a concave stone within the limit IS traced, with its tools, by every
+    // `try_accumulate_geom` call in `batch`) is the CPU tracer's alone: swapping in a backend
+    // with no device makes every GPU attempt below decline, which each batch already answers
+    // by tracing the full share on the CPU, exactly as a build without the `gpu` feature
+    // does.
     let no_gpu = GpuBackend::disabled();
-    let gpu = if scene_routes_to_gpu(
+    let gpu = if scene_routes_to_gpu_with_tools(
         &scene.material,
         StoneGeometry {
             planes: &scene.active_planes,
@@ -95,6 +103,39 @@ fn with_export_ctx<R>(
     } else {
         &no_gpu
     };
+    let ray_frame = indicatrix::renderer::frame_scene::FrameScene {
+        camera: &camera,
+        width,
+        height,
+        planes: &scene.active_planes,
+        facet_finishes: &scene.facet_finishes,
+        material: &scene.material,
+        max_bounces: scene.max_bounces,
+        environment,
+    };
+    let ray_prep = if scene.engine.is_ray() {
+        match indicatrix::renderer::whitted::WhittedPrep::new(
+            &ray_frame,
+            &scene.fluorescence,
+            scene.engine.ray,
+        ) {
+            Ok(prep) => Some(prep),
+            Err(reason) => return f(Err(reason.to_string())),
+        }
+    } else {
+        None
+    };
+    let ray_soa = ray_prep
+        .as_ref()
+        .map(|_| indicatrix::optics::raytracer::build_plane_soa(&scene.active_planes));
+    // The frozen frame owns these uploads until all local/remote claims finish.
+    // A decline chooses CPU for this frame; the next frame may recover the backend.
+    let ray_uploaded = ray_gpu.zip(ray_prep.as_ref()).and_then(|(gpu, prep)| {
+        gpu.prepare_cancellable(&ray_frame, &scene.tools, prep, &|| {
+            cancel.load(Ordering::Acquire)
+        })
+        .ok()
+    });
     let ctx = ExportCtx {
         width,
         height,
@@ -103,8 +144,10 @@ fn with_export_ctx<R>(
         gpu,
         gpu_scene: &gpu_scene,
         gpu_retired: &gpu_retired,
+        ray: ray_prep.as_ref().zip(ray_soa.as_ref()),
+        ray_gpu: ray_gpu.zip(ray_uploaded.as_ref()),
     };
-    f(&ctx)
+    f(Ok(&ctx))
 }
 
 /// Renders `params.samples_per_pixel` samples per pixel of `scene` from the camera pose
@@ -178,7 +221,7 @@ pub fn render_accumulation(
         width,
         height,
         samples_per_pixel,
-        max_bounces: _,
+        ..
     } = params;
     let job = RenderJob {
         scene,
@@ -192,9 +235,40 @@ pub fn render_accumulation(
         cancel,
     };
 
-    let rendered = with_export_ctx(scene, cam_yaw, cam_pitch, width, height, gpu, |ctx| {
-        render_on_ctx(ctx, &job, local_compute, carry, &mut report_progress)
-    });
+    if scene.engine.is_ray() && cancel.load(Ordering::Acquire) {
+        return AccumulationOutcome::Cancelled;
+    }
+    let ray_gpu = if scene.engine.is_ray()
+        && local_compute != LocalComputeTarget::Cpu
+        && compute_target != ComputeTarget::RemoteOnly
+    {
+        Some(std::sync::Arc::clone(carry.ray_gpu.get_or_insert_with(
+            || {
+                std::sync::Arc::new(
+                    indicatrix::renderer::gpu_backend::whitted::WhittedGpuBackend::acquire(),
+                )
+            },
+        )))
+    } else {
+        None
+    };
+    let rendered = with_export_ctx(
+        scene,
+        cam_yaw,
+        cam_pitch,
+        width,
+        height,
+        gpu,
+        ray_gpu.as_deref(),
+        cancel,
+        |ctx| {
+            if scene.engine.is_ray() && cancel.load(Ordering::Acquire) {
+                return Err(AccumulationOutcome::Cancelled);
+            }
+            let ctx = ctx.map_err(AccumulationOutcome::Failed)?;
+            render_on_ctx(ctx, &job, local_compute, carry, &mut report_progress)
+        },
+    );
     match rendered {
         Ok(done) => AccumulationOutcome::Completed(done),
         Err(early) => early,
@@ -251,51 +325,152 @@ pub(in crate::bridge::export_thread) fn render_local_share(
     let (cam_yaw, cam_pitch) = pose;
     let ExportParams { width, height, .. } = params;
 
-    with_export_ctx(scene, cam_yaw, cam_pitch, width, height, gpu, |ctx| {
-        let mut accum = vec![Vec3::ZERO; (width as usize) * (height as usize)];
-        let mut gpu_accum = vec![Vec3::ZERO; accum.len()];
-        // Absolute cursor for the calibration probe (if any) -- starts at `first`, the
-        // reserved tail's own first absolute sample, exactly as `render_accumulation`'s
-        // own `samples_done` starts at `0` (its own range's first absolute sample).
-        let mut next = first;
-        let mut gpu_frac =
-            if local_compute == LocalComputeTarget::CpuGpu && samples >= HYBRID_MIN_SPP {
+    if scene.engine.is_ray() && stop.load(Ordering::Acquire) {
+        return None;
+    }
+    let ray_gpu = (scene.engine.is_ray() && local_compute != LocalComputeTarget::Cpu)
+        .then(indicatrix::renderer::gpu_backend::whitted::WhittedGpuBackend::acquire);
+    with_export_ctx(
+        scene,
+        cam_yaw,
+        cam_pitch,
+        width,
+        height,
+        gpu,
+        ray_gpu.as_ref(),
+        stop,
+        |ctx| {
+            if scene.engine.is_ray() && stop.load(Ordering::Acquire) {
+                return None;
+            }
+            let ctx = ctx.ok()?;
+            let mut accum = vec![Vec3::ZERO; (width as usize) * (height as usize)];
+            let mut gpu_accum = vec![Vec3::ZERO; accum.len()];
+            // Absolute cursor for the calibration probe (if any) -- starts at `first`, the
+            // reserved tail's own first absolute sample, exactly as `render_accumulation`'s
+            // own `samples_done` starts at `0` (its own range's first absolute sample).
+            let mut next = first;
+            let mut gpu_frac = if !scene.engine.is_ray()
+                && local_compute == LocalComputeTarget::CpuGpu
+                && samples >= HYBRID_MIN_SPP
+            {
                 hybrid_frac
                     .or_else(|| calibrate_split(ctx, &mut next, &mut accum, &mut gpu_accum, stop))
             } else {
                 None
             };
 
-        let cursor = SampleCursor::new(next, first + samples);
-        // This render has no remote lane of its own to wait on -- an already-`true`
-        // "remote lane done" flag collapses `run_local_batches`' stop condition to
-        // "stop once the cursor is empty", the same single-engine convention
-        // `render_accumulation`'s own no-remote-lane branch uses.
-        let no_remote = AtomicBool::new(true);
-        let stopped = run_local_batches(
-            ctx,
-            &cursor,
-            local_chunk_size(samples),
-            &no_remote,
-            &mut gpu_frac,
-            &mut accum,
-            &mut gpu_accum,
-            stop,
-            |traced, _accum, _gpu_accum| {
-                done.store((next - first) + traced, Ordering::Relaxed);
+            let cursor = SampleCursor::new(next, first + samples);
+            // This render has no remote lane of its own to wait on -- an already-`true`
+            // "remote lane done" flag collapses `run_local_batches`' stop condition to
+            // "stop once the cursor is empty", the same single-engine convention
+            // `render_accumulation`'s own no-remote-lane branch uses.
+            let no_remote = AtomicBool::new(true);
+            let stopped = run_local_batches(
+                ctx,
+                &cursor,
+                local_chunk_size(samples),
+                &no_remote,
+                &mut gpu_frac,
+                &mut accum,
+                &mut gpu_accum,
+                stop,
+                |traced, _accum, _gpu_accum| {
+                    done.store((next - first) + traced, Ordering::Relaxed);
+                },
+            );
+            *hybrid_frac = gpu_frac;
+            if stopped || stop.load(Ordering::Relaxed) {
+                return None;
+            }
+
+            // Merge the GPU's separate accumulation exactly once, mirroring
+            // `render_accumulation`'s own end-of-render merge. A pure-CPU share leaves
+            // `gpu_accum` all zero, making this a no-op.
+            for (px, gpu_px) in accum.iter_mut().zip(&gpu_accum) {
+                *px += *gpu_px;
+            }
+            Some(accum)
+        },
+    )
+}
+
+#[cfg(test)]
+mod prepared_ray_tests {
+    use super::*;
+    use crate::bridge::render_thread::RenderContext;
+    use indicatrix::renderer::{engine::RenderEngine, gpu_backend::whitted::WhittedGpuBackend};
+    use std::sync::Mutex;
+
+    #[test]
+    fn a_declined_frame_upload_preserves_cpu_claims_and_cancelled_output() {
+        let mut scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default())).unwrap();
+        scene.engine.engine = RenderEngine::RayTraced;
+        scene.engine.ray.aa_taps = 4;
+        let gpu = GpuBackend::disabled();
+        let ray_gpu = WhittedGpuBackend::disabled();
+        let cancel = AtomicBool::new(false);
+        let mut cpu = vec![Vec3::ZERO; 64];
+        with_export_ctx(
+            &scene,
+            scene.yaw,
+            scene.pitch,
+            8,
+            8,
+            &gpu,
+            None,
+            &cancel,
+            |ctx| {
+                assert!(!super::super::export_ray::accumulate(
+                    ctx.unwrap(),
+                    0,
+                    4,
+                    &mut cpu,
+                    &cancel
+                ));
             },
         );
-        *hybrid_frac = gpu_frac;
-        if stopped || stop.load(Ordering::Relaxed) {
-            return None;
-        }
-
-        // Merge the GPU's separate accumulation exactly once, mirroring
-        // `render_accumulation`'s own end-of-render merge. A pure-CPU share leaves
-        // `gpu_accum` all zero, making this a no-op.
-        for (px, gpu_px) in accum.iter_mut().zip(&gpu_accum) {
-            *px += *gpu_px;
-        }
-        Some(accum)
-    })
+        with_export_ctx(
+            &scene,
+            scene.yaw,
+            scene.pitch,
+            8,
+            8,
+            &gpu,
+            Some(&ray_gpu),
+            &cancel,
+            |ctx| {
+                let ctx = ctx.unwrap();
+                assert!(
+                    ctx.ray_gpu.is_none(),
+                    "a disabled adapter declines the frame upload"
+                );
+                let mut actual = vec![Vec3::ZERO; 64];
+                assert!(!super::super::export_ray::accumulate(
+                    ctx,
+                    0,
+                    4,
+                    &mut actual,
+                    &cancel
+                ));
+                assert_eq!(
+                    actual, cpu,
+                    "upload decline retries the complete absolute tap claim"
+                );
+                cancel.store(true, Ordering::Release);
+                let before = actual.clone();
+                assert!(super::super::export_ray::accumulate(
+                    ctx,
+                    0,
+                    1,
+                    &mut actual,
+                    &cancel
+                ));
+                assert_eq!(
+                    actual, before,
+                    "cancellation commits no CPU fallback output"
+                );
+            },
+        );
+    }
 }

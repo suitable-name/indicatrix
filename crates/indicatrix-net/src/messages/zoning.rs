@@ -1,6 +1,6 @@
 //! The zoning wire extension (`render` feature only).
 //!
-//! Colour zones travel BESIDE the scene, never inside it, and the protocol version stays 24.
+//! Colour zones travel BESIDE the scene, never inside it, and need no protocol bump of their own.
 //!
 //! # Why a separate message
 //!
@@ -193,6 +193,10 @@ impl ZoningPayload {
     /// zones (nothing to send).
     #[must_use]
     pub fn for_scene(request_id: u32, scene: &SceneState) -> Option<Self> {
+        // This image engine intentionally uses the material's already-carried base color.
+        if scene.engine.is_ray() {
+            return None;
+        }
         scene.material.zoning.as_ref().map(|zoning| Self {
             request_id,
             materials: vec![ZonedMaterialEntry {
@@ -208,6 +212,7 @@ impl ZoningPayload {
     pub fn for_batch(request_id: u32, items: &[super::BatchItem]) -> Option<Self> {
         let mut materials: Vec<ZonedMaterialEntry> = items
             .iter()
+            .filter(|item| !item.scene.engine.is_ray())
             .filter_map(|item| {
                 item.scene
                     .material
@@ -425,6 +430,7 @@ mod tests {
             material = material.with_zoning(zoning);
         }
         SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 8,
             height: 8,
             yaw: 0.4,
@@ -444,6 +450,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 
@@ -525,7 +532,10 @@ mod tests {
             postcard::to_allocvec(&ClientMessage::Ping { nonce: 1 }).unwrap()[0],
             4
         );
-        assert_eq!(PROTOCOL_VERSION, 24, "zoning needs no protocol bump");
+        assert_eq!(
+            PROTOCOL_VERSION, 29,
+            "zoning itself needs no protocol bump; the pinned value moves with the other changes"
+        );
     }
 
     #[test]

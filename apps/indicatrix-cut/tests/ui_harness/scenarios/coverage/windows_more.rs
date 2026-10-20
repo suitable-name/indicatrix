@@ -27,8 +27,8 @@ use crate::support::{
 };
 use indicatrix_cut::{CompareMetricRow, CompareModel, RoughPlanModel, harness_support};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use slint_harness::{backend::wait_until_labeled, report::Report};
 use std::time::Duration;
+use uiprobe::{backend::wait_until_labeled, report::Report};
 
 /// The pieces of this file: one `overlay:more-*:<state>` piece per main-window state and one
 /// `window:<name>:<state>` piece per secondary-window state.

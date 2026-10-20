@@ -3,20 +3,22 @@
 //! The same flat solid raster the compare window and the Edit tab's Solid view use, at
 //! one fixed three-quarter pose so the pictures of different steps can be compared at a
 //! glance. The background is transparent: the tile the picture sits in follows the theme.
-//! A concave tool cut is not drawn (the picture is the planar facets only, like the
-//! compare window's).
+//! The stone is drawn with the cuts of its concave tiers (the grooves and dimples), the
+//! geometry the compare window draws ([`cut_geometry`]); a design without concave tiers
+//! draws exactly the planar picture it always did.
 
 use crate::gui::{
     render::camera_lighting::fit_distance_for_radius,
     solid_preview::{
+        cut_slider::cut_geometry,
         mesh_cache::MeshCache,
         raster::{SolidRasterizer, SolidStyle},
         to_pixel_buffer,
     },
 };
-use glam::Vec3;
 use indicatrix::optics::raytracer::{Camera, DEFAULT_FOV_DEG, DEFAULT_POSE};
-use indicatrix_editor::{HistorySnapshot, solve_policy::design_to_gpu_planes_from_solved};
+use indicatrix_editor::HistorySnapshot;
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 /// A finished picture's pixels, `Send` so they can cross back to the UI thread.
@@ -52,13 +54,30 @@ impl ThumbRenderer {
     /// Draws the solid the half-spaces `planes` (`n . x <= m`, the rough's own
     /// `preform_planes` first) bound, framed to fill an `edge` by `edge` picture. `None`
     /// when the planes do not close into a solid.
+    #[cfg(test)]
     pub(super) fn render_planes(
         &mut self,
-        planes: &[(Vec3, f32)],
+        planes: &[(glam::Vec3, f32)],
         preform_planes: usize,
         edge: u32,
     ) -> Option<Pixels> {
-        let prepared = self.cache.get_or_build(planes)?;
+        self.render_stone(
+            &StoneGeometryBuf::from_halfspaces(planes),
+            preform_planes,
+            edge,
+        )
+    }
+
+    /// Draws `stone` (its planes, the rough's own `preform_planes` first, and the concave
+    /// tools cut into them), framed to fill an `edge` by `edge` picture. `None` when the
+    /// stone does not close into a solid.
+    pub(super) fn render_stone(
+        &mut self,
+        stone: &StoneGeometryBuf,
+        preform_planes: usize,
+        edge: u32,
+    ) -> Option<Pixels> {
+        let prepared = self.cache.get_or_build_geometry(stone)?;
         let camera = Camera::new(
             DEFAULT_POSE.yaw,
             DEFAULT_POSE.pitch,
@@ -84,17 +103,17 @@ pub(super) fn render_step(
     let design = session.design_at(position).ok()?;
     let preform_planes = design.preform.planes().len();
     let solved = design.solve().ok()?;
-    let planes: Vec<(Vec3, f32)> = design_to_gpu_planes_from_solved(&design, &solved)
-        .iter()
-        .map(|plane| (Vec3::from(plane.normal), -plane.d))
-        .collect();
-    renderer.render_planes(&planes, preform_planes, edge)
+    // The finished stone with its concave tools; without concave tiers its planes are
+    // exactly `design_to_gpu_planes_from_solved`'s, so a planar picture is unchanged.
+    let stone = cut_geometry(&design, Some(&solved), None);
+    renderer.render_stone(&stone, preform_planes, edge)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix_cut_core::Edit;
+    use glam::Vec3;
+    use indicatrix_cut_core::{Design, Edit};
     use indicatrix_editor::EditorSession;
 
     /// The six half-spaces of the cube `|x|, |y|, |z| <= 1`.
@@ -153,6 +172,28 @@ mod tests {
         let small = renderer.render_planes(&cube(), 0, 24).unwrap();
         let large = renderer.render_planes(&cube(), 0, 96).unwrap();
         assert_eq!((small.width(), large.width()), (24, 96));
+    }
+
+    /// The picture of a concave design carries its tools' cuts: it is not the picture of
+    /// the same design with its concave tiers taken away.
+    #[test]
+    fn a_concave_step_is_drawn_with_its_tools() {
+        let concave = Design::concave_fixture();
+        let mut flat = concave.clone();
+        flat.concave_tiers.clear();
+        flat.concave_tier_ids.clear();
+        let picture_of = |design: Design| {
+            let session = EditorSession::with_history(design, indicatrix_cut_core::History::new());
+            let snapshot = session.history_snapshot();
+            let mut renderer = ThumbRenderer::default();
+            render_step(&mut renderer, &snapshot, 0, 128).expect("the stone draws")
+        };
+        let carved = picture_of(concave);
+        let shell = picture_of(flat);
+        assert!(
+            carved.as_slice() != shell.as_slice(),
+            "the grooves and dimples are in the picture"
+        );
     }
 
     #[test]

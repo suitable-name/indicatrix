@@ -40,11 +40,14 @@ impl Welford {
     }
 
     /// Builds the statistics of `n` samples from their raw moments instead of one
-    /// sample at a time: `sum` is `Σx`, `sum_sq` is `Σx²`, and `mean` is the mean the
+    /// sample at a time.
+    ///
+    /// `sum` is `Σx`, `sum_sq` is `Σx²`, and `mean` is the mean the
     /// caller reports (normally `sum / n`, but a caller may supply the mean its own
     /// production buffer yields). `m2 = Σ(x - mean)²`, expanded, clamped at zero
     /// against rounding.
     #[cfg(test)]
+    #[must_use]
     pub fn from_moments(n: u64, mean: f64, sum: f64, sum_sq: f64) -> Self {
         let n_f = n as f64;
         let m2 = (n_f * mean).mul_add(mean, 2.0f64.mul_add(-mean * sum, sum_sq));
@@ -78,6 +81,7 @@ impl Welford {
 
 /// Two-sample z-score of `b`'s mean against `a`'s, assuming the two sample sets are
 /// independent (disjoint sample ranges). `0.0` when both standard errors vanish.
+#[must_use]
 pub fn z_score(a: &Welford, b: &Welford) -> f64 {
     let se2 = a.standard_error_sq() + b.standard_error_sq();
     if se2 <= 0.0 {
@@ -86,9 +90,12 @@ pub fn z_score(a: &Welford, b: &Welford) -> f64 {
     (b.mean - a.mean) / se2.sqrt()
 }
 
-/// The shared pass criteria: `over_sigma_count <= max(5 * expected_rate * total_pixels,
-/// 10)` AND the largest cluster (`cluster_sizes` is sorted largest first, as
-/// [`connected_components`] returns it) is at most [`MAX_CLUSTER_PIXELS`].
+/// The shared pass criteria of a z-score comparison.
+///
+/// `over_sigma_count <= max(5 * expected_rate * total_pixels, 10)` AND the largest cluster
+/// (`cluster_sizes` is sorted largest first, as [`connected_components`] returns it) is at
+/// most [`MAX_CLUSTER_PIXELS`].
+#[must_use]
 pub fn passes_z_criteria(
     over_sigma_count: usize,
     total_pixels: usize,
@@ -102,10 +109,13 @@ pub fn passes_z_criteria(
 }
 
 /// 4-connectivity connected-component sizes of `|z| > threshold` pixels in a `width x
-/// height` grid, largest first. Standard flood fill -- this matters more than a bare
+/// height` grid, largest first.
+///
+/// Standard flood fill -- this matters more than a bare
 /// failing-pixel count: a connected region (one facet, a grazing-angle band, one branch
 /// of the physics) is what a real porting bug leaves behind, while independent
 /// per-sample noise crossing the 3-sigma threshold lands as scattered singletons.
+#[must_use]
 pub fn connected_components(z_grid: &[f64], width: u32, height: u32, threshold: f64) -> Vec<usize> {
     let w = width as usize;
     let h = height as usize;

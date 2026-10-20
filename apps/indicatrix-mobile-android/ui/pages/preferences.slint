@@ -16,7 +16,7 @@ export component PreferencesPage inherits Rectangle {
             title: "Preferences";
             show-back: true;
             back-clicked => {
-                Shell.handle-back();
+                Shell.request-back();
             }
         }
 
@@ -91,7 +91,7 @@ export component PreferencesPage inherits Rectangle {
 
                 InfoButton {
                     info-title: "Battery Saver";
-                    info-body: "Renders at Draft quality with two worker threads, which keeps the phone cooler and the battery lasting longer. Previews are noisier and take longer to settle.";
+                    info-body: "Path-Traced renders at Draft quality with two worker threads to keep the phone cooler. Ray-Traced is the light choice on battery: fixed taps finish without noise.";
                 }
 
                 Toggle {
@@ -99,6 +99,17 @@ export component PreferencesPage inherits Rectangle {
                     toggled(value) => {
                         Prefs.set-battery-saver(value);
                     }
+                }
+            }
+
+            ListRow {
+                icon: Icons.close;
+                title: "Delete All Cutting Progress";
+                supporting: "The done marks of every design on this device";
+                clicked => {
+                    // The answer arrives as dialog 2002 (`src/cut.rs`, `DIALOG_DELETE_ALL`); the
+                    // Cut page's menu asks the same question.
+                    Shell.show-dialog(2002, "Delete All Cutting Progress?", "The done marks of every design on this device will be deleted, not only those of the open design. This cannot be undone.", "Delete", "Cancel");
                 }
             }
         }

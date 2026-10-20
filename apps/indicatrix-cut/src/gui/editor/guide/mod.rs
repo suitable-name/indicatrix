@@ -31,6 +31,7 @@ mod launch;
 mod perform;
 mod progress;
 mod runtime;
+pub(super) mod stage_nav;
 
 pub(in crate::gui::editor) use indicatrix_editor::guide::NEW_DESIGN_CREATED;
 pub(in crate::gui::editor) use progress::{check_design_progress, check_progress, notify};

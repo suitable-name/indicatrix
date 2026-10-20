@@ -1,6 +1,8 @@
 //! [`AppSettings`]: the four originally in-memory-only settings, plus camera pose,
 //! the selected material, and everything else migrated into persistent storage.
 
+use super::view_settings::default_live_view_mode;
+pub use super::view_settings::{DEFAULT_LIVE_VIEW_MODE, DEFAULT_SOLID_VIEW_MODE};
 use super::{
     head_shadow::{DEFAULT_HEAD_SHADOW_DEG, default_head_shadow_deg, deserialize_head_shadow_deg},
     local_compute::LocalComputeTarget,
@@ -12,6 +14,12 @@ use super::{
     worker::{LiveComputeTarget, LocalPreviewScale, WorkerSettings},
 };
 use crate::bridge::export_thread::DEFAULT_TEMPLATE as DEFAULT_EXPORT_FILENAME_TEMPLATE;
+use defaults::{
+    default_editor_auto_solve_budget_ms, default_editor_dock_width,
+    default_editor_inspector_height, default_export_filename_template, default_remote_batch_lanes,
+    default_remote_preview_batch_size, deserialize_remote_batch_lanes,
+    deserialize_remote_preview_batch_size,
+};
 use indicatrix::optics::raytracer::DEFAULT_POSE;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -126,10 +134,11 @@ pub const DEFAULT_LIGHT_PITCH_DEG: f32 = 72.0;
 /// facet contrast, so an undialled-in render already reads like a photograph.
 pub const DEFAULT_LIGHTING_RIG: &str = "Light tent + black cards";
 
-/// What the camera sees behind the stone -- `EnvironmentSource::Studio::backdrop`. Only
-/// the camera ray sees it; the stone's optics never do, so leakage stays dark.
+/// The surface the stone lies on -- a lit tray seen around the stone and through its
+/// windows alike (`EnvironmentSource::Studio::backdrop`, resolved by
+/// `indicatrix::render_setup::Backdrop::resolve` at the scene's own preset and light pose).
 ///
-/// The `level`/`index`/`from_index` derivation this carries is now pinned once in
+/// The `index`/`from_index` derivation this carries is pinned once in
 /// `indicatrix::render_setup::Backdrop` (shared with the browser app) and mirrored
 /// here variant-for-variant -- this type keeps its own definition, rather than a
 /// re-export, purely so it can carry the `serde` derives its on-disk settings-file
@@ -139,22 +148,32 @@ pub const DEFAULT_LIGHTING_RIG: &str = "Light tent + black cards";
 /// the indicatrix side would grow ITS base dependency footprint for every consumer,
 /// not just this one. Every method below just converts to the indicatrix mirror and
 /// delegates, so the derivation logic itself lives in exactly one place.
+///
+/// Saved settings keep the choice they hold; only a fresh default is White.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Backdrop {
-    /// The environment's own ground, as lit.
+    /// The lighting's own ground, as lit (nothing below the girdle for the Grading tray).
     AsLit,
-    /// A neutral grey backdrop card (about sRGB 160), for like-for-like comparisons.
-    #[default]
+    /// An 18 % grey card.
     Grey,
-    /// A white light box.
+    /// White paper (90 % reflectance), the default.
+    #[default]
     White,
+    /// Black velvet (2 % reflectance; appended last so stored names and indices stay valid).
+    Black,
 }
 
 impl Backdrop {
-    /// Backdrop radiance handed to `EnvironmentSource::with_backdrop`.
+    /// The tray radiance (at exposure 1) handed to `EnvironmentSource::with_backdrop`, for
+    /// the scene's own lighting preset and light pose (radians); `0.0` for As Lit.
     #[must_use]
-    pub const fn level(self) -> f32 {
-        self.to_indicatrix().level()
+    pub fn resolve(
+        self,
+        preset: indicatrix::optics::raytracer::LightingPreset,
+        light_yaw: f32,
+        light_pitch: f32,
+    ) -> f32 {
+        self.to_indicatrix().resolve(preset, light_yaw, light_pitch)
     }
 
     /// Index into the Parameters panel's pill row (`SettingsModel.backdrop_index`).
@@ -170,12 +189,13 @@ impl Backdrop {
     }
 
     /// Converts to the pure `indicatrix::render_setup` mirror this type's own
-    /// `level`/`index` delegate to.
+    /// `resolve`/`index` delegate to.
     const fn to_indicatrix(self) -> indicatrix::render_setup::Backdrop {
         match self {
             Self::AsLit => indicatrix::render_setup::Backdrop::AsLit,
             Self::Grey => indicatrix::render_setup::Backdrop::Grey,
             Self::White => indicatrix::render_setup::Backdrop::White,
+            Self::Black => indicatrix::render_setup::Backdrop::Black,
         }
     }
 
@@ -185,6 +205,7 @@ impl Backdrop {
             indicatrix::render_setup::Backdrop::AsLit => Self::AsLit,
             indicatrix::render_setup::Backdrop::Grey => Self::Grey,
             indicatrix::render_setup::Backdrop::White => Self::White,
+            indicatrix::render_setup::Backdrop::Black => Self::Black,
         }
     }
 }
@@ -209,21 +230,6 @@ pub const DEFAULT_MATERIAL: &str = "Diamond";
 pub const DEFAULT_PREVIEW_SIZE: u32 = 160;
 /// See [`DEFAULT_PREVIEW_SIZE`] for the measured cost this pairs with.
 pub const DEFAULT_PREVIEW_SPP: u32 = 256;
-/// The solid preview's Solid/Path-traced/Both view-mode selector -- `0` is Solid (the
-/// software-rasterized inspection view), `1` Path-traced (today's GPU/CPU render),
-/// `2` Both (edges from the solid rasterizer composited over the path-traced image --
-/// see `solid_preview::edges_layer`). A plain `u8` since that's what a Slint `int`
-/// property round-trips most directly. `0` (Solid) by default so a settings file
-/// predating this control loads into the same view that already shipped as the sole
-/// mode.
-pub const DEFAULT_SOLID_VIEW_MODE: u8 = 0;
-/// The Live Render tab's own Solid/Path-traced view-mode selector -- see
-/// `ViewportModel.live_view_mode`'s own doc comment (`ui/models/viewport.slint`). `1`
-/// (Path-traced) by default so a settings file predating this control loads into the
-/// same spectral-tracer view that already shipped as the Live Render tab's sole mode --
-/// unlike [`DEFAULT_SOLID_VIEW_MODE`], whose `0` default matches the EDIT tab's
-/// pre-existing sole mode instead.
-pub const DEFAULT_LIVE_VIEW_MODE: u8 = 1;
 /// The "Edit" sub-tab's auto-solve budget, in milliseconds -- see
 /// `gui::editor::auto_solve::should_schedule_auto_solve`. After an edit, a design
 /// whose last measured solve took less than this is re-solved automatically
@@ -265,6 +271,9 @@ pub const DEFAULT_EDITOR_INSPECTOR_HEIGHT: f32 = 340.0;
     reason = "mirrors the settings.toml file; the boolean fields are independent switches"
 )]
 pub struct AppSettings {
+    /// Quality for the explicitly selected Ray-Traced view.
+    #[serde(default)]
+    pub ray_trace: super::RaySettings,
     /// The user's progressive-accumulation target sample count, replacing the old
     /// four-tier `quality_preset` string (which TOML silently drops on load).
     pub target_samples: u32,
@@ -313,7 +322,8 @@ pub struct AppSettings {
     /// fully merged result.
     #[serde(default = "default_denoise_enabled")]
     pub denoise_enabled: bool,
-    /// What the camera sees behind the stone, in the live view and every export.
+    /// The tray the stone lies on, lit by the lighting and seen around the stone and through
+    /// its windows, in the live view and every export.
     #[serde(default)]
     pub backdrop: Backdrop,
     /// Scale of the white mirror image of the light on the table, `0.0..=1.0` (`1.0`,
@@ -345,9 +355,10 @@ pub struct AppSettings {
     /// Disabled in the UI for an isotropic material, whose optic axis is physically
     /// meaningless.
     pub c_axis_override_enabled: bool,
-    /// Tilt from the table normal (`+Y`), 0-90 degrees. `0.0` reproduces every
-    /// material's default `c_axis` (`Vec3::Y`); `90.0` (azimuth `0.0`) reproduces
-    /// Tourmaline's cut-orientation override (`Vec3::X`) to within `f32` precision.
+    /// Tilt from the table normal (`+Y`), 0-90 degrees. `0.0` reproduces the default
+    /// `c_axis` (`Vec3::Y`) of every built-in except Tourmaline and Aquamarine; `90.0`
+    /// (azimuth `0.0`) reproduces their cut-orientation override (`Vec3::X`) to within
+    /// `f32` precision.
     pub c_axis_tilt_deg: f32,
     /// Azimuth around `+Y`, 0-360 degrees.
     pub c_axis_azimuth_deg: f32,
@@ -445,6 +456,14 @@ pub struct AppSettings {
     /// thumbnails -- see `bridge::preview_render` and [`DEFAULT_PREVIEW_SIZE`].
     #[serde(default = "default_preview_size")]
     pub preview_size: u32,
+    /// Stable thumbnail renderer; changing it makes existing thumbnails outdated once.
+    #[serde(default)]
+    pub thumbnail_renderer: indicatrix::renderer::engine::RenderEngine,
+    /// The tray catalogue thumbnails are rendered on (White, Grey or Black); Grey by
+    /// default, so a colorless stone stands apart from its background. Independent of the
+    /// live view's [`Self::backdrop`]; changing it makes existing thumbnails outdated once.
+    #[serde(default = "default_thumbnail_backdrop")]
+    pub thumbnail_backdrop: Backdrop,
     /// Samples per pixel for the cached preview thumbnails -- see [`DEFAULT_PREVIEW_SPP`].
     #[serde(default = "default_preview_spp")]
     pub preview_spp: u32,
@@ -472,7 +491,7 @@ pub struct AppSettings {
     /// give the viewport more room.
     #[serde(default)]
     pub library_panel_collapsed: bool,
-    /// The solid preview's Solid/Path-traced/Both view-mode selector -- see
+    /// The solid preview's Solid/Path-Traced/Both/Diagram view-mode selector -- see
     /// [`DEFAULT_SOLID_VIEW_MODE`]. Still saved when the user changes it, but not
     /// applied at startup: the app always opens on the Live Render tab in Solid mode.
     #[serde(default)]
@@ -658,6 +677,10 @@ const fn default_preview_spp() -> u32 {
     DEFAULT_PREVIEW_SPP
 }
 
+const fn default_thumbnail_backdrop() -> Backdrop {
+    Backdrop::Grey
+}
+
 const fn default_denoise_enabled() -> bool {
     true
 }
@@ -679,143 +702,6 @@ const fn default_contribute_to_final_picture() -> bool {
 
 const fn default_plan_time_limit_secs() -> u32 {
     crate::plan_limit::DEFAULT_LIMIT_SECS
-}
-
-const fn default_remote_batch_lanes() -> u32 {
-    DEFAULT_REMOTE_BATCH_LANES
-}
-
-const fn default_remote_preview_batch_size() -> u32 {
-    DEFAULT_REMOTE_PREVIEW_BATCH_SIZE
-}
-
-/// Reads [`AppSettings::remote_preview_batch_size`] as a signed integer and limits it, like
-/// [`deserialize_remote_batch_lanes`].
-fn deserialize_remote_preview_batch_size<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw = i64::deserialize(deserializer)?;
-    let limited = raw.clamp(
-        i64::from(MIN_REMOTE_PREVIEW_BATCH_SIZE),
-        i64::from(MAX_REMOTE_PREVIEW_BATCH_SIZE),
-    );
-    Ok(u32::try_from(limited).unwrap_or(DEFAULT_REMOTE_PREVIEW_BATCH_SIZE))
-}
-
-/// Reads [`AppSettings::remote_batch_lanes`] as a signed integer and limits it, so a
-/// hand-edited value outside `1..=32` (a negative one included) loads as the nearest
-/// valid count instead of failing the whole settings file.
-fn deserialize_remote_batch_lanes<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw = i64::deserialize(deserializer)?;
-    let limited = raw.clamp(
-        i64::from(MIN_REMOTE_BATCH_LANES),
-        i64::from(MAX_REMOTE_BATCH_LANES),
-    );
-    Ok(u32::try_from(limited).unwrap_or(DEFAULT_REMOTE_BATCH_LANES))
-}
-
-const fn default_editor_auto_solve_budget_ms() -> u32 {
-    DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS
-}
-
-const fn default_live_view_mode() -> u8 {
-    DEFAULT_LIVE_VIEW_MODE
-}
-
-const fn default_editor_dock_width() -> f32 {
-    DEFAULT_EDITOR_DOCK_WIDTH
-}
-
-const fn default_editor_inspector_height() -> f32 {
-    DEFAULT_EDITOR_INSPECTOR_HEIGHT
-}
-
-fn default_export_filename_template() -> String {
-    DEFAULT_EXPORT_FILENAME_TEMPLATE.to_string()
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            target_samples: DEFAULT_TARGET_SAMPLES,
-            render_width: DEFAULT_RENDER_WIDTH,
-            render_height: DEFAULT_RENDER_HEIGHT,
-            max_bounces: DEFAULT_MAX_BOUNCES,
-            exposure: DEFAULT_EXPOSURE,
-            light_yaw_deg: DEFAULT_LIGHT_YAW_DEG,
-            light_pitch_deg: DEFAULT_LIGHT_PITCH_DEG,
-            lighting_rig: DEFAULT_LIGHTING_RIG.to_string(),
-            camera_yaw: DEFAULT_CAMERA_YAW,
-            camera_pitch: DEFAULT_CAMERA_PITCH,
-            camera_distance: DEFAULT_CAMERA_DISTANCE,
-            selected_material: DEFAULT_MATERIAL.to_string(),
-            remote: None,
-            legacy_remote_workers: Vec::new(),
-            denoise_enabled: true,
-            backdrop: Backdrop::default(),
-            surface_glare: DEFAULT_SURFACE_GLARE,
-            head_shadow_deg: DEFAULT_HEAD_SHADOW_DEG,
-            inclusion_sigma_s: DEFAULT_INCLUSION_SIGMA_S,
-            c_axis_override_enabled: DEFAULT_C_AXIS_OVERRIDE_ENABLED,
-            c_axis_tilt_deg: DEFAULT_C_AXIS_TILT_DEG,
-            c_axis_azimuth_deg: DEFAULT_C_AXIS_AZIMUTH_DEG,
-            girdle_frosted: DEFAULT_GIRDLE_FROSTED,
-            edge_rounding_radius: DEFAULT_EDGE_ROUNDING_RADIUS,
-            stone_width_mm: DEFAULT_STONE_WIDTH_MM,
-            local_preview_scale: DEFAULT_LOCAL_PREVIEW_SCALE,
-            live_compute_target: DEFAULT_LIVE_COMPUTE_TARGET,
-            local_compute_target: DEFAULT_LOCAL_COMPUTE_TARGET,
-            tilt_video_compute_target: TiltVideoCompute::Both,
-            contribute_to_final_picture: DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE,
-            remote_batch_lanes: DEFAULT_REMOTE_BATCH_LANES,
-            remote_batch_lanes_user_set: false,
-            remote_preview_batch_size: DEFAULT_REMOTE_PREVIEW_BATCH_SIZE,
-            plan_time_limit_secs: crate::plan_limit::DEFAULT_LIMIT_SECS,
-            import_preview_choice: super::ImportPreviewChoice::Ask,
-            payload_encoding: indicatrix_net::messages::adaptive::PayloadChoice::Auto,
-            env_map_path: String::new(),
-            preview_size: DEFAULT_PREVIEW_SIZE,
-            preview_spp: DEFAULT_PREVIEW_SPP,
-            export_directory: String::new(),
-            last_import_directory: String::new(),
-            export_filename_template: DEFAULT_EXPORT_FILENAME_TEMPLATE.to_string(),
-            library_panel_collapsed: false,
-            solid_view_mode: DEFAULT_SOLID_VIEW_MODE,
-            live_view_mode: DEFAULT_LIVE_VIEW_MODE,
-            editor_auto_solve_budget_ms: DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS,
-            editor_dock_width: DEFAULT_EDITOR_DOCK_WIDTH,
-            editor_inspector_height: DEFAULT_EDITOR_INSPECTOR_HEIGHT,
-            editor_settings_collapsed: false,
-            editor_inspector_collapsed: false,
-            editor_tier_table_collapsed: false,
-            editor_remap_collapsed: false,
-            editor_layout_touched: false,
-            recent_native_files: Vec::new(),
-            suppressed_confirmations: BTreeSet::new(),
-            // A brand-new install: the simple interface, with the welcome tour still to
-            // come. A settings file that merely lacks these keys is an EXISTING install
-            // and loads the field defaults above instead (Advanced, tour done).
-            ui_mode: UiMode::Simple,
-            first_run_tour_done: false,
-            tutorials_completed: BTreeSet::new(),
-            ui_scale_percent: 0,
-            high_contrast: false,
-            large_handles: false,
-            manipulate_snap_off: false,
-            slice_symmetric: true,
-            render_body_color_override: None,
-            output: super::output_settings::OutputSettings::default(),
-            // A brand-new install has no old per-app stone effects to carry over.
-            migrated_stone_effects: true,
-            parameters_dock_open: false,
-            parameters_dock_tab: 0,
-            update_check: indicatrix_update::UpdatePreferences::default(),
-        }
-    }
 }
 
 impl AppSettings {
@@ -898,6 +784,8 @@ impl AppSettings {
         self.first_run_tour_done = false;
     }
 }
+
+mod defaults;
 
 #[cfg(test)]
 mod tests;

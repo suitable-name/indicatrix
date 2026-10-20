@@ -700,3 +700,58 @@ fn spelling_check_reads_strings_not_interpolations() {
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(findings[0].contains("`text`"));
 }
+
+// ---------------------------------------------------------------------------------------------
+// The preview offer's "Picture Quality" block
+// ---------------------------------------------------------------------------------------------
+
+/// The properties and the `edited` handler of the `SliderRow` whose label is `label`, with
+/// every run of whitespace collapsed: from `text: "<label>";` through `end`.
+fn slider_row_body(source: &str, label: &str, end: &str) -> Option<String> {
+    let start = source.find(&format!("text: \"{label}\";"))?;
+    let stop = start + source[start..].find(end)? + end.len();
+    Some(
+        source[start..stop]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// The confirm step of the preview batch offers the same two sliders as the Render & Output tab
+/// -- label, hint, value text, range, step, binding and callback -- so a change made there
+/// persists exactly as it does in the tab, and tells the user where to find them again.
+#[test]
+fn the_preview_offer_sliders_mirror_the_render_output_tab() {
+    let sources = slint_sources();
+    let text_of = |name: &str| {
+        sources
+            .iter()
+            .find(|(file, _)| file == name)
+            .map_or_else(|| panic!("{name} is missing"), |(_, text)| text.as_str())
+    };
+    let tab = text_of("components/parameters_panel/render_output_tab.slint");
+    let dialog = text_of("components/preview_batch_dialog.slint");
+    for (label, end) in [
+        (
+            "Preview Image Size",
+            "SettingsModel.preview_size_changed(Math.round(val)); }",
+        ),
+        (
+            "Preview Samples",
+            "SettingsModel.preview_spp_changed(Math.round(val)); }",
+        ),
+    ] {
+        let in_tab = slider_row_body(tab, label, end);
+        let in_dialog = slider_row_body(dialog, label, end);
+        assert!(in_tab.is_some(), "the tab has no {label} slider");
+        assert_eq!(
+            in_dialog, in_tab,
+            "the offer's {label} slider drifted from the tab's"
+        );
+    }
+    assert!(dialog.contains("text: \"Picture Quality\";"));
+    assert!(dialog.contains(
+        "You can change these later in the Advanced interface, under Render & Output > Library Thumbnails."
+    ));
+}

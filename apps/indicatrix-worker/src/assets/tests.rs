@@ -113,6 +113,7 @@ impl crate::stream_emit::TimeoutWrite for Scripted {
 
 fn scene(environment: SceneEnvironment) -> SceneState {
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 4,
         height: 4,
         yaw: 0.4,
@@ -132,6 +133,7 @@ fn scene(environment: SceneEnvironment) -> SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 
@@ -307,6 +309,36 @@ fn a_registered_map_equals_a_local_decode_bit_for_bit() {
     let lying = HdrEnvironment { width: 31, ..env };
     assert!(decoded::decode_and_register(&lying, &bytes).is_err());
     assert!(decoded::decode_and_register(&env, b"not an hdr file").is_err());
+}
+
+/// A v25 float asset (what the phone ships for its effective map) registers to a map that is
+/// bit-identical to `EnvironmentMap::from_rgb` over the same texels, is told apart from a
+/// Radiance file by its magic, and is refused when its declared size lies.
+#[test]
+fn a_float_asset_registers_the_bit_identical_map() {
+    use indicatrix_net::messages::envmap_asset::{encode_envmap_asset, envmap_asset_hash};
+    let tag = (UNIQUE.fetch_add(1, Ordering::Relaxed) % 250 + 1) as f32;
+    let texels: Vec<[f32; 3]> = (0..24_u32)
+        .map(|i| {
+            [
+                (i as f32).mul_add(0.37, tag),
+                0.2 + (i % 5) as f32,
+                1.0 / (1.0 + i as f32),
+            ]
+        })
+        .collect();
+    let bytes = encode_envmap_asset(6, 4, &texels).unwrap();
+    let env = hdr_env(&bytes, 6, 4);
+    assert_eq!(env.content_hash, envmap_asset_hash(6, 4, &texels).unwrap());
+
+    let registered = decoded::decode_and_register(&env, &bytes).unwrap();
+    let local = EnvironmentMap::from_rgb(6, 4, texels).unwrap();
+    assert!(registered.bitwise_eq(&local));
+
+    let lying = HdrEnvironment { width: 5, ..env };
+    assert!(decoded::decode_and_register(&lying, &bytes).is_err());
+    // Truncated bytes are refused by the float codec, not misread as Radiance.
+    assert!(decoded::decode_and_register(&env, &bytes[..bytes.len() - 4]).is_err());
 }
 
 /// An HDR scene whose map nobody resolved panics in the tracer instead of rendering

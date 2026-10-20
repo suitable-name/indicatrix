@@ -50,6 +50,8 @@ pub mod coordinator;
 pub mod enroll;
 pub mod enroll_client;
 #[cfg(feature = "worker")]
+pub mod jobs;
+#[cfg(feature = "worker")]
 pub mod join;
 pub mod pki;
 #[cfg(feature = "worker")]

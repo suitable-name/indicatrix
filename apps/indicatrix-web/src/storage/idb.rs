@@ -1,12 +1,12 @@
-//! A minimal IndexedDB wrapper for the autosaved current design.
+//! A minimal `IndexedDB` wrapper for the autosaved current design.
 //!
 //! One database (`indicatrix`, version 1), one object store (`designs`), one record
 //! under the key `"current"`: a JS object `{ bytes: Uint8Array, meta: string }` where
 //! `bytes` is the `.isdd` design file text (attachments included) and `meta` a
-//! JSON [`DesignMeta`]. IndexedDB has no `sessionStorage`-style size ceiling, so the
+//! JSON [`DesignMeta`]. `IndexedDB` has no `sessionStorage`-style size ceiling, so the
 //! whole file goes in.
 //!
-//! Everything is async (`wasm-bindgen-futures`) and every failure -- no IndexedDB
+//! Everything is async (`wasm-bindgen-futures`) and every failure -- no `IndexedDB`
 //! (private mode in some browsers), a blocked open, quota, an aborted transaction --
 //! comes back as `Err(String)` for the caller to log; nothing here shows the user
 //! anything. A write resolves when its transaction has completed, not merely when the
@@ -75,6 +75,7 @@ fn request_error_text(request: &IdbRequest) -> String {
 }
 
 /// Resolves with the request's result once it succeeds.
+#[expect(clippy::future_not_send, reason = "wasm is single-threaded")]
 async fn request_result(request: &IdbRequest) -> Result<JsValue, String> {
     let promise = Promise::new(&mut |resolve: js_sys::Function, reject: js_sys::Function| {
         let ok_request = request.clone();
@@ -94,6 +95,7 @@ async fn request_result(request: &IdbRequest) -> Result<JsValue, String> {
 }
 
 /// Resolves once the transaction has completed (data durable), rejects on error or abort.
+#[expect(clippy::future_not_send, reason = "wasm is single-threaded")]
 async fn transaction_done(tx: &IdbTransaction) -> Result<(), String> {
     let promise = Promise::new(&mut |resolve: js_sys::Function, reject: js_sys::Function| {
         let on_complete = Closure::once_into_js(move || {
@@ -125,6 +127,7 @@ async fn transaction_done(tx: &IdbTransaction) -> Result<(), String> {
 }
 
 /// Opens (creating on first use) the `indicatrix` database.
+#[expect(clippy::future_not_send, reason = "wasm is single-threaded")]
 async fn open_db() -> Result<IdbDatabase, String> {
     let factory = web_sys::window()
         .ok_or_else(|| "no window".to_string())?
@@ -153,8 +156,9 @@ async fn open_db() -> Result<IdbDatabase, String> {
 ///
 /// # Errors
 ///
-/// IndexedDB is unavailable, the open was blocked, the value could not be built, or the
+/// `IndexedDB` is unavailable, the open was blocked, the value could not be built, or the
 /// transaction failed (quota included).
+#[expect(clippy::future_not_send, reason = "wasm is single-threaded")]
 pub async fn save_design(bytes: &[u8], meta: &DesignMeta) -> Result<(), String> {
     let meta_json = serde_json::to_string(meta).map_err(|e| e.to_string())?;
     let value = Object::new();
@@ -182,8 +186,9 @@ pub async fn save_design(bytes: &[u8], meta: &DesignMeta) -> Result<(), String> 
 ///
 /// # Errors
 ///
-/// IndexedDB is unavailable or the read failed. A record that is present but not shaped
+/// `IndexedDB` is unavailable or the read failed. A record that is present but not shaped
 /// like ours is an `Err` too (the caller treats it as "no usable design").
+#[expect(clippy::future_not_send, reason = "wasm is single-threaded")]
 pub async fn load_design() -> Result<Option<StoredDesign>, String> {
     let db = open_db().await?;
     let outcome = async {
@@ -218,7 +223,8 @@ pub async fn load_design() -> Result<Option<StoredDesign>, String> {
 ///
 /// # Errors
 ///
-/// IndexedDB is unavailable or the transaction failed.
+/// `IndexedDB` is unavailable or the transaction failed.
+#[expect(clippy::future_not_send, reason = "wasm is single-threaded")]
 pub async fn clear_design() -> Result<(), String> {
     let db = open_db().await?;
     let outcome = async {

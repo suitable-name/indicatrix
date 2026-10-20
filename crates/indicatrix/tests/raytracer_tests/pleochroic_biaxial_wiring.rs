@@ -130,14 +130,9 @@ fn sapphire_pleochroic_absorption_still_attenuates_end_to_end() {
 fn tanzanite_biaxial_eigenmodes_diverge_from_uniaxial_fallback_off_axis() {
     let tanzanite = GemMaterial::by_name("Tanzanite").unwrap();
     let lambda = 550.0f32;
-    // Synthetic, strongly dichroic coefficients: tanzanite's actual built-in absorption
-    // bands are still an uncited isotropic placeholder (see its entry's doc comment in
-    // `materials::GemMaterial::all_materials` -- the principal
-    // INDICES, not chromophore spectroscopy), so alpha_o == alpha_e there and the
-    // quadratic form would be eigenmode-independent regardless of which eigenmode pair
-    // is used. Using synthetic values isolates exactly what this test checks: that the
-    // wiring feeds in genuinely different eigen-DIRECTIONS, independent of whether the
-    // material's own absorption data happens to be dichroic yet.
+    // Synthetic, strongly dichroic coefficients are used instead of Tanzanite's own three
+    // fitted band sets so that this test isolates the eigen-DIRECTION wiring from the
+    // material's data.
     let (alpha_o, alpha_e) = (1.0f32, 6.0f32);
     let tensor = AbsorptionTensor3::uniaxial(alpha_o, alpha_e, tanzanite.c_axis);
 
@@ -228,8 +223,10 @@ fn non_biaxial_materials_render_is_pinned_to_current_post_chapter_04_values() {
     let golden: &[(&str, u32, u32, u32)] = &[
         ("Diamond", 0x3F12_4125, 0x3F16_03EE, 0x3F1C_561C),
         ("Cubic Zirconia", 0x3FDA_E16D, 0x3FD1_A43F, 0x4018_44C4),
-        ("Sapphire", 0x3B75_3359, 0x3B0C_1C8B, 0x3C95_4BE3),
-        ("Ruby", 0x3C12_D2A3, 0x3B9D_0EF1, 0x3C0C_1D99),
+        // Sapphire and Ruby re-pinned on 2026-10-19 after the measured color refits
+        // (owner decision; bits from the owner's Windows run).
+        ("Sapphire", 0x3B8A_6D5D, 0x3B51_79FE, 0x3C90_798D),
+        ("Ruby", 0x3BD8_5C83, 0x3B2A_B65B, 0x3A1F_FC11),
         (
             "Synthetic Moissanite",
             0x3E8D_87DA,
@@ -238,7 +235,10 @@ fn non_biaxial_materials_render_is_pinned_to_current_post_chapter_04_values() {
         ),
     ];
 
-    for &(name, bx, by, bz) in golden {
+    // Every material is traced before anything is compared, so one failing run prints the
+    // whole table (all rows that drifted, not only the first).
+    let mut got = Vec::with_capacity(golden.len());
+    for &(name, _, _, _) in golden {
         let material = GemMaterial::by_name(name)
             .unwrap_or_else(|| panic!("{name} must be a built-in material"));
         let xyz = trace_spectral_ray(
@@ -251,25 +251,14 @@ fn non_biaxial_materials_render_is_pinned_to_current_post_chapter_04_values() {
             (hash_u32(SEED) as f32) / 4_294_967_295.0,
             None,
         );
-        assert_eq!(
-            xyz.x.to_bits(),
-            bx,
-            "{name}: x component bit pattern changed (got {:?})",
-            xyz.x
-        );
-        assert_eq!(
-            xyz.y.to_bits(),
-            by,
-            "{name}: y component bit pattern changed (got {:?})",
-            xyz.y
-        );
-        assert_eq!(
-            xyz.z.to_bits(),
-            bz,
-            "{name}: z component bit pattern changed (got {:?})",
-            xyz.z
-        );
+        got.push((name, xyz.x.to_bits(), xyz.y.to_bits(), xyz.z.to_bits()));
     }
+    assert_eq!(
+        got.as_slice(),
+        golden,
+        "a material's x/y/z bit pattern changed (name, x, y, z bits); re-pin only after an \
+         intended physics change"
+    );
 }
 
 /// refraction/walk-off wiring must actually be consulted for the three

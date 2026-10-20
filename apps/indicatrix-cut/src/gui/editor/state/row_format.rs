@@ -41,6 +41,7 @@ pub(in crate::gui::editor) fn tier_item_from_row(row: TierRow) -> EditorTierItem
         kind: i32::from(row.kind == TierRowKind::Concave),
         tool_line: row.tool_line.into(),
         relation_text: row.relation_text.into(),
+        frosting_text: row.frosting_text.into(),
     }
 }
 
@@ -99,6 +100,8 @@ pub(in crate::gui::editor) fn index_chip_items(
             position: chip.position,
             label: chip.label.into(),
             detached: chip.detached,
+            // Set by `view::selected_tier_chips`, which knows the design's frosting.
+            frosted: false,
         })
         .collect()
 }

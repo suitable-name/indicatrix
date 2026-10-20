@@ -15,8 +15,9 @@
 //!   from sensitivities).
 //! - 3: the `actor_mean_head` is replaced by a sensitivity head (`sens_head`, `d_model ->
 //!   N_COMPONENTS`, one prediction per tier) and a `gain_head` (`d_model -> 1`, on the pooled vector
-//!   the critic reads); the policy mean is composed from the sensitivities and the objective's weight
-//!   fractions, which the global token carries since observation layout 4 (`GLOBAL_DIM` 19).
+//!   the critic reads); the policy mean is composed from the sensitivities and objective weights.
+//! - 4: seven objective components, mobility-aware action composition, the shared score-slope floor,
+//!   and observation layout 5. Version-3 weights cannot represent tone or shape targets and are refused.
 //!
 //! The file's schema version is read before the network is parsed, so an old file is refused with
 //! [`WeightError::UnsupportedSchema`] rather than a "missing field" JSON error.
@@ -25,7 +26,7 @@ use super::{
     actor_critic::{GemstoneSetAttentionNetwork, ModelTier},
     weights::WeightError,
 };
-use crate::env::{N_COMPONENTS, WEIGHT_FRACTION_INDEX};
+use crate::env::{GLOBAL_DIM, N_COMPONENTS, TIER_DIM, WEIGHT_FRACTION_INDEX};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -36,7 +37,7 @@ use std::{
 };
 
 /// Schema version written by [`Checkpoint::save`] and required by [`Checkpoint::load`].
-pub const CHECKPOINT_SCHEMA_VERSION: u32 = 3;
+pub const CHECKPOINT_SCHEMA_VERSION: u32 = 4;
 
 /// The one field of a checkpoint file that is read before the rest, so a file of another schema is
 /// refused by version and not by whichever field its network happens to be missing.
@@ -76,7 +77,8 @@ pub struct Checkpoint {
     pub obs_layout_version: u32,
     /// Number of tier slots the batched training pass was padded to.
     pub max_tiers: usize,
-    /// PPO updates completed when the checkpoint was written.
+    /// Completed trainer iterations when the checkpoint was written (rollout/training rounds for
+    /// either PPO or imitation; this is not an Adam-step count).
     pub iteration: u64,
     /// Seed of the training run.
     pub seed: u64,
@@ -167,6 +169,12 @@ impl Checkpoint {
             });
         }
         checkpoint.network.validate()?;
+        if checkpoint.network.d_tier != TIER_DIM || checkpoint.network.d_global != GLOBAL_DIM {
+            return Err(WeightError::Invalid(format!(
+                "network observation width {}x{} does not match layout {}x{}",
+                checkpoint.network.d_tier, checkpoint.network.d_global, TIER_DIM, GLOBAL_DIM
+            )));
+        }
 
         let (d_model, num_heads, num_layers) = checkpoint.tier.config();
         let net = &checkpoint.network;
@@ -214,7 +222,7 @@ impl Checkpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{env::TierFeature, model::Linear};
+    use crate::env::{OBS_LAYOUT_VERSION, TierFeature};
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("indicatrix-ai-{}-{name}", std::process::id()))
@@ -225,7 +233,7 @@ mod tests {
         Checkpoint::new(
             TrainingMode::Optimizer,
             tier,
-            3,
+            OBS_LAYOUT_VERSION,
             24,
             17,
             99,
@@ -238,24 +246,38 @@ mod tests {
         let path = temp_path("roundtrip.json");
         let original = small_checkpoint();
         original.save(&path).unwrap();
-        let loaded = Checkpoint::load(&path, 3).unwrap();
+        let loaded = Checkpoint::load(&path, OBS_LAYOUT_VERSION).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn saving_over_an_existing_checkpoint_replaces_the_previous_file() {
+        let path = temp_path("replace.json");
+        let first = small_checkpoint();
+        first.save(&path).unwrap();
+        let mut second = small_checkpoint();
+        second.iteration += 1;
+        second.seed += 1;
+        second.save(&path).unwrap();
+        let loaded = Checkpoint::load(&path, OBS_LAYOUT_VERSION).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(loaded.iteration, second.iteration);
+        assert_eq!(loaded.seed, second.seed);
     }
 
     #[test]
     fn layout_and_mode_mismatches_are_rejected() {
         let path = temp_path("mismatch.json");
         small_checkpoint().save(&path).unwrap();
-        let layout = Checkpoint::load(&path, 4);
-        let loaded = Checkpoint::load(&path, 3).unwrap();
+        let wrong_layout = OBS_LAYOUT_VERSION + 1;
+        let layout = Checkpoint::load(&path, wrong_layout);
+        let loaded = Checkpoint::load(&path, OBS_LAYOUT_VERSION).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(matches!(
             layout,
-            Err(WeightError::ObsLayoutMismatch {
-                expected: 4,
-                got: 3
-            })
+            Err(WeightError::ObsLayoutMismatch { expected, got })
+                if expected == wrong_layout && got == OBS_LAYOUT_VERSION
         ));
         assert!(matches!(
             loaded.ensure_mode(TrainingMode::Retarget),
@@ -270,50 +292,42 @@ mod tests {
         let mut checkpoint = small_checkpoint();
         checkpoint.schema_version = CHECKPOINT_SCHEMA_VERSION + 1;
         checkpoint.save(&path).unwrap();
-        let result = Checkpoint::load(&path, 3);
+        let result = Checkpoint::load(&path, OBS_LAYOUT_VERSION);
         std::fs::remove_file(&path).unwrap();
         assert!(matches!(result, Err(WeightError::UnsupportedSchema { .. })));
     }
 
     #[test]
-    fn schema_version_three_is_written_with_the_new_heads() {
-        assert_eq!(CHECKPOINT_SCHEMA_VERSION, 3);
-        assert_eq!(small_checkpoint().schema_version, 3);
-        let path = temp_path("schema3.json");
+    fn schema_version_four_is_written_with_the_new_heads() {
+        assert_eq!(CHECKPOINT_SCHEMA_VERSION, 4);
+        assert_eq!(small_checkpoint().schema_version, 4);
+        let path = temp_path("schema4.json");
         small_checkpoint().save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["schema_version"], 3);
+        assert_eq!(value["schema_version"], 4);
         let network = value["network"].as_object().unwrap();
         assert!(network.contains_key("sens_head") && network.contains_key("gain_head"));
         assert!(!network.contains_key("actor_mean_head"));
     }
 
     #[test]
-    fn a_version_two_file_is_refused_by_its_schema_version() {
-        let path = temp_path("v2.json");
-        // A version-2 network had an `actor_mean_head` and neither `sens_head` nor `gain_head`:
+    fn a_version_three_file_is_refused_by_its_schema_version() {
+        let path = temp_path("v3.json");
+        // A version-3 network had four objective components and no explicit mobility masking:
         // rewrite a fresh file that way.
         let mut value = serde_json::to_value(small_checkpoint()).unwrap();
-        value["schema_version"] = serde_json::Value::from(2u32);
-        let network = value["network"].as_object_mut().unwrap();
-        assert!(network.remove("sens_head").is_some());
-        assert!(network.remove("gain_head").is_some());
-        let d_model = ModelTier::Small.config().0;
-        network.insert(
-            "actor_mean_head".to_owned(),
-            serde_json::to_value(Linear::init_xavier(d_model, 1, 3)).unwrap(),
-        );
+        value["schema_version"] = serde_json::Value::from(3u32);
         std::fs::write(&path, value.to_string()).unwrap();
-        let result = Checkpoint::load(&path, 3);
+        let result = Checkpoint::load(&path, OBS_LAYOUT_VERSION);
         std::fs::remove_file(&path).unwrap();
         assert!(
             matches!(
                 result,
                 Err(WeightError::UnsupportedSchema {
-                    expected: 3,
-                    got: 2
+                    expected: CHECKPOINT_SCHEMA_VERSION,
+                    got: 3
                 })
             ),
             "{result:?}"
@@ -337,7 +351,7 @@ mod tests {
         Checkpoint::new(
             TrainingMode::Retarget,
             ModelTier::Small,
-            3,
+            OBS_LAYOUT_VERSION,
             24,
             0,
             1,
@@ -345,7 +359,7 @@ mod tests {
         )
         .save(&path)
         .unwrap();
-        let result = Checkpoint::load(&path, 3);
+        let result = Checkpoint::load(&path, OBS_LAYOUT_VERSION);
         std::fs::remove_file(&path).unwrap();
         let err = result.unwrap_err();
         assert!(matches!(err, WeightError::Invalid(_)), "{err}");
@@ -358,7 +372,7 @@ mod tests {
         let mut checkpoint = small_checkpoint();
         damage(&mut checkpoint);
         checkpoint.save(&path).unwrap();
-        let result = Checkpoint::load(&path, 3);
+        let result = Checkpoint::load(&path, OBS_LAYOUT_VERSION);
         std::fs::remove_file(&path).unwrap();
         result.unwrap_err()
     }
@@ -390,7 +404,7 @@ mod tests {
         let mut checkpoint = small_checkpoint();
         checkpoint.network.tier_proj.weights.pop();
         checkpoint.save(&path).unwrap();
-        let result = Checkpoint::load(&path, 3);
+        let result = Checkpoint::load(&path, OBS_LAYOUT_VERSION);
         std::fs::remove_file(&path).unwrap();
         assert!(matches!(result, Err(WeightError::DimensionMismatch { .. })));
     }

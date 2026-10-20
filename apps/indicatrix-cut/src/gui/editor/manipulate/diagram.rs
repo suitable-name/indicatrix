@@ -41,9 +41,6 @@ use indicatrix_editor::manipulate::{
 use slint::ComponentHandle as _;
 use std::sync::PoisonError;
 
-/// The Diagram view's `SolidPreviewModel.view_mode`.
-const DIAGRAM_VIEW_MODE: i32 = 3;
-
 /// What a handle target on a diagram panel adds to a [`Target`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct DiagramPlacement {
@@ -57,7 +54,8 @@ pub(super) struct DiagramPlacement {
 
 /// Whether the Diagram view is showing.
 pub(super) fn is_diagram_view(ui: &MainWindow) -> bool {
-    ui.global::<SolidPreviewModel>().get_view_mode() == DIAGRAM_VIEW_MODE
+    crate::gui::view_modes::EditViewMode::from_raw(ui.global::<SolidPreviewModel>().get_view_mode())
+        == crate::gui::view_modes::EditViewMode::Diagram
 }
 
 /// `radius` (in the frame's pixels, as for the 3D views) for the view's zoom: the markers

@@ -38,6 +38,7 @@ pub fn load_env_map(path: &str) -> Result<Arc<EnvironmentMap>, String> {
     reason = "mirrors RenderContext's flag fields; fields are independent switches"
 )]
 pub(in crate::bridge::render_thread) struct FrameInputs {
+    pub(in crate::bridge::render_thread) engine: indicatrix::renderer::engine::EngineSpec,
     pub(in crate::bridge::render_thread) width: u32,
     pub(in crate::bridge::render_thread) height: u32,
     pub(in crate::bridge::render_thread) yaw: f32,
@@ -62,6 +63,8 @@ pub(in crate::bridge::render_thread) struct FrameInputs {
     pub(in crate::bridge::render_thread) edge_rounding_radius: f32,
     pub(in crate::bridge::render_thread) stone_width_mm: f32,
     pub(in crate::bridge::render_thread) active_planes: Arc<Vec<GpuFacetPlane>>,
+    /// See [`RenderContext::active_frosted`].
+    pub(in crate::bridge::render_thread) active_frosted: Arc<Vec<u32>>,
     /// See [`RenderContext::active_tools`].
     pub(in crate::bridge::render_thread) active_tools: Arc<Vec<ToolPrimitive>>,
     pub(in crate::bridge::render_thread) custom_materials: Arc<Vec<GemMaterial>>,
@@ -90,6 +93,14 @@ pub(in crate::bridge::render_thread) struct FrameInputs {
     pub(in crate::bridge::render_thread) scene_generation: u64,
 }
 
+impl RenderContext {
+    /// The manual pause belongs to Path-Traced; Ray-Traced has no pause control.
+    /// Preserve the stored value so returning to Path-Traced restores its pause.
+    pub const fn effective_paused(&self) -> bool {
+        self.paused && !self.engine.is_ray()
+    }
+}
+
 /// Snapshots every field the render loop needs for one frame out of `RenderContext`,
 /// clearing `dirty` in the same locked section so a `dirty` set by a callback between
 /// the read and the clear is never lost.
@@ -113,6 +124,7 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
     ctx.redisplay_requested = false;
     let scene_generation = ctx.scene_generation();
     FrameInputs {
+        engine: ctx.engine,
         width: ctx.width,
         height: ctx.height,
         yaw: ctx.yaw,
@@ -124,12 +136,19 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
         // The override with the Live Render toolbar's view-only colour applied (a plain
         // clone while none is in force) -- see `RenderContext::tinted_material_override`.
         material_override: ctx.tinted_material_override(),
-        material_unresolved: ctx.material_unresolved.clone(),
+        material_unresolved: ctx.material_unresolved.clone().or_else(|| {
+            super::super::engine::decline_message(
+                ctx.engine,
+                ctx.env_map.is_none().then_some(ctx.lighting_preset),
+                ctx.active_fluorescence().as_deref(),
+            )
+            .map(str::to_owned)
+        }),
         lighting_preset: ctx.lighting_preset,
         backdrop: ctx.backdrop,
         surface_glare: ctx.surface_glare,
         head_shadow_deg: ctx.head_shadow_deg,
-        target_samples: ctx.target_samples,
+        target_samples: ctx.engine.target_samples(ctx.target_samples),
         max_bounces: ctx.max_bounces,
         exposure: ctx.exposure,
         inclusion_sigma_s: ctx.inclusion_sigma_s,
@@ -140,6 +159,7 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
         // `Arc::clone`, not a deep copy -- see `RenderContext::active_planes`'s doc
         // comment.
         active_planes: Arc::clone(&ctx.active_planes),
+        active_frosted: Arc::clone(&ctx.active_frosted),
         // `Arc::clone`, like the planes beside it.
         active_tools: Arc::clone(&ctx.active_tools),
         // `Arc::clone`, not a deep copy -- see `RenderContext::custom_materials`'s doc
@@ -149,21 +169,48 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
         fluorescence: ctx.active_fluorescence(),
         running: ctx.running,
         dirty,
-        paused: ctx.paused,
+        paused: ctx.effective_paused(),
         tab_visible: ctx.tab_visible,
-        denoise_enabled: ctx.denoise_enabled,
+        denoise_enabled: ctx.denoise_enabled && ctx.engine.denoises(),
         redisplay_requested,
         remote_active: ctx.remote_active,
         // `Arc::clone`, not a deep copy -- see `live_epoch`'s doc comment.
         live_epoch: ctx.live_epoch.clone(),
         export_active: ctx.export_active(),
         // The EFFECTIVE target: a final-picture epoch behaves as `RemoteOnly`.
-        live_compute_target: ctx.effective_live_target(),
+        live_compute_target: if super::super::remote_allowed(ctx.engine) {
+            ctx.effective_live_target()
+        } else {
+            LiveComputeTarget::LocalOnly
+        },
         local_compute_target: ctx.local_compute_target,
         local_preview_scale: ctx.local_preview_scale,
         camera_moving: ctx.camera_moving,
         // `Arc::clone`, not a deep copy of the decoded panorama -- see `env_map`'s doc comment.
         env_map: ctx.env_map.clone(),
         scene_generation,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indicatrix::renderer::engine::RenderEngine;
+
+    #[test]
+    fn ray_snapshots_ignore_manual_path_pause_and_restore_it_on_return() {
+        let ctx = Arc::new(Mutex::new(RenderContext {
+            paused: true,
+            ..RenderContext::default()
+        }));
+        assert!(snapshot_frame_inputs(&ctx).paused);
+        RenderContext::lock(&ctx).engine.engine = RenderEngine::RayTraced;
+        assert!(!snapshot_frame_inputs(&ctx).paused);
+        assert!(
+            RenderContext::lock(&ctx).paused,
+            "keep the Path-Traced preference"
+        );
+        RenderContext::lock(&ctx).engine.engine = RenderEngine::PathTraced;
+        assert!(snapshot_frame_inputs(&ctx).paused);
     }
 }

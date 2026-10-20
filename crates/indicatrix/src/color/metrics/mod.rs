@@ -53,6 +53,19 @@
 //! The observer's head-shadow cone is applied on top, separately. The details and their
 //! edge cases are on the private `lighting` module.
 //!
+//! # Facet finishes
+//!
+//! The tilt sweeps ([`evaluate_all_axes_profiles_finished_threaded`],
+//! [`evaluate_full_axis_profile_at_azimuth_finished_threaded`] and the stepped variant) take a
+//! [`FinishedStone`]: the planes and tools plus a per-facet finish list. A frosted facet scatters
+//! the way the render tracer's frosted bounce does (a broadband Fresnel reflect/transmit split and
+//! a cosine-weighted direction, see the private `frosted` module), so a frosted design's tilt
+//! curves differ from its polished ones. An empty list, or one with no frosted facet, is the
+//! polished stone and gives bit-identical results to the plain-geometry entry points, which is
+//! also what every other metric uses: the live HUD numbers
+//! ([`compute_or_reuse_metrics_geom`]), the optimiser's scoring and the Compare deltas take no
+//! finishes and see every facet polished.
+//!
 //! # Fan scale
 //!
 //! The grid is scaled to the stone: the sampled disc reaches 95% of the measured girdle
@@ -77,12 +90,29 @@
 //! their inputs, lighting included, do not change).
 
 mod accumulate;
+mod attribution;
 mod cache;
 mod camera;
 mod classify;
 mod evaluate;
 mod fan;
+mod finished;
+mod frosted;
+#[cfg(test)]
+mod frosted_tests;
+mod image;
+mod image_scint;
+mod image_types;
 mod lighting;
+pub use attribution::{
+    AttributionLighting, SPECTRAL_ATTRIBUTION_VERSION, SpectralClass, classify_path,
+};
+pub use image::evaluate_optical_image;
+pub use image_scint::{
+    SCINTILLATION_WINDOW_RADIUS, scintillation_index, scintillation_index_at,
+    scintillation_spatial, scintillation_spatial_at,
+};
+pub use image_types::*;
 mod pose_batch;
 mod prepared;
 mod profile;
@@ -103,10 +133,12 @@ pub use evaluate::{
     evaluate_gem_optical_metrics_geom_core, evaluate_gem_optical_metrics_with_tone,
     evaluate_gem_optical_metrics_with_tone_geom, evaluate_gem_optical_metrics_with_tone_geom_core,
 };
+pub use finished::FinishedStone;
 pub use profile::{
     EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG, TILT_ANGLES_DEG, evaluate_angular_profile,
     evaluate_angular_profile_at_azimuth, evaluate_angular_profile_at_azimuth_geom,
     evaluate_angular_profile_geom, evaluate_full_axis_profile_at_azimuth,
+    evaluate_full_axis_profile_at_azimuth_finished_threaded,
     evaluate_full_axis_profile_at_azimuth_geom,
     evaluate_full_axis_profile_at_azimuth_geom_threaded,
     evaluate_full_axis_profile_at_azimuth_stepped,
@@ -114,10 +146,11 @@ pub use profile::{
     evaluate_full_axis_profile_at_azimuth_stepped_geom_threaded,
 };
 pub use sweep::{
-    AxisProfile, SweepProgress, evaluate_all_axes_profiles, evaluate_all_axes_profiles_geom,
+    AxisProfile, SweepProgress, evaluate_all_axes_profiles,
+    evaluate_all_axes_profiles_finished_threaded, evaluate_all_axes_profiles_geom,
     evaluate_all_axes_profiles_geom_threaded, evaluate_all_axes_profiles_stepped,
-    evaluate_all_axes_profiles_stepped_geom, evaluate_all_axes_profiles_stepped_geom_threaded,
-    total_evaluations,
+    evaluate_all_axes_profiles_stepped_finished_threaded, evaluate_all_axes_profiles_stepped_geom,
+    evaluate_all_axes_profiles_stepped_geom_threaded, total_evaluations,
 };
 pub use tone::{FaceUpTone, ToneIlluminant};
 pub use types::{GemOpticalMetrics, PROFILE_ANGLES_DEG};

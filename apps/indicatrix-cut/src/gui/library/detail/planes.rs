@@ -18,14 +18,17 @@ use indicatrix::{
     geometry::{
         cuts::{FacetSpec, StandardGemCuts},
         plane::GpuFacetPlane,
+        tool::ToolPrimitive,
     },
     optics::materials::GemMaterial,
 };
 use indicatrix_cut_core::{
     StoneRenderEffects,
+    design::ConcaveTableRow,
     material::{BuiltinMaterials, MaterialLookup, MaterialSelection},
     native::CustomMaterialSnapshot,
 };
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 use tracing::info;
@@ -106,7 +109,85 @@ pub(super) struct ReconstructedPlanesInput<'a> {
     /// -- tried by [`apply_catalogue_material`] ahead of the refractive-index guess.
     pub(super) preview_material: Option<&'a str>,
     pub(super) real_design: Option<(Vec<GpuFacetPlane>, u32, f32)>,
+    /// The planes `real_design` frosts (ascending indices into its planes,
+    /// `resolve_catalogue_planes_with_frosting`); empty for a polished design and on the remote
+    /// route.
+    pub(super) frosted: Vec<u32>,
     pub(super) design_material: DesignFileMaterial,
+    /// The concave tools the stone is drawn with and their `(tier, placement)` list:
+    /// `CataloguePlanes::render_tools` on the local route, empty on the remote one (which
+    /// passes [`Self::concave_rows`] instead). Empty for a planar design, which claims exactly
+    /// the plane-only stone it always did.
+    pub(super) tools: Vec<ToolPrimitive>,
+    pub(super) tool_placements: Vec<(usize, usize)>,
+    /// The record's concave angle-table rows, for the route that has no design file to place
+    /// tools from (the remote one): the tools are placed against the planes this function
+    /// rebuilds ([`remote_tools`]). Ignored when `tools` is not empty.
+    pub(super) concave_rows: Vec<ConcaveRow>,
+}
+
+/// The cells of one concave angle-table row, owned (the wire record's own strings).
+#[derive(Debug, Clone)]
+pub(super) struct ConcaveRow {
+    pub(super) facet: String,
+    /// The signed angle cell (`-42°`): the angle items of the table drop the sign.
+    pub(super) angle: String,
+    pub(super) index: String,
+    pub(super) notes: String,
+    /// The formatted tool line (the code is its first column).
+    pub(super) tool_line: String,
+}
+
+impl ConcaveRow {
+    /// The concave rows among `rows` (`(facet, angle, index, notes, tool_line)`): those with
+    /// a tool line. A flat row has none and is skipped.
+    pub(super) fn from_wire<'a>(
+        rows: impl IntoIterator<Item = (&'a str, &'a str, &'a str, &'a str, Option<&'a str>)>,
+    ) -> Vec<Self> {
+        rows.into_iter()
+            .filter_map(|(facet, angle, index, notes, tool_line)| {
+                Some(Self {
+                    facet: facet.to_owned(),
+                    angle: angle.to_owned(),
+                    index: index.to_owned(),
+                    notes: notes.to_owned(),
+                    tool_line: tool_line.filter(|line| !line.trim().is_empty())?.to_owned(),
+                })
+            })
+            .collect()
+    }
+}
+
+/// The tools the concave `rows` describe, placed on the flat stone `planes` of an index gear
+/// with `gear_teeth` teeth (the angle-table rule of `CataloguePlanes::render_tools`). The
+/// remote record carries only the rows, so this is the whole of what that route knows about a
+/// concave tier. Empty without rows, and the flat stone when they do not resolve.
+pub(super) fn remote_tools(
+    rows: &[ConcaveRow],
+    planes: &[GpuFacetPlane],
+    gear_teeth: u32,
+) -> (Vec<ToolPrimitive>, Vec<(usize, usize)>) {
+    if rows.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let facets: Vec<(glam::DVec3, f64)> = planes
+        .iter()
+        .copied()
+        .map(GpuFacetPlane::to_halfspace_f64)
+        .collect();
+    crate::gui::editor::tools_from_table_rows(
+        rows.iter().map(|row| ConcaveTableRow {
+            facet: &row.facet,
+            angle: &row.angle,
+            index: &row.index,
+            notes: &row.notes,
+            tool: "",
+            tool_line: &row.tool_line,
+        }),
+        &facets,
+        i32::try_from(gear_teeth).unwrap_or(96),
+        0.0,
+    )
 }
 
 /// Falls back to [`reconstruct_planes`] (gear reference angle `0.0`, matching this
@@ -150,6 +231,35 @@ pub(super) fn planes_gear_and_reference_angle(
     (planes, gear_teeth, 0.0)
 }
 
+/// Claims the viewport's stone for catalogue row `entry_id`: planes, tools and the frosted
+/// planes together, as the editor's viewport claims its own (`gui::editor::view::viewport`).
+/// `claim_active_geometry` resets the frosting, so it is set after an accepted claim and only
+/// then. Returns whether the claim was accepted.
+pub(super) fn claim_catalogue_stone(
+    ctx: &mut RenderContext,
+    entry_id: i64,
+    stone: StoneGeometryBuf,
+    design_gear: Option<(u32, f32)>,
+) -> bool {
+    let StoneGeometryBuf {
+        planes,
+        tools,
+        placements,
+        frosted,
+    } = stone;
+    let claimed = ctx.claim_active_geometry(
+        Arc::new(planes),
+        Arc::new(tools),
+        placements,
+        design_gear,
+        PlanesOwner::Catalogue { entry_id },
+    );
+    if claimed {
+        ctx.claim_active_frosted(frosted);
+    }
+    claimed
+}
+
 /// Shared by the local and remote detail-load paths: rebuilds the 3D viewport's facet
 /// planes from a design's shape/gear/angle-settings -- exactly one reconstruction
 /// implementation for both sources, so they can never drift apart.
@@ -166,10 +276,19 @@ pub(super) fn apply_reconstructed_planes(
         refractive_index,
         preview_material,
         real_design,
+        frosted,
         design_material,
+        tools,
+        tool_placements,
+        concave_rows,
     } = input;
     let (planes, gear_teeth, gear_reference_angle) =
         planes_gear_and_reference_angle(real_design, shape, index_gear, angle_items);
+    let (tools, tool_placements) = if tools.is_empty() {
+        remote_tools(&concave_rows, &planes, gear_teeth)
+    } else {
+        (tools, tool_placements)
+    };
 
     info!(
         "Reconstructed {} 3D facet planes for diagram #{}",
@@ -180,10 +299,18 @@ pub(super) fn apply_reconstructed_planes(
     let mut ctx = RenderContext::lock(render_ctx);
     // An explicit Library selection takes the viewport, also from a design loaded in
     // the editor: the editor's next load or edit claims it back.
-    let claimed = ctx.claim_active_planes(
-        std::sync::Arc::new(planes),
+    // The planes and the tools go in together, so the view never shows this design's planes
+    // with the previous design's tools; a planar design claims no tools at all.
+    let claimed = claim_catalogue_stone(
+        &mut ctx,
+        entry_id,
+        StoneGeometryBuf {
+            planes,
+            tools,
+            placements: tool_placements,
+            frosted,
+        },
         Some((gear_teeth, gear_reference_angle)),
-        PlanesOwner::Catalogue { entry_id },
     );
     let (resolved_material, c_axis_available, stone_width_mm) = if claimed {
         let resolved = apply_catalogue_material(

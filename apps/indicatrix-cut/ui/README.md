@@ -23,10 +23,15 @@ window's own handle.
 | --- | --- | --- |
 | `ActivityModel` | `models/activity.slint` | The one list of running long actions (auto-solve, Deep Solve, Optimize, exports, ...) |
 | `BatchModel` | `models/batch.slint` | Preview-batch and tilt-batch dialogs |
+| `BodyColorEditorModel` | `models/body_color_editor.slint` | The material editor's path-aware L*C*h body-color editor: Tone, Chroma and Hue, the solved swatches at the reference paths, and the apply request (one undoable edit). Rust: `gui::editor::render_color`, `gui::editor::lch_color` |
 | `BuildDesignModel` | `models/build_design.slint` | "Build this design": starts the generated rebuild lesson for a library design (the library list's menu, the detail header's steps button, the palette) and says whether one is being prepared. Rust: `gui::editor::guide::build_design` |
+| `CommandPaletteModel` | `models/command_palette.slint` | The command palette: open state, query and highlighted row live in Slint; Rust (`gui::commands`) fills the rows and runs the chosen command |
 | `CompareModel` | `models/compare.slint` | The visual before/after compare window, and the comparison pane embedded in the Retarget dialog (separate instances per window) |
+| `CuttingModeModel` | `models/cutting_mode.slint` | Cutting mode, the full-window one-step-per-page cutting screen (Edit > Cutting Mode..., the Cut Mode button, the palette). Rust: `gui::editor::cutting_mode` |
 | `CuttingTableModel` | `models/cutting_table.slint` | One pure callback for the library cutting table's keyboard cursor (`step_row`): Slint has no loop to find the next row a Pavilion or Crown filter still shows. Rust: `gui::library::detail::row_cursor` |
 | `DesignSettingsModel` | `models/design_settings.slint` | One pure callback for the Design settings panel (`advanced_in_use`): whether a control the Simple interface hides holds a non-default value, which shows the "Some advanced settings are in use" line. Rust: `gui::editor::design_settings_model` |
+| `DesignLightingModel` | `models/design_lighting.slint` | The Parameters panel's "Lighting for this design" group: whether a design can remember its lighting in the library database and the two buttons for it. Rust: `gui::render::design_lighting` |
+| `DispersionEditorModel` | `models/dispersion_editor.slint` | The material editor's Dispersion section: a custom material's index curve typed as Sellmeier or Cauchy coefficients. Rust: `gui::optics::dispersion_editor` |
 | `EditorModel` | `models/editor.slint` | The Edit tab: tiers, solve, optimize, deep solve, new-design/gear-remap dialogs |
 | `ExportModel` | `models/export.slint` | The render-export dialog, including its "Transfer" choice |
 | `ExportRunModel` | `models/export_run.slint` | "Is an export running?" (the still export, the tilt video or a queue job; every Start control is disabled while it is true) and the text of the header's export indicator (`components/export_chip.slint`), which shows a dialog export that runs in the background and reopens its popup. Rust: `gui::export_run` |
@@ -36,23 +41,32 @@ window's own handle.
 | `VariantsModel` | `models/variants.slint` | The History tab's Variants view: the open design's saved variants (rows with pictures, newest first), the compare boxes, the save/rename/note/delete form, and the text comparison page. Variants live in the library database by design id. Filled by `gui::editor::variants` |
 | `LibraryModel` | `models/library.slint` | The catalogue/diagram list, filters, metadata editor |
 | `ManipulateModel` | `models/manipulate.slint` | The Solid viewport's angle/depth/index drag handles, their hint line, the Snap pill and the Slice tool (mode, rubber-band line, provisional tier buttons) |
+| `OpticalModel` | `models/optical.slint` | The optical diagnostics overlay state (separate from the beauty accumulation): which maps are on, opacity, and the still and video options |
+| `OptimizeModel` | `models/optimize.slint` | The Inspector's Optimize tab: objective preset, what may change, angle ranges, run settings and the ranked candidates. Rust: `gui::editor::optimize_panel` |
+| `ParametersModel` | `models/parameters.slint` | The Parameters dock's own state: open or folded and the active tab (Stone, Lighting & Environment, Render & Output). Rust: `gui::parameters_dock` |
+| `PhysicscolorModel` | `models/physics_color.slint` | The material editor's physics color mode (UI shown only in builds with the `physical-color` feature). Rust: `gui::optics::physics_ui` |
 | `PreferencesModel` | `models/preferences.slint` | App-wide preferences: the Simple/Advanced switch (`simple_mode`, read by other components to hide advanced controls), UI scale, high contrast, larger handles, the welcome-tour flag and the Preferences dialog's open state |
+| `RawTextModel` | `models/raw_text.slint` | The Edit as Text dialog: the cutting instructions as `.asc` text, a live check, a summary of what applying would change, and a line comparison. Rust: `gui::editor::raw_text` |
 | `RelationModel` | `models/relation.slint` | Tier relations (a tier's angle follows other tiers): "Remove relation", the hint for an angle cell that cannot be edited, and the Steps panel's "Keep linked" Generate. The relation itself is typed into the Tier form's Angle field with a leading `=` |
 | `RemoteWorkerModel` | `models/remote_worker.slint` | The one remote endpoint ("Remote Coordinator" form), "served by", library switch and mirroring |
+| `RenderJobsModel` | `models/render_jobs.slint` | The render queue: the Jobs window (File > Render Jobs...), the header's Jobs chip and the Add to Queue buttons. Rust: `gui::render_jobs` |
 | `RetargetModel` | `models/retarget.slint` | The "Retarget for material" dialog |
 | `RoughPlanModel` | `models/rough_plan.slint` | The Rough Planner window (Library > Plan Rough...): inputs, results, saved plans |
 | `SettingsModel` | `models/settings.slint` | The render-quality settings: Live Compute, Local Compute, preview size and the other Render & Output controls the Parameters panel shows |
 | `ShortcutsModel` | `models/shortcuts.slint` | The keyboard-shortcuts overlay |
+| `SliderModel` | `models/sliders.slint` | The sliders beside the Tier form's Angle field and the Preform tab's number fields; ranges, steps and presets come from Rust through pure callbacks |
 | `SolidPreviewModel` | `models/solid_preview.slint` | The Edit tab's solid-inspection viewport |
 | `SweepModel` | `models/sweep.slint` | The Angle Sweep dialog (Edit > Angle Sweep...): the form, the run's progress, and the table, chart and readout of the finished sweep; the dialog is `components/sweep_dialog.slint` |
 | `TemplateGalleryModel` | `models/templates.slint` | The New Design dialog's template gallery |
 | `Theme` | `theme.slint` | The color palette and other design tokens. Read from `.slint`; exported to Rust only for its `high-contrast` flag, which every color token switches on (Rust sets it per window: `gui::preferences`). Use `Theme` tokens, never hex literals, so the high-contrast palette reaches new code (see "Colours and high contrast" below) |
 | `TierTableModel` | `models/tier_table.slint` | The few callbacks the tier table and the Tier form need from Rust beyond `EditorModel`'s edits: the multi-select Offset box, the "+ Add" facet box and the Rotate buttons read what was typed as a number or a small calculation (`eval_number`) and say in a toast when they cannot; `any_detached` lets the Simple interface note a detached tier. Rust: `gui::editor::tier_table_model` |
 | `TiltModel`, `TiltVideoExportModel` | `models/tilt.slint` | Tilt performance graphs; the tilt-video export section |
+| `TutorialsModel` | `models/tutorials.slint` | The tutorial browser (Help > Tutorials...), the welcome dialog and the empty state's library hint. Rust: `gui::editor::guide::browser` |
+| `UpdateModel` | `models/update.slint` | The new-version check: the one-time question, the Preferences switch and Check Now, and the notice under the header. Rust: `gui::update_check` |
 | `UndoRedoLabels` | `components/editor_command_bar/edit_groups.slint` (re-exported by `components/editor_command_bar.slint`) | The Undo/Redo wording shown by the command bar and the Edit menu (declared beside the Undo/Redo group because both import it from there) |
 | `VerdictModel` | `models/verdict.slint` | The overall Good / Check / Problem verdict of the open design: the word, the headline sentence, the reasons (each with a Show tier and an optional Fix), the stale and busy flags, and the `fix_reason` callback. Shown by `components/verdict_badge.slint` and `components/verdict_popover.slint` in the status strip. Rust: `gui::editor::verdict` over `indicatrix_editor::verdict` |
 | `ViewportModel` | `models/viewport.slint` | The 3D gem viewport's camera/lighting/material controls |
-| `Zoning` | `models/zoning.slint` | Rough color and color zoning, always on. Planner window instance: the "Rough colour..." button, whether the shown plan has a stored colour (`colour_available`), the "Stone orientation" choice and "Use colour" on a design row. Main window instance: the zone list of a zoned material in the material editor. Rust: `gui::rough_colour`, `gui::rough_plan::zoning_hooks` |
+| `Zoning` | `models/zoning.slint` | Rough color and color zoning, always on. Planner window instance: the "Rough Color..." button, whether the shown plan has a stored color (`colour_available`), the "Stone Orientation" choice and "Use Color" on a design row. Main window instance: the zone list of a zoned material in the material editor. Rust: `gui::rough_colour`, `gui::rough_plan::zoning_hooks` |
 
 A `.slint` component reads/writes a global directly (`EditorModel.solve()`,
 `LibraryModel.search_text`), the same way it would read `root.` on a
@@ -116,7 +130,9 @@ wiring is two matched halves:
   `SettingsPersister`.
 
 `SolidPreviewModel.view_mode_changed`, `EditorModel.auto_solve_budget_ms_changed`,
-and `LibraryModel.panel_collapsed_changed` all follow this shape. `ExportModel`'s
+and `LibraryModel.panel_collapsed_changed` all follow this shape. (The two view modes
+are saved this way but not restored: `gui::startup_settings` always starts the Solid
+viewport and the Live Render tab in Solid mode.) `ExportModel`'s
 `changed is_open` block is the one exception: it drives two of `ExportModel`'s
 own callbacks (`check_remote_availability`, `populate_fanout_presets`) entirely
 in `.slint`, with no Rust-side `_changed` handler needed.

@@ -20,7 +20,7 @@ use crate::{
 use indicatrix_cut_core::Design;
 use indicatrix_editor::{
     retarget::{
-        metrics::{MetricColumn, measure_column},
+        metrics::{MetricColumn, measure_column_with_tools},
         plan::tier_display_names,
     },
     solve_policy::design_to_gpu_planes_from_solved,
@@ -81,8 +81,13 @@ fn judge(loaded: &Loaded, catalogue: &Catalogue, args: &ValidateArgs) -> Result<
         (Some(scoring), Some(solved)) if analysis.is_closed() => {
             // Sized by the design's girdle diameter, like the render.
             let gem = scoring.sized_gem(design, &design_to_gpu_planes_from_solved(design, solved));
-            Some(measure_column(
-                &design.planes_from_solved(solved),
+            let planes = design.planes_from_solved(solved);
+            // The stone with its concave tools (none for a flat design), as the Compare
+            // window draws it and the status strip's verdict is read off.
+            let tools = design.tools_for_scoring(&planes);
+            Some(measure_column_with_tools(
+                &planes,
+                &tools,
                 &gem,
                 args.lighting,
             ))
@@ -253,7 +258,7 @@ mod tests {
     use indicatrix_cut_core::{
         CANONICAL_LIGHTING_PRESET, ConstraintTier, PreformSpec, ScheduleMeta,
     };
-    use indicatrix_editor::verdict::ReasonKind;
+    use indicatrix_editor::{retarget::metrics::measure_column, verdict::ReasonKind};
     use std::path::PathBuf;
 
     fn args(material: Option<MaterialArg>, json: bool) -> ValidateArgs {
@@ -436,5 +441,53 @@ mod tests {
         let value: Value = serde_json::from_str(text).expect("valid JSON");
         assert!(value["headline"].is_string());
         assert_eq!(outcome.stdout, "");
+    }
+
+    /// The optics of a design with concave tiers are those of the stone with its tools, not of
+    /// its flat shell; a design without them is measured on its planes alone.
+    #[test]
+    fn the_optics_of_a_concave_design_are_those_of_the_stone_with_its_tools() {
+        let ri = || Some(MaterialArg::Ri(1.76));
+        let design = testing::concave();
+        let loaded = Loaded::in_memory(design.clone(), "concave.isdd");
+        let report = judge(&loaded, &Catalogue::default(), &args(ri(), false)).expect("judges");
+        let optics = report.optics.expect("a named index measures the optics");
+
+        let solved = design.solve().expect("the fixture pins every mast");
+        let planes = design.planes_from_solved(&solved);
+        let tools = design.tools_for_scoring(&planes);
+        assert!(!tools.is_empty(), "the fixture carves");
+        let scoring =
+            resolve_scoring(&design, &Catalogue::default(), ri().as_ref()).expect("scoring");
+        let gem = scoring.sized_gem(&design, &design_to_gpu_planes_from_solved(&design, &solved));
+        let lighting = CANONICAL_LIGHTING_PRESET;
+        let carved = measure_column_with_tools(&planes, &tools, &gem, lighting);
+        let shell = measure_column(&planes, &gem, lighting);
+        assert_eq!(optics, carved);
+        assert_ne!(optics, shell, "the grooves and dimples change the optics");
+
+        // Without concave tiers the column is the planes-only one.
+        let flat = Loaded::in_memory(testing::concave_shell(), "shell.isdd");
+        let flat_report = judge(&flat, &Catalogue::default(), &args(ri(), false)).expect("judges");
+        assert_eq!(flat_report.optics, Some(shell));
+    }
+
+    #[test]
+    fn end_to_end_validate_reports_the_optics_of_the_carved_stone() {
+        let carved = testing::write_design("validate-e2e-concave.isdd", &testing::concave());
+        let shell = testing::write_design("validate-e2e-shell.isdd", &testing::concave_shell());
+        let optics = |input: &str| -> Value {
+            let outcome = testing::run(&["validate", input, "--ri", "1.76", "--json"]);
+            assert!(
+                outcome.exit == EXIT_OK || outcome.exit == EXIT_PROBLEM,
+                "{} {}",
+                outcome.exit,
+                outcome.stderr
+            );
+            let value: Value = serde_json::from_str(&outcome.stdout).expect("valid JSON");
+            value["optics"].clone()
+        };
+        assert!(optics(&carved).is_object());
+        assert_ne!(optics(&carved), optics(&shell));
     }
 }

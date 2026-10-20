@@ -6,7 +6,9 @@
 //! workspace already consumes:
 //!
 //! - [`RlOptimizerModel::optimize`] returns cut-core's `OptimizeResult`.
-//! - [`RlRetargetModel::retarget`] returns an [`RlRetargetProposal`] of changed tier angles.
+//! - [`RlRetargetModel::retarget_certified`] returns [`CertifiedRetargetResult`] with exact angles,
+//!   masts, materialized design and preservation facts. The compact proposal also carries solved
+//!   vectors.
 //!
 //! # How a run goes
 //!
@@ -23,12 +25,9 @@
 //!
 //! # What is supported
 //!
-//! One trained model serves both tasks: the optimizer is the retarget task with the target equal
-//! to the source material, so [`RlOptimizerModel`] accepts a retarget checkpoint as well as an
-//! optimizer one (the reverse is refused). The objective may be any weighting of windowing,
-//! extinction, tilt brilliance and yield; a face-up tone term (the presets Lighten Dark Rough
-//! and Intensify Pale Rough) is not covered and is refused with
-//! [`InferenceError::UnsupportedObjective`] before any environment is built.
+//! Models are task-specific; each wrapper accepts only its matching checkpoint mode. Objectives
+//! support any finite weighting of windowing, extinction, tilt brilliance, measurable yield,
+//! either tone goal and optional shape penalty.
 //!
 //! Every fallible step returns an [`InferenceError`]; nothing panics on a bad network file or
 //! an unsolvable design, and nothing falls back to a made-up answer. Settings live in
@@ -48,5 +47,5 @@ pub use config::{
 };
 pub use error::InferenceError;
 pub use optimizer_model::RlOptimizerModel;
-pub(crate) use policy::ensure_supported_objective;
-pub use retarget_model::{RlRetargetModel, RlRetargetProposal};
+pub use report::{ScoreReadout, score_design_at_fidelity};
+pub use retarget_model::{CertifiedRetargetResult, RlRetargetModel, RlRetargetProposal};

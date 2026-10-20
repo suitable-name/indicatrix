@@ -152,7 +152,9 @@ pub(super) struct ExitLighting<'a> {
 
 impl<'a> ExitLighting<'a> {
     /// The lighting of `environment`. A studio environment's exposure and backdrop are
-    /// ignored: neither changes which directions stand out from the ambient level. Its
+    /// ignored: neither changes which directions stand out from the ambient level, and the
+    /// backdrop (the lit tray under the stone) is not part of the scoring radiance -- the
+    /// metrics score the cut under the lighting model, not under the user's tray. Its
     /// `head_shadow_deg` sets the metrics' head-shadow cone for the lit models.
     pub(super) fn new(environment: EnvironmentSource<'a>) -> Self {
         let head_shadow_cos = head_shadow_cone_cos(

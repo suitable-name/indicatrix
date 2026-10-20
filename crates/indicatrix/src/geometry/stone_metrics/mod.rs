@@ -56,6 +56,46 @@ pub(super) use vertices::{escaping_plane_indices, for_each_feasible_triple};
 
 use super::girdle::GIRDLE_NORMAL_Y_EPSILON;
 
+/// Every feasible plane triple of the arrangement `planes` bounds, with the point the
+/// three planes meet at, in `planes`' own units and in the walk's lexicographic order.
+///
+/// This is the public face of the crate-private `for_each_feasible_triple` walk (whose
+/// callers hand it already-normalised planes): it applies the same power-of-two offset
+/// normalisation as [`build_solid_mesh`], then scales every point back, so a point is
+/// bit-for-bit one the mesh derives its vertices from. Unlike the mesh it neither
+/// welds nearby points nor snaps them to a face, so a caller can cluster the points at
+/// an accuracy of its own choosing.
+///
+/// `scale_floor` is a length (the stone's extent) the normalisation scale never falls
+/// below. The walk accepts a point that violates a plane by up to `EPS_FEAS` (`1e-5`)
+/// in normalised units, so a scale far below the stone's extent would make that slack
+/// smaller than the caller's own incidence tolerance. Pass `0.0` to reproduce the
+/// mesh's scale exactly.
+///
+/// Returns `None` when a well-conditioned feasible vertex reaches the bounding blank
+/// (the planes enclose no finite stone). Triples that involve a blank-box plane are
+/// never reported.
+#[must_use]
+pub fn feasible_plane_triples(
+    planes: &[(glam::DVec3, f64)],
+    scale_floor: f64,
+) -> Option<Vec<([usize; 3], glam::DVec3)>> {
+    let floor = if scale_floor.is_finite() {
+        scale_floor
+    } else {
+        0.0
+    };
+    let scale = pow2_scale_norm(max_abs_offset(planes).max(floor));
+    let normalised: Vec<(glam::DVec3, f64)> = planes.iter().map(|&(n, m)| (n, m / scale)).collect();
+    let mut triples = Vec::new();
+    for_each_feasible_triple(&normalised, MIN_TRIPLE_DET, true, |triple, _, vertex| {
+        if triple.iter().all(|&index| index < planes.len()) {
+            triples.push((triple, vertex * scale));
+        }
+    })?;
+    Some(triples)
+}
+
 // One definition of the blank box half-extent (a solid that reaches it is
 // unbounded -- a schedule missing its closing planes -- which [`measure_solid`]
 // reports as `None`), the feasibility slack (a vertex may poke this far beyond a

@@ -98,9 +98,29 @@ impl GemMaterial {
                 // (95nm) and amplitude (peak=2.1, figure-read off Emmett et al. Fig.
                 // 10's relative peak heights, the lowest-confidence number here) are
                 // tuned/estimated.
+                //
+                // 2026-10-19 color check (OWNER DECISION: take the measured-shape
+                // refit) REPLACED the single
+                // 580/700 nm wavelength-Gaussians by bounded 3-band energy-Gaussian
+                // fits of the GIA Fe2+-Ti4+ pair cross section (Dubinsky,
+                // Stone-Sundberg & Emmett, Gems & Gemology Spring 2020 [S1];
+                // `data/reference_spectra/gia_v3plus_fe2plus_ti4plus_sigma_5nm.csv`:
+                // 1.98e-18 cm^2 at 580 nm E-perp-c, 1.25e-18 at 700 nm E-parallel-c)
+                // at 10 ppma*cm. Fitted, not tuned. Swatch (7 mm, D65): L*57 C*40
+                // h=283 (x1.2 for L*51); the old data gave L*54 h=275.
                 absorption: AbsorptionTensor::uniaxial(
-                    vec![AbsorptionBand::new(580.0, 90.0, 3.0)], // o-ray (E-perp-c)
-                    vec![AbsorptionBand::new(700.0, 95.0, 2.1)], // e-ray (E-parallel-c), IVCT at 700nm
+                    vec![
+                        // o-ray (E-perp-c)
+                        AbsorptionBand::energy(585.0, 4_878.0, 2.01),
+                        AbsorptionBand::energy(744.0, 3_142.0, 0.887),
+                        AbsorptionBand::energy(457.0, 12_000.0, 0.433),
+                    ],
+                    vec![
+                        // e-ray (E-parallel-c)
+                        AbsorptionBand::energy(612.0, 7_466.0, 0.371),
+                        AbsorptionBand::energy(729.0, 4_955.0, 1.03),
+                        AbsorptionBand::energy(467.0, 11_169.0, 0.524),
+                    ],
                 ),
                 c_axis: Vec3::Y,
                 biaxial_delta_beta_alpha: None,
@@ -157,14 +177,34 @@ impl GemMaterial {
                 // rays per Mandarino's "near-equal at 440nm"; yellow-green carries the
                 // bulk of the dichroic ratio) -- a mid-range, tuned simplification of
                 // Mandarino's cited 1.37-2.9 span.
+                //
+                // 2026-10-19 color check REPLACED
+                // the hand-tuned 410/556 nm (o) and 400/550 nm (e) Gaussians (density
+                // of a 0.8 mm slice, window ratio A(472)/A(556) = 0.32 vs 0.075
+                // measured: pink-mauve, L*57 C*30 h=340) by bounded 3-band
+                // energy-Gaussian fits to the GIA sample 1110 Cr3+ cross sections
+                // (Dubinsky, Stone-Sundberg & Emmett, Gems & Gemology Spring 2020
+                // [S1]; `data/reference_spectra/gia_cr3plus_sample1110_sigma.csv`),
+                // scaled to 800 ppma*cm Cr (e.g. ~900 ppma over the 8.8 mm face-up
+                // path; OWNER DECISION 2026-10-19; 1 ppma = 1.178e17 cm^-3 [S1]).
+                // Fitted, not tuned; the DENSITY (800 ppma*cm) is the owner's choice
+                // (600 ppma*cm would be these peaks x 0.75). The o-ray is the
+                // stronger absorber (U band 10.9 vs 3.4); the e-ray's 397 nm band
+                // carries the measured E-parallel-c near-UV rise. Swatch (7 mm,
+                // D65): L*41 C*67 h=356 (p=1.5: h 4; p=2: h 11), GIA Appendix 2
+                // "both" 38.7/70.8/352 at 750 ppma*cm.
                 absorption: AbsorptionTensor::uniaxial(
                     vec![
-                        AbsorptionBand::new(410.0, 30.0, 3.0), // o-ray (E-perp-c)
-                        AbsorptionBand::new(556.0, 45.0, 2.5),
+                        // o-ray (E-perp-c)
+                        AbsorptionBand::energy(562.0, 1_493.0, 10.9),
+                        AbsorptionBand::energy(410.0, 2_767.0, 15.8),
+                        AbsorptionBand::energy(537.0, 2_688.0, 7.06),
                     ],
                     vec![
-                        AbsorptionBand::new(400.0, 30.0, 2.9), // e-ray (E-parallel-c)
-                        AbsorptionBand::new(550.0, 45.0, 1.4),
+                        // e-ray (E-parallel-c)
+                        AbsorptionBand::energy(553.0, 1_721.0, 3.38),
+                        AbsorptionBand::energy(397.0, 3_445.0, 27.1),
+                        AbsorptionBand::energy(525.0, 2_303.0, 2.56),
                     ],
                 ),
                 c_axis: Vec3::Y,
@@ -212,10 +252,30 @@ impl GemMaterial {
                 // (the red-side centre is reported ~600-620nm across localities;
                 // 600nm used here). Widths (30nm/40nm) and peaks (2.8/2.6) tuned; band
                 // positions cited.
-                absorption: AbsorptionTensor::isotropic(vec![
-                    AbsorptionBand::new(430.0, 30.0, 2.8),
-                    AbsorptionBand::new(600.0, 40.0, 2.6),
-                ]),
+                //
+                // 2026-10-19 color check (OWNER DECISION: take the measured-shape
+                // refit) REPLACED the isotropic
+                // 430/600 nm wavelength-Gaussians by uniaxial bounded 3-band
+                // energy-Gaussian fits of the Caltech GRR 3570 emerald spectrum
+                // (G. R. Rossman, Caltech Mineral Spectroscopy Server;
+                // `data/reference_spectra/caltech_emerald_grr3570_5nm.csv`) scaled to
+                // 0.3 cm. Fitted, not tuned. This adds the measured o/e dichroism
+                // (Wood & Nassau 1968 [S3]: o-ray yellowish green, e-ray bluish
+                // green). Swatch (7 mm, D65): L*65 C*101 h=168 (old L*64 h=166).
+                absorption: AbsorptionTensor::uniaxial(
+                    vec![
+                        // o-ray (E-perp-c)
+                        AbsorptionBand::energy(430.0, 3_579.0, 4.5),
+                        AbsorptionBand::energy(591.0, 2_410.0, 2.7),
+                        AbsorptionBand::energy(633.0, 1_860.0, 1.6),
+                    ],
+                    vec![
+                        // e-ray (E-parallel-c)
+                        AbsorptionBand::energy(422.0, 2_681.0, 3.7),
+                        AbsorptionBand::energy(584.0, 1_656.0, 2.2),
+                        AbsorptionBand::energy(645.0, 1_595.0, 5.4),
+                    ],
+                ),
                 c_axis: Vec3::Y,
                 biaxial_delta_beta_alpha: None,
                 scattering_sigma_s: 0.0,

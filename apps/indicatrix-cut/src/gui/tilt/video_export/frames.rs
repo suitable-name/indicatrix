@@ -200,6 +200,143 @@ const fn frame_local_compute(
     }
 }
 
+/// The legend file of a diagnostic video, one for the whole folder.
+const LEGEND_FILE: &str = "optical.txt";
+
+/// Said when frames already on disk were rendered under other diagnostic settings.
+const LEGEND_MISMATCH: &str = "The frames already in this folder were rendered with different Optical Diagnostics settings. Restart the video to render every frame again.";
+
+/// Checks the diagnostic choice before any frame renders, and writes the folder's one legend
+/// file ([`LEGEND_FILE`]). The legend doubles as the resume key: with `frames_done` frames
+/// already on disk it must equal the legend those frames were rendered under, or the video
+/// would mix pictures with and without (or with other) diagnostics. A fresh run (no frames on
+/// disk) with no diagnostics removes a legend left by an earlier run.
+fn prepare_legend(request: &VideoExportRequest, frames_done: usize) -> Result<(), String> {
+    use crate::bridge::optical_overlay::export::{refusal, sweep_legend};
+    if let Some(reason) = refusal(&request.scene) {
+        return Err(reason.to_string());
+    }
+    let path = request.out_dir.join(LEGEND_FILE);
+    let sweep = format!(
+        "Sweep axis {}; start {}; end {}; step {} degrees; every frame is traced at its exact signed pose.",
+        request.axis_index, request.start_deg, request.end_deg, request.step_deg
+    );
+    let Some(legend) = sweep_legend(&request.scene, request.width, request.height, &sweep) else {
+        if frames_done == 0 {
+            let _ = std::fs::remove_file(&path);
+        } else if path.is_file() {
+            return Err(LEGEND_MISMATCH.to_string());
+        }
+        return Ok(());
+    };
+    if frames_done > 0 && std::fs::read_to_string(&path).ok().as_deref() != Some(legend.as_str()) {
+        return Err(LEGEND_MISMATCH.to_string());
+    }
+    std::fs::write(&path, legend).map_err(|e| format!("Diagnostic legend: {e}"))
+}
+
+/// The row `up` pixels above the bottom edge of a picture `height` tall.
+fn row_above_bottom(height: u32, up: u32) -> i32 {
+    i32::try_from(height.saturating_sub(up)).unwrap_or(i32::MAX)
+}
+
+/// The caption strip at the bottom of a frame that carries a diagnostic overlay.
+fn draw_diagnostic_caption(rgba: &mut [u8], width: u32, height: u32) {
+    overlay::fill_rect_alpha(
+        rgba,
+        width,
+        height,
+        0,
+        row_above_bottom(height, 20),
+        width,
+        20,
+        [0, 0, 0],
+        210,
+    );
+    let caption = if width >= 320 {
+        "OPTICAL DIAGNOSTICS V1 - GEOMETRIC ESTIMATE"
+    } else {
+        "OPTICAL V1"
+    };
+    overlay::draw_text(
+        rgba,
+        width,
+        height,
+        4,
+        row_above_bottom(height, 17),
+        caption,
+        1,
+        [255, 255, 255],
+    );
+    if width >= 320 {
+        overlay::draw_text(
+            rgba,
+            width,
+            height,
+            4,
+            row_above_bottom(height, 9),
+            "FIRE = DISPERSION POTENTIAL",
+            1,
+            [255, 255, 255],
+        );
+    }
+}
+
+/// The GPU backend a sweep traces with: acquired only when the local compute target uses
+/// the GPU and some frame still has to be rendered.
+fn acquire_gpu(local_compute: LocalComputeTarget, needs_render: bool) -> GpuBackend {
+    match local_compute {
+        LocalComputeTarget::CpuGpu | LocalComputeTarget::Gpu if needs_render => {
+            GpuBackend::acquire()
+        }
+        _ => GpuBackend::disabled(),
+    }
+}
+
+/// Draws the optical diagnostics (and their caption) over frame `(index, total)`'s `rgba`,
+/// when the scene asks for them. They fill the second half of the frame's progress.
+fn overlay_diagnostics(
+    request: &VideoExportRequest,
+    pose: [f32; 2],
+    (index, total): (usize, usize),
+    rgba: &mut [u8],
+    cancel: &AtomicBool,
+    reporter: &mut dyn FrameReporter,
+) -> Result<(), String> {
+    let mut report_diagnostics = |fraction: f32| {
+        reporter.frame_progress(index, total, fraction.mul_add(0.5, 0.5), None);
+    };
+    let applied = crate::bridge::optical_overlay::export::apply(
+        &request.scene,
+        pose,
+        crate::bridge::optical_overlay::export::Picture {
+            width: request.width,
+            height: request.height,
+            color_space: request.color_space,
+            rgba: &mut *rgba,
+        },
+        cancel,
+        &mut report_diagnostics,
+    )?;
+    if applied.is_some() {
+        draw_diagnostic_caption(rgba, request.width, request.height);
+    }
+    Ok(())
+}
+
+/// How a sweep ends when the diagnostic pass of a frame stops with `message`: cancelled
+/// when `cancel` is raised (the pass reports a stopped job as an error), failed otherwise.
+fn diagnostics_stopped(message: String, cancel: &AtomicBool, frames_done: usize) -> FramesOutcome {
+    if cancel.load(Ordering::Relaxed) {
+        FramesOutcome::Cancelled { frames_done }
+    } else {
+        FramesOutcome::Failed {
+            message,
+            frames_done,
+        }
+    }
+}
+
 /// Renders every frame of `request`'s sweep in order, writing each as a numbered PNG in
 /// `request.out_dir` (which must exist).
 ///
@@ -210,6 +347,10 @@ const fn frame_local_compute(
 /// `skip_existing`, a frame whose PNG is already on disk is not rendered again. `cancel`
 /// is checked between frames, not mid-frame: a frame's own trace is already parallelised
 /// internally and not worth interrupting partway through.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one frame loop whose setup, cancel checks and progress share local state"
+)]
 pub fn render_frames(
     request: &VideoExportRequest,
     skip_existing: bool,
@@ -229,6 +370,16 @@ pub fn render_frames(
     };
     let is_on_disk = |index: usize| existing.get(index).copied().unwrap_or(false);
     let mut frames_done = (0..total).filter(|&index| is_on_disk(index)).count();
+    if let Err(message) = prepare_legend(request, frames_done) {
+        return FramesOutcome::Failed {
+            message,
+            frames_done,
+        };
+    }
+    let diagnostics = request.scene.optical_diagnostics.is_some();
+    // With diagnostics the beauty render fills the first half of a frame's progress and the
+    // diagnostic pass the second half.
+    let beauty_share = if diagnostics { 0.5 } else { 1.0 };
 
     // ---- Compute setup, once for the whole video -----------------------------------
     // Adapter acquisition, remote probing, and hybrid/remote calibration are all far
@@ -239,12 +390,14 @@ pub fn render_frames(
     // `Remote only` traces nothing here: `local_compute` becomes the CPU alone (no hybrid
     // calibration probe, which would trace locally) and no GPU adapter is acquired.
     let local_compute = frame_local_compute(request.remote.compute_target, request.local_compute);
-    let gpu = match local_compute {
-        LocalComputeTarget::CpuGpu | LocalComputeTarget::Gpu if needs_render => {
-            GpuBackend::acquire()
-        }
-        _ => GpuBackend::disabled(),
-    };
+    let gpu = acquire_gpu(
+        if request.scene.engine.is_ray() {
+            LocalComputeTarget::Cpu
+        } else {
+            local_compute
+        },
+        needs_render,
+    );
     let mut carry = AccumulationCarry::default();
     let config = render::VideoComputeConfig {
         remote: request.remote.clone(),
@@ -276,7 +429,14 @@ pub fn render_frames(
             &gpu,
             &mut carry,
             cancel,
-            |progress| reporter.frame_progress(index, total, progress.fraction, progress.note),
+            |progress| {
+                reporter.frame_progress(
+                    index,
+                    total,
+                    progress.fraction * beauty_share,
+                    progress.note,
+                );
+            },
         );
         let mut rgba = match outcome {
             render::FrameOutcome::Rendered(rgba) => rgba,
@@ -288,6 +448,16 @@ pub fn render_frames(
                 };
             }
         };
+        if let Err(message) = overlay_diagnostics(
+            request,
+            [cam_yaw, cam_pitch],
+            (index, total),
+            &mut rgba,
+            cancel,
+            reporter,
+        ) {
+            return diagnostics_stopped(message, cancel, frames_done);
+        }
         if request.selection.count() > 0 {
             let readings =
                 metrics::readings_for_frame(request.selection, &request.curves, tilt_deg);
@@ -431,6 +601,45 @@ mod tests {
             FramesOutcome::Cancelled { frames_done: 1 }
         ));
         assert_eq!(existing_frames(&dir, 3), vec![true, false, false]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The video writes one legend beside its frames, and frames already on disk may only be
+    /// kept when that legend is unchanged.
+    #[test]
+    fn the_folders_legend_is_the_resume_key_for_diagnostic_videos() {
+        use indicatrix::renderer::optical_overlay::OpticalPresentation;
+        let dir = test_dir("legend");
+        let mut request = request(&dir);
+        request.scene.optical_diagnostics = Some(OpticalPresentation::default());
+        prepare_legend(&request, 0).expect("a fresh run writes the legend");
+        let legend = dir.join(LEGEND_FILE);
+        assert!(legend.is_file());
+        assert!(
+            !dir.join("frame_001.optical.txt").exists(),
+            "no per-frame legend files"
+        );
+        prepare_legend(&request, 1).expect("the same settings may resume");
+
+        request.scene.optical_diagnostics = Some(OpticalPresentation {
+            opacity: 0.9,
+            ..OpticalPresentation::default()
+        });
+        assert_eq!(
+            prepare_legend(&request, 1),
+            Err(LEGEND_MISMATCH.to_string())
+        );
+        prepare_legend(&request, 0).expect("a restart replaces the legend");
+
+        request.scene.optical_diagnostics = None;
+        assert_eq!(
+            prepare_legend(&request, 1),
+            Err(LEGEND_MISMATCH.to_string()),
+            "frames with diagnostics cannot continue without them"
+        );
+        prepare_legend(&request, 0).expect("a clean restart is fine");
+        assert!(!legend.exists(), "the old legend is removed");
+        prepare_legend(&request, 1).expect("a clean video resumes a clean folder");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

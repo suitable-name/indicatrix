@@ -169,6 +169,15 @@ pub fn render_request(
     // the request: a `Planned` request rebuilds the style without them and the gate
     // drops a superseded overlay update -- see `Outlines`.
     let style = memory.with_outlines(style);
+    // The five view modes: 0 Solid, 1 Path-Traced, 2 Both (adds the edges layer),
+    // 3 Diagram (adds the diagram layer), 4 Ray-Traced. Modes 0, 1 and 4 draw the same
+    // solid raster, because the traced image is composed by the caller and needs the
+    // solid pick geometry only. Any other value is treated as Solid, so a sixth mode
+    // must be added to this match and to the layer branches below on purpose.
+    let view_mode = match view_mode {
+        0..=4 => view_mode,
+        _ => 0,
+    };
 
     rasterizer.resize(size.0, size.1);
     let camera = Camera::new(

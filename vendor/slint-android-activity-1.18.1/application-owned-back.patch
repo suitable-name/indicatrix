@@ -1,0 +1,98 @@
+--- a/java/SlintAndroidJavaHelper.java
++++ b/java/SlintAndroidJavaHelper.java
+@@ -427,6 +427,17 @@
+     SlintInputView mInputView;
+     private OnBackInvokedCallback mBackCallback;
+ 
++    // Opt-in ownership switch. Default behavior is unchanged for upstream consumers.
++    private static boolean applicationOwnsBack(Activity activity) {
++        try {
++            android.content.pm.ActivityInfo info = activity.getPackageManager().getActivityInfo(
++                    activity.getComponentName(), android.content.pm.PackageManager.GET_META_DATA);
++            return info.metaData != null && info.metaData.getBoolean("dev.slint.applicationOwnsBack", false);
++        } catch (android.content.pm.PackageManager.NameNotFoundException exception) {
++            return false;
++        }
++    }
++
+     public SlintAndroidJavaHelper(Activity activity) {
+         this.mActivity = activity;
+         this.mInputView = new SlintInputView(activity);
+@@ -455,7 +466,8 @@
+                 }
+                 // On API 34+, Back arrives via OnBackInvokedDispatcher; forward
+                 // it into Slint's key-event pipeline.
+-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && mBackCallback == null) {
++                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && mBackCallback == null
++                        && !applicationOwnsBack(activity)) {
+                     mBackCallback = () -> SlintAndroidJavaHelper.onBackInvoked();
+                     mActivity.getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                             OnBackInvokedDispatcher.PRIORITY_DEFAULT, mBackCallback);
+--- a/androidwindowadapter.rs
++++ b/androidwindowadapter.rs
+@@ -49,6 +49,8 @@
+ 
+     long_press: RefCell<Option<LongPressDetection>>,
+     last_pressed_state: Cell<ButtonState>,
++    // Consume the complete legacy Back sequence that dismissed a popup.
++    popup_back_pressed: Cell<bool>,
+ }
+ 
+ impl WindowAdapter for AndroidWindowAdapter {
+@@ -194,6 +196,7 @@
+             show_cursor_handles: Cell::new(false),
+             long_press: RefCell::default(),
+             last_pressed_state: Cell::new(ButtonState(0)),
++            popup_back_pressed: Cell::new(false),
+         })
+     }
+ 
+@@ -248,6 +251,7 @@
+                 self.window.dispatch_event_with_result(WindowEvent::WindowActiveChanged(true))?;
+             }
+             PollEvent::Main(MainEvent::LostFocus) => {
++                self.popup_back_pressed.set(false);
+                 self.window.dispatch_event_with_result(WindowEvent::WindowActiveChanged(false))?;
+             }
+             PollEvent::Main(MainEvent::ConfigChanged { .. }) => {
+@@ -282,7 +286,31 @@
+         loop {
+             let mut result = Ok(());
+             let read_input = iter.next(|event| match event {
+-                InputEvent::KeyEvent(key_event) => match map_key_event(key_event) {
++                InputEvent::KeyEvent(key_event) => {
++                    if key_event.key_code() == Keycode::Back {
++                        if self.popup_back_pressed.get() {
++                            if key_event.action() == KeyAction::Up {
++                                self.popup_back_pressed.set(false);
++                            }
++                            return InputStatus::Handled;
++                        }
++                        if key_event.action() == KeyAction::Down
++                            && !WindowInner::from_pub(&self.window).active_popups().is_empty()
++                        {
++                            self.popup_back_pressed.set(true);
++                            for event in [
++                                WindowEvent::KeyPressed { text: Key::Escape.into() },
++                                WindowEvent::KeyReleased { text: Key::Escape.into() },
++                            ] {
++                                if let Err(error) = self.window.dispatch_event_with_result(event) {
++                                    result = Err(error);
++                                    break;
++                                }
++                            }
++                            return InputStatus::Handled;
++                        }
++                    }
++                    match map_key_event(key_event) {
+                     Some(ev) => match self.window.dispatch_event_with_result(ev) {
+                         Ok(WindowEventDispatchResult::Accepted) => InputStatus::Handled,
+                         Ok(_) => InputStatus::Unhandled,
+@@ -292,6 +320,7 @@
+                         }
+                     },
+                     None => InputStatus::Unhandled,
++                    }
+                 },
+                 InputEvent::MotionEvent(motion_event) => {
+                     let offset = self.offset.get();

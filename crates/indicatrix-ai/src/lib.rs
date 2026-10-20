@@ -31,43 +31,34 @@
 //!
 //! # The composed policy
 //!
-//! The network does not predict an action. For every tier it predicts how much each of four
-//! objective components (windowing, extinction, brilliance loss, yield loss) changes per degree of
-//! that tier (the sensitivity heads). [`model::compose_mean`] weights those sensitivities with the
-//! objective's weight fractions, which are part of the observation, and scales the result so the
-//! steepest tier sits at [`env::MEAN_BOUND`] in pre-squash units; the squash then moves it 95 % of
-//! the step limit. One model therefore serves every objective preset and any custom weighting
-//! without having seen it. The model supplies the direction only: the environment's line search
-//! finds the length, in training and in inference alike. A value head (the PPO baseline) and a
-//! gain head (the predicted score drop of the oracle step, telemetry) read the same network.
+//! The network predicts per-tier slopes for seven components: windowing, extinction, brilliance
+//! loss, yield loss, lighter-tone loss, deeper-tone loss and shape distance. [`model::compose_mean`]
+//! weights them with observed objective coefficients and composes a direction; the environment's
+//! line search determines the accepted length. A value head supports PPO and a gain head predicts
+//! the oracle score drop.
 //!
 //! # Conventions
 //!
 //! - Angles are degrees and signed: crown tiers positive, pavilion tiers negative; no tier ever
 //!   changes sign.
-//! - Scores are `0..=100`, lower is better: the optical `ObjectiveWeights::score` figure, plus the
-//!   yield loss (`ObjectiveWeights::score_with_yield`) when the weights weigh the yield and the
-//!   design's preform makes it measurable.
+//! - Scores use the shared cut-core optical/tone objective, add yield loss when measurable and
+//!   weighted, and add configured shape penalty. Lower is better. Yield loss follows core's
+//!   `100 - yield_percent` convention without an AI-side clamp.
 //! - Everything is deterministic: identical network, design and settings give identical results.
 //!   The environments contain no randomness; exploration noise belongs to the training sampler
 //!   ([`model::Prng`], `SplitMix64` with explicit seeds).
 //!
 //! # Known limits
 //!
-//! - Rollouts score candidates at `Fast` fidelity (one table-up pose): the policy sees no tilt
-//!   information while it acts, and the `Fast` score is quantised (about 0.16 points: a move that
-//!   changes no ray count scores the same as no move, which the greedy gate rejects). Inference
-//!   reports its before/after figures at `Full` fidelity and only proposes a change that also
-//!   measures better there.
-//! - The face-up tone term is not supported: the environments do not trace the body color and
-//!   the observation carries none. The environments refuse a tone weight
-//!   ([`env::EnvError::InvalidConfig`]) and the inference wrappers return
-//!   [`inference::InferenceError::UnsupportedObjective`], so the presets Lighten Dark Rough and
-//!   Intensify Pale Rough are not covered; every other weighting is.
-//! - One model serves both tasks and every supported objective (the optimizer is the retarget
-//!   task with the target equal to the source material), so there is no model per task or per
-//!   objective; the optimizer wrapper accepts a retarget checkpoint, the retarget wrapper does not
-//!   accept an optimizer one.
+//! - Training defaults to `Fast`; either environment accepts `Fast` or `Full`. Inference uses its
+//!   configured rollout fidelity and independently scores endpoints at report fidelity.
+//! - Tone is measured and both tone goals are supported. A score readout can be requested directly
+//!   with `inference::score_design_at_fidelity` without capturing a new environment.
+//! - Checkpoints are task-specific: optimizer and retarget wrappers accept only their matching task
+//!   and reject wrong schema/layout stamps, even for an in-memory checkpoint.
+//! - Retargeting preserves the exact certified angles and masts in `CertifiedRetargetResult`.
+//!   The legacy editor adapter verifies its angle-plan reconstruction and returns an error if it
+//!   cannot reproduce that certified geometry.
 //! - An inference run stops early after a number of consecutive refused steps
 //!   ([`inference::InferenceConfig::stall_steps`]); a rejected step spends the whole line search,
 //!   so a run costs at most `steps * line_search.len()` evaluations.

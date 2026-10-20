@@ -4,10 +4,13 @@
 //! # Design
 //!
 //! - **Scene.** [`sync`] builds a `SceneSpec` from `WebApp` with
-//!   `indicatrix_web_core::settings::scene_spec` (the solved design's planes, the
+//!   `indicatrix_web_core::settings::scene_spec_with_frosting` (the solved design's planes, the
 //!   settings' finishes/material/lighting/bounces, the view's camera and size, the HDR
-//!   id) and compares it with the one being rendered. Any difference is a new scene:
-//!   `set_scene` + `start(target)`, a new epoch whose stale chunks the pool drops. A
+//!   id) and compares it with the one being rendered. A design with concave tiers also
+//!   gets its resolved tools (`live_tools`, the same `Design::tools_for_scoring` the
+//!   desktop's scoring uses), which ride with the scene to every Worker (CPU and GPU alike)
+//!   and take part in the comparison. Any difference is a new scene:
+//!   `set_scene_with_tools` + `start(target)`, a new epoch whose stale chunks the pool drops. A
 //!   changed target alone just moves the goal. Leaving the Render tab pauses the pool
 //!   (`cancel`); coming back resumes the same accumulation.
 //! - **HDR map.** `hdr::sync_hdr` uploads the uploaded `.hdr` to the render Workers
@@ -33,11 +36,13 @@
 //!   goes silent is replaced by the pool; one that keeps failing shows "Restart render
 //!   workers".
 
+mod design_cache;
 mod hdr;
 mod header_material;
 
+use self::design_cache::{live_frosted, live_tools};
 use self::hdr::{HdrState, sync_hdr};
-use super::{export, now_ms, panel, rgba_image};
+use super::{export, live_ray, now_ms, panel, rgba_image};
 use crate::{
     AppModel, RenderModel,
     app::{
@@ -47,15 +52,15 @@ use crate::{
         state::SolveState,
     },
 };
-use indicatrix::geometry::GpuFacetPlane;
+use indicatrix::geometry::{GpuFacetPlane, tool::ToolPrimitive};
 use indicatrix_editor::solve_policy::design_to_gpu_planes_from_solved;
 use indicatrix_web_core::{
     display::{format_rate, live_rgba, samples_per_second},
     host::{PictureResult, WorkerPool},
     protocol::PictureKind,
-    render::{Accumulator, clamp_live_spp},
+    render::Accumulator,
     scene::SceneSpec,
-    settings::{SceneInputs, render_material, scene_spec},
+    settings::{SceneInputs, render_material, scene_spec_with_frosting},
 };
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::{cell::RefCell, time::Duration};
@@ -94,6 +99,9 @@ struct Live {
     settle_timer: Timer,
     /// The live scene being rendered.
     current: Option<SceneSpec>,
+    current_engine: indicatrix::renderer::engine::EngineSpec,
+    /// The concave tools `current` is cut by (empty for a flat stone).
+    current_tools: Vec<ToolPrimitive>,
     target_spp: u32,
     hdr: HdrState,
     shown: Shown,
@@ -150,6 +158,13 @@ pub(super) fn ensure_pool(ctx: &Ctx) -> Result<WorkerPool, String> {
         render.on_error(move |message| on_error(&c, message));
         let c = ctx.clone();
         render.on_picture(move |result| on_picture(&c, result));
+        let c = ctx.clone();
+        render.on_gpu_event(move |event| super::gpu_gate::on_gpu_event(&c, event));
+        // Not in a browser without WebGPU, and not after a blocked start (the GPU Worker's
+        // adapter request is the step the last start lost the GPU in).
+        if ctx.state.borrow().settings.gpu_enabled && super::gpu_gate::worker_allowed() {
+            render.set_gpu_enabled(true);
+        }
     }
     Ok(pool)
 }
@@ -162,8 +177,8 @@ enum Desired {
     Hidden,
     /// Cannot render yet or at all; the text says why.
     Blocked(String),
-    /// Render this.
-    Scene(Box<SceneSpec>),
+    /// Render this: the scene and the concave tools cut out of its planes.
+    Scene(Box<SceneSpec>, Vec<ToolPrimitive>),
 }
 
 /// The solved design's planes, or why there are none yet.
@@ -210,18 +225,24 @@ fn live_planes(ctx: &Ctx) -> Result<Vec<GpuFacetPlane>, String> {
     Err("Solving the design...".to_string())
 }
 
-/// The live scene for the current state (ignoring the view tab), or why there is
-/// none. Also used by the export, which renders the same scene at its own size.
-pub(super) fn live_scene(ctx: &Ctx, pool: &WorkerPool) -> Result<SceneSpec, String> {
+/// The live scene for the current state (ignoring the view tab) with the concave tools cut
+/// out of its planes -- what the Workers trace -- or why there is none. Also used by the
+/// export, which renders the same pair at its own size.
+pub(super) fn live_geometry(
+    ctx: &Ctx,
+    pool: &WorkerPool,
+) -> Result<(SceneSpec, Vec<ToolPrimitive>), String> {
     let planes = live_planes(ctx)?;
     if planes.is_empty() {
         return Err("Nothing to render: the design has no facets yet.".to_string());
     }
     let hdr_id = sync_hdr(ctx, pool);
+    let tools = live_tools(ctx);
+    let frosted = live_frosted(ctx);
     let app = ctx.state.borrow();
     let design = app.design.as_ref().map(|d| &d.session.design);
     let material = render_material(&app.settings, design, &app.custom_materials)?;
-    Ok(scene_spec(
+    let spec = scene_spec_with_frosting(
         &app.settings,
         &SceneInputs {
             planes: &planes,
@@ -231,24 +252,32 @@ pub(super) fn live_scene(ctx: &Ctx, pool: &WorkerPool) -> Result<SceneSpec, Stri
             height: app.view.render_height,
             hdr_id,
         },
-    ))
+        &frosted,
+    );
+    drop(app);
+    live_ray::validate(ctx, &spec)?;
+    Ok((spec, tools))
 }
 
-/// The stone, material and light of the live view, without a frame size or an HDR map:
-/// what the Tilt dialog's sweep measures (`crate::metrics::tilt`), which the desktop
-/// scores under the lighting preset whatever lights the viewport. (The metrics HUD takes
-/// the live scene itself, whose `hdr_id` names the map it is scored under.) The planes
-/// are the solved design's, so this starts a solve when there is none for the current
-/// design and answers "Solving..." until it lands.
-pub fn optics_scene(ctx: &Ctx) -> Result<SceneSpec, String> {
+/// The stone, material and light of the live view, without a frame size or an HDR map, and
+/// the concave tools cut out of the stone: what the Tilt dialog's sweep measures
+/// (`crate::metrics::tilt`), which the desktop scores under the lighting preset whatever
+/// lights the viewport. (The metrics HUD takes the live scene itself, whose `hdr_id` names
+/// the map it is scored under.) The planes are the solved design's, so this starts a solve
+/// when there is none for the current design and answers "Solving..." until it lands.
+pub fn optics_geometry(ctx: &Ctx) -> Result<(SceneSpec, Vec<ToolPrimitive>), String> {
     let planes = live_planes(ctx)?;
     if planes.is_empty() {
         return Err("Nothing to measure: the design has no facets yet.".to_string());
     }
+    let tools = live_tools(ctx);
+    // The design's frosting travels in the spec's finishes: the tilt sweep scores the frosted
+    // stone the viewport draws (a frosted facet scatters light), and its params name them.
+    let frosted = live_frosted(ctx);
     let app = ctx.state.borrow();
     let design = app.design.as_ref().map(|d| &d.session.design);
     let material = render_material(&app.settings, design, &app.custom_materials)?;
-    Ok(scene_spec(
+    let spec = scene_spec_with_frosting(
         &app.settings,
         &SceneInputs {
             planes: &planes,
@@ -258,7 +287,9 @@ pub fn optics_scene(ctx: &Ctx) -> Result<SceneSpec, String> {
             height: app.view.render_height,
             hdr_id: None,
         },
-    ))
+        &frosted,
+    );
+    Ok((spec, tools))
 }
 
 fn desired(ctx: &Ctx) -> Result<(Desired, Option<WorkerPool>), String> {
@@ -277,8 +308,8 @@ fn desired(ctx: &Ctx) -> Result<(Desired, Option<WorkerPool>), String> {
         return Ok((Desired::Hidden, existing));
     }
     let pool = ensure_pool(ctx)?;
-    let desired = match live_scene(ctx, &pool) {
-        Ok(spec) => Desired::Scene(Box::new(spec)),
+    let desired = match live_geometry(ctx, &pool) {
+        Ok((spec, tools)) => Desired::Scene(Box::new(spec), tools),
         Err(reason) => Desired::Blocked(reason),
     };
     Ok((desired, Some(pool)))
@@ -291,6 +322,9 @@ fn sync(ctx: &Ctx) {
     }
     header_material::follow(ctx);
     header_material::show_linked(ctx);
+    if let Some(pool) = crate::workers::existing() {
+        super::gpu_gate::admit_if_ready(ctx, &pool);
+    }
     if let Some(ui) = ctx.ui.upgrade() {
         panel::push_panel(&ui, &ctx.state.borrow().settings);
     }
@@ -307,10 +341,7 @@ fn sync(ctx: &Ctx) {
         set_overlay(ctx, "");
         return;
     };
-    set_backend(
-        ctx,
-        &format!("CPU \u{b7} {} workers", pool.render().worker_count()),
-    );
+    set_backend(ctx, &super::gpu_gate::format_backend_text(ctx, &pool));
     match desired {
         Desired::Nothing => {
             pool.render().cancel();
@@ -324,23 +355,28 @@ fn sync(ctx: &Ctx) {
             set_overlay(ctx, &reason);
             crate::metrics::scene_blocked(ctx);
         }
-        Desired::Scene(spec) => {
+        Desired::Scene(spec, tools) => {
             set_overlay(ctx, "");
-            crate::metrics::scene_changed(ctx, &spec);
-            render_scene(ctx, &pool, *spec);
+            crate::metrics::scene_changed(ctx, &spec, &tools);
+            render_scene(ctx, &pool, *spec, tools);
         }
     }
 }
 
 /// Starts `spec` if it differs from the scene being rendered, and (re)starts the pool
 /// towards the target.
-fn render_scene(ctx: &Ctx, pool: &WorkerPool, spec: SceneSpec) {
-    let target = clamp_live_spp(ctx.state.borrow().settings.target_spp);
+fn render_scene(ctx: &Ctx, pool: &WorkerPool, spec: SceneSpec, tools: Vec<ToolPrimitive>) {
+    let target = ctx.state.borrow().settings.live_target();
+    let engine = live_ray::engine(ctx);
     let changed = LIVE.with(|live| {
         let mut live = live.borrow_mut();
-        let changed = live.current.as_ref() != Some(&spec);
+        let changed = live.current.as_ref() != Some(&spec)
+            || live.current_tools != tools
+            || live.current_engine != engine;
         if changed {
             live.current = Some(spec.clone());
+            live.current_tools.clone_from(&tools);
+            live.current_engine = engine;
             live.last_error = None;
         }
         live.target_spp = target;
@@ -348,7 +384,7 @@ fn render_scene(ctx: &Ctx, pool: &WorkerPool, spec: SceneSpec) {
     });
     let render = pool.render();
     if changed {
-        render.set_scene(spec);
+        render.set_scene_with_engine(spec, tools, engine);
         let scene_id = render.scene_id();
         LIVE.with(|live| {
             live.borrow_mut().shown = Shown {
@@ -435,6 +471,7 @@ fn display(ctx: &Ctx, pool: &WorkerPool) {
     drop(acc);
     let elapsed = now_ms() - start;
     set_frame(ctx, width, height, &rgba);
+    super::gpu_gate::admit_if_ready(ctx, pool);
     LIVE.with(|live| {
         let mut live = live.borrow_mut();
         let shown = &mut live.shown;
@@ -461,6 +498,9 @@ fn settle(ctx: &Ctx, pool: &WorkerPool) {
 
 /// Asks a Worker for the denoised picture of the current sum, once per sample count.
 fn maybe_denoise(ctx: &Ctx, pool: &WorkerPool) {
+    if !live_ray::engine(ctx).denoises() {
+        return;
+    }
     let enabled = ctx.state.borrow().settings.denoise;
     let render = pool.render();
     let (scene_id, samples) = {
@@ -516,7 +556,7 @@ fn on_picture(ctx: &Ctx, result: PictureResult) {
             acc.height(),
         )
     };
-    let wanted = ctx.state.borrow().settings.denoise;
+    let wanted = ctx.state.borrow().settings.denoise && live_ray::engine(ctx).denoises();
     if export::is_running() || !wanted || result.scene_id != scene_id {
         return;
     }
@@ -641,11 +681,15 @@ fn show_progress_text(ctx: &Ctx, pool: &WorkerPool) {
     });
     let (requested, denoised, failed, denoise_ms) = denoise;
     let rate = samples_per_second(samples, started, anchor, now);
-    let mut text = format!(
-        "{samples}/{target} spp \u{b7} {} spp/s \u{b7} {} workers",
-        format_rate(rate),
-        render.worker_count()
-    );
+    let mut text = if live_ray::engine(ctx).is_ray() {
+        live_ray::progress(samples, target)
+    } else {
+        format!(
+            "{samples}/{target} spp \u{b7} {} spp/s \u{b7} {} workers",
+            format_rate(rate),
+            render.worker_count()
+        )
+    };
     if denoised == Some(key) {
         text.push_str(&denoise_ms.map_or_else(
             || " \u{b7} denoised".to_string(),

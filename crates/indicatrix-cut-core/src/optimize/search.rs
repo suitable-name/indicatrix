@@ -6,7 +6,7 @@
 //! own doc comment ("Why this is three functions, not one") for why.
 
 use super::{
-    candidate::{BaselineWarningCounts, SearchContext, apply_free_angles, preform_volume},
+    candidate::{BaselineWarningCounts, SearchContext, preform_volume},
     guard::ShapeGuard,
     objective::{CANONICAL_LIGHTING_PRESET, ObjectiveComponents, ObjectiveWeights},
     options::{OptimizeOptions, OptimizeResult},
@@ -208,7 +208,8 @@ pub struct OptimizeConfig {
     /// (see [`run_search`]'s own doc comment).
     pub polish_start_step_deg: Option<f64>,
     /// Caps the polish stage's own evaluation count, independent of
-    /// `max_evaluations` (the coordinate stage's budget). `None` uses `3 *
+    /// `max_evaluations` (the coordinate stage's budget), and a hard cap: the stage
+    /// never evaluates more often than this. `None` uses `3 *
     /// free_tier_indices(design).len() + 20` -- enough for the initial simplex (one
     /// evaluation per free tier) plus a modest number of reflect/expand/contract
     /// iterations. Has no effect when the polish stage is disabled.
@@ -331,6 +332,8 @@ pub struct AngleChange {
 /// spent getting there, and which tiers it would change.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptimizeOutcome {
+    /// Source, score inputs and complete accepted depths, also retained over worker transport.
+    pub provenance: Option<super::OptimizationProvenance>,
     /// Objective components of the starting design.
     pub before: ObjectiveComponents,
     /// Combined score of the starting design.
@@ -380,8 +383,9 @@ pub struct OptimizeOutcome {
 /// (see [`super::free_tier_indices`]) to minimize [`super::objective::ObjectiveWeights::score`].
 ///
 /// [`optimize_design_with`] is the same search with an [`OptimizeOptions`] request.
-/// Entirely synchronous on the calling thread (aside from the two short-lived
-/// worker threads [`evaluate_candidate_pair`] spawns per tier decision) -- a caller
+/// Entirely synchronous on the calling thread (aside from the short-lived worker
+/// threads [`evaluate_candidate_pair`] spawns per tier decision and, with several
+/// starts, the lane threads of the multi-start driver) -- a caller
 /// that needs the whole search off the UI thread wraps this call the same way
 /// `gui::editor::deep_solve` wraps `solve_meet_points_verified`. `hooks` (see
 /// [`SearchHooks`]) is that caller's way to observe progress and request
@@ -464,8 +468,11 @@ pub fn optimize_design(
 /// stages" sections), over a space the request may widen or narrow, and it returns the
 /// best result plus the alternatives.
 ///
-/// With [`OptimizeOptions::default`] this is exactly [`optimize_design`]: same free
-/// tiers, same candidates, same outcome bits. The request may
+/// With [`OptimizeOptions::default`] this searches exactly the space [`optimize_design`]
+/// does (same free tiers, same candidates). Every accepted state is additionally gated
+/// against the captured meet network and the outcome carries its provenance, so the
+/// outcome is the same except that it is certified (or the run reports no change). The
+/// request may
 ///
 /// - let `ScaleReference` tiers with a hinge move too
 ///   ([`OptimizeOptions::vary_anchored`]; their masts follow their hinges, reported as
@@ -513,9 +520,10 @@ pub fn optimize_design_with(
 ) -> Result<OptimizeResult, DesignSolveError> {
     let baseline = baseline_report(design, material, config, options, hooks)?;
 
-    if baseline.free.is_empty() {
-        return Ok(OptimizeResult::unchanged(
+    if baseline.free.is_empty() && super::constrained::movable_masts(design, options).is_empty() {
+        let mut result = OptimizeResult::unchanged(
             OptimizeOutcome {
+                provenance: None,
                 before: baseline.before,
                 before_score: baseline.before_score,
                 before_yield_loss_pct: baseline.before_yield_loss_pct,
@@ -531,18 +539,37 @@ pub fn optimize_design_with(
             config.lighting,
             baseline.tone_before,
             (config.weights.tone_weight > 0.0).then_some(config.weights.tone_goal),
-        ));
+        );
+        super::provenance::stamp_result(
+            design,
+            material,
+            config,
+            options,
+            &baseline.preservation,
+            &mut result,
+        )?;
+        return Ok(result);
     }
 
-    let space = SearchSpace::new(options, baseline.anchors.clone());
+    let mut space = SearchSpace::new(options, baseline.anchors.clone());
+    space.feasible = Some(super::constrained::FeasibleSpace {
+        baseline: baseline.preservation.clone(),
+        free: baseline.free.clone(),
+        masts: super::constrained::movable_masts(design, options),
+        policy: options.preservation_policy,
+        // The request is a projection-only input (`OptimizeOptions::turn_request`): a search
+        // judges every probe by its own turn, and its scoring identity does not record one.
+        turn_request: None,
+    });
     let ctx = SearchContext {
+        cancel: hooks.cancel,
         material,
         weights: &config.weights,
         baseline_warnings: &baseline.warnings,
         lighting: config.lighting,
         space: &space,
         guard: baseline.guard.as_ref(),
-        shape_target: options.shape_target,
+        shape_target: options.active_shape_target(),
         preform_volume: preform_volume(design),
     };
     let pool = CandidatePool::new(
@@ -568,20 +595,22 @@ pub fn optimize_design_with(
         )
     };
 
-    let best_angles: Vec<f64> = baseline
-        .free
-        .iter()
-        .map(|&i| current.tiers[i].angle_deg)
-        .collect();
     let rivals: Vec<Design> = pool
-        .rivals(&best_angles)
+        .rivals_for_design(&current, &baseline.free)
         .into_iter()
-        .filter_map(|entry| apply_free_angles(design, &baseline.free, &entry.angles, &space))
+        .filter_map(|entry| entry.design)
         .collect();
 
-    Ok(build_result(
-        design, &current, &rivals, &ctx, &baseline, hooks, &summary,
-    ))
+    let mut result = build_result(design, &current, &rivals, &ctx, &baseline, hooks, &summary);
+    super::provenance::stamp_result(
+        design,
+        material,
+        config,
+        options,
+        &baseline.preservation,
+        &mut result,
+    )?;
+    Ok(result)
 }
 
 /// The single-descent search: the coordinate stage from `design` itself, then the polish
@@ -631,6 +660,7 @@ fn run_single_start(
 /// the [`BaselineWarningCounts`] every candidate gets checked against, and the
 /// free tier indices the search is allowed to move.
 struct Baseline {
+    preservation: std::sync::Arc<crate::meet_preservation::MeetPreservationBaseline>,
     before: ObjectiveComponents,
     before_score: f32,
     /// The SAME starting design's score, but at [`ObjectiveFidelity::Fast`] --

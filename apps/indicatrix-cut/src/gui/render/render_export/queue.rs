@@ -108,7 +108,12 @@ pub(super) fn apply_preset_to_scene(
         crate::gui::optics::offered_lighting::offered_from_label(&values.lighting_rig);
     // A saved lighting is a complete look: its glare, backdrop and head shadow come with it.
     scene.surface_glare = values.surface_glare;
-    scene.backdrop = values.backdrop.level();
+    // Resolved at the saved lighting's own preset and pose (set just above), never the
+    // base capture's: the tray's brightness follows the rig that lights it.
+    scene.backdrop =
+        values
+            .backdrop
+            .resolve(scene.lighting_preset, scene.light_yaw, scene.light_pitch);
     scene.head_shadow_deg = values.head_shadow_deg;
     // Applied unconditionally, matching `lighting_presets`' own live-apply -- unlike
     // camera yaw/pitch just below, `camera_distance` is a plain field (not an

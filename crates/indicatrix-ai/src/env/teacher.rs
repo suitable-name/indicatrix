@@ -2,15 +2,15 @@
 //!
 //! The simulator is deterministic and cheap, so instead of inferring a direction from the
 //! noisy scalar reward of a proposal, the trainer asks it directly. [`EnvCore::teacher_label`]
-//! probes every free tier by one candidate evaluation (`+h` degrees, else `-h`) and reports
-//! how each of the four score components moves per degree of that tier
+//! probes every free tier with feasible two-sided evaluations where possible and reports
+//! how each of the seven score components moves per degree of that tier
 //! ([`TierSensitivity`]). A model that predicts those sensitivities can compose the direction
 //! for ANY weighting of the objective from the weight fractions in the observation, so one
 //! model serves every preset.
 //!
 //! # Components
 //!
-//! Everywhere (labels, model heads, loss) the four components come in this order, all as
+//! Everywhere (labels, model heads, loss) the seven components come in this order, all as
 //! LOSSES (lower is better), in percentage points:
 //!
 //! | index | constant | figure |
@@ -18,7 +18,10 @@
 //! | 0 | [`COMPONENT_WINDOWING`] | windowing percentage |
 //! | 1 | [`COMPONENT_EXTINCTION`] | extinction percentage |
 //! | 2 | [`COMPONENT_BRILLIANCE_LOSS`] | `100 - tilt_brilliance_pct` |
-//! | 3 | [`COMPONENT_YIELD_LOSS`] | `max(100 - yield_pct, 0)` (NaN when the yield is not measurable) |
+//! | 3 | [`COMPONENT_YIELD_LOSS`] | `100 - yield_pct` (NaN when yield is not measurable) |
+//! | 4 | [`COMPONENT_LIGHTER_TONE_LOSS`] | shared lighter-tone loss |
+//! | 5 | [`COMPONENT_DEEPER_TONE_LOSS`] | shared deeper-tone loss |
+//! | 6 | [`COMPONENT_SHAPE_DISTANCE`] | `100 *` configured shape distance (NaN when absent) |
 //!
 //! A slope is the change of such a figure per degree of one tier, in percentage points per
 //! degree; the score slope is in score points per degree. A negative slope means "increasing
@@ -53,11 +56,11 @@
 use super::{
     action::ContinuousTierAction,
     common::{DesignEval, EnvCore, apply_action, evaluate_design, yield_loss_pct},
-    stepping::usable_scales,
+    stepping::{CandidateOutcome, usable_scales},
 };
 
 /// Number of score components a sensitivity vector holds.
-pub const N_COMPONENTS: usize = 4;
+pub const N_COMPONENTS: usize = 7;
 /// Index of the windowing percentage in a sensitivity vector.
 pub const COMPONENT_WINDOWING: usize = 0;
 /// Index of the extinction percentage in a sensitivity vector.
@@ -66,12 +69,18 @@ pub const COMPONENT_EXTINCTION: usize = 1;
 pub const COMPONENT_BRILLIANCE_LOSS: usize = 2;
 /// Index of the yield loss (`100 - yield_pct`) in a sensitivity vector.
 pub const COMPONENT_YIELD_LOSS: usize = 3;
+/// Index of the lighter-tone loss component.
+pub const COMPONENT_LIGHTER_TONE_LOSS: usize = 4;
+/// Index of the deeper-tone loss component.
+pub const COMPONENT_DEEPER_TONE_LOSS: usize = 5;
+/// Index of the shape-distance component (`100 * distance`).
+pub const COMPONENT_SHAPE_DISTANCE: usize = 6;
 
 /// `atanh(0.95)`: the pre-squash magnitude of the steepest tier of a composed direction.
 pub const MEAN_BOUND: f32 = 1.831_78;
-/// Added to the largest `|slope|` before dividing, in both twins and the oracle (bit for
-/// bit); it keeps a design whose slopes are all numerical noise from being blown up to the
-/// full step.
+/// Minimum score-slope scale (points/degree) before composing a policy direction.
+pub const SLOPE_NORM_FLOOR: f32 = 0.05;
+/// Compatibility constant retained for source users; direction normalization uses the floor.
 pub const SLOPE_EPS: f32 = 1e-6;
 /// Default line-search scales of a step, tried in this order.
 pub const DEFAULT_LINE_SEARCH: [f64; 3] = [1.0, 0.5, 0.25];
@@ -86,7 +95,7 @@ pub struct TierSensitivity {
     /// The score slope, points per degree (the weighted composition of `components` as the
     /// environment scores it; measured directly, so it includes the score's own rounding).
     pub score: f32,
-    /// Which probe produced it: `+h` or `-h` (`false` = the `-h` fallback was used).
+    /// Whether a positive-side probe contributed (`false` means a negative-only fallback).
     pub forward_probe: bool,
 }
 
@@ -138,24 +147,23 @@ pub struct OracleOutcome {
 }
 
 /// The pre-squash direction of slopes `score` (points per degree, `None` = no slope):
-/// `-MEAN_BOUND * s_k / (max_k |s_k| + SLOPE_EPS)`, `0.0` for a tier without a slope.
+/// `-MEAN_BOUND * (s_k / max(max_j |s_j|, SLOPE_NORM_FLOOR))`, `0.0` for a tier without a slope.
 ///
 /// A slope that is NaN or infinite counts as "no slope" (it is excluded from the maximum and
 /// its entry is `0.0`). When no tier has a slope every entry is `0.0`. The output is never
-/// NaN, and lies in `[-MEAN_BOUND, MEAN_BOUND]` for any slope magnitudes below about `1e38`
-/// (the numerator `MEAN_BOUND * s` must not overflow `f32`).
+/// NaN, and lies in `[-MEAN_BOUND, MEAN_BOUND]` for every finite slope. Slopes are divided by
+/// the finite maximum before multiplication, so even very large finite values stay bounded.
 #[must_use]
 pub fn direction_from_slopes(score: &[Option<f32>]) -> Vec<f32> {
     let usable = |slope: &Option<f32>| slope.filter(|value| value.is_finite());
     let steepest = score
         .iter()
         .filter_map(usable)
-        .fold(0.0_f32, |max, slope| max.max(slope.abs()));
+        .fold(0.0_f32, |max, slope| max.max(slope.abs()))
+        .max(SLOPE_NORM_FLOOR);
     score
         .iter()
-        .map(|slope| {
-            usable(slope).map_or(0.0, |slope| -MEAN_BOUND * slope / (steepest + SLOPE_EPS))
-        })
+        .map(|slope| usable(slope).map_or(0.0, |slope| -MEAN_BOUND * (slope / steepest)))
         .collect()
 }
 
@@ -205,29 +213,30 @@ pub const fn assemble_label(
     }
 }
 
-/// The four component figures of `eval`, in the order of the `COMPONENT_*` constants.
+/// The seven component figures of `eval`, in the order of the `COMPONENT_*` constants.
 fn component_values(eval: &DesignEval) -> [f32; N_COMPONENTS] {
     [
         eval.components.windowing_pct,
         eval.components.extinction_pct,
         100.0 - eval.components.tilt_brilliance_pct,
         eval.yield_pct.map_or(f32::NAN, yield_loss_pct),
+        eval.tone_lighter_loss_pct.unwrap_or(f32::NAN),
+        eval.tone_deeper_loss_pct.unwrap_or(f32::NAN),
+        eval.shape_distance_pct,
     ]
 }
 
 impl EnvCore {
     /// What the teacher measures at the current design.
     ///
-    /// For each free tier the candidate is built exactly as a step builds it
-    /// ([`apply_action`] on a one-hot delta of `+h_deg`, so hinge re-anchoring and tier
-    /// relations apply) and evaluated at the configured fidelity; when it solves, closes,
-    /// scores finitely and passes both gates (girdle, manufacturability, against the base
-    /// design as in [`EnvCore::step_scaled`]), its four components and its score give the
-    /// one-sided difference quotients `(after - current) / h`. Otherwise the same is tried at
-    /// `-h`, with `(current - after) / h`; when both fail the tier is `None`. Lower is better,
-    /// so a negative score slope means "increase this tier's angle". A tier the environment
-    /// does not move is `None`. The yield slope is NaN when the current or the probed design
-    /// has no measurable yield.
+    /// For each free tier, candidates are built as a step builds them ([`apply_action`], so
+    /// hinge re-anchoring and tier relations apply) and evaluated at configured fidelity. Feasible
+    /// probes are taken on both sides when possible; clipped one-sided probes are used at bounds.
+    /// Two-sided labels use a nonuniform three-point derivative about the current score. The
+    /// denominator is the actual requested input displacement after safe/user-bound clipping,
+    /// not a post-projection coordinate delta. A full projected no-op is not scored. Lower is
+    /// better, so a negative score slope means "increase this tier's signed angle". Yield is NaN
+    /// when unavailable.
     ///
     /// The oracle step follows: [`direction_from_slopes`] over the score slopes,
     /// [`action_from_direction`] at the step limit, then `scales` in order through the same
@@ -261,22 +270,20 @@ impl EnvCore {
     /// Per-tier score sensitivity at the current design, in score points per degree: the
     /// score slopes of [`Self::teacher_label`] (without an oracle step).
     ///
-    /// One entry per tier of the design. A tier the environment does not move is `None`, and
-    /// so is a free tier whose `+h_deg` and `-h_deg` candidates are both refused. Pure, like
-    /// the label.
+    /// One entry per tier of the design. A tier the environment does not move is `None`, as is
+    /// a free tier with no feasible scored probe. Pure, like the label.
     pub(crate) fn score_gradient_fd(&self, h_deg: f64) -> Vec<Option<f32>> {
         score_slopes(&self.teacher_label(h_deg, &[]).tiers)
     }
 
     /// The probe of one tier: the unit of work of [`Self::teacher_label`].
     ///
-    /// Exactly what the label does for `tier`: the candidate at `+h_deg`, else the one at
-    /// `-h_deg`, measured against the current design (see [`Self::teacher_label`] for the
-    /// slopes and the gates). The result has `sensitivity: None` and `evaluations: 0` for a
+    /// The positive and negative probes for `tier`, measured against the current design (see
+    /// [`Self::teacher_label`] for the derivative and gates). The result has `sensitivity: None` and `evaluations: 0` for a
     /// tier that is not a free tier of the environment (pinned, or an index beyond the
     /// design's tiers) and for an `h_deg` that is not finite and positive; it has
-    /// `sensitivity: None` and the evaluations actually spent when both candidates are
-    /// refused. Pure: nothing in the core changes, and any number of threads may probe the
+    /// `sensitivity: None` and the evaluations actually spent when neither side is usable. Pure:
+    /// nothing in the core changes, and any number of threads may probe the
     /// same environment at once.
     pub(crate) fn probe_tier(&self, tier: usize, h_deg: f64) -> TierProbe {
         if !(h_deg.is_finite() && h_deg > 0.0) || !self.space.free().contains(&tier) {
@@ -302,6 +309,19 @@ impl EnvCore {
     /// for a `slopes` of any other length than the tier count, and when no entry is a finite
     /// slope. Pure, like [`Self::probe_tier`].
     pub(crate) fn oracle_outcome(&self, slopes: &[Option<f32>], scales: &[f64]) -> OracleOutcome {
+        self.oracle_outcome_with(slopes, scales, false)
+    }
+
+    /// [`Self::oracle_outcome`], optionally evaluating the candidates of the line search
+    /// concurrently (`parallel`, see [`EnvCore::try_scales_parallel`]). The outcome is
+    /// bit-identical, `evaluations` included: it counts the candidates the sequential search
+    /// would have evaluated, up to and including the accepted one.
+    pub(crate) fn oracle_outcome_with(
+        &self,
+        slopes: &[Option<f32>],
+        scales: &[f64],
+        parallel: bool,
+    ) -> OracleOutcome {
         let usable: Vec<f64> = usable_scales(scales).collect();
         let has_slope = slopes.iter().flatten().any(|slope| slope.is_finite());
         if usable.is_empty() || !has_slope || slopes.len() != self.current_design.tiers.len() {
@@ -310,8 +330,18 @@ impl EnvCore {
         let action =
             action_from_direction(&direction_from_slopes(slopes), self.settings.max_step_deg);
         let mut evaluations = 0;
-        for scale in usable {
-            let outcome = self.try_candidate(&action, scale);
+        let candidates: Box<dyn Iterator<Item = (f64, CandidateOutcome)> + '_> =
+            if parallel && usable.len() > 1 {
+                let outcomes = self.try_scales_parallel(&action, &usable);
+                Box::new(usable.into_iter().zip(outcomes))
+            } else {
+                Box::new(
+                    usable
+                        .into_iter()
+                        .map(|scale| (scale, self.try_candidate(&action, scale))),
+                )
+            };
+        for (scale, outcome) in candidates {
             evaluations += usize::from(outcome.evaluated);
             if outcome.is_accepted()
                 && let Some(score) = outcome.score()
@@ -330,7 +360,8 @@ impl EnvCore {
         }
     }
 
-    /// The slopes of `tier`: the `+h` probe, else the `-h` probe, `None` when both fail.
+    /// The slopes of `tier`: a nonuniform two-sided derivative when both probes pass, otherwise
+    /// the available one-sided derivative; `None` when both fail.
     /// `evaluations` is incremented for every probe that reached the scorer.
     fn tier_sensitivity(
         &self,
@@ -338,13 +369,53 @@ impl EnvCore {
         h_deg: f64,
         evaluations: &mut usize,
     ) -> Option<TierSensitivity> {
-        [(h_deg, true), (-h_deg, false)]
-            .into_iter()
-            .find_map(|(delta_deg, forward_probe)| {
-                let (probed, evaluated) = self.probe(tier, delta_deg);
-                *evaluations += usize::from(evaluated);
-                probed.map(|eval| self.sensitivity(&eval, delta_deg, forward_probe))
-            })
+        let positive_delta = self.probe_delta(tier, h_deg);
+        let negative_delta = self.probe_delta(tier, -h_deg);
+        let positive = if positive_delta > 0.0 {
+            let (result, spent) = self.probe(tier, positive_delta);
+            *evaluations += usize::from(spent);
+            result.map(|eval| (eval, positive_delta))
+        } else {
+            None
+        };
+        let negative = if negative_delta < 0.0 {
+            let (result, spent) = self.probe(tier, negative_delta);
+            *evaluations += usize::from(spent);
+            result.map(|eval| (eval, negative_delta.abs()))
+        } else {
+            None
+        };
+        match (positive, negative) {
+            (Some((plus, h_plus)), Some((minus, h_minus))) => {
+                Some(self.two_sided_sensitivity(&plus, &minus, h_plus, h_minus))
+            }
+            (Some((plus, h)), None) => Some(self.sensitivity(&plus, h, true)),
+            (None, Some((minus, h))) => Some(self.sensitivity(&minus, -h, false)),
+            (None, None) => None,
+        }
+    }
+
+    fn probe_delta(&self, tier: usize, requested: f64) -> f64 {
+        let old = self.current_design.tiers[tier].angle_deg;
+        let step = requested.clamp(-self.settings.max_step_deg, self.settings.max_step_deg);
+        let user_bounds = self.space.requested_bounds(tier);
+        let signed_safe = if old.is_sign_negative() {
+            (
+                -indicatrix_cut_core::optimize::MAX_SAFE_CANDIDATE_ANGLE_DEG,
+                -super::moves::MIN_SAFE_CANDIDATE_ANGLE_DEG,
+            )
+        } else {
+            (
+                super::moves::MIN_SAFE_CANDIDATE_ANGLE_DEG,
+                indicatrix_cut_core::optimize::MAX_SAFE_CANDIDATE_ANGLE_DEG,
+            )
+        };
+        let lo = user_bounds.0.max(signed_safe.0);
+        let hi = user_bounds.1.min(signed_safe.1);
+        if lo > hi {
+            return 0.0;
+        }
+        (old + step).clamp(lo, hi) - old
     }
 
     /// Evaluates the current design with `tier` moved by `delta_deg` (every other tier at
@@ -364,12 +435,17 @@ impl EnvCore {
         ) else {
             return (None, false);
         };
+        if candidate == self.current_design {
+            return (None, false);
+        }
         let Ok(eval) = evaluate_design(
             &candidate,
             &self.gem,
             &self.settings.weights,
             self.settings.fidelity,
             self.preform_volume,
+            self.settings.lighting,
+            self.settings.shape_target,
         ) else {
             return (None, true);
         };
@@ -388,13 +464,47 @@ impl EnvCore {
     ) -> TierSensitivity {
         let current = component_values(&self.current_eval);
         let after = component_values(probed);
-        let slope = |moved: f32, rest: f32| (f64::from(moved - rest) / delta_deg) as f32;
+        let slope =
+            |moved: f32, rest: f32| ((f64::from(moved) - f64::from(rest)) / delta_deg) as f32;
         TierSensitivity {
             components: std::array::from_fn(|index| slope(after[index], current[index])),
             score: slope(probed.score, self.current_eval.score),
             forward_probe,
         }
     }
+
+    fn two_sided_sensitivity(
+        &self,
+        positive: &DesignEval,
+        negative: &DesignEval,
+        h_plus: f64,
+        h_minus: f64,
+    ) -> TierSensitivity {
+        let current = component_values(&self.current_eval);
+        let plus = component_values(positive);
+        let minus = component_values(negative);
+        let quotient = |f0: f32, fp: f32, fm: f32| nonuniform_secant(f0, fp, fm, h_plus, h_minus);
+        TierSensitivity {
+            components: std::array::from_fn(|i| quotient(current[i], plus[i], minus[i])),
+            score: quotient(self.current_eval.score, positive.score, negative.score),
+            forward_probe: true,
+        }
+    }
+}
+
+fn nonuniform_secant(center: f32, positive: f32, negative: f32, h_plus: f64, h_minus: f64) -> f32 {
+    if !(h_plus.is_finite() && h_minus.is_finite() && h_plus > 0.0 && h_minus > 0.0)
+        || !center.is_finite()
+        || !positive.is_finite()
+        || !negative.is_finite()
+    {
+        return f32::NAN;
+    }
+    let span = h_plus + h_minus;
+    let f0 = f64::from(center);
+    let fp = f64::from(positive);
+    let fm = f64::from(negative);
+    ((h_minus / span) * ((fp - f0) / h_plus) + (h_plus / span) * ((f0 - fm) / h_minus)) as f32
 }
 
 #[cfg(test)]

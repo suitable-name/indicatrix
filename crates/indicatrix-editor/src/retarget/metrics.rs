@@ -12,12 +12,13 @@
 //! (`indicatrix_cut_core::evaluate_objective_under`, about 2 ms) under the lighting preset
 //! the viewport uses. They are comparable with each other, not with a full tilt sweep.
 
+use super::validity::StoneAnalysis;
 use glam::DVec3;
 use indicatrix::{
-    geometry::GpuFacetPlane,
+    geometry::{GpuFacetPlane, StoneGeometry, tool::ToolPrimitive},
     optics::{LightingPreset, materials::GemMaterial},
 };
-use indicatrix_cut_core::{ObjectiveFidelity, evaluate_objective_under};
+use indicatrix_cut_core::{ObjectiveFidelity, evaluate_objective_geom_under};
 
 /// What shows when a number is not available.
 pub const NOT_AVAILABLE: &str = "n/a";
@@ -44,11 +45,36 @@ pub struct RetargetMetrics {
     pub retargeted_in_target: Option<MetricColumn>,
 }
 
-/// Measures one column for `planes` (`(normal, offset)`, the design's own convention) in
-/// `gem` under `lighting`.
+/// Measures one column for the flat `planes` (`(normal, offset)`, the design's own
+/// convention) in `gem` under `lighting`.
 #[must_use]
 pub fn measure_column(
     planes: &[(DVec3, f64)],
+    gem: &GemMaterial,
+    lighting: LightingPreset,
+) -> MetricColumn {
+    measure_column_with_tools(planes, &[], gem, lighting)
+}
+
+/// [`measure_column`] for the stone `analysis` describes, concave tools included.
+///
+/// The column is the figure of the stone the cutter holds and the Compare window draws,
+/// not of its flat shell. Without concave tiers it is [`measure_column`] of the analysis'
+/// planes, bit for bit.
+#[must_use]
+pub fn measure_analysis_column(
+    analysis: &StoneAnalysis,
+    gem: &GemMaterial,
+    lighting: LightingPreset,
+) -> MetricColumn {
+    measure_column_with_tools(&analysis.planes, &analysis.tools(), gem, lighting)
+}
+
+/// [`measure_column`] with the concave `tools` cut out of `planes`.
+#[must_use]
+pub fn measure_column_with_tools(
+    planes: &[(DVec3, f64)],
+    tools: &[ToolPrimitive],
     gem: &GemMaterial,
     lighting: LightingPreset,
 ) -> MetricColumn {
@@ -63,7 +89,15 @@ pub fn measure_column(
             GpuFacetPlane::new(normal.as_vec3(), d)
         })
         .collect();
-    let components = evaluate_objective_under(&gpu, gem, ObjectiveFidelity::Fast, lighting);
+    let components = evaluate_objective_geom_under(
+        StoneGeometry {
+            planes: &gpu,
+            tools,
+        },
+        gem,
+        ObjectiveFidelity::Fast,
+        lighting,
+    );
     MetricColumn {
         windowing_pct: components.windowing_pct,
         brilliance_pct: components.tilt_brilliance_pct,
@@ -160,5 +194,36 @@ mod tests {
                 assert!((0.0..=100.0).contains(&value), "{}: {value}", gem.name);
             }
         }
+    }
+
+    /// Retarget's columns measure the stone with its concave tools; a flat design's column
+    /// is exactly the planes-only one it always was.
+    #[test]
+    fn the_analysis_column_measures_the_stone_with_its_tools() {
+        use crate::retarget::validity::analyze;
+        use indicatrix_cut_core::{ConstraintTier, Design, PreformSpec, ScheduleMeta};
+
+        let gem = GemMaterial::diamond();
+        let lighting = LightingPreset::RingLights;
+
+        let flat_design = Design::new(
+            PreformSpec::block(2.0, 1.0, 4.0),
+            ScheduleMeta::standard_round_brilliant(),
+            ConstraintTier::standard_round_brilliant(),
+        );
+        let flat = analyze(&flat_design, false).expect("the standard brilliant closes");
+        assert_eq!(flat.tools().len(), 0);
+        assert_eq!(
+            measure_analysis_column(&flat, &gem, lighting),
+            measure_column(&flat.planes, &gem, lighting)
+        );
+
+        let concave = analyze(&Design::concave_fixture(), false).expect("the fixture closes");
+        assert_eq!(concave.tools().len(), 12, "one tool per placement");
+        assert_ne!(
+            measure_analysis_column(&concave, &gem, lighting),
+            measure_column(&concave.planes, &gem, lighting),
+            "the grooves and dimples change the column"
+        );
     }
 }

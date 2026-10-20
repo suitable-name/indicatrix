@@ -3,13 +3,13 @@
 
 use crate::{
     kit::{Sc, card_rect, click_last, find_inherits, press_on, rect_of},
-    nav::{CROWN_TIER, FVS, STUDIO},
+    nav::{CROWN_TIER, FVS, OPT_DESIGN, STUDIO},
     support::app::pump,
 };
 use indicatrix_cut::{CompareModel, EditorModel, OptimizeModel, RetargetModel, SolidPreviewModel};
 use indicatrix_editor::material::gear_index_from_teeth;
 use slint::{ComponentHandle, Model};
-use slint_harness::screenshot::Shot;
+use uiprobe::screenshot::Shot;
 
 /// Inspector height of the Edit-view shots, in logical pixels. The first-run default (380 px)
 /// leaves the tier table at its minimum, a header with no rows, at the shots' window height;
@@ -20,7 +20,7 @@ const NEW_TEETH: i32 = 64;
 /// How far the Optimize shot scrolls the inspector down to the candidate list, in logical pixels.
 const OPTIMIZER_SCROLL: f32 = 900.0;
 /// The material the Retarget shots move the design to.
-const RETARGET_TARGET: &str = "emerald";
+const RETARGET_TARGET: &str = "sapphire";
 /// Space around and between the parts of the composed shot, in physical pixels.
 const GAP: u32 = 48;
 /// Status words of the compare pane while it still works on a frame.
@@ -105,9 +105,9 @@ pub fn busy_status(status: &str) -> bool {
     BUSY_WORDS.iter().any(|word| lower.contains(word))
 }
 
-/// Opens the Retarget for Material dialog on the Emerald proposal in Shift mode.
-fn open_retarget(sc: &mut Sc<'_, '_>) -> Result<(), String> {
-    sc.open_in_editor(FVS)?;
+/// Opens the Retarget for Material dialog on the Sapphire proposal in Shift mode.
+fn open_retarget(sc: &Sc<'_, '_>) -> Result<(), String> {
+    sc.open_in_editor(OPT_DESIGN)?;
     let ui = sc.ui();
     let retarget = ui.global::<RetargetModel>();
     retarget.invoke_open();
@@ -125,11 +125,30 @@ fn open_retarget(sc: &mut Sc<'_, '_>) -> Result<(), String> {
         .ok_or_else(|| format!("the dialog offers no {RETARGET_TARGET} among {options:?}"))?;
     retarget.set_mode_index(0);
     retarget.set_target_material_index(i32::try_from(index).unwrap_or(0));
+    // What the combo's `selected` handler does for a user: a picked material drops the
+    // custom n_D the dialog seeded from the design's own override.
+    retarget.set_target_ri_override_text("".into());
     retarget.invoke_proposal_changed();
     pump(800);
     let compare = ui.global::<CompareModel>();
-    if !Sc::wait(60, || compare.get_embedded_open()) {
+    // The check ends in "not valid" (3) or "could not be checked" (4) when the design is
+    // refused; the pane then opens only for a refusal that still leaves a proposal. Stop at
+    // once on a verdict that comes without a pane, and say what the dialog says.
+    let opened = Sc::wait(60, || {
+        compare.get_embedded_open()
+            || (!retarget.get_is_busy() && matches!(retarget.get_validity_state(), 3 | 4))
+    });
+    if !opened {
         return Err("the comparison pane of the Retarget dialog did not open".to_owned());
+    }
+    if !compare.get_embedded_open() {
+        pump(300);
+        if !compare.get_embedded_open() {
+            return Err(format!(
+                "the Retarget check refused the design and no comparison pane opened: {}",
+                retarget.get_validity_text()
+            ));
+        }
     }
     pump(500);
     Ok(())
@@ -216,7 +235,7 @@ pub fn retarget_gear_2(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
 }
 
 /// The viewport and the tier table of the Edit view as two pictures.
-fn merge_part(sc: &mut Sc<'_, '_>) -> Result<(Shot, Shot), String> {
+fn merge_part(sc: &Sc<'_, '_>) -> Result<(Shot, Shot), String> {
     let shot = sc.snap_main()?;
     let view = sc.view();
     let top = rect_of(&view, "SolidViewportView").or_else(|_| rect_of(&view, "GemViewportView"))?;
@@ -274,8 +293,8 @@ pub fn retarget_merge(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
 }
 
 /// Opens the Optimize tab of the Edit view.
-fn open_optimize_tab(sc: &mut Sc<'_, '_>) -> Result<(), String> {
-    sc.open_in_editor(FVS)?;
+fn open_optimize_tab(sc: &Sc<'_, '_>, design: &str) -> Result<(), String> {
+    sc.open_in_editor(design)?;
     sc.set_inspector_tab(2);
     pump(500);
     Ok(())
@@ -287,7 +306,7 @@ fn open_optimize_tab(sc: &mut Sc<'_, '_>) -> Result<(), String> {
 ///
 /// The design does not open or the list does not open.
 pub fn optimizer_1(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
-    open_optimize_tab(sc)?;
+    open_optimize_tab(sc, FVS)?;
     let combo = sc
         .view()
         .try_find("Optimize Objective")
@@ -322,13 +341,18 @@ pub fn optimizer_1(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
     Ok(area.grow(6.0).crop(&shot))
 }
 
+/// Whether an Optimize status line reports a failed run.
+fn optimize_failed(status: &str) -> bool {
+    status.to_lowercase().contains("optimize failed")
+}
+
 /// Runs Optimize on the open design (16 starts, 5 candidates) and waits for the result.
 ///
 /// # Errors
 ///
 /// Optimize is not available, reports a problem or does not finish.
-pub fn run_optimize(sc: &mut Sc<'_, '_>) -> Result<(), String> {
-    open_optimize_tab(sc)?;
+pub fn run_optimize(sc: &Sc<'_, '_>) -> Result<(), String> {
+    open_optimize_tab(sc, OPT_DESIGN)?;
     let ui = sc.ui();
     let editor = ui.global::<EditorModel>();
     let model = ui.global::<OptimizeModel>();
@@ -350,9 +374,16 @@ pub fn run_optimize(sc: &mut Sc<'_, '_>) -> Result<(), String> {
         editor.get_optimize_weight_tone(),
     );
     pump(500);
+    // A refusal ("Optimize failed: ...") ends the run without candidates; report it at once
+    // instead of waiting out the whole budget.
     let done = Sc::wait(1200, || {
-        !editor.get_optimize_running() && model.get_has_results()
+        !editor.get_optimize_running()
+            && (model.get_has_results() || optimize_failed(editor.get_optimize_status().as_str()))
     });
+    let status = editor.get_optimize_status();
+    if done && !model.get_has_results() {
+        return Err(format!("Optimize refused the design: {status}"));
+    }
     if !done {
         return Err(format!(
             "Optimize did not deliver candidates within 20 minutes: {}",
@@ -392,4 +423,13 @@ pub fn optimizer_2(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
     }
     let shot = sc.snap_main()?;
     Ok(rect_of(&sc.view(), "EditorInspector")?.crop(&shot))
+}
+
+/// Ray-Traced comparison coverage alongside the existing path-traced and solid shots.
+///
+/// # Errors
+///
+/// The design or comparison controls cannot be opened.
+pub fn retarget_dialog_ray(sc: &mut Sc<'_, '_>) -> Result<Shot, String> {
+    retarget_shot(sc, "Side by Side", "Ray Traced")
 }

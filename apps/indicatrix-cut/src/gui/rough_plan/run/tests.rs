@@ -335,7 +335,7 @@ fn a_source_whose_every_design_is_excluded_says_so_instead_of_naming_an_empty_li
     assert_eq!(
         ALL_EXCLUDED_MESSAGE,
         "Every candidate design is excluded from planning. Restore one under Candidate \
-         designs, or widen the filter."
+         Designs, or widen the filter."
     );
 }
 

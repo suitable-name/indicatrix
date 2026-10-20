@@ -40,7 +40,7 @@ use indicatrix_editor::{
     EditorSession,
     loading::{parse_new_design_form, parse_preform_form},
     material::{builtin_preset_names, gear_choice_to_teeth},
-    templates::{NewDesignChoice, create_from_template, gallery_cards, template_spec},
+    templates::{GalleryCard, NewDesignChoice, create_from_template, gallery_cards, template_spec},
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::rc::Rc;
@@ -82,7 +82,7 @@ pub fn push_cards(ui: &AppWindow) {
     model.set_card_group(ModelRc::new(VecModel::from(
         cards.iter().map(|c| c.group.code()).collect::<Vec<_>>(),
     )));
-    model.set_card_designed_for(string_model(cards.iter().map(|c| c.designed_for())));
+    model.set_card_designed_for(string_model(cards.iter().map(GalleryCard::designed_for)));
 }
 
 /// The spec the Empty form's fields describe, or the message naming the field that is wrong.

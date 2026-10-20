@@ -72,9 +72,10 @@ fn library_request_variants_round_trip() {
     }
 }
 
-#[test]
-fn library_response_variants_round_trip() {
-    let design = DesignRecord {
+/// A design record with a non-default value in every field, so a dropped field fails a
+/// round-trip.
+fn sample_design() -> DesignRecord {
+    DesignRecord {
         entry_id: 42,
         title: "Round Brilliant".to_string(),
         url: "https://example.test/diagram/42".to_string(),
@@ -119,8 +120,21 @@ fn library_response_variants_round_trip() {
             size: 12_345,
         }],
         version: [1u8; 32],
-    };
+        frosting: vec![
+            FrostedTierWire {
+                tier: 0,
+                facets: Vec::new(),
+            },
+            FrostedTierWire {
+                tier: 2,
+                facets: vec![1, 3],
+            },
+        ],
+    }
+}
 
+#[test]
+fn library_response_variants_round_trip() {
     for resp in [
         LibraryResponse::SearchResults {
             items: vec![sample_summary()],
@@ -136,7 +150,7 @@ fn library_response_variants_round_trip() {
                 facets: (20, 200),
             },
         },
-        LibraryResponse::Design(Box::new(design)),
+        LibraryResponse::Design(Box::new(sample_design())),
         LibraryResponse::Attachment {
             name: "schedule.pdf".to_string(),
             content: vec![0xDE, 0xAD, 0xBE, 0xEF],
@@ -161,6 +175,16 @@ fn library_response_variants_round_trip() {
             entry_id: 42,
             file_name: "round-brilliant.asc".to_string(),
             asc_text: "GemCad 5.0\n...\n".to_string(),
+            frosting: Vec::new(),
+        },
+        LibraryResponse::DesignSource {
+            entry_id: 43,
+            file_name: "frosted.asc".to_string(),
+            asc_text: "GemCad 5.0\n...\n".to_string(),
+            frosting: vec![FrostedTierWire {
+                tier: 3,
+                facets: vec![0, 2, 5],
+            }],
         },
         LibraryResponse::DesignSourceNotAvailable,
         LibraryResponse::DesignNative {
@@ -369,12 +393,63 @@ fn design_source_response_round_trips() {
         entry_id: 7,
         file_name: "test.asc".to_string(),
         asc_text: "GemCad 5.0\nR1  c 41.0 96\n".to_string(),
+        frosting: vec![FrostedTierWire {
+            tier: 1,
+            facets: Vec::new(),
+        }],
     };
     let mut buf = Vec::new();
     write_message(&mut buf, &resp).unwrap();
     let mut cursor = std::io::Cursor::new(buf);
     let decoded: LibraryResponse = read_message(&mut cursor).unwrap();
     assert_eq!(decoded, resp);
+}
+
+/// The frosting list is appended LAST (v26) to [`LibraryResponse::DesignSource`] (as it is to
+/// `DesignRecord`), so a design without frosting adds exactly one trailing byte (the empty
+/// list's length) to what a v25 peer wrote, and the bytes before it are the v25 layout
+/// unchanged. A v25 message does not decode as v26 (the handshake refuses the version before
+/// any library message is read), which this pins so the bump stays deliberate.
+#[test]
+fn the_frosting_list_is_the_last_field_of_a_design_source_reply() {
+    let source = LibraryResponse::DesignSource {
+        entry_id: 7,
+        file_name: "test.asc".to_string(),
+        asc_text: "GemCad 5.0\n".to_string(),
+        frosting: Vec::new(),
+    };
+    let bytes = postcard::to_allocvec(&source).unwrap();
+    assert_eq!(bytes.last(), Some(&0), "an empty list is its zero length");
+    let v25_layout = &bytes[..bytes.len() - 1];
+    assert!(
+        postcard::from_bytes::<LibraryResponse>(v25_layout).is_err(),
+        "a v25 DesignSource is one list short"
+    );
+
+    let frosted = LibraryResponse::DesignSource {
+        entry_id: 7,
+        file_name: "test.asc".to_string(),
+        asc_text: "GemCad 5.0\n".to_string(),
+        frosting: vec![FrostedTierWire {
+            tier: 2,
+            facets: vec![1, 3],
+        }],
+    };
+    let frosted_bytes = postcard::to_allocvec(&frosted).unwrap();
+    assert_eq!(
+        &frosted_bytes[..v25_layout.len()],
+        v25_layout,
+        "everything before the list is unchanged"
+    );
+    assert_eq!(
+        &frosted_bytes[v25_layout.len()..],
+        // list length 1, tier 2, two facets: 1 and 3.
+        &[1, 2, 2, 1, 3]
+    );
+    assert_eq!(
+        postcard::from_bytes::<LibraryResponse>(&frosted_bytes).unwrap(),
+        frosted
+    );
 }
 
 /// [`LibraryResponse::DesignSourceNotAvailable`] round-trips as its own distinct

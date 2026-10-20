@@ -56,7 +56,7 @@ pub(in crate::gui) fn setup_render_export_callbacks(
     setup_check_remote_availability_callback(ui, settings_store);
     setup_populate_export_fanout_presets_callback(ui, settings_store);
     setup_toggle_export_preset_selected_callback(ui);
-    setup_export_output_location_callbacks(ui, settings_store);
+    setup_export_output_location_callbacks(ui, render_ctx, settings_store);
     super::advanced::setup_advanced_in_use_callback(ui);
 
     // The queue currently running, if any -- plain UI-thread-only state (both
@@ -86,7 +86,7 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                 return;
             }
 
-            let params =
+            let mut params =
                 match export_thread::validate_export_params(width, height, samples, max_bounces) {
                     Ok(params) => params,
                     Err(err) => {
@@ -95,6 +95,8 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                         return;
                     }
                 };
+            params.engine = output_defaults::still_engine(&ui);
+            params.samples_per_pixel = params.engine.target_samples(params.samples_per_pixel);
             let color_space = crate::gui::color_space_from_index(color_space_index);
             // A snapshot of the remote endpoint configured RIGHT NOW -- `run_export`
             // re-probes it itself (see its own doc comment on why this isn't trusted
@@ -102,7 +104,11 @@ pub(in crate::gui) fn setup_render_export_callbacks(
             // current setting, not a cached capability. The "Transfer" pill (full
             // data or final picture only) is read off the dialog's own model.
             let remote = RemoteSelection {
-                compute_target: compute_target_from_index(compute_target_index),
+                compute_target: if crate::bridge::render_thread::remote_allowed(params.engine) {
+                    compute_target_from_index(compute_target_index)
+                } else {
+                    export_thread::ComputeTarget::LocalOnly
+                },
                 worker: settings_store_start.snapshot().settings.remote_worker(),
                 transfer: ExportTransfer::from_index(
                     ui.global::<ExportModel>().get_transfer_index(),
@@ -397,7 +403,7 @@ fn continue_start_export(
     // stone when the design's material does not resolve -- abort the whole export
     // before any job is queued or `export_active_count` is bumped. `finished` is the stone an
     // export always renders (see `finish_start_export`).
-    let base_scene = match SceneSnapshot::capture_finished(&render_ctx, finished) {
+    let mut base_scene = match SceneSnapshot::capture_finished(&render_ctx, finished) {
         Ok(scene) => apply_export_bounce_cap(scene, params.max_bounces),
         Err(reason) => {
             ui.global::<ExportModel>().set_has_error(true);
@@ -406,7 +412,21 @@ fn continue_start_export(
         }
     };
 
+    base_scene.engine = params.engine;
+    if !base_scene.engine.is_ray() && ui.global::<crate::OpticalModel>().get_include_still() {
+        base_scene.optical_diagnostics = Some(crate::bridge::optical_overlay::presentation(ui));
+    }
     let jobs = fan_out_jobs(ui, &settings_store, &base_scene, &mesh_bounding_radius);
+    // Every picture of the queue is checked now: a preset of the fan-out can be ASET, and
+    // the refusal must come before any render, not after the first one.
+    if let Some(reason) = jobs
+        .iter()
+        .find_map(|job| crate::bridge::optical_overlay::export::refusal(&job.scene))
+    {
+        ui.global::<ExportModel>().set_has_error(true);
+        ui.global::<ExportModel>().set_status_message(reason.into());
+        return;
+    }
     let total = jobs.len();
 
     // Pause live-viewport tracing for the duration of the WHOLE queue -- see
@@ -572,6 +592,7 @@ fn setup_populate_export_fanout_presets_callback(
 /// section for both controls.
 fn setup_export_output_location_callbacks(
     ui: &MainWindow,
+    render_ctx: &Arc<Mutex<crate::bridge::render_thread::RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
 ) {
     let settings_store_dir = settings_store.clone();
@@ -612,21 +633,40 @@ fn setup_export_output_location_callbacks(
                 .update(|s| s.settings.export_filename_template = text.to_string());
         });
 
-    // The filename template field needs a live preview and a way to flag a
-    // typo'd placeholder before actually exporting. Both callbacks
-    // render against one fixed, clearly-labelled EXAMPLE `TemplateContext` (not the
-    // live selected design) -- reusing `filename_template::render` here would mean
-    // threading the real selected design/material/camera state down through
-    // `gem_viewport.slint`/`export_dialog.slint` for a "preview" that is, by
-    // definition, only ever seen while the dialog is open and something is already
-    // loaded; a representative example demonstrates the mechanism (and catches typos)
-    // without that extra wiring, at the cost of not literally matching the current
-    // design's own title.
+    // The filename template field's live preview names THIS export's file: the dialog passes
+    // the export's own size, samples, bounces, color space and material, and the design names
+    // and camera come from the live view the way the export's own naming takes them
+    // (`live_template_context`). An example used to stand in here, which named a Sapphire
+    // export "Diamond". Typo'd placeholders are still checked against the example below.
+    let ui_weak_preview = ui.as_weak();
+    let render_ctx_preview = Arc::clone(render_ctx);
     ui.global::<ExportModel>().on_preview_filename_template(
-        move |template: slint::SharedString| {
+        move |template: slint::SharedString,
+              width: i32,
+              height: i32,
+              spp: i32,
+              bounces: i32,
+              color_space: i32,
+              material: slint::SharedString| {
+            let context = ui_weak_preview
+                .upgrade()
+                .map_or_else(example_template_context, |ui| {
+                    live_template_context(
+                        &ui,
+                        &render_ctx_preview,
+                        LivePreviewValues {
+                            width,
+                            height,
+                            spp,
+                            bounces,
+                            color_space,
+                            material: &material,
+                        },
+                    )
+                });
             let rendered = export_thread::filename_template::render(
                 &template,
-                &example_template_context(),
+                &context,
                 std::time::SystemTime::now(),
             );
             format!("{rendered}.png").into()
@@ -638,10 +678,51 @@ fn setup_export_output_location_callbacks(
         });
 }
 
-/// A representative, clearly-fictional set of template values for
-/// `on_preview_filename_template`'s live "resolves to" preview -- see that callback's
-/// own doc comment for why this is a fixed example rather than the live selected
-/// design.
+/// The export dialog's own values for the filename preview.
+struct LivePreviewValues<'a> {
+    width: i32,
+    height: i32,
+    spp: i32,
+    bounces: i32,
+    color_space: i32,
+    material: &'a str,
+}
+
+/// The `TemplateContext` the current-view export would name its file with: the dialog's
+/// values, the design names `design_naming` gives the export, and the live view's lighting,
+/// camera and exposure. The preset is empty, as for the current-view render.
+fn live_template_context(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<crate::bridge::render_thread::RenderContext>>,
+    values: LivePreviewValues<'_>,
+) -> export_thread::TemplateContext {
+    // `design_naming` takes the render context's lock itself; it is released before ours.
+    let (design, designer, shape, ri) = design_naming(ui, render_ctx);
+    let ctx = crate::bridge::render_thread::RenderContext::lock(render_ctx);
+    let count = |value: i32| u32::try_from(value).unwrap_or(0);
+    export_thread::TemplateContext {
+        design,
+        designer,
+        shape,
+        material: values.material.to_string(),
+        ri,
+        width: count(values.width),
+        height: count(values.height),
+        spp: count(values.spp),
+        bounces: count(values.bounces),
+        colorspace: colorspace_label(crate::gui::color_space_from_index(values.color_space))
+            .to_string(),
+        preset: String::new(),
+        lighting: ctx.lighting_preset.label().to_string(),
+        yaw_deg: ctx.yaw.to_degrees(),
+        pitch_deg: ctx.pitch.to_degrees(),
+        distance: ctx.distance,
+        exposure: ctx.exposure,
+    }
+}
+
+/// A representative, clearly-fictional set of template values: what unrecognised
+/// placeholders are checked against, and the preview's fallback once the window is gone.
 fn example_template_context() -> export_thread::TemplateContext {
     export_thread::TemplateContext {
         design: "Example Design".to_string(),

@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use indicatrix::geometry::meet_solver::MeetConstraint;
+use indicatrix::geometry::meet_solver::{MeetConstraint, SolveStrategy, SolvedTier};
 use indicatrix_cut_core::Edit;
 use slint::ComponentHandle;
 
@@ -153,15 +153,17 @@ pub(super) fn setup_adopt_selected_callback(
 /// [`MeetConstraint::ScaleReference`] anchor, through [`Edit::SetConstraint`]
 /// exactly like `solve_actions::setup_adopt_meet_callback`'s own "Adopt" --
 /// letting a cutter pin a value the solver just derived before optimizing the
-/// rest of the design. A silent no-op when there is no current solve for this
-/// tier (an out-of-range index, or `solid_last_solved` not populated yet) -- the
-/// tier table only shows the "Pin" button while
-/// `EditorTierItem::strategy_is_uncertain` is `false`, so this only guards a race
-/// with a concurrent edit/solve.
+/// rest of the design. When there is no current solve for this tier it pins
+/// nothing and raises a warning toast ("Wait for the current design to finish
+/// solving before pinning."). That covers an out-of-range index, an unpopulated
+/// `solid_last_solved`, a cache from an older design generation or a different tier
+/// count (the table still shows Pin buttons from the cached rows right after an
+/// edit), and a tier whose mast is only an estimate (see [`pinnable_mast`]).
 ///
-/// Calls [`refresh_all`] for the identical reason `setup_adopt_all_callback`
-/// above (and `setup_adopt_meet_callback`) do: the value pinned is already what
-/// the design's last real solve produced.
+/// Does not call `refresh_all`: the value pinned is already what the design's last
+/// real solve produced, so it pushes the immediate UI update from the cached solve
+/// (`refresh_editor_panel_stale`) and lets the background dirty-set replan
+/// (`submit_preview_replan`) confirm it.
 ///
 /// Wired to `EditorModel.pin_to_mast(int)` (declared in `ui/models/editor.slint`)
 /// -- the tier table's own per-row "Pin" button calls it.
@@ -188,18 +190,26 @@ pub(super) fn setup_pin_to_mast_callback(
                 let Ok(index) = usize::try_from(index) else {
                     return;
                 };
-                let Some(mast) = solid_last_solved
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .as_ref()
-                    // the shared cache is now generation-tagged -- only
-                    // the masts themselves matter here.
-                    .and_then(|(_, solved)| solved.get(index))
-                    .map(|tier| tier.mast)
-                else {
+                let mut st = state.borrow_mut();
+                let mast = {
+                    let cache = solid_last_solved
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    pinnable_mast(
+                        cache.as_ref(),
+                        st.current_generation(),
+                        st.design.tiers.len(),
+                        index,
+                    )
+                };
+                let Some(mast) = mast else {
+                    show_toast(
+                        &ui,
+                        "Wait for the current design to finish solving before pinning.",
+                        "warning",
+                    );
                     return;
                 };
-                let mut st = state.borrow_mut();
                 match st.apply(Edit::SetConstraint {
                     index,
                     constraint: MeetConstraint::ScaleReference(mast),
@@ -238,4 +248,89 @@ pub(super) fn setup_pin_to_mast_callback(
                 }
             });
         });
+}
+
+/// The mast of tier `index` from the last real solve, when it is safe to freeze.
+///
+/// `None` when there is no cache, when the cache belongs to another design `generation`
+/// or another tier count (the design was edited since), when `index` is out of range, or
+/// when the mast is only an estimate (`LeastSquaresFallback`) or a placeholder (`Failed`).
+fn pinnable_mast(
+    cache: Option<&(u64, Vec<SolvedTier>)>,
+    generation: u64,
+    tier_count: usize,
+    index: usize,
+) -> Option<f64> {
+    cache
+        .filter(|(cached, solved)| *cached == generation && solved.len() == tier_count)
+        .and_then(|(_, solved)| solved.get(index))
+        .filter(|tier| {
+            !matches!(
+                tier.strategy,
+                SolveStrategy::LeastSquaresFallback | SolveStrategy::Failed
+            )
+        })
+        .map(|tier| tier.mast)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pinnable_mast;
+    use indicatrix::geometry::meet_solver::{SolveStrategy, SolvedTier};
+
+    fn tier(mast: f64, strategy: SolveStrategy) -> SolvedTier {
+        SolvedTier {
+            mast,
+            strategy,
+            detail: String::new(),
+        }
+    }
+
+    fn cache(generation: u64) -> (u64, Vec<SolvedTier>) {
+        (
+            generation,
+            vec![
+                tier(1.5, SolveStrategy::DependencyOrder),
+                tier(2.5, SolveStrategy::LeastSquaresFallback),
+                tier(3.5, SolveStrategy::Failed),
+                tier(4.5, SolveStrategy::ScaleReference),
+                tier(5.5, SolveStrategy::JointGroup),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_current_solved_tier_pins_its_mast() {
+        let cache = cache(7);
+        assert_eq!(pinnable_mast(Some(&cache), 7, 5, 0), Some(1.5));
+        assert_eq!(pinnable_mast(Some(&cache), 7, 5, 3), Some(4.5));
+        assert_eq!(pinnable_mast(Some(&cache), 7, 5, 4), Some(5.5));
+    }
+
+    #[test]
+    fn a_stale_generation_pins_nothing() {
+        let cache = cache(7);
+        assert_eq!(pinnable_mast(Some(&cache), 8, 5, 0), None);
+    }
+
+    #[test]
+    fn a_different_tier_count_pins_nothing() {
+        let cache = cache(7);
+        assert_eq!(pinnable_mast(Some(&cache), 7, 4, 0), None);
+        assert_eq!(pinnable_mast(Some(&cache), 7, 6, 0), None);
+    }
+
+    #[test]
+    fn estimated_and_failed_masts_are_not_pinned() {
+        let cache = cache(7);
+        assert_eq!(pinnable_mast(Some(&cache), 7, 5, 1), None);
+        assert_eq!(pinnable_mast(Some(&cache), 7, 5, 2), None);
+    }
+
+    #[test]
+    fn no_cache_or_an_out_of_range_index_pins_nothing() {
+        let cache = cache(7);
+        assert_eq!(pinnable_mast(None, 7, 5, 0), None);
+        assert_eq!(pinnable_mast(Some(&cache), 7, 5, 5), None);
+    }
 }

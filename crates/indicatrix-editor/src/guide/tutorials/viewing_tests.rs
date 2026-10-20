@@ -32,7 +32,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 /// Every viewing, output, library and app tutorial, in the order the browser lists them. A new
 /// lesson must be added here and given a walk in the submodule of its file.
-const IDS: [&str; 29] = [
+const IDS: [&str; 30] = [
     "viewing-solid-picking",
     "viewing-drag-handles",
     "viewing-slice",
@@ -42,6 +42,7 @@ const IDS: [&str; 29] = [
     "viewing-design-lighting",
     "viewing-custom-material",
     "viewing-material-coefficients",
+    "viewing-optical-diagnostics",
     "output-cutting-mode",
     "output-export-asc",
     "output-export-gcs",

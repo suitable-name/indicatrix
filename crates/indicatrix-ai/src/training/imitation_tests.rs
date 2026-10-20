@@ -8,7 +8,7 @@ use std::f32::consts::FRAC_1_SQRT_2;
 
 use super::*;
 use crate::{
-    env::{GLOBAL_DIM, MEAN_BOUND, SLOPE_EPS, TIER_DIM, WEIGHT_FRACTION_INDEX},
+    env::{GLOBAL_DIM, MEAN_BOUND, TIER_DIM, WEIGHT_FRACTION_INDEX},
     model::{GemstoneSetAttentionNetwork, Prng},
     training::{
         ModelShape, PpoConfig,
@@ -20,8 +20,13 @@ const MAX_TIERS: usize = 6;
 const D_MODEL: usize = 16;
 /// The teacher's sensitivities are scaled to a few tenths of a point per degree, like real labels.
 const TARGET_SCALE: f32 = 0.5;
-/// Balanced weight fractions (`[w_win, w_ext, w_tilt, w_yield] / sum`).
-const BALANCED: [f32; N_COMPONENTS] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0];
+/// Balanced weight fractions (the three optical terms only).
+const BALANCED: [f32; N_COMPONENTS] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0, 0.0, 0.0, 0.0];
+
+/// A label row of the four hand-built components; the tone and shape components are unmeasured (NaN).
+fn component_row(values: [f32; 4]) -> [f32; N_COMPONENTS] {
+    std::array::from_fn(|c| values.get(c).copied().unwrap_or(f32::NAN))
+}
 
 fn shape(max_tiers: usize) -> ModelShape {
     ModelShape {
@@ -63,7 +68,11 @@ fn random_states(count: usize, max_tiers: usize, seed: u64) -> (Vec<Vec<f32>>, V
         row[WEIGHT_FRACTION_INDEX..WEIGHT_FRACTION_INDEX + N_COMPONENTS].copy_from_slice(&BALANCED);
         for slot in 0..max_tiers {
             let live = slot < real;
+            let start = row.len();
             row.extend((0..TIER_DIM).map(|_| if live { rng.next_signed_f32() } else { 0.0 }));
+            if live {
+                row[start + crate::env::MOBILITY_INDEX] = 1.0;
+            }
         }
         states.push(row);
         n_tiers.push(real);
@@ -146,7 +155,7 @@ impl Fixture {
     fn from_teacher(count: usize, max_tiers: usize, teacher_seed: u64) -> Self {
         let mut fx = Self::blank(count, max_tiers);
         let (sens, gains) = teacher_outputs(&fx.states, &fx.n_tiers, max_tiers, teacher_seed);
-        for i in 0..count {
+        for (i, gain) in gains.iter().enumerate().take(count) {
             let fractions =
                 &fx.states[i][WEIGHT_FRACTION_INDEX..WEIGHT_FRACTION_INDEX + N_COMPONENTS];
             let rows: Vec<[f32; N_COMPONENTS]> = (0..fx.n_tiers[i])
@@ -160,7 +169,7 @@ impl Fixture {
                 .map(|row| fractions.iter().zip(row).map(|(f, s)| f * s).sum::<f32>())
                 .collect();
             fx.sensitivities[i] = rows;
-            fx.oracle_gain[i] = TARGET_SCALE * gains[i];
+            fx.oracle_gain[i] = TARGET_SCALE * gain;
         }
         fx
     }
@@ -175,12 +184,18 @@ impl Fixture {
 }
 
 /// Two samples (3 and 2 real tiers) padded to 4, covering every masking rule: tier 1 of sample 0
-/// is not free, one component is NaN, tier 0 of sample 1 has no label, sample 1 has no gain.
+/// is not free, one component is NaN, tier 0 of sample 1 has no label, sample 1 has no gain. Only
+/// the first four components are measured; the tone and shape components are NaN throughout.
 fn hand_built() -> Fixture {
     let row = |seed: usize| -> Vec<f32> {
-        (0..GLOBAL_DIM + 4 * TIER_DIM)
+        let mut state: Vec<f32> = (0..GLOBAL_DIM + 4 * TIER_DIM)
             .map(|k| ((seed * 100 + k) as f32 * 0.37).sin())
-            .collect()
+            .collect();
+        for slot in 0..4 {
+            state[GLOBAL_DIM + slot * TIER_DIM + crate::env::MOBILITY_INDEX] =
+                f32::from(slot < if seed == 1 { 3 } else { 2 });
+        }
+        state
     };
     Fixture {
         states: vec![row(1), row(2)],
@@ -188,11 +203,14 @@ fn hand_built() -> Fixture {
         free_tiers: vec![vec![true, false, true], vec![true, true]],
         sensitivities: vec![
             vec![
-                [1.0, 2.0, 3.0, 4.0],
-                [5.0, 6.0, 7.0, 8.0],
-                [0.5, f32::NAN, -1.5, 2.5],
+                component_row([1.0, 2.0, 3.0, 4.0]),
+                component_row([5.0, 6.0, 7.0, 8.0]),
+                component_row([0.5, f32::NAN, -1.5, 2.5]),
             ],
-            vec![[f32::NAN; N_COMPONENTS], [0.1, 0.2, 0.3, 0.4]],
+            vec![
+                [f32::NAN; N_COMPONENTS],
+                component_row([0.1, 0.2, 0.3, 0.4]),
+            ],
         ],
         score_slopes: vec![vec![-2.0, 4.0, 1.0], vec![f32::NAN, 0.8]],
         oracle_gain: vec![3.5, f32::NAN],
@@ -217,9 +235,39 @@ fn shape_message(result: Result<(), TrainError>) -> String {
 }
 
 fn all_finite(m: &ImitationMetrics) -> bool {
-    [m.loss, m.sens_mse, m.cosine, m.gain_loss, m.grad_norm]
-        .iter()
-        .all(|v| v.is_finite())
+    [
+        m.loss,
+        m.sens_mse,
+        m.cosine,
+        m.gain_loss,
+        m.grad_norm,
+        m.packing_ms,
+        m.update_ms,
+    ]
+    .iter()
+    .all(|v| v.is_finite())
+}
+
+#[test]
+fn older_serialized_imitation_metrics_default_component_support_and_timings() {
+    let old = serde_json::json!({
+        "loss": 1.0,
+        "sens_mse": 2.0,
+        "cosine": 0.5,
+        "gain_loss": 0.25,
+        "grad_norm": 3.0,
+        "labelled_tiers": 4,
+        "updates": 5,
+    });
+    let metrics: ImitationMetrics = serde_json::from_value(old).unwrap();
+    assert_eq!(metrics.component_support, [0; N_COMPONENTS]);
+    assert_eq!((metrics.packing_ms, metrics.update_ms), (0.0, 0.0));
+}
+
+fn metric_core(mut metrics: ImitationMetrics) -> ImitationMetrics {
+    metrics.packing_ms = 0.0;
+    metrics.update_ms = 0.0;
+    metrics
 }
 
 fn matrix(values: Vec<f32>, rows: usize, cols: usize) -> Tensor<2> {
@@ -235,6 +283,27 @@ fn single_step(batch_len: usize) -> ImitationConfig {
     ImitationConfig {
         mini_batch_size: batch_len,
         epochs_per_round: 1,
+        updates_per_round: 0,
+        ..ImitationConfig::default()
+    }
+}
+
+#[path = "imitation_bounded_tests.rs"]
+mod bounded_tests;
+
+/// The default config in the full-epoch mode (`updates_per_round == 0`).
+fn epoch_config() -> ImitationConfig {
+    ImitationConfig {
+        updates_per_round: 0,
+        ..ImitationConfig::default()
+    }
+}
+
+/// A bounded-mode config of `updates` mini-batches of `mini_batch` samples.
+fn bounded(updates: usize, mini_batch: usize) -> ImitationConfig {
+    ImitationConfig {
+        mini_batch_size: mini_batch,
+        updates_per_round: updates,
         ..ImitationConfig::default()
     }
 }
@@ -248,6 +317,7 @@ fn defaults_are_the_documented_ones() {
     assert_eq!(config.lr_schedule, LrSchedule::Constant);
     assert_eq!(config.mini_batch_size, 256);
     assert_eq!(config.epochs_per_round, 2);
+    assert_eq!(config.updates_per_round, 64);
     assert_eq!(config.max_grad_norm, 1.0);
     assert_eq!(config.cosine_coeff, 0.5);
     assert_eq!(config.gain_coeff, 0.1);
@@ -256,7 +326,8 @@ fn defaults_are_the_documented_ones() {
 
 #[test]
 fn validate_refuses_every_out_of_range_field() {
-    let cases: [(&str, fn(&mut ImitationConfig)); 13] = [
+    type Damage = fn(&mut ImitationConfig);
+    let cases: [(&str, Damage); 13] = [
         ("zero mini-batch", |c| c.mini_batch_size = 0),
         ("zero epochs", |c| c.epochs_per_round = 0),
         ("zero learning rate", |c| c.learning_rate = 0.0),
@@ -333,7 +404,8 @@ fn batch_len_and_emptiness() {
 #[test]
 fn validation_names_the_slice_the_sample_and_the_field() {
     // (text the message must contain, field it must name, damage to a valid 3-sample fixture)
-    let cases: [(&str, &str, fn(&mut Fixture)); 11] = [
+    type Damage = fn(&mut Fixture);
+    let cases: [(&str, &str, Damage); 11] = [
         ("batch slices", "n_tiers", |fx| fx.n_tiers.truncate(2)),
         ("batch slices", "free_tiers", |fx| fx.free_tiers.truncate(2)),
         ("batch slices", "sensitivities", |fx| {
@@ -378,181 +450,8 @@ fn a_non_finite_state_is_refused_by_sample() {
     );
 }
 
-// Packing
-
-#[test]
-fn label_rows_follow_the_masking_rules() {
-    let fx = hand_built();
-    let rows = label_rows(&fx.batch(), &[0, 1], 4);
-
-    // Sample 0: tier 1 is not free (masked although finite), tier 2 lacks one component, tier 3
-    // is padding. Sample 1: tier 0 has no label at all, tiers 2 and 3 are padding.
-    let o = 0.0_f32;
-    let want_target = [
-        [
-            1.0, 2.0, 3.0, 4.0, o, o, o, o, 0.5, o, -1.5, 2.5, o, o, o, o,
-        ],
-        [o, o, o, o, 0.1, 0.2, 0.3, 0.4, o, o, o, o, o, o, o, o],
-    ];
-    assert_eq!(rows.sens_target, want_target.concat());
-    let want_mask = [
-        [1.0, 1.0, 1.0, 1.0, o, o, o, o, 1.0, o, 1.0, 1.0, o, o, o, o],
-        [o, o, o, o, 1.0, 1.0, 1.0, 1.0, o, o, o, o, o, o, o, o],
-    ];
-    assert_eq!(rows.sens_mask, want_mask.concat());
-
-    // Directions: -MEAN_BOUND * slope / (max |slope| + SLOPE_EPS) over the sample's finite slopes.
-    let direction = |slope: f32, max: f32| -MEAN_BOUND * slope / (max + SLOPE_EPS);
-    let want_dir = [
-        direction(-2.0, 4.0),
-        o,
-        direction(1.0, 4.0),
-        o,
-        o,
-        direction(0.8, 0.8),
-        o,
-        o,
-    ];
-    assert_close(&rows.dir_target, &want_dir, 1e-5);
-    assert_eq!(rows.dir_mask, vec![1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
-    assert_eq!(rows.gain_target, vec![3.5, 0.0]);
-    assert_eq!(rows.gain_mask, vec![1.0, 0.0]);
-    assert!(rows.has_labels());
-}
-
-#[test]
-fn label_rows_of_an_unlabelled_batch_report_no_labels() {
-    let fx = Fixture::blank(4, MAX_TIERS);
-    let rows = label_rows(&fx.batch(), &[0, 1, 2, 3], MAX_TIERS);
-    assert!(!rows.has_labels());
-    assert!(rows.sens_target.iter().all(|&v| v == 0.0));
-    assert!(rows.dir_target.iter().all(|&v| v == 0.0));
-    assert!(rows.gain_target.iter().all(|&v| v == 0.0));
-}
-
-#[test]
-fn infinite_labels_are_treated_as_missing() {
-    let mut fx = Fixture::blank(1, MAX_TIERS);
-    fx.sensitivities[0][0] = [f32::INFINITY, 1.0, f32::NEG_INFINITY, f32::NAN];
-    fx.score_slopes[0][0] = f32::INFINITY;
-    fx.oracle_gain[0] = f32::INFINITY;
-    let rows = label_rows(&fx.batch(), &[0], MAX_TIERS);
-    assert_eq!(rows.sens_mask.iter().sum::<f32>(), 1.0);
-    assert_eq!(rows.sens_target[1], 1.0);
-    assert_eq!(rows.dir_mask.iter().sum::<f32>(), 0.0);
-    assert_eq!(rows.gain_mask, vec![0.0]);
-}
-
-#[test]
-fn labelled_tiers_count_real_free_tiers_with_a_finite_component() {
-    // Sample 0: tier 0 (all four) and tier 2 (three of four) count, tier 1 is not free.
-    // Sample 1: tier 0 has no label, tier 1 counts.
-    assert_eq!(count_labelled_tiers(&hand_built().batch()), 3);
-    assert_eq!(
-        count_labelled_tiers(&Fixture::blank(5, MAX_TIERS).batch()),
-        0
-    );
-}
-
-#[test]
-fn pack_imitation_uploads_states_masks_and_labels_in_index_order() {
-    let fx = hand_built();
-    let batch = fx.batch();
-    let trainer = trainer(4, 0);
-    let packed = trainer.pack_imitation(&batch, &[1, 0]);
-    assert!(packed.has_labels);
-    assert_eq!(packed.tiers.dims(), [2, 4, TIER_DIM]);
-    assert_eq!(packed.globals.dims(), [2, GLOBAL_DIM]);
-
-    let globals = host_vec(packed.globals).unwrap();
-    assert_eq!(globals[..GLOBAL_DIM], fx.states[1][..GLOBAL_DIM]);
-    assert_eq!(globals[GLOBAL_DIM..], fx.states[0][..GLOBAL_DIM]);
-    let tiers = host_vec(packed.tiers).unwrap();
-    assert_eq!(tiers[..4 * TIER_DIM], fx.states[1][GLOBAL_DIM..]);
-    assert_eq!(tiers[4 * TIER_DIM..], fx.states[0][GLOBAL_DIM..]);
-    // Sample 1 has 2 real tiers, sample 0 has 3.
-    assert_eq!(
-        host_vec(packed.mask).unwrap(),
-        vec![1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0]
-    );
-
-    let rows = label_rows(&batch, &[1, 0], 4);
-    assert_eq!(packed.labels.sens_mask.dims(), [2, 4, N_COMPONENTS]);
-    assert_eq!(host_vec(packed.labels.sens_mask).unwrap(), rows.sens_mask);
-    assert_eq!(
-        host_vec(packed.labels.sens_target).unwrap(),
-        rows.sens_target
-    );
-    assert_eq!(host_vec(packed.labels.dir_mask).unwrap(), rows.dir_mask);
-    assert_eq!(host_vec(packed.labels.dir_target).unwrap(), rows.dir_target);
-    assert_eq!(host_vec(packed.labels.gain_mask).unwrap(), rows.gain_mask);
-    assert_eq!(
-        host_vec(packed.labels.gain_target).unwrap(),
-        rows.gain_target
-    );
-    // Only sample 0, now the second row, has a gain.
-    assert_eq!(rows.gain_mask, vec![0.0, 1.0]);
-}
-
-// Loss terms (hand values)
-
-#[test]
-fn sensitivity_mse_is_the_masked_mean_over_labelled_entries() {
-    let hat = cube(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], [1, 2, 4]);
-    let target = cube(vec![0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0], [1, 2, 4]);
-    // Entries 0 and 6 only: ((1 - 0.5)^2 + (7 - 4)^2) / 2 = 4.625; every other entry is ignored.
-    let mask = cube(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], [1, 2, 4]);
-    let mse = host_scalar(masked_sens_mse(hat.clone(), target.clone(), mask)).unwrap();
-    assert!((mse - 4.625).abs() < 1e-6, "{mse}");
-
-    let none = masked_sens_mse(hat, target, cube(vec![0.0; 8], [1, 2, 4]));
-    assert_eq!(host_scalar(none).unwrap(), 0.0);
-}
-
-#[test]
-fn cosine_averages_over_the_samples_that_have_a_direction() {
-    // Sample 0 (tiers 0 and 1 masked): hat (1, 0) vs target (1, 1) -> 1 / sqrt(2); the huge
-    // masked hat entry must not matter. Sample 1: nothing masked -> excluded. Sample 2: parallel.
-    let hat = matrix(vec![1.0, 0.0, 99.0, 5.0, 5.0, 5.0, 2.0, -2.0, 0.0], 3, 3);
-    let target = matrix(vec![1.0, 1.0, 7.0, 1.0, 2.0, 3.0, 1.0, -1.0, 0.0], 3, 3);
-    let mask = matrix(vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 3, 3);
-    let (cosine, loss) = masked_cosine(hat, target, mask);
-    let want = f32::midpoint(FRAC_1_SQRT_2, 1.0);
-    let (cosine, loss) = (host_scalar(cosine).unwrap(), host_scalar(loss).unwrap());
-    assert!((cosine - want).abs() < 1e-5, "{cosine} vs {want}");
-    assert!((loss - (1.0 - want)).abs() < 1e-5, "{loss}");
-}
-
-#[test]
-fn cosine_of_opposite_directions_is_minus_one_and_an_empty_mask_is_exactly_zero() {
-    let target = matrix(vec![1.0, 2.0], 1, 2);
-    let opposite = matrix(vec![-1.0, -2.0], 1, 2);
-    let both = matrix(vec![1.0; 2], 1, 2);
-    let (cosine, loss) = masked_cosine(opposite.clone(), target.clone(), both);
-    assert!((host_scalar(cosine).unwrap() + 1.0).abs() < 1e-5);
-    assert!((host_scalar(loss).unwrap() - 2.0).abs() < 1e-5);
-
-    let (cosine, loss) = masked_cosine(opposite, target, matrix(vec![0.0; 2], 1, 2));
-    assert_eq!(host_scalar(cosine).unwrap(), 0.0);
-    assert_eq!(host_scalar(loss).unwrap(), 0.0);
-}
-
-#[test]
-fn huber_is_quadratic_below_the_knee_linear_above_and_masked() {
-    let hat = matrix(vec![0.5, 3.0, 10.0, 7.0, -1.5], 5, 1);
-    let target = matrix(vec![0.0, 0.5, 2.0, 0.0, 0.0], 5, 1);
-    // Errors 0.5 -> 0.125, 2.5 -> 2.0, (masked), 7 -> 6.5, 1.5 -> 1.0; mean of four = 2.40625.
-    let mask = matrix(vec![1.0, 1.0, 0.0, 1.0, 1.0], 5, 1);
-    let loss = host_scalar(masked_huber(hat, target, mask)).unwrap();
-    assert!((loss - 2.406_25).abs() < 1e-5, "{loss}");
-
-    let one = |v: f32| matrix(vec![v], 1, 1);
-    // Exactly at the knee both branches give 0.5; an empty mask gives exactly 0.
-    let knee = masked_huber(one(1.0), one(0.0), one(1.0));
-    assert!((host_scalar(knee).unwrap() - 0.5).abs() < 1e-6);
-    let none = masked_huber(one(4.0), one(0.0), one(0.0));
-    assert_eq!(host_scalar(none).unwrap(), 0.0);
-}
+#[path = "imitation_packing_tests.rs"]
+mod packing_tests;
 
 // The trainer
 
@@ -598,7 +497,13 @@ fn an_empty_or_all_masked_batch_is_a_no_op() {
         let metrics = trainer
             .train_imitation_epochs(&fx.batch(), &ImitationConfig::default())
             .unwrap();
-        assert_eq!(metrics, ImitationMetrics::default(), "{count} samples");
+        assert!(metrics.packing_ms.is_finite() && metrics.packing_ms >= 0.0);
+        assert!(metrics.update_ms.is_finite() && metrics.update_ms >= 0.0);
+        assert_eq!(
+            metric_core(metrics),
+            ImitationMetrics::default(),
+            "{count} samples"
+        );
     }
     assert_eq!(trainer.update_count(), 0);
     assert_eq!(export(&trainer), before);
@@ -662,11 +567,11 @@ fn labels_of_tiers_that_are_not_free_do_not_change_the_result() {
         free[1] = false;
     }
     for sens in &mut garbage.sensitivities {
-        sens[1] = [100.0, -50.0, 25.0, 12.0];
+        sens[1] = component_row([100.0, -50.0, 25.0, 12.0]);
     }
     let config = ImitationConfig {
         mini_batch_size: 4,
-        ..ImitationConfig::default()
+        ..epoch_config()
     };
     let (mut first, mut second) = (trainer(MAX_TIERS, 3), trainer(MAX_TIERS, 3));
     let run_a = first
@@ -675,7 +580,7 @@ fn labels_of_tiers_that_are_not_free_do_not_change_the_result() {
     let run_b = second
         .train_imitation_epochs(&garbage.batch(), &config)
         .unwrap();
-    assert_eq!(run_a, run_b);
+    assert_eq!(metric_core(run_a), metric_core(run_b)); // the timings differ from run to run
     assert_eq!(export(&first), export(&second));
 }
 
@@ -683,7 +588,7 @@ fn labels_of_tiers_that_are_not_free_do_not_change_the_result() {
 fn a_diverged_loss_is_reported_and_the_step_is_skipped() {
     let mut fx = Fixture::from_teacher(4, MAX_TIERS, 11);
     // (3e30)^2 overflows f32, so the regression loss is infinite.
-    fx.sensitivities[0][0] = [3.0e30, 0.0, 0.0, 0.0];
+    fx.sensitivities[0][0] = component_row([3.0e30, 0.0, 0.0, 0.0]);
     let mut trainer = trainer(MAX_TIERS, 1);
     let before = export(&trainer);
     let result = trainer.train_imitation_epochs(&fx.batch(), &ImitationConfig::default());
@@ -700,11 +605,12 @@ fn the_hand_built_batch_trains_and_counts_its_labelled_tiers() {
     let fx = hand_built();
     let mut trainer = trainer(4, 0);
     let metrics = trainer
-        .train_imitation_epochs(&fx.batch(), &ImitationConfig::default())
+        .train_imitation_epochs(&fx.batch(), &epoch_config())
         .unwrap();
-    // Default: 2 epochs, one mini-batch of the 2 samples each.
+    // Epoch mode, 2 epochs, one mini-batch of the 2 samples each.
     assert_eq!(metrics.updates, 2);
     assert_eq!(metrics.labelled_tiers, 3);
+    assert_eq!(metrics.component_support, [3, 2, 3, 3, 0, 0, 0]);
     assert!(all_finite(&metrics), "{metrics:?}");
     assert!(metrics.sens_mse > 0.0 && metrics.gain_loss > 0.0);
 }
@@ -719,7 +625,7 @@ fn epochs_and_mini_batches_set_the_number_of_updates() {
     let config = ImitationConfig {
         mini_batch_size: 4,
         epochs_per_round: 3,
-        ..ImitationConfig::default()
+        ..epoch_config()
     };
     let metrics = small.train_imitation_epochs(&fx.batch(), &config).unwrap();
     assert_eq!(metrics.updates, 9);
@@ -728,7 +634,7 @@ fn epochs_and_mini_batches_set_the_number_of_updates() {
 
     // A mini-batch larger than the batch is one step per epoch.
     let mut large = trainer(MAX_TIERS, 1);
-    let default = ImitationConfig::default();
+    let default = epoch_config();
     let metrics = large.train_imitation_epochs(&fx.batch(), &default).unwrap();
     assert_eq!(metrics.updates, 2);
     assert_eq!(metrics.labelled_tiers, total_tiers);
@@ -809,7 +715,7 @@ fn the_same_seed_gives_the_same_metrics_and_weights() {
         learning_rate: 1e-3,
         mini_batch_size: 8,
         epochs_per_round: 2,
-        ..ImitationConfig::default()
+        ..epoch_config()
     };
     let run = |seed: u64| {
         let mut trainer = trainer(MAX_TIERS, seed);
@@ -820,11 +726,74 @@ fn the_same_seed_gives_the_same_metrics_and_weights() {
     };
     let (metrics_a, weights_a) = run(7);
     let (metrics_b, weights_b) = run(7);
-    assert_eq!(metrics_a, metrics_b);
+    assert_eq!(metric_core(metrics_a), metric_core(metrics_b));
     assert_eq!(weights_a, weights_b);
     assert_eq!(metrics_a.updates, 6);
 
     // Another shuffle seed visits the mini-batches in another order.
     let (metrics_c, _) = run(8);
-    assert_ne!(metrics_a, metrics_c);
+    assert_ne!(metric_core(metrics_a), metric_core(metrics_c));
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires an NVIDIA CUDA device at hardware index 0"]
+fn cuda_imitation_update_and_packed_export_match_pure_inference() {
+    let mut trainer = BurnTrainer::new_cuda(shape(MAX_TIERS), PpoConfig::default()).unwrap();
+    trainer.load_weights(&network(5)).unwrap();
+    let before = export(&trainer);
+    let fixture = Fixture::from_teacher(6, MAX_TIERS, 11);
+    let config = ImitationConfig {
+        mini_batch_size: 4,
+        updates_per_round: 2,
+        ..ImitationConfig::default()
+    };
+    let metrics = trainer
+        .train_imitation_epochs(&fixture.batch(), &config)
+        .unwrap();
+    assert_eq!(metrics.updates, 2);
+    assert_eq!(trainer.update_count(), 2);
+    assert!(
+        [
+            metrics.loss,
+            metrics.sens_mse,
+            metrics.cosine,
+            metrics.gain_loss,
+            metrics.grad_norm,
+            metrics.packing_ms,
+            metrics.update_ms,
+        ]
+        .into_iter()
+        .all(f32::is_finite),
+        "non-finite imitation metrics: {metrics:?}"
+    );
+
+    let exported = export(&trainer);
+    assert_ne!(exported, before, "imitation updates did not change weights");
+    let rollout = trainer
+        .rollout_model()
+        .forward_host(&fixture.states, &fixture.n_tiers)
+        .unwrap();
+    for (index, (state, &n_tiers)) in fixture.states.iter().zip(&fixture.n_tiers).enumerate() {
+        let tokens: Vec<Vec<f32>> = state[GLOBAL_DIM..]
+            .chunks_exact(TIER_DIM)
+            .take(n_tiers)
+            .map(<[f32]>::to_vec)
+            .collect();
+        let (policy, value) = exported.forward(&tokens, &state[..GLOBAL_DIM]).unwrap();
+        for tier in 0..n_tiers {
+            assert!(
+                (policy.mean[tier] - rollout.means[index][tier]).abs() < 1e-4,
+                "mean {index}/{tier}"
+            );
+            assert!(
+                (policy.log_std[tier] - rollout.log_stds[index][tier]).abs() < 1e-4,
+                "log std {index}/{tier}"
+            );
+        }
+        assert!(
+            (value - rollout.values[index]).abs() < 1e-4,
+            "value {index}"
+        );
+    }
 }

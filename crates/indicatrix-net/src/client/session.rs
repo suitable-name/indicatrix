@@ -425,6 +425,7 @@ mod tests {
             optics::{materials::GemMaterial, raytracer::LightingPreset},
         };
         crate::SceneState {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
             width: 2,
             height: 2,
             yaw: 0.4,
@@ -444,6 +445,7 @@ mod tests {
             tools: Vec::new(),
             fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
             head_shadow_deg: 16.0,
+            frosted_planes: Vec::new(),
         }
     }
 

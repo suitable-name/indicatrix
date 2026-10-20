@@ -18,6 +18,7 @@
 
 mod core;
 mod export;
+pub(super) mod export_ray;
 mod final_picture;
 #[cfg(test)]
 mod tests;

@@ -8,9 +8,12 @@ use indicatrix_net::{
     library::{LibraryResponse, RangeFilterWire, SortOrderWire},
     messages::{ErrorMsg, error_codes},
 };
-use indicatrix_vault::db::sqlite::{Database, DisplayFilters, SEARCH_RESULT_CAP, SortOrder};
+use indicatrix_vault::{
+    db::sqlite::{Database, DisplayFilters, SEARCH_RESULT_CAP, SortOrder},
+    model::frosting::StoredTierFrosting,
+};
 
-use super::convert::{from_range_wire, to_ranges_wire, to_summary};
+use super::convert::{from_range_wire, to_frosting_wire, to_ranges_wire, to_summary};
 
 /// `LibraryResponse::Error` code for a library request refused before any database work.
 ///
@@ -138,7 +141,7 @@ pub(super) fn design_source(db: &Database, entry_id: i64) -> LibraryResponse {
                 attachment.id,
                 content.len()
             );
-            design_source_reply(entry_id, &name, kind, &content)
+            design_source_reply(entry_id, &name, kind, &content, &meta.frosting)
         }
         // The metadata query just found this attachment; content going missing here
         // would mean a concurrent delete raced this request -- treat it the same as
@@ -198,21 +201,32 @@ pub(super) fn design_native(db: &Database, entry_id: i64) -> LibraryResponse {
 /// conversion runs inside `catch_unwind`, so one malformed file is an error reply,
 /// never a dead connection thread; a file that does not read is a
 /// [`LibraryResponse::Error`] carrying the reader's message.
+///
+/// The reply carries the design's frosting beside the text, since `.asc` has no notation for
+/// it: `stored` (the entry's `diagram_frosting` rows, what an import of a `.gcs` or a design
+/// file recorded) when it has any, else what a converted `.gcs` attachment states itself.
 fn design_source_reply(
     entry_id: i64,
     name: &str,
     kind: indicatrix_vault::local::DesignFileKind,
     content: &[u8],
+    stored: &[StoredTierFrosting],
 ) -> LibraryResponse {
     let converted = std::panic::catch_unwind(|| {
         indicatrix_vault::local::design_file_to_asc_text(name, kind, content)
     });
     let failure = match converted {
         Ok(Ok(file)) => {
+            let frosting = if stored.is_empty() {
+                StoredTierFrosting::from_gcs(&file.frosting)
+            } else {
+                stored.to_vec()
+            };
             return LibraryResponse::DesignSource {
                 entry_id,
                 file_name: file.asc_file_name,
                 asc_text: file.asc_text,
+                frosting: to_frosting_wire(&frosting),
             };
         }
         Ok(Err(e)) => format!("'{name}' could not be read: {e}"),

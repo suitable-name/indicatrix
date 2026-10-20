@@ -13,12 +13,13 @@
 //!   facets, the girdle and the table keep their size).
 //! - **Move after** simulates the move: it must leave fewer tiers meeting a later tier,
 //!   and the design must still solve.
-//! - **Steepen pavilion** turns the facet about its girdle-side edge (the hinge of
+//! - **Steepen pavilion** turns the facet about its girdle corners (the hinge of
 //!   `design::hinge`, through `retarget::anchors`), so the girdle stays, and the result
 //!   must pass the Retarget validity gate (`retarget::validity::judge`).
 //! - **Add a table** tries the quick-add height first and otherwise scans heights above the
 //!   girdle for one that keeps every crown facet, nearest a table of about 56 % of the
-//!   stone's width.
+//!   stone's width. It judges the finished stone only (`retarget::validity::judge_stone`):
+//!   a table cuts the crown's apex away, so the meet-preservation gate does not apply.
 //!
 //! The planner solves the design (and candidates) itself, so a caller runs it on a worker
 //! thread. It never mutates the design it is given.
@@ -28,7 +29,7 @@ use crate::{
     manipulate::{dependents::clear_dependant_edits, tiers_meeting},
     retarget::{
         anchors::anchored_candidate_for,
-        validity::{InvalidReason, StoneAnalysis, analyze, judge},
+        validity::{InvalidReason, StoneAnalysis, analyze, judge, judge_stone},
     },
 };
 use indicatrix::geometry::{
@@ -440,7 +441,7 @@ fn steepen_pavilion(design: &Design, tier: usize, n_d: f64) -> Result<FixPlan, S
         edit,
         message: format!(
             "Steepened {label} from {current:.1}\u{b0} to {target:.2}\u{b0}; it turns about its \
-             girdle edge, so the girdle stays."
+             girdle corners, so the girdle outline stays."
         ),
         select: Some(tier),
     })
@@ -500,7 +501,9 @@ fn table_width_at(
         })
         .ok()?;
     let analysis = analyze(&candidate, false);
-    if !judge(design, original, &analysis).is_empty() {
+    // The stone alone is judged: a table cuts the crown's apex away and adds a facet, so it can
+    // never keep the original meet network, and `original` was analysed without a baseline.
+    if !judge_stone(design, original, &analysis).is_empty() {
         return None;
     }
     let analysis = analysis.ok()?;

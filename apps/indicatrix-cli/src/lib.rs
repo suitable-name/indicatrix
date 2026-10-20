@@ -26,6 +26,14 @@
 //! Custom materials come from a design library given with `--db`, opened read-only. Render job
 //! files are written by the desktop app's render queue. See each command's `--help`.
 //!
+//! # Several designs
+//!
+//! Every command that takes a design takes several. Each runs as the command would alone, and
+//! the results are put together as one [`Outcome`]: the reports under `==> FILE <==` lines, the
+//! files of the designs that worked (`--out-dir DIR` names one for each design after its stem;
+//! `--out FILE` is refused with several), and the exit code of the first design that failed.
+//! One design is the plain command, byte for byte.
+//!
 //! # Exit codes
 //!
 //! | Code | Meaning |
@@ -73,17 +81,23 @@ use std::{fmt::Write as _, io::IsTerminal as _};
 
 /// Parses and runs the command line, streaming the progress of `render` and `tilt-video`
 /// to `progress`. Every other command writes nothing to it.
-fn execute(args: &[String], progress: &mut dyn std::io::Write, terminal: bool) -> Outcome {
+///
+/// The flag is `true` for a command line with several designs: its files are written even when
+/// the exit code is not a success, because one design that failed leaves the files of the
+/// others standing.
+fn execute(args: &[String], progress: &mut dyn std::io::Write, terminal: bool) -> (Outcome, bool) {
     let command = match args::parse(args) {
         Ok(command) => command,
         Err(message) => {
             let mut outcome = Outcome::failure(&CliError::usage(message));
             outcome.stderr.push_str("try: indicatrix-cli --help\n");
-            return outcome;
+            return (outcome, false);
         }
     };
-    commands::dispatch_streaming(&command, progress, terminal)
-        .unwrap_or_else(|error| Outcome::failure(&error))
+    let several = matches!(command, args::Command::Batch(_));
+    let outcome = commands::dispatch_streaming(&command, progress, terminal)
+        .unwrap_or_else(|error| Outcome::failure(&error));
+    (outcome, several)
 }
 
 /// Runs the command line `args` (the words after the program name) without writing any file
@@ -96,7 +110,7 @@ fn execute(args: &[String], progress: &mut dyn std::io::Write, terminal: bool) -
 #[must_use]
 pub fn run_command_line(args: &[String]) -> Outcome {
     let mut buffer: Vec<u8> = Vec::new();
-    let mut outcome = execute(args, &mut buffer, false);
+    let (mut outcome, _) = execute(args, &mut buffer, false);
     if !buffer.is_empty() {
         outcome
             .stderr
@@ -110,8 +124,10 @@ pub fn run_command_line(args: &[String]) -> Outcome {
 ///
 /// Files are written only when the command succeeded (exit code 0), or when it succeeded in
 /// finding a Problem (`validate`, exit code 4): a command that refuses its result never leaves
-/// a file behind. A file that cannot be written ends the run with exit code 3. Each file that
-/// was written is noted on standard error.
+/// a file behind. With several designs each design is its own command: the files of the ones
+/// that worked are written even when another failed, and the run ends with the failure's exit
+/// code. A file that cannot be written ends the run with exit code 3 (the other files are still
+/// written). Each file that was written is noted on standard error.
 ///
 /// `render` and `tilt-video` write their pictures themselves and stream their progress to
 /// standard error while they run (one rewritten line when it is a terminal): that part is
@@ -121,10 +137,11 @@ pub fn run_command_line(args: &[String]) -> Outcome {
 pub fn run(args: &[String]) -> Outcome {
     let mut stderr = std::io::stderr();
     let terminal = stderr.is_terminal();
-    let mut outcome = execute(args, &mut stderr, terminal);
-    if outcome.exit != EXIT_OK && outcome.exit != EXIT_PROBLEM {
+    let (mut outcome, several) = execute(args, &mut stderr, terminal);
+    if !several && outcome.exit != EXIT_OK && outcome.exit != EXIT_PROBLEM {
         return outcome;
     }
+    let mut unwritten = false;
     for file in &outcome.files {
         match std::fs::write(&file.path, &file.text) {
             Ok(()) => {
@@ -136,10 +153,12 @@ pub fn run(args: &[String]) -> Outcome {
                     "error: cannot write {}: {error}",
                     file.path.display()
                 );
-                outcome.exit = EXIT_IO;
-                break;
+                unwritten = true;
             }
         }
+    }
+    if unwritten {
+        outcome.exit = EXIT_IO;
     }
     outcome
 }
@@ -232,6 +251,62 @@ mod tests {
             "{}",
             outcome.stderr
         );
+    }
+
+    /// With several designs one that fails does not take the others' files with it, and the
+    /// run still ends with the failure's exit code.
+    #[test]
+    fn run_with_several_designs_writes_the_ones_that_worked() {
+        let good = testing::write_design("lib-many-good.isdd", &testing::template());
+        let missing = testing::temp_path("lib-many-missing.isdd");
+        let folder = testing::temp_path("lib-many-out");
+        let _ = std::fs::create_dir_all(&folder);
+        let written = folder.join("lib-many-good.isdd");
+        let _ = std::fs::remove_file(&written);
+        let outcome = run(&[
+            "solve".to_string(),
+            good,
+            missing.to_string_lossy().into_owned(),
+            "--out-dir".to_string(),
+            folder.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(outcome.exit, EXIT_IO, "{}", outcome.stderr);
+        assert!(written.is_file(), "the good design is saved");
+        assert!(outcome.stderr.contains("wrote "), "{}", outcome.stderr);
+        assert!(
+            outcome
+                .stderr
+                .contains("error: 1 of 2 design files failed\n"),
+            "{}",
+            outcome.stderr
+        );
+    }
+
+    /// One failing write does not stop the other files, and ends the run with exit code 3.
+    #[test]
+    fn run_keeps_writing_after_one_file_cannot_be_written() {
+        let a = testing::write_design("lib-many-a.isdd", &testing::template());
+        let b = testing::write_design("lib-many-b.isdd", &testing::template());
+        let folder = testing::temp_path("lib-many-out-two");
+        let _ = std::fs::create_dir_all(&folder);
+        // A folder where the first file should go: it cannot be written, the second can.
+        let _ = std::fs::create_dir_all(folder.join("lib-many-a.isdd"));
+        let second = folder.join("lib-many-b.isdd");
+        let _ = std::fs::remove_file(&second);
+        let outcome = run(&[
+            "solve".to_string(),
+            a,
+            b,
+            "--out-dir".to_string(),
+            folder.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(outcome.exit, EXIT_IO, "{}", outcome.stderr);
+        assert!(
+            outcome.stderr.contains("error: cannot write"),
+            "{}",
+            outcome.stderr
+        );
+        assert!(second.is_file(), "the second file is still written");
     }
 
     #[test]

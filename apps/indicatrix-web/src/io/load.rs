@@ -72,10 +72,11 @@ pub fn load_converted(
 ) -> Result<Opened, String> {
     let converted = convert_foreign_design(file_name, kind, bytes)
         .map_err(|e| format!("Cannot open \"{file_name}\": {e}"))?;
-    let loaded = design_from_asc_text(&converted.asc_file_name, &converted.asc_text, None)
+    let mut loaded = design_from_asc_text(&converted.asc_file_name, &converted.asc_text, None)
         .map_err(|e| {
             format!("Cannot open \"{file_name}\": the converted schedule does not parse: {e}")
         })?;
+    loaded.design.apply_imported_frosting(&converted.frosting);
     let source = if kind == InputFileKind::Gem {
         DesignSource::Converted(".gem")
     } else {

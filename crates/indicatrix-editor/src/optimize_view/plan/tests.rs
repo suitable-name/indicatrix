@@ -337,7 +337,11 @@ fn a_driven_tier_gets_no_range_and_is_not_counted_as_movable() {
 }
 
 #[test]
-fn the_hinges_skip_driven_tiers_and_follow_the_selection() {
+fn the_hinges_keep_driven_tiers_and_follow_the_selection() {
+    // A tier that follows a relation keeps its hinge: the optimizers give relation followers
+    // depth freedom independent of their (driven) angle
+    // (docs/meet-preserving-optimizers-implementation-report.md, gap 2), and the cut-core test
+    // `a_tier_that_follows_a_relation_is_not_an_anchored_variable_either` expects the hinge.
     let mut design = adopted();
     design
         .tiers
@@ -354,14 +358,14 @@ fn the_hinges_skip_driven_tiers_and_follow_the_selection() {
     fill_anchor_hinges(&mut options, &design, &hinges, None);
     assert_eq!(
         options.anchor_hinges.keys().copied().collect::<Vec<_>>(),
-        vec![0, 1]
+        vec![0, 1, 2]
     );
 
     let only = BTreeSet::from([1, 2]);
     fill_anchor_hinges(&mut options, &design, &hinges, Some(&only));
     assert_eq!(
         options.anchor_hinges.keys().copied().collect::<Vec<_>>(),
-        vec![1]
+        vec![1, 2]
     );
     assert_eq!(options.anchor_hinges[&1], DVec3::new(1.0, 0.0, 1.0));
 }

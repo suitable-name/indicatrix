@@ -100,11 +100,11 @@ export component ExportSheet inherits Rectangle {
                     }
                 }
 
-                Label {
+                if RenderModel.engine == 0: Label {
                     text: "Samples per Pixel";
                 }
 
-                Segmented {
+                if RenderModel.engine == 0: Segmented {
                     options: RenderModel.export-samples;
                     current: RenderModel.export-spp;
                     selected(index) => {
@@ -112,6 +112,7 @@ export component ExportSheet inherits Rectangle {
                         RenderModel.export-options-changed();
                     }
                 }
+                if RenderModel.engine == 1: Label { text: "Anti-Aliasing: 16 Fixed Taps"; }
 
                 Label {
                     text: "Color Space";
@@ -147,6 +148,13 @@ export component ExportSheet inherits Rectangle {
                     }
                 }
 
+                if RenderModel.export-note != "": Text {
+                    text: RenderModel.export-note;
+                    color: Theme.on-surface;
+                    font-size: Theme.text-body;
+                    wrap: word-wrap;
+                }
+
                 if RenderModel.export-done && !RenderModel.export-running: Text {
                     text: RenderModel.export-result;
                     color: Theme.on-surface;
@@ -180,6 +188,14 @@ export component ExportSheet inherits Rectangle {
                         }
                     }
 
+                    if !RenderModel.export-running && RenderModel.backend == 3: TonalButton {
+                        text: "Send To Server";
+                        enabled: RenderModel.export-ready;
+                        clicked => {
+                            RenderModel.export-submit-job();
+                        }
+                    }
+
                     if !RenderModel.export-running: PrimaryButton {
                         text: RenderModel.export-done ? "Render Again" : "Render";
                         enabled: RenderModel.export-ready;
@@ -189,22 +205,13 @@ export component ExportSheet inherits Rectangle {
                     }
                 }
 
-                // The remote render lands with the remote setup (More).
-                VerticalLayout {
-                    spacing: Theme.space-xs;
-
-                    TonalButton {
-                        text: "Render on Desktop";
-                        enabled: false;
-                    }
-
-                    Text {
-                        text: "Set up a remote in More";
-                        color: Theme.on-surface-variant;
-                        font-size: Theme.text-label;
-                        horizontal-alignment: center;
-                    }
+                Text {
+                    text: RenderModel.backend == 3 ? "Render uses the configured endpoint while this app stays connected. Send To Server stores the job on the endpoint, which keeps rendering after the phone disconnects; fetch the picture later under Remote." : RenderModel.backend-report;
+                    color: Theme.on-surface-variant;
+                    font-size: Theme.text-label;
+                    wrap: word-wrap;
                 }
+
             }
         }
     }

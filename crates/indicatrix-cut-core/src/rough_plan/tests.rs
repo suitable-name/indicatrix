@@ -52,7 +52,7 @@ pub(super) fn box_design(entry_id: i64) -> CandidateDesign {
     }
 }
 
-/// Settings with the design cap `max_designs` (the number of stones is never capped).
+/// Settings with the design cap `max_designs` and no stone cap.
 pub(super) fn settings_with(
     max_designs: u8,
     kerf: f64,
@@ -61,6 +61,7 @@ pub(super) fn settings_with(
 ) -> PlanSettings {
     PlanSettings {
         max_designs,
+        max_stones: 0,
         kerf_mm: kerf,
         allowance_mm: allowance,
         skin_mm: 0.0,

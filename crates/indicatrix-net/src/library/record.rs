@@ -181,4 +181,25 @@ pub struct DesignRecord {
     /// one design needs a re-fetch; all zero bytes when the server could not read the
     /// revision. See the module docs' "Staleness" section.
     pub version: [u8; 32],
+    /// The frosted tiers and facets of the design (v26), wire counterpart of
+    /// `indicatrix_vault::model::entry::FullDiagramMeta::frosting`: `.asc` has no notation
+    /// for frosting, so a mirror stores this beside the design's rows. Tiers ascending;
+    /// empty for a design without frosting. Appended last so every earlier field keeps its
+    /// postcard position.
+    pub frosting: Vec<FrostedTierWire>,
+}
+
+/// How one tier of a library design is frosted -- wire counterpart of
+/// `indicatrix_vault::model::frosting::StoredTierFrosting`.
+///
+/// A tier is named by its position in the design's schedule (the order of
+/// [`DesignRecord::angle_settings`]' flat rows), a frosted facet by its slot in the tier's
+/// index list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrostedTierWire {
+    /// The tier's position in the design's schedule (0-based).
+    pub tier: u32,
+    /// The slots of the frosted facets in the tier's index list, ascending. Empty when
+    /// the whole tier is frosted.
+    pub facets: Vec<u32>,
 }

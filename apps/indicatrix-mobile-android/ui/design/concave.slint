@@ -1,0 +1,86 @@
+import { Shell } from "../models.slint";
+import { LineEdit, ComboBox, CheckBox } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { TopBar } from "../shell/top_bar.slint";
+import { PageScroll } from "../shell/page_scroll.slint";
+import { PrimaryButton, TextButton } from "../shell/buttons.slint";
+
+export global ConcaveModel {
+    in-out property <bool> open: false;
+    in property <bool> existing: false;
+    in-out property <string> name;
+    in-out property <string> angle;
+    in-out property <string> indices;
+    in-out property <string> instructions;
+    in-out property <int> tool: 0;
+    in-out property <string> azimuth;
+    in-out property <string> x;
+    in-out property <string> y;
+    in-out property <string> z;
+    in-out property <string> diameter;
+    in-out property <string> tool-angle;
+    in-out property <bool> reciprocating: true;
+    in property <string> error;
+    callback create();
+    callback edit(int);
+    callback save();
+    callback remove();
+    callback close();
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> value;
+    Text { text: root.label; color: Theme.on-surface-variant; }
+    LineEdit { text <=> root.value; }
+}
+
+export component ConcaveScreen inherits Rectangle {
+    property <bool> confirm-delete: false;
+    background: Theme.surface;
+    TouchArea { }
+    VerticalLayout {
+        TopBar {
+            title: ConcaveModel.existing ? "Edit Concave Tier" : "Add Concave Tier";
+            show-back: true;
+            back-clicked => { Shell.request-back(); }
+        }
+        PageScroll {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: Theme.space-md;
+                spacing: Theme.space-md;
+                Text { text: "Draft: Save commits one edit. Back or Cancel discards changes."; wrap: word-wrap; color: Theme.on-surface-variant; }
+                Field { label: "Name"; value <=> ConcaveModel.name; }
+                Field { label: "Facet Angle (Signed Degrees)"; value <=> ConcaveModel.angle; }
+                Field { label: "Index Positions"; value <=> ConcaveModel.indices; }
+                Field { label: "Cutting Instructions"; value <=> ConcaveModel.instructions; }
+                ComboBox {
+                    model: ["CYL · Cylinder", "CON · Cone", "CIR · Circle", "DSC · Disc", "SPH · Sphere"];
+                    current-index <=> ConcaveModel.tool;
+                }
+                Field { label: "Tool Azimuth θ (Degrees; Blank = 0)"; value <=> ConcaveModel.azimuth; }
+                Field { label: "X / Stone Width (Blank = 0)"; value <=> ConcaveModel.x; }
+                Field { label: "Y / Stone Width (Blank = 0)"; value <=> ConcaveModel.y; }
+                Field { label: "Z / Stone Width (Blank = 0)"; value <=> ConcaveModel.z; }
+                Field { label: "Tool Diameter / Stone Width (D/W)"; value <=> ConcaveModel.diameter; }
+                if ConcaveModel.tool == 1 || ConcaveModel.tool == 3: Field {
+                    label: "Included Tool Angle (Degrees)";
+                    value <=> ConcaveModel.tool-angle;
+                }
+                CheckBox { text: "Reciprocating (Off = Plunge)"; checked <=> ConcaveModel.reciprocating; }
+                Text { text: ConcaveModel.error; wrap: word-wrap; color: Theme.error; }
+                PrimaryButton { text: "Save Tier"; clicked => { ConcaveModel.save(); } }
+                TextButton { text: "Cancel Draft"; clicked => { ConcaveModel.close(); } }
+                if ConcaveModel.existing: TextButton {
+                    text: root.confirm-delete ? "Confirm Remove Tier" : "Remove Tier…";
+                    clicked => {
+                        if (root.confirm-delete) { ConcaveModel.remove(); }
+                        else { root.confirm-delete = true; }
+                    }
+                }
+                if root.confirm-delete: TextButton { text: "Keep Tier"; clicked => { root.confirm-delete = false; } }
+            }
+        }
+    }
+}

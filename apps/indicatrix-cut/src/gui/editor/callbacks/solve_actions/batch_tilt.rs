@@ -7,11 +7,11 @@ use crate::{
     gui::{
         batch::tilt,
         editor::{
-            auto_solve,
             material_lookup::{EditorMaterialLookup, resolved_gem_material},
             state::EditorState,
         },
         show_toast,
+        solid_preview::cut_slider::cut_geometry,
     },
 };
 use indicatrix::{
@@ -33,9 +33,10 @@ use std::{
 
 /// Computes the full 4-axis tilt-performance sweep for the
 /// design currently open in the editor -- not whatever a catalogue row currently
-/// stores -- via `gui::batch::tilt::tilt_curves_for_planes`, entirely off the UI
+/// stores -- via `gui::batch::tilt::tilt_curves_for_stone` (the stone with its concave
+/// tools), entirely off the UI
 /// thread (~1.36s, see that function's own doc comment). Closes the crate's last
-/// 3 clippy warnings: `tilt_curves_for_planes`/`save_tilt_curves_for_entry` were
+/// 3 clippy warnings: `tilt_curves_for_stone`/`save_tilt_curves_for_entry` were
 /// real and tested but had no production caller before this.
 ///
 /// `run_epoch` (the same superseded-run guard [`super::deep_solve_run::setup_deep_solve_callback`]/
@@ -295,16 +296,26 @@ fn run_batch_tilt_for_open_design(run: BatchTiltRun) {
             return;
         }
     };
-    let planes = auto_solve::design_to_gpu_planes_from_solved(&run.design, &solved);
+    // The stone WITH its concave tools, the geometry the Compare window shows; a planar
+    // design's planes are exactly `auto_solve::design_to_gpu_planes_from_solved`'s.
+    let stone = cut_geometry(&run.design, Some(&solved), None);
     let lookup = EditorMaterialLookup::new(&run.custom_materials);
     let material = resolved_gem_material(&run.design.material, &lookup);
     // `run.cancel`, not a fresh, unreachable local flag: a later click
     // sets THIS run's own flag (via `begin_batch_tilt_for_open_design`'s
     // `active_cancel`) before starting its own, so this sweep actually stops
     // early instead of running to completion unattended.
-    let curves = tilt::tilt_curves_for_planes(&planes, &material, None, &run.cancel, &mut |p| {
-        push_sweep_progress(&run, p);
-    });
+    // `stone.frosted`: the planes the design frosts, so the curves are the frosted stone's.
+    let curves = tilt::tilt_curves_for_stone(
+        stone.as_geometry(),
+        &stone.frosted,
+        &material,
+        None,
+        &run.cancel,
+        &mut |p| {
+            push_sweep_progress(&run, p);
+        },
+    );
 
     let ui_weak = run.ui_weak.clone();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {

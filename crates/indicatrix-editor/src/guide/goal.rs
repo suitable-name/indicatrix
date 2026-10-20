@@ -78,7 +78,7 @@ pub enum Goal {
     SolvedClosed,
     /// The yield inputs were applied: the design has a girdle diameter.
     YieldApplied,
-    /// The Solid viewport is in this view mode (0 Solid, 1 Path-traced, 2 Both, 3 Diagram).
+    /// The Solid viewport is in this view mode (0 Solid, 1 Path-Traced, 2 Both, 3 Diagram, 4 Ray-Traced).
     ViewMode(i32),
     /// The inspector shows this tab (0 Tier, 1 Preform, 2 Optimize, 3 Schedule, 4 History).
     InspectorTab(i32),
@@ -266,7 +266,7 @@ impl Goal {
                 (*count == 0).then(|| "a tier count of zero is always met".into())
             }
             Self::ViewMode(mode) => {
-                (!(0..=3).contains(mode)).then(|| format!("view mode {mode} does not exist"))
+                (!(0..=4).contains(mode)).then(|| format!("view mode {mode} does not exist"))
             }
             Self::InspectorTab(tab) => {
                 (!(0..=4).contains(tab)).then(|| format!("inspector tab {tab} does not exist"))

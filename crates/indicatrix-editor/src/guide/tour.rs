@@ -83,7 +83,7 @@ pub fn welcome_tour_guide() -> Guide {
         )
         .actions([
             "Drag in the viewport to turn the stone.",
-            "The buttons along its top switch between Solid, Path-traced, Both and Diagram.",
+            "The buttons along its top switch between Solid, Path-Traced, Ray-Traced, Both and Diagram.",
             "Press 1, 2, 3 or 4 to switch the view from the keyboard.",
         ]),
     )

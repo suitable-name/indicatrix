@@ -1,7 +1,8 @@
-//! Pure render-setup helpers shared by every renderer built on this crate: the
-//! desktop viewer (`apps/indicatrix-cut`, through thin re-exports/adapters at its old
-//! paths) and the browser app (`apps/indicatrix-web`), so both build the exact same
-//! scene/material for the same settings and produce byte-identical output.
+//! Pure render-setup helpers shared by every renderer built on this crate.
+//!
+//! The desktop viewer (`apps/indicatrix-cut`, through thin re-exports/adapters at its old
+//! paths) and the browser app (`apps/indicatrix-web`) both use them, so both build the exact
+//! same scene/material for the same settings and produce byte-identical output.
 //!
 //! Everything here is pure: no threads, no `Instant::now`, no filesystem access, so
 //! the whole module compiles for `wasm32-unknown-unknown`. State that genuinely needs

@@ -84,14 +84,14 @@ pub use sampling::{
     radical_inverse_base, sample_draws,
 };
 
-// environment.rs
 pub use environment::{
-    BACKDROP_GREY, BACKDROP_WHITE, DEFAULT_HEAD_SHADOW_COSINES, DEFAULT_HEAD_SHADOW_DEG,
-    EnvironmentSource, LightingModel, LightingPreset, LightingRigParams, TentParams,
-    blackbody_spectrum, head_shadow_cosines, sample_studio_environment,
-    sample_studio_environment_observed, sample_studio_environment_with_rig,
-    sample_studio_environment_with_rig_shadow, sample_studio_environment_with_rig_spec_power,
-    studio_spec_power,
+    BACKDROP_GREY, DEFAULT_HEAD_SHADOW_COSINES, DEFAULT_HEAD_SHADOW_DEG, EnvironmentSource,
+    LightingModel, LightingPreset, LightingRigParams, TRAY_ALBEDO_BLACK, TRAY_ALBEDO_GREY,
+    TRAY_ALBEDO_WHITE, TRAY_MODEL_VERSION, TentParams, blackbody_spectrum, head_shadow_cosines,
+    rig_irradiance_over_pi, sample_studio_environment, sample_studio_environment_observed,
+    sample_studio_environment_with_rig, sample_studio_environment_with_rig_shadow,
+    sample_studio_environment_with_rig_shadow_tray, sample_studio_environment_with_rig_spec_power,
+    sample_studio_environment_with_rig_spec_power_tray, studio_spec_power, tray_radiance,
 };
 #[cfg(feature = "gpu")]
 pub(crate) use environment::{
@@ -174,7 +174,9 @@ pub(crate) fn balance_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {
 
 // transport.rs
 pub use transport::{
-    PathTermination, trace_spectral_ray, trace_spectral_ray_geom, trace_spectral_ray_with_finish,
-    trace_spectral_ray_with_finish_instrumented, trace_spectral_ray_with_finish_soa,
-    trace_spectral_ray_with_finish_soa_geom, wrapped_hero_wavelengths,
+    ExitEvent, PathEvents, PathTermination, trace_spectral_ray,
+    trace_spectral_ray_attributed_soa_geom, trace_spectral_ray_geom,
+    trace_spectral_ray_with_finish, trace_spectral_ray_with_finish_instrumented,
+    trace_spectral_ray_with_finish_soa, trace_spectral_ray_with_finish_soa_geom,
+    wrapped_hero_wavelengths,
 };

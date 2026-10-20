@@ -21,9 +21,12 @@ pub enum InferenceError {
     Unscorable(String),
     /// The baseline plan the retarget starts from could not be built.
     Baseline(String),
-    /// The objective weighs something the models do not cover: a face-up tone term (the presets
-    /// Lighten Dark Rough and Intensify Pale Rough). The text names the term and the presets.
-    /// Returned before any environment is built.
+    /// The final proposal failed exact original-relative meet-preservation certification.
+    Preservation(String),
+    /// A legacy angle-only adapter could not reconstruct the certified angles+masts exactly.
+    Roundtrip(String),
+    /// Reserved compatibility variant. Current environments and models support all seven
+    /// objective components, including both tone goals.
     UnsupportedObjective(String),
 }
 
@@ -35,6 +38,10 @@ impl fmt::Display for InferenceError {
             Self::Weights(error) => write!(f, "unusable network: {error}"),
             Self::Unscorable(why) => write!(f, "cannot score the design for the report: {why}"),
             Self::Baseline(why) => write!(f, "cannot build the retarget baseline: {why}"),
+            Self::Preservation(why) => {
+                write!(f, "retarget preservation certification failed: {why}")
+            }
+            Self::Roundtrip(why) => write!(f, "retarget adapter roundtrip failed: {why}"),
             Self::UnsupportedObjective(why) => write!(f, "unsupported objective: {why}"),
         }
     }
@@ -46,7 +53,11 @@ impl std::error::Error for InferenceError {
             Self::Env(error) => Some(error),
             Self::Model(error) => Some(error),
             Self::Weights(error) => Some(error),
-            Self::Unscorable(_) | Self::Baseline(_) | Self::UnsupportedObjective(_) => None,
+            Self::Unscorable(_)
+            | Self::Baseline(_)
+            | Self::Preservation(_)
+            | Self::Roundtrip(_)
+            | Self::UnsupportedObjective(_) => None,
         }
     }
 }

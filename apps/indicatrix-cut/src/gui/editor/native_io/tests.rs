@@ -4,7 +4,7 @@
 //! are in [`super::design_tests`].
 
 use super::{
-    export::{ScheduleFormat, file_name_for_format, schedule_file_text},
+    export::{ScheduleFormat, file_name_for_format, schedule_file_text_with_frosting},
     open_picker::read_foreign_design,
     save_helpers::{NOT_CLOSED_SOLID_MARKER, degenerate_marker_header},
 };
@@ -551,13 +551,13 @@ fn standard_round_brilliant_schedule() -> indicatrix_formats::asc::AscSchedule {
 #[test]
 fn gcs_export_of_the_standard_round_brilliant_parses_back_with_the_same_tier_count() {
     let schedule = standard_round_brilliant_schedule();
-    let text =
-        schedule_file_text(&schedule, ScheduleFormat::Gcs).expect("the .gcs writer accepts it");
+    let text = schedule_file_text_with_frosting(&schedule, ScheduleFormat::Gcs, &[])
+        .expect("the .gcs writer accepts it");
     let parsed = indicatrix_formats::gcs::parse_gcs_bytes(text.as_bytes())
         .expect("the exported .gcs parses back");
     assert_eq!(parsed.tiers.len(), schedule.tiers.len());
-    let asc =
-        schedule_file_text(&schedule, ScheduleFormat::Asc).expect("the .asc writer accepts it");
+    let asc = schedule_file_text_with_frosting(&schedule, ScheduleFormat::Asc, &[])
+        .expect("the .asc writer accepts it");
     assert!(asc.starts_with("GemCad"), "{asc}");
 }
 

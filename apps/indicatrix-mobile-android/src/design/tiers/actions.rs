@@ -127,7 +127,17 @@ fn with_selected(
 /// mode it toggles the row instead.
 fn row_tapped(window: &AppWindow, state: &Shared, row: i32) {
     let Some(tier) = flat_tier(row) else {
-        toast::show(window, "Tools-cut tiers are edited on the desktop.");
+        if let Ok(row) = usize::try_from(row) {
+            let concave = ui::with(|ui| {
+                ui.rows
+                    .get(row)
+                    .filter(|row| row.is_concave)
+                    .map(|row| row.index)
+            });
+            if let Some(index) = concave {
+                crate::design::concave::open(window, state, Some(index));
+            }
+        }
         return;
     };
     let model = window.global::<TiersModel>();

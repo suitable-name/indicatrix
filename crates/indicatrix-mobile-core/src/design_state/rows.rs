@@ -131,7 +131,7 @@ pub struct MobileTierRow {
     pub is_multi_selected: bool,
     /// The mast shown is from an older solve (or blank): the design changed since.
     pub is_stale: bool,
-    /// A concave (tool-cut) tier: listed, but edited on the desktop.
+    /// A concave (tool-cut) tier, edited through its separate typed form.
     pub is_concave: bool,
     /// For a concave tier, its tool line; empty for a flat tier.
     pub tool_line: String,
@@ -218,7 +218,11 @@ fn mobile_row(state: &AppState, row: &TierRow, source: Source) -> MobileTierRow 
         relation_text: row.relation_text.clone(),
         imported_meet_text: row.imported_meet_text.clone(),
         needs_anchor: row.needs_anchor,
-        is_selected: !concave && state.selected_tier == Some(index),
+        is_selected: if concave {
+            state.session.selected_concave == Some(index)
+        } else {
+            state.selected_tier == Some(index)
+        },
         is_multi_selected: !concave && state.session.multi_selected.contains(&index),
         is_stale: source == Source::Stale,
         is_concave: concave,

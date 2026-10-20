@@ -14,8 +14,9 @@ use indicatrix_net::{
 };
 use std::{collections::BTreeMap, io::Cursor};
 
-/// A concave scene (one ball tool): `scene_uses_gpu` is false for it, so it is traced on
-/// the CPU even where a GPU is present.
+/// A concave scene (one ball tool). `scene_uses_gpu` is true for it (the GPU kernels trace
+/// tools), so on a machine with a GPU it rides the GPU half of the batch with its tools, like
+/// any other GPU-eligible item; with no GPU (or a disabled one) the CPU traces it.
 fn concave_scene() -> SceneState {
     let mut scene = tiny_scene();
     scene.tools = vec![ToolPrimitive::ball(glam::Vec3::new(0.0, 0.0, 0.4), 0.2)];

@@ -63,15 +63,34 @@ fn defaults_match_the_brief() {
     assert_eq!(settings.material_name, "Diamond");
     assert_eq!(settings.last_destination, Destination::Design);
     assert_eq!(settings.render.bounces, 8);
+    assert_eq!(settings.render.engine, 0);
     assert_eq!(settings.render.quality, RenderQuality::Normal);
     assert_eq!(settings.render.export_cap_px, 1024);
     assert_eq!(settings.lighting.preset_name, "Light tent + black cards");
-    assert_eq!(settings.lighting.backdrop, Backdrop::Grey);
+    assert_eq!(settings.lighting.backdrop, Backdrop::White);
     assert_eq!(settings.lighting.head_shadow_deg, 16.0);
     assert_eq!(settings.remote.cadence_ms, 500);
     assert_eq!(settings.remote.transfer, RemoteTransfer::DisplayOnly);
     assert_eq!(settings.library.sort, LibrarySort::CatalogueOrder);
     assert_eq!(settings.recent, Vec::<RecentItem>::new());
+}
+
+#[test]
+fn a_future_image_engine_keeps_the_rest_of_phone_settings() {
+    let settings: MobileSettings =
+        toml::from_str("[render]\nengine = 255\nbounces = 24\n").expect("future settings load");
+    assert!(!settings.render.engine_spec().is_ray());
+    assert_eq!(settings.render.bounces, 24);
+    for (quality, taps) in [
+        (RenderQuality::Draft, 1),
+        (RenderQuality::Normal, 4),
+        (RenderQuality::Fine, 8),
+    ] {
+        let mut render = settings.render.clone();
+        render.engine = 1;
+        render.quality = quality;
+        assert_eq!(render.engine_spec().target_samples(512), taps);
+    }
 }
 
 #[test]
@@ -83,7 +102,7 @@ fn toml_round_trip_of_a_changed_value() {
         ..MobileSettings::default()
     };
     settings.render.quality = RenderQuality::Fine;
-    settings.lighting.backdrop = Backdrop::White;
+    settings.lighting.backdrop = Backdrop::Black;
     settings.remote.address = "192.168.1.5:7000".to_owned();
     settings.library.sort = LibrarySort::RecentlyEdited;
     settings.push_recent(recent("A", RecentKind::Library { entry_id: 7 }, 100));
@@ -262,4 +281,63 @@ fn push_recent_dedups_orders_and_caps() {
     ));
     assert_eq!(settings.recent[0].title, "doc2");
     assert_eq!(settings.recent[1].title, "L5 again");
+}
+
+/// Two library entries and a file named like neither.
+fn three_recents() -> MobileSettings {
+    let mut settings = MobileSettings::default();
+    settings.push_recent(recent("L1", RecentKind::Library { entry_id: 1 }, 1));
+    settings.push_recent(recent("L2", RecentKind::Library { entry_id: 2 }, 2));
+    settings.push_recent(recent(
+        "doc",
+        RecentKind::Document {
+            display_name: "L1".to_owned(),
+        },
+        3,
+    ));
+    settings
+}
+
+#[test]
+fn clear_recent_empties_the_list_and_says_how_many_it_held() {
+    let mut settings = three_recents();
+    assert_eq!(settings.clear_recent(), 3);
+    assert_eq!(settings.recent, Vec::<RecentItem>::new());
+    assert_eq!(settings.clear_recent(), 0);
+
+    // The empty list is what the next start reads back.
+    let text = toml::to_string_pretty(&settings).expect("serialize");
+    let back: MobileSettings = toml::from_str(&text).expect("parse");
+    assert_eq!(back.recent, Vec::<RecentItem>::new());
+}
+
+#[test]
+fn clearing_the_recent_items_keeps_every_other_setting() {
+    let mut settings = three_recents();
+    settings.theme = ThemeChoice::Dark;
+    settings.remote.address = "192.168.1.5:7000".to_owned();
+    let expected = MobileSettings {
+        recent: Vec::new(),
+        ..settings.clone()
+    };
+    settings.clear_recent();
+    assert_eq!(settings, expected);
+}
+
+#[test]
+fn forgetting_library_entries_removes_only_their_lines() {
+    let mut settings = three_recents();
+    assert_eq!(settings.forget_library_entries(&[2, 99]), 1);
+    let titles: Vec<&str> = settings
+        .recent
+        .iter()
+        .map(|item| item.title.as_str())
+        .collect();
+    // A file whose name is the same text as a deleted library title is not that entry.
+    assert_eq!(titles, ["doc", "L1"]);
+
+    assert_eq!(settings.forget_library_entries(&[]), 0);
+    assert_eq!(settings.forget_library_entries(&[1]), 1);
+    assert_eq!(settings.recent.len(), 1);
+    assert_eq!(settings.recent[0].title, "doc");
 }

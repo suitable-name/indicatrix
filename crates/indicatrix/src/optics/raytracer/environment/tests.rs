@@ -74,24 +74,9 @@ fn daylight_preset_studio_environment_uses_the_d65_table_not_a_blackbody() {
     );
 }
 
-#[test]
-fn backdrop_fills_the_camera_ray_only_when_set() {
-    let lambdas = [450.0f32, 550.0, 650.0];
-    let mut radiance = [0.0f32; 3];
-    let plain = LightingPreset::LightTent.studio(1.0, 0.4, 0.35);
-    assert!(!fill_backdrop(plain, &lambdas, &mut radiance));
-    assert_eq!(radiance, [0.0; 3]);
-
-    let carded = plain.with_backdrop(BACKDROP_GREY);
-    assert!(fill_backdrop(carded, &lambdas, &mut radiance));
-    for (&value, &lambda_nm) in radiance.iter().zip(&lambdas) {
-        let expected = BACKDROP_GREY * LightingPreset::LightTent.spectral_power(lambda_nm);
-        assert!(
-            (value - expected).abs() < 1e-6,
-            "backdrop at {lambda_nm} nm: got {value}, expected {expected}"
-        );
-    }
-}
+// The old `backdrop_fills_the_camera_ray_only_when_set` test is replaced by
+// `tests_tray::the_tray_is_seen_by_every_bounce`: the backdrop is part of the environment
+// function now, not a bounce-0 card.
 
 #[test]
 fn label_and_index_round_trip_for_every_preset() {
@@ -475,7 +460,7 @@ fn daylight_dome_has_no_sun_disc() {
 #[test]
 fn nee_key_dir_is_bit_identical_to_the_studio_rig() {
     for (yaw, pitch) in [(0.0f32, 1.2f32), (0.84, 0.94), (-2.1, 0.3), (3.0, -0.2)] {
-        let a = rig::key_dir_only_for_test(yaw, pitch);
+        let a = nee::key_dir_only_for_test(yaw, pitch);
         let b = crate::optics::studio_rig::StudioRig::new(yaw, pitch).key_dir;
         assert_eq!(
             a.to_array().map(f32::to_bits),
@@ -489,7 +474,7 @@ fn nee_key_dir_is_bit_identical_to_the_studio_rig() {
 /// horizontal irradiance at the default 72 degree key elevation.
 #[test]
 fn daylight_sun_disc_radiance_and_solid_angle() {
-    use rig::{SUN_DISC_COS, SUN_ONE_MINUS_COS, SUN_RADIANCE, SUN_SOLID_ANGLE};
+    use sun::{SUN_DISC_COS, SUN_ONE_MINUS_COS, SUN_RADIANCE, SUN_SOLID_ANGLE};
 
     let radius_deg = SUN_DISC_COS.acos().to_degrees();
     assert!(
@@ -570,7 +555,7 @@ fn daylight_sun_follows_the_horizon_but_not_the_head_shadow() {
     let lit = at_sun(&high, Vec3::ZERO);
     let observed = at_sun(&high, high.key_dir);
     assert!(
-        observed > 0.99 * rig::SUN_RADIANCE,
+        observed > 0.99 * sun::SUN_RADIANCE,
         "head shadow must not dim the sun: {observed} (unobserved {lit})"
     );
     let below = crate::optics::studio_rig::StudioRig::new(0.3, -0.3);

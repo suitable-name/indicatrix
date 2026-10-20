@@ -94,6 +94,7 @@ fn build_chunk_params(
         state.white_balance.to_array(),
     )
     .with_pixel_offset(count_u32(first_pixel))
+    .with_tool_count(state.tool_count)
     .with_debug_buffers_disabled()
     .with_studio_use_d65(state.use_d65)
     .with_studio_model(state.studio_model)
@@ -137,7 +138,8 @@ impl GpuFrameRenderer {
         chunk_index: usize,
     ) -> PendingChunk {
         let tuples = pixels_this_chunk * state.spp as usize;
-        let planes_len = state.scene.planes.len();
+        // Entries in the `planes` binding: the planes plus the packed tool records.
+        let planes_len = state.packed_len;
 
         // camera_params/material/planes/facet_finishes are NOT rebuilt or re-uploaded
         // here -- frame_buffers already holds them, persistent across every accumulate

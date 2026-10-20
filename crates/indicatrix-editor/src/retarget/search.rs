@@ -1,61 +1,15 @@
-//! The Optimize half of "Retarget for material": a search over the angles the Shift plan
-//! only moves by a formula.
+//! Meet-preserving material Retarget.
 //!
-//! Shift moves every crown and pavilion angle by the critical-angle shift and stops. Optimize
-//! starts from that result and lets every crown and pavilion angle move on its own, inside a
-//! range the cutter picks, to score best in the TARGET material. The result is always checked
-//! with the same validity gate Shift uses, against the design as it is now.
-//!
-//! # What the search does
-//!
-//! 1. The start. The Shift result (angles, girdle-side edges kept, table and culet refitted)
-//!    is the start when it is valid. When it is not, the start is the largest part of the
-//!    Shift change that is (found by halving), or the design as it is.
-//! 2. The search. [`optimize_design_with`] varies every crown and pavilion angle, including
-//!    the ones pinned to a mast: a pinned facet turns about the girdle-side edge it has in the
-//!    start stone, so the girdle keeps its outline and height. Each angle may move at most
-//!    the chosen range either side of its start angle, never across the horizontal and never
-//!    past 89 degrees. Table, culet and girdle tiers never tilt (the table and culet HEIGHTS
-//!    are refitted on every option, see below). The girdle must keep at least half the
-//!    thickness the design has now, both overall and at its thinnest point (the corners
-//!    between the walls, which the overall figure cannot see), and the table facet must
-//!    survive. A pavilion angle also never drops below [`pavilion_floor_deg`]: the target's
-//!    critical angle plus the margin the design has now (at most 2 degrees), so a search
-//!    cannot buy brilliance with a window.
-//! 3. The gate. Tiers that follow a relation are brought back into line, the table and culet
-//!    heights are refitted to the size the design has now ([`refit_flats`], as Shift does),
-//!    then each result goes through the validity gate. A result the gate refuses is dropped
-//!    and counted.
-//!
-//! # Keeping the design's look
-//!
-//! With [`SearchSettings::keep_look`] (the default) every score, the start stone's included,
-//! adds a penalty for drifting from the design's own table size and crown-to-pavilion ratio
-//! (measured on the live design, not on the start stone; weight [`KEEP_LOOK_WEIGHT`]). Off,
-//! the options carry no shape target and are ranked by the optical score and the yield alone.
-//!
-//! The same inputs give the same candidates: the search is seeded and the code here has no
-//! other source of variation.
-//!
-//! # Tiers that follow a relation
-//!
-//! They are never varied. After the search each result has its followers evaluated
-//! ([`fold_relations`]) and re-anchored, so a relation such as `P2 = P1 + 2` still holds.
-//! The proposal leaves the followers out: applying it through the editor session makes them
-//! follow again in the same undo step.
-//!
-//! The optimizer scores a stone whose followers still sit on their start masts and whose table
-//! and culet are not refitted, so a result whose followers or flats moved is scored again as
-//! the stone that is delivered (re-anchored, refitted), at the same fidelity and with the
-//! same shape penalty, before the options are ranked: the order, the "best" mark and the figures
-//! shown all describe the stone the cutter gets.
+//! Shift is a projected preference; all search
+//! starts and candidates retain the immutable operation-original network. Optical
+//! scoring follows the real authored solve, and no follower/table correction runs
+//! after scoring. Results form a bounded shape/optics frontier under hard limits.
 
 use super::{
     anchors::{angle_differences, fold_relations, mast_differences},
     check::{AnalysisResult, Attempt, GirdleAllowance, best_attempt},
-    metrics::{MetricColumn, RetargetMetrics, measure_column},
+    metrics::{MetricColumn, RetargetMetrics, measure_analysis_column},
     plan::RetargetPlan,
-    refit::refit_flats,
     retarget_scope,
     validity::{
         InvalidReason, KNIFE_EDGE_PERCENT, MIN_GIRDLE_FRACTION, RetargetStrategy, RetargetValidity,
@@ -69,7 +23,7 @@ use indicatrix::{
 use indicatrix_cut_core::{
     Design, ObjectivePreset, OptimizeCandidate, OptimizeConfig, OptimizeOptions, SearchHooks,
     ShapeTarget,
-    design::hinge::{TierHinge, mast_through, tier_hinges},
+    design::hinge::{TierHinge, tier_hinges},
     free_tier_indices_with,
     optics_hints::{
         MAX_RETARGET_ANGLE_DEG, MIN_RETARGET_ANGLE_DEG, critical_angle_deg, tier_margin_deg,
@@ -84,10 +38,14 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+mod probe;
 mod report;
+mod selection;
 
+pub use probe::probe_evaluation;
 pub use report::{
-    CandidateKind, CandidateNumbers, SearchCandidate, SearchError, SearchReport, StartPoint,
+    CandidateKind, CandidateNumbers, CandidateRole, SearchCandidate, SearchError, SearchReport,
+    StartPoint,
 };
 
 /// The angle ranges the dialog offers, in degrees either side of each start angle.
@@ -124,6 +82,7 @@ const SEARCH_CEILING_DEG: f64 = MAX_RETARGET_ANGLE_DEG - 0.5;
 const PARTIAL_STEPS: usize = 5;
 
 /// The smallest mast a re-anchored follower may get.
+#[cfg(test)]
 const MIN_FOLLOWER_MAST: f64 = 1e-6;
 
 /// What the cutter chose in the dialog.
@@ -199,6 +158,10 @@ impl SearchSettings {
 
 /// One sentence on how long a search of `total_steps` evaluations takes, given the measured
 /// cost of one (`step_ms`, milliseconds; `None` before it is known).
+///
+/// A step is one projected proposal (the projection's solves plus one fast optical
+/// measurement), which is what [`probe_evaluation`] times; the sentence is a guide, not a
+/// bound, because the number of solves a projection needs depends on the proposal.
 #[must_use]
 pub fn estimate_text(total_steps: usize, step_ms: Option<f64>) -> String {
     step_ms
@@ -223,18 +186,6 @@ pub fn estimate_text(total_steps: usize, step_ms: Option<f64>) -> String {
                 )
             },
         )
-}
-
-/// Runs one evaluation of the kind a search repeats (solve, mesh, manufacturing checks and
-/// one fast optical measurement) so the caller can time it. `false` when the design does not
-/// solve and close.
-///
-/// The editor crate keeps no clock of its own: the caller takes the time around this call.
-#[must_use]
-pub fn probe_evaluation(design: &Design, gem: &GemMaterial, lighting: LightingPreset) -> bool {
-    analyze(design, false)
-        .map(|analysis| measure_column(&analysis.planes, gem, lighting))
-        .is_ok()
 }
 
 /// Everything a search needs.
@@ -381,6 +332,7 @@ fn search_options(
         shape_target: shape_target(settings, original),
         ..OptimizeOptions::default()
     };
+    options.anchor_hinges = hinges.iter().map(|(&i, h)| (i, h.point)).collect();
     let blocks = retarget_scope(start).1;
     for &index in free {
         let start_deg = start.tiers[index].angle_deg;
@@ -407,12 +359,13 @@ struct Columns {
 
 impl Columns {
     fn measure(inputs: &SearchInputs<'_>, original: &StoneAnalysis) -> Self {
+        // Every column measures the stone with its concave tools, as the Compare window does.
         Self {
             current_in_current: inputs
                 .current_gem
-                .map(|gem| measure_column(&original.planes, gem, inputs.lighting)),
-            current_in_target: Some(measure_column(
-                &original.planes,
+                .map(|gem| measure_analysis_column(original, gem, inputs.lighting)),
+            current_in_target: Some(measure_analysis_column(
+                original,
                 &inputs.plan.target.gem,
                 inputs.lighting,
             )),
@@ -424,7 +377,7 @@ impl Columns {
             current_in_current: self.current_in_current,
             current_in_target: self.current_in_target,
             retargeted_in_target: candidate.as_ref().ok().map(|analysis| {
-                measure_column(&analysis.planes, &inputs.plan.target.gem, inputs.lighting)
+                measure_analysis_column(analysis, &inputs.plan.target.gem, inputs.lighting)
             }),
         }
     }
@@ -519,11 +472,18 @@ fn choose_start(
 /// Gives every tier that follows a relation, and whose angle moved away from `start`'s, the
 /// mast that keeps it on its hinge. `true` when at least one follower got a different mast
 /// than the optimizer scored the stone with.
+///
+/// Test-only reference for the difference between the stone the optimizer scores and one
+/// that is corrected afterwards. PRODUCTION DOES NOT CALL IT: the search delivers exactly the
+/// authored state the optimizer accepted and validated (`finish_candidate`), and no
+/// follower or table correction runs after scoring.
+#[cfg(test)]
 fn reanchor_followers(
     design: &mut Design,
     start: &Design,
     hinges: &BTreeMap<usize, TierHinge>,
 ) -> bool {
+    use indicatrix_cut_core::design::hinge::mast_through;
     let mut changed = false;
     for index in 0..design.tiers.len() {
         let moved =
@@ -549,20 +509,6 @@ fn reanchor_followers(
         }
     }
     changed
-}
-
-/// Refits the table and culet heights of `design` to the size they have in `original`, as
-/// Shift does. `true` when at least one flat got a different mast. A design that does not
-/// analyse is left as it is (the gate reports it).
-fn refit_table_and_culet(design: &mut Design, original: &StoneAnalysis) -> bool {
-    let Ok(stone) = analyze(design, false) else {
-        return false;
-    };
-    let refits = refit_flats(design, &stone.solved, &stone.flats, original, &|| false);
-    for refit in &refits {
-        design.tiers[refit.tier_index].constraint = MeetConstraint::ScaleReference(refit.new_mast);
-    }
-    !refits.is_empty()
 }
 
 /// The numbers of the stone that is delivered: `design` scored the way the optimizer reports
@@ -592,7 +538,6 @@ fn finish_candidate(
     inputs: &SearchInputs<'_>,
     original: &StoneAnalysis,
     start: &Design,
-    hinges: &BTreeMap<usize, TierHinge>,
     found: &OptimizeCandidate,
     columns: &Columns,
     girdle_step: Option<f64>,
@@ -610,29 +555,18 @@ fn finish_candidate(
     }
     fold_relations(&mut design)
         .map_err(|error| vec![InvalidReason::RelationFails(error.to_string())])?;
-    let followers_moved = reanchor_followers(&mut design, start, hinges);
-    let refit_moved = refit_table_and_culet(&mut design, original);
 
     let analysis = analyze(&design, false);
     let reasons = judge(inputs.design, original, &analysis);
     if !reasons.is_empty() {
         return Err(reasons);
     }
-    // The optimizer scored the stone with its followers on their start masts and its table and
-    // culet at their start heights. When a follower was re-anchored or a flat refitted the
-    // delivered stone is a different one, so it is scored again; when neither moved (the
-    // refit leaves a flat alone that is within tolerance) the optimizer's own numbers are
-    // exactly the delivered stone's.
-    let numbers = analysis
-        .as_ref()
-        .ok()
-        .filter(|_| followers_moved || refit_moved)
-        .map_or_else(
-            || CandidateNumbers::new(found.after, found.score, found.yield_loss_pct),
-            |stone| delivered_numbers(inputs, original, &design, stone),
-        );
+    // Relations were part of the accepted authored state; no post-search geometry edits.
+    let numbers = CandidateNumbers::new(found.after, found.score, found.yield_loss_pct);
     Ok(SearchCandidate {
+        preservation: None,
         kind: CandidateKind::Optimized,
+        role: None,
         angles: angle_differences(inputs.design, &design),
         anchors: mast_differences(inputs.design, &design),
         validity: RetargetValidity::judged(
@@ -648,12 +582,122 @@ fn finish_candidate(
     })
 }
 
+/// The candidate that stands for the search's own start (Shift or a partial Shift), or
+/// `None` when the search started from the unchanged design.
+fn start_candidate(
+    inputs: &SearchInputs<'_>,
+    original: &StoneAnalysis,
+    start: &Attempt,
+    start_point: StartPoint,
+    columns: &Columns,
+    numbers: CandidateNumbers,
+) -> Option<SearchCandidate> {
+    let kind = match start_point {
+        StartPoint::Shift => CandidateKind::Shift,
+        StartPoint::Partial { percent } => CandidateKind::Partial { percent },
+        StartPoint::Unchanged => return None,
+    };
+    Some(SearchCandidate {
+        preservation: None,
+        kind,
+        role: None,
+        angles: angle_differences(inputs.design, &start.design),
+        anchors: mast_differences(inputs.design, &start.design),
+        validity: RetargetValidity::judged(original, &start.analysis, Vec::new(), start.strategy)
+            .with_girdle_thickened(start.girdle_step),
+        metrics: columns.metrics(inputs, &start.analysis),
+        numbers,
+        design: start.design.clone(),
+    })
+}
+
+/// The live design as a stone, solved with `cancel` wired into the solver.
+///
+/// A raised flag aborts the solve itself and the solver reports that as a failed solve; the
+/// caller asked to stop, so the answer is then `Cancelled`, not "the design is unusable".
+fn analyze_original(
+    inputs: &SearchInputs<'_>,
+    cancel: &AtomicBool,
+    should_stop: &dyn Fn() -> bool,
+) -> Result<StoneAnalysis, SearchError> {
+    let original = super::validity::analyze_controlled(
+        inputs.design,
+        true,
+        &indicatrix::geometry::meet_solver::SolveControl::with_cancel(cancel),
+    )
+    .map_err(|reason| {
+        if should_stop() {
+            SearchError::Cancelled
+        } else {
+            SearchError::Unusable(reason)
+        }
+    })?;
+    if should_stop() {
+        return Err(SearchError::Cancelled);
+    }
+    Ok(original)
+}
+
+/// The search's candidates after [`selection::select`], and the reasons for every optimizer
+/// result the gate refused.
+///
+/// The candidates are the start stone's own (when the search did not start from the unchanged
+/// design) and every optimizer result in `results` that passes the gate.
+fn ranked_candidates(
+    inputs: &SearchInputs<'_>,
+    original: &StoneAnalysis,
+    start: &Attempt,
+    start_point: StartPoint,
+    start_numbers: CandidateNumbers,
+    results: &[OptimizeCandidate],
+) -> (Vec<SearchCandidate>, Vec<Vec<InvalidReason>>) {
+    let columns = Columns::measure(inputs, original);
+    let mut candidates = Vec::new();
+    candidates.extend(start_candidate(
+        inputs,
+        original,
+        start,
+        start_point,
+        &columns,
+        start_numbers,
+    ));
+    let mut dropped = Vec::new();
+    for found in results {
+        match finish_candidate(
+            inputs,
+            original,
+            &start.design,
+            found,
+            &columns,
+            start.girdle_step,
+        ) {
+            Ok(candidate) => candidates.push(candidate),
+            Err(reasons) => dropped.push(reasons),
+        }
+    }
+    let fair_baseline = delivered_numbers(inputs, original, inputs.design, original);
+    let ranked = original
+        .preservation
+        .as_ref()
+        .map_or_else(Vec::new, |baseline| {
+            selection::select(
+                candidates,
+                baseline,
+                fair_baseline.score,
+                inputs.settings.keep,
+            )
+        });
+    (ranked, dropped)
+}
+
 /// Runs the whole search.
 ///
 /// `cancel` is read between steps (and handed to the optimizer, which reads it once per tier
 /// decision); `on_progress` hears the running evaluation count and the stage. Both are
-/// called on the calling thread. The optimizer starts two short-lived threads of its own per
-/// decision, so this call is meant for a worker thread.
+/// called on the calling thread. The optimizer may use threads of its own (a short-lived pair
+/// per tier decision, and one lane per start in a multi-start run), and a projected proposal
+/// is several authoring solves, so this call is meant for a worker thread. Cancellation is read
+/// between solves, not inside one.
 ///
 /// # Errors
 ///
@@ -666,10 +710,7 @@ pub fn run_search(
     on_progress: &dyn Fn(usize, SearchStage),
 ) -> Result<SearchReport, SearchError> {
     let should_stop = || cancel.load(Ordering::Relaxed);
-    let original = analyze(inputs.design, true).map_err(SearchError::Unusable)?;
-    if should_stop() {
-        return Err(SearchError::Cancelled);
-    }
+    let original = analyze_original(inputs, cancel, &should_stop)?;
 
     let (start, start_point, shift_validity) = choose_start(inputs, &original, &should_stop)?;
     let start_analysis = start
@@ -678,7 +719,7 @@ pub fn run_search(
         .map_err(|reason| SearchError::Unusable(reason.clone()))?;
     let hinges = tier_hinges(&start.design, &start_analysis.solved);
     let free = free_candidates(&start.design);
-    let options = search_options(
+    let mut options = search_options(
         inputs,
         &original,
         &start.design,
@@ -686,6 +727,11 @@ pub fn run_search(
         &hinges,
         guard_fractions(&original, start_analysis),
     );
+    options
+        .preservation_baseline
+        .clone_from(&original.preservation);
+    options.preservation_policy =
+        indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET;
     let free_tiers = free_tier_indices_with(&start.design, &options).len();
 
     let config = inputs.settings.config(inputs.lighting);
@@ -706,51 +752,19 @@ pub fn run_search(
         return Err(SearchError::Cancelled);
     }
 
-    let columns = Columns::measure(inputs, &original);
     let start_numbers = CandidateNumbers::new(
         result.outcome.before,
         result.outcome.before_score,
         result.outcome.before_yield_loss_pct,
     );
-    let mut candidates = Vec::new();
-    let start_kind = match start_point {
-        StartPoint::Shift => Some(CandidateKind::Shift),
-        StartPoint::Partial { percent } => Some(CandidateKind::Partial { percent }),
-        StartPoint::Unchanged => None,
-    };
-    if let Some(kind) = start_kind {
-        candidates.push(SearchCandidate {
-            kind,
-            angles: angle_differences(inputs.design, &start.design),
-            anchors: mast_differences(inputs.design, &start.design),
-            validity: RetargetValidity::judged(
-                &original,
-                &start.analysis,
-                Vec::new(),
-                start.strategy,
-            )
-            .with_girdle_thickened(start.girdle_step),
-            metrics: columns.metrics(inputs, &start.analysis),
-            numbers: start_numbers,
-            design: start.design.clone(),
-        });
-    }
-    let mut dropped = Vec::new();
-    for found in &result.candidates {
-        match finish_candidate(
-            inputs,
-            &original,
-            &start.design,
-            &hinges,
-            found,
-            &columns,
-            start.girdle_step,
-        ) {
-            Ok(candidate) => candidates.push(candidate),
-            Err(reasons) => dropped.push(reasons),
-        }
-    }
-    candidates.sort_by(|a, b| a.numbers.score.total_cmp(&b.numbers.score));
+    let (candidates, dropped) = ranked_candidates(
+        inputs,
+        &original,
+        &start,
+        start_point,
+        start_numbers,
+        &result.candidates,
+    );
 
     Ok(SearchReport {
         start: start_point,
@@ -761,6 +775,7 @@ pub fn run_search(
         evaluations: result.outcome.evaluations,
         free_tiers,
         keep_look: inputs.settings.keep_look,
+        baseline: original.preservation,
     })
 }
 

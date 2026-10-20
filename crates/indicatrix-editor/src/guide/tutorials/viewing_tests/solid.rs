@@ -13,6 +13,7 @@ fn picking_a_facet_selects_its_tier_in_every_view() {
             act(|sim| sim.show(2)),
             event(events::FACET_PICKED),
             event(events::TIER_SELECTED),
+            act(|sim| sim.show(4)),
             read(),
         ],
     );

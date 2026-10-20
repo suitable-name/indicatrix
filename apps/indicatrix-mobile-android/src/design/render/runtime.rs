@@ -6,9 +6,11 @@
 //!   stop) and moves the newest frame from the engine onto `RenderModel`. Leaving the
 //!   Design destination therefore stops the trace within half a second.
 //! - The **kick** is a single-shot timer that runs the same maintenance right after a
-//!   change (a camera move, a setting) instead of waiting for the next tick. While a
-//!   finger is down the core's gate answers "wait", and the kick is re-armed for the rest
-//!   of the 150 ms, so a drag restarts the trace at most about seven times a second.
+//!   change (a camera move, a setting) instead of waiting for the next tick. While a finger
+//!   moves the camera or the light the core cancels the trace once and answers `Held`: no
+//!   scene is described and no epoch starts on the UI thread. The release kicks again
+//!   ([`on_touch_released`]); the core waits for the pose to rest and starts one epoch at the
+//!   final pose. Meanwhile the viewport draws the Solid raster at the live pose.
 //! - The **governor** runs every 10 s while a trace is active and applies the thermal and
 //!   battery rules to the worker pool.
 //!
@@ -25,6 +27,7 @@ use std::{
 
 use indicatrix_mobile_core::{
     app_state::AppState,
+    operations::OperationPhase,
     viewport::render_view::{self, Maintain},
 };
 use slint::{ComponentHandle, Timer, TimerMode, Weak};
@@ -67,6 +70,9 @@ pub(super) fn install(window: &AppWindow, state: &Shared) {
             window: window.as_weak(),
         });
     });
+    // Exports share the budget even while the live render is off screen.
+    start_governor();
+    govern();
 }
 
 /// Stops every timer and forgets the state and the window.
@@ -138,11 +144,20 @@ pub(super) fn maintain(window: &AppWindow, shared: &Shared) {
     match outcome {
         Maintain::Wait(delay) => schedule_kick(delay),
         Maintain::Started => start_governor(),
-        Maintain::Stopped => GOVERN.with(Timer::stop),
-        Maintain::Idle | Maintain::Blocked(_) => {}
+        // A finger is down: the release (`on_touch_released`) asks again.
+        Maintain::Held | Maintain::Stopped | Maintain::Idle | Maintain::Blocked(_) => {}
     }
     if let Ok(app) = shared.try_borrow() {
         model::push(window, &app);
+    }
+}
+
+/// The finger lifted (or the stream was cancelled): a trace owed to a drag starts once the
+/// pose has rested. The core answers `Wait` with the rest of the settle time, so asking now
+/// is enough; there is no need to wait for the next poll.
+pub fn on_touch_released(state: &AppState) {
+    if state.viewport.mode.is_render() && state.viewport.render_live.owes_restart() {
+        schedule_kick(Duration::ZERO);
     }
 }
 
@@ -183,6 +198,14 @@ fn tick() {
     };
     if let Some(frame) = frame {
         model::show_frame(&window, &frame);
+        // The first traced picture of the new pose is up: the viewport hands the picture
+        // area from the live Solid raster to it.
+        let flipped = shared
+            .try_borrow_mut()
+            .is_ok_and(|mut app| render_view::frame_landed(&mut app, frame.epoch));
+        if flipped && let Ok(app) = shared.try_borrow() {
+            crate::design::viewport::push(&window, &app);
+        }
     }
     if render {
         set_poll_rate(on_show);
@@ -203,7 +226,7 @@ fn start_governor() {
 /// One governor step: the platform's thermal headroom and the battery saver setting go to
 /// the worker pool.
 fn govern() {
-    let Some((_window, shared)) = context() else {
+    let Some((window, shared)) = context() else {
         return;
     };
     let platform = Arc::clone(shared.borrow().platform());
@@ -212,6 +235,19 @@ fn govern() {
     let Ok(mut app) = shared.try_borrow_mut() else {
         return;
     };
-    let battery_saver = app.settings.battery_saver;
+    let battery_saver = app.settings.battery_saver || platform.system_power_save().unwrap_or(false);
     app.render.govern(headroom, battery_saver);
+    if app.render.compute_policy().paused() {
+        app.analysis.cancel_all();
+    }
+    if app.render.compute_policy().paused()
+        && matches!(
+            app.operations.phase(),
+            Some(OperationPhase::Preparing | OperationPhase::Running | OperationPhase::Paused)
+        )
+    {
+        app.operations.cancel();
+    }
+    drop(app);
+    crate::design::refresh(&window, &shared);
 }

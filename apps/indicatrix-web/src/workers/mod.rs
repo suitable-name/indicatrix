@@ -1,7 +1,8 @@
 //! The page's one Worker pool (`indicatrix_web_core::host::WorkerPool`): render
 //! Workers plus the solve Worker, created lazily when the first design appears
-//! ([`pool`]) and shared by the solve path (`crate::app::solve`) and the renderer
-//! (`crate::render`).
+//! ([`pool`]) -- or at page load, when GPU rendering is on and the browser has WebGPU,
+//! because the GPU start-up test needs the pool's GPU Worker (`crate::render::gpu_gate`) --
+//! and shared by the solve path (`crate::app::solve`) and the renderer (`crate::render`).
 //!
 //! The pool lives here, in a thread-local, not in `WebApp`: its methods run their
 //! callbacks synchronously, and those callbacks borrow `WebApp`, so the pool must be

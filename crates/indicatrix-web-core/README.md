@@ -9,12 +9,18 @@ cargo test -p indicatrix-web-core
 
 ## Pieces
 
+Ray-Traced engine selection travels beside the unchanged scene message. Its CPU workers
+cache tint, environment and frost preparation per scene. Its small WebGPU kernel accepts
+every material class, with independent admission keyed by the whitted shader hash; the
+existing event-wavefront keys and records stay valid. The GPU worker compares a 16×16,
+four-tap render with the CPU under G-D10 before admitting the small kernel. Oversized HDR maps and more than 128 tools (more than a scene can hold) decline the GPU route.
+
 | Module | What it holds |
 |---|---|
-| `protocol` | `ToWorker` / `FromWorker`, postcard-encoded into a transferred `ArrayBuffer`; `PROTOCOL_VERSION` (17), checked on `Init`. Requests: trace a chunk, make a picture, set or clear an HDR map (render Workers and the analysis Worker), and the solve-role jobs (`SolveRequest`: Solve, Optimize, Retarget, Metrics, Tilt). New variants are appended at the end; messages of each direction, and the HDR fields of the metrics messages, are pinned byte for byte in the tests |
+| `protocol` | `ToWorker` / `FromWorker`, postcard-encoded into a transferred `ArrayBuffer`; `PROTOCOL_VERSION` (24), checked on `Init`. Requests: trace a chunk, trace a full GPU pass, compile GPU kernels, make a picture, set or clear an HDR map, select an engine beside the unchanged scene payload (`SetEngine`, index 12), and the solve-role jobs. New variants are appended; existing scene bytes remain unchanged |
 | `scene` | `SceneSpec` (planes, finishes, material, camera, lighting, bounces, size, HDR id) and `OwnedScene`, which builds exactly the desktop's scene for the same settings |
 | `render` | `handle_trace_chunk` (one interleaved partition over a sample range), `Accumulator` (merges complete passes in order), `ChunkPlanner` (sizes passes to about 200 ms per Worker chunk), the live (64 to 1024) and export (16 to 4096) sample bounds |
-| `solve` | `handle_solve`: a native-TOML design in, solved masts, planes, status and warnings out, like the desktop's background solve. `analysis` is Optimize and Retarget (cooperatively cancellable, with progress), `optical` is the current-view metrics (scored under the HDR map the Worker holds when the request names it, else the lighting preset) and the four-axis tilt sweep (always under the preset, as on the desktop), all the desktop's own functions |
+| `solve` | `handle_solve`: a native-TOML design in, solved masts, planes, status and warnings out, like the desktop's background solve. `analysis` is Optimize and Retarget (cooperatively cancellable, with progress), `optical` is the current-view metrics (scored under the HDR map the Worker holds when the request names it, else the lighting preset) and the four-axis tilt sweep (always under the preset, as on the desktop), all the desktop's own functions; both score a concave stone with its tools (`SolveRequest::metrics` / `tilt` send `MetricsWithTools` / `TiltWithTools`, and the planar variants, bytes unchanged, when there are none) |
 | `display` | Pixels from an accumulation: the live tone map, the settled denoise, the PNG export (sRGB or Display P3, ICC embedded) and its file name; the 4096 px export edge |
 | `settings` | The persisted render settings and `SessionPayload` (the JSON in `sessionStorage`), and `scene_spec`, which turns them into a `SceneSpec` with the desktop's conversions |
 | `custom_material` | The Design settings dialog's custom-material fields turned into a `GemMaterial` and the snapshot an `.isdd` file stores for it |
@@ -22,8 +28,17 @@ cargo test -p indicatrix-web-core
 | `guide` | The guided walkthrough's tab-session state, and `WEB_WORDING`, the few walkthrough lines reworded for the browser (a test pins that each still exists in the shared steps) |
 | `hdr` | The browser HDR limits (64 MiB, 8192 x 4096) and the render-Worker count rule (never downsample; fewer render Workers instead), which counts the analysis Worker's copy of the map against the 1.5 GiB budget |
 | `worker` | `WorkerHandler`, the whole Worker state machine; `apps/indicatrix-web-compute` only moves bytes in and out of it |
-| `host` (wasm32) | `WorkerPool` = `RenderPool` (N render Workers + a picture Worker created on first use) + `SolveClient` (1 solve Worker) + an analysis `SolveClient` created on first use |
+| `host` (wasm32) | `WorkerPool` = `RenderPool` (N render Workers + a picture Worker created on first use) + `SolveClient` (1 solve Worker) + an analysis `SolveClient` created on first use; the render side also owns the optional GPU render Worker slot (`gpu_slot`: a pass ledger, scene re-send after the self-check, passes handed back to the planner when the GPU is turned off, lost or silent) |
+| `gpu_admission` | The pure half of the GPU admission gate: scene eligibility (isotropic, not zoned, at most 128 concave tools, HDR fits), the per-adapter admission record, the adapter key (FNV-1a over the adapter fields, limits, browser major and kernel set hash) and the 16x16 self-check scene |
+| `gpu_ledger` | `GpuLedger`: the passes posted to the GPU Worker and not yet answered, so a stale answer never clears the supervision of a newer pass |
 | `solve_error` | `SolveError` (superseded, cancelled, failed): the typed reason a solve-role job produced no answer |
+| `gpu_startup` | The pure half of the GPU start-up test: what the page does at load (`StartupPlan`), the crash marker, the progress of a run and the sentence that says what the app renders with |
+| `input` | The size limits checked on a picked or dropped file before it is read |
+| `open_route` | What the Open picker offers and the file names a design is saved under (which loader a file goes to is `indicatrix_editor::files::InputFileKind::classify`) |
+| `rows` | Pure helpers of the page's tier table, nudges, schedule readout and history list |
+| `new_design` | The template path of the New Design dialog without the window |
+| `storage_keys` | The `indicatrix.<name>.v<n>` storage key builders |
+| `tab_state` | The design name and unsaved flag, which belong to one browser tab rather than to the shared settings |
 
 ## Workers
 
@@ -54,9 +69,12 @@ cargo test -p indicatrix-web-core
   later. When the memory budget holds a single copy it is the render Worker's, and the
   metrics stay under the lighting preset (the result says which it was scored under).
   The tilt sweep is scored under the preset, as the desktop's dialog is.
-- Every Worker runs the same script, `indicatrix-web-compute_loader.js`, which Trunk
-  writes next to the app (`WORKER_LOADER_URL`). The page creates the pool only when a
-  design is shown on the Render tab or a solve needs the solve Worker.
+- Compute Workers (render, solve, analysis) run `indicatrix-web-compute_loader.js`
+  (`WORKER_LOADER_URL`), while the GPU render Worker runs
+  `indicatrix-web-gpu_loader.js` (`GPU_WORKER_LOADER_URL`), both written by Trunk
+  next to the app. The page creates the pool when a design is shown on the
+  Render tab or a solve needs the solve Worker, and at page load when GPU rendering
+  is on and the browser has WebGPU (the start-up test, `gpu_startup`).
 
 ## Bit-identity
 

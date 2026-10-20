@@ -43,6 +43,14 @@ pub const ALLOW: &[(&str, &str)] = &[
     // capture the text / target instead of starting a program (`harness_support`).
     // ---- long GPU jobs ----
     (
+        "BatchModel.preview_generate_ray_confirmed",
+        "long job: renders deterministic drafts for the whole imported set",
+    ),
+    (
+        "components/preview_batch_dialog.slint|PreviewBatchDialog|\"Quick (Ray-Traced)\"",
+        "long job: starts the whole imported set of deterministic drafts",
+    ),
+    (
         "BatchModel.preview_generate_confirmed",
         "long job: renders previews for the whole filtered set on the GPU",
     ),

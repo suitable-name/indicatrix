@@ -26,10 +26,8 @@ use crate::{
                 apply_von_kries_white_balance, integrate_channels_to_xyz,
                 integrate_channels_to_xyz_families,
             },
-            environment::{
-                EnvironmentSource, environment_nee_pdf, environment_white_balance, fill_backdrop,
-            },
-            intersect_stone::intersect_stone_soa,
+            environment::{EnvironmentSource, environment_white_balance},
+            intersect_stone::intersect_stone_soa_side,
             refraction::{
                 ExitSplitCtx, RayMaterialContext, RayWavelengthCache,
                 compute_bounce_refraction_geometry,
@@ -38,16 +36,20 @@ use crate::{
                 FLUORESCENCE_DIR_U_STREAM, FLUORESCENCE_DIR_V_STREAM, FLUORESCENCE_DISTANCE_STREAM,
                 FLUORESCENCE_EMITTER_STREAM, FLUORESCENCE_EXCITATION_STREAM, hash_u32,
             },
-            scattering::{NeeContext, ScatterStepOutcome, balance_heuristic, try_scatter_step},
+            scattering::{NeeContext, ScatterStepOutcome, try_scatter_step},
             transport::{
                 PathTermination,
-                bounce::{accumulate_miss_radiance, apply_russian_roulette, dispatch_bounce},
+                bounce::{apply_russian_roulette, dispatch_bounce},
+                path_events::PathEvents,
                 wrapped_hero_wavelengths,
             },
         },
     },
 };
 use glam::Vec3;
+
+mod events_hooks;
+mod miss;
 
 /// Upper bound on the expected number of fluorescence vertices the free-path sampler
 /// of one segment aims for (`mu_s * segment <= CAP`): the sampling rate is
@@ -198,7 +200,17 @@ struct PathState<'a> {
     /// The one piece of state that carries from a scatter event to its VERY NEXT loop
     /// iteration -- see `ScatterStepOutcome::ScatteredAndSurvived`'s doc comment.
     pending_light_mis: Option<(f32, Vec3)>,
+    /// The attribution recorder, written by the `record_*` hooks and never read here.
+    events: Option<&'a mut PathEvents>,
 }
+
+/// The optional out-parameters of [`trace_spectral_ray_core`]: primary hit, termination
+/// `(bounces, reason)` and the attribution recorder.
+type TraceOutputs<'a> = (
+    Option<&'a mut Option<HitRecord>>,
+    Option<&'a mut (u32, PathTermination)>,
+    Option<&'a mut PathEvents>,
+);
 
 /// The shared bounce loop's body: see `inner::trace_spectral_ray_inner` for the contract.
 pub(super) fn trace_spectral_ray_core(
@@ -207,12 +219,9 @@ pub(super) fn trace_spectral_ray_core(
     rng_seed: u32,
     hero_rand: f32,
     switches: TraceSwitches,
-    outputs: (
-        Option<&mut Option<HitRecord>>,
-        Option<&mut (u32, PathTermination)>,
-    ),
+    outputs: TraceOutputs<'_>,
 ) -> Vec3 {
-    let (mut primary_hit_out, mut termination_out) = outputs;
+    let (mut primary_hit_out, mut termination_out, events) = outputs;
     // Exit-event splitting's own staging accumulator -- see `ExitSplitCtx::split_radiance`'s
     // doc comment for why a split channel's contribution lands here first, folded into
     // `radiance` only if the shared/hero path terminates via `PathTermination::Escaped`.
@@ -225,6 +234,7 @@ pub(super) fn trace_spectral_ray_core(
         switches,
         &mut split_radiance,
     );
+    path.events = events;
     for bounce in 0..path.scene.max_bounces {
         let flow = path.run_bounce(bounce, &mut primary_hit_out, &mut termination_out);
         if matches!(flow, Flow::Stop) {
@@ -341,6 +351,7 @@ impl<'a> PathState<'a> {
             path_escaped: false,
             nee_ctx,
             pending_light_mis: None,
+            events: None,
         }
     }
 
@@ -361,20 +372,31 @@ impl<'a> PathState<'a> {
         let phase_pdf_for_mis_this_check = self.pending_light_mis.take();
         // With no tools this is `intersect_polyhedron_soa` exactly. On a concave stone a
         // hit after an exit is a legitimate re-entry across the cavity, not an error.
-        let hit = intersect_stone_soa(
+        let (hit, entering) = intersect_stone_soa_side(
             self.current_ray,
             scene.plane_soa,
             scene.planes.len(),
             scene.tools,
-        );
+        )
+        .map_or((None, None), |(hit, entering)| (Some(hit), entering));
         // Denoiser wiring: the primary ray's first-hit depth/normal/facet index feed the
         // A-Trous denoiser's guide buffers. Captured only at bounce 0, which is
         // unambiguously the hero channel's own first hit.
         capture_primary_hit(primary_hit_out, bounce, hit);
         let Some(hit_rec) = hit else {
             self.handle_miss(bounce, phase_pdf_for_mis_this_check, termination_out);
+            self.record_miss(bounce);
             return Flow::Stop;
         };
+        // Concave stones only: the stretch of ray that ends at this hit is in the material
+        // exactly when the hit is an exit. The toggle in `dispatch_bounce` agrees with that
+        // except when the `1e-4` restart stepped over a second surface within `1e-4` of the
+        // one it crossed (a tool's rim on a facet, the crease of two tools): the
+        // intersection skipped that boundary as the ray's own origin, so the ray is in the
+        // other medium and the intersection's own state is the one to trace by.
+        if let Some(entering) = entering {
+            self.inside_gem = !entering;
+        }
         #[cfg(debug_assertions)]
         debug_assert_inside_gem_matches_geometry(
             StoneGeometry {
@@ -398,49 +420,6 @@ impl<'a> PathState<'a> {
             phase_pdf_for_mis_this_check,
             termination_out,
         )
-    }
-
-    /// The ray exited or missed the gemstone: the backdrop card or the environment source is
-    /// sampled and the path ends as `Escaped`.
-    ///
-    /// If an earlier bounce left a pending NEE-eligible carry still live (a scatter event
-    /// whose continuation just now escaped directly, possibly after first transmitting out
-    /// through a polished exit facet -- see `dispatch_bounce`'s doc comment for why the carry
-    /// must survive that intervening refraction), this escape is the SAME light-sampling
-    /// technique's competing (BSDF/phase-sampled) continuation -- weight it by the balance
-    /// heuristic so the two techniques' contributions sum to the true value rather than
-    /// double-counting. Evaluated at the carried INTERIOR direction, the same measure
-    /// `nee_contribution_hg_scatter` sampled in -- NOT `current_ray.dir`, which by the time a
-    /// transmit-out carry reaches here is the refracted EXTERIOR direction instead.
-    /// `map_or(1.0, ..)` reproduces the full-weight behaviour exactly whenever no carry is
-    /// live (including every trace with NEE disabled, where this is always `None`).
-    #[inline]
-    fn handle_miss(
-        &mut self,
-        bounce: u32,
-        phase_pdf_for_mis_this_check: Option<(f32, Vec3)>,
-        termination_out: &mut Option<&mut (u32, PathTermination)>,
-    ) {
-        let environment = self.scene.environment;
-        // The camera ray sees the backdrop card, if the scene has one -- only the stone's
-        // own light reaches the environment lookup below.
-        if !(bounce == 0 && fill_backdrop(environment, &self.lambdas, &mut self.radiance)) {
-            let mis_weight =
-                phase_pdf_for_mis_this_check.map_or(1.0, |(phase_pdf, interior_dir)| {
-                    let light_pdf = environment_nee_pdf(environment, interior_dir);
-                    balance_heuristic(phase_pdf, light_pdf)
-                });
-            accumulate_miss_radiance(
-                &self.exit_split_ctx,
-                self.current_ray.dir,
-                &self.lambdas,
-                &self.stokes,
-                mis_weight,
-                &mut self.radiance,
-            );
-        }
-        self.path_escaped = true;
-        record_termination(termination_out, bounce, PathTermination::Escaped);
     }
 
     /// Fluorescence: samples a vertex along the interior segment, competing with the
@@ -509,6 +488,7 @@ impl<'a> PathState<'a> {
             self.exit_split_ctx.compat,
             self.scene.facet_finishes,
         );
+        self.record_scatter(&outcome);
         match outcome {
             ScatterStepOutcome::NotApplicable | ScatterStepOutcome::ReachedBoundary => {
                 if let Some(t_scaled) = vertex_t {
@@ -605,6 +585,7 @@ impl<'a> PathState<'a> {
         self.current_k = new_dir;
         self.prev_plane_normal = None;
         self.lambdas = [vertex.lambda_ex; NUM_CHANNELS];
+        self.record_fluoresce();
         (self.mat_ctx, self.wavelength_cache) = build_ray_context(
             material,
             self.lambdas,
@@ -673,6 +654,7 @@ impl<'a> PathState<'a> {
         // Girdle finish: `Polished` (default) takes the pre-existing dispatch; `Frosted`
         // takes `apply_frosted_bounce` instead.
         let finish = facet_finish_for(scene.facet_finishes, hit_rec.facet_idx);
+        let inside_before = self.inside_gem;
         self.pending_light_mis = dispatch_bounce(
             &self.mat_ctx,
             &self.wavelength_cache,
@@ -695,6 +677,7 @@ impl<'a> PathState<'a> {
             &mut self.radiance,
             phase_pdf_for_mis_this_check,
         );
+        self.record_facet(bounce, hit_rec, inside_before);
         // Surface glare: the camera path's first event at a polished facet left the ray
         // outside the stone, so it was the specular (Fresnel) reflection and the light never
         // entered. Scaling the throughput here scales everything this path later deposits.

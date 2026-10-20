@@ -19,6 +19,7 @@ mod concave_tier;
 mod design_forms;
 mod facet_editing;
 mod facet_overlay;
+mod frosting;
 mod gear_remap;
 mod history;
 mod lifecycle;

@@ -4,7 +4,7 @@
 
 use std::fmt::Write as _;
 
-use crate::design::{ConcaveTier, ConcaveTool, ToolMotion, is_legacy_123_abc};
+use crate::design::{ConcaveTier, ConcaveTool, TierFrosting, ToolMotion, is_legacy_123_abc};
 
 /// Width of the label column in [`CuttingSheet::to_text`] (the tier code).
 ///
@@ -147,6 +147,11 @@ pub struct CutSheetRow {
     /// mast; [`CuttingSheet::to_text`] prints a dash in the mast column for it, never
     /// the placeholder) and no depth, and its `meets_tiers` is empty.
     pub concave: Option<ConcaveRowInfo>,
+    /// How the design frosts this tier ([`crate::design::Design::tier_frosting`]); `None`
+    /// for a polished tier (every tier of a design without frosting, and every concave
+    /// tier). [`Self::instruction`] says so, so the text and HTML sheets and Cutting mode
+    /// all tell the cutter not to polish it.
+    pub frosting: Option<TierFrosting>,
 }
 
 impl CutSheetRow {
@@ -176,12 +181,27 @@ impl CutSheetRow {
     /// The instruction text of the row: [`Self::meet_instruction`], with the tier's
     /// descriptive name in front when it has one (`Crown Main: Meet P1, P2`). The text and
     /// HTML sheets and Cutting mode all print this.
+    ///
+    /// A frosted tier says so at the end: `Crown Main: Meet P1, P2 (Frosted)`, or
+    /// `... (Frosted facets: 12, 36)` when only some of its facets are frosted. A polished
+    /// tier's text is exactly what it was before frosting existed.
     #[must_use]
     pub fn instruction(&self) -> String {
-        self.descriptive_name().map_or_else(
+        let base = self.descriptive_name().map_or_else(
             || self.meet_instruction.clone(),
             |name| format!("{name}: {}", self.meet_instruction),
-        )
+        );
+        match &self.frosting {
+            None => base,
+            Some(TierFrosting::Tier) => format!("{base} (Frosted)"),
+            Some(TierFrosting::Facets(positions)) => {
+                let list: Vec<String> = positions
+                    .iter()
+                    .map(|&position| format_sheet_index(position))
+                    .collect();
+                format!("{base} (Frosted facets: {})", list.join(", "))
+            }
+        }
     }
 }
 

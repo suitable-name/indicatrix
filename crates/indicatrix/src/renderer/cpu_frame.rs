@@ -1,6 +1,7 @@
-//! Wasm-safe, thread-free "trace these pixels x samples" tracer over
-//! [`FrameScene`] -- the shared core both the desktop's threaded
-//! `renderer::gpu::hybrid::cpu_trace_range` and a browser's per-Worker CPU tracer call.
+//! Wasm-safe, thread-free "trace these pixels x samples" tracer over [`FrameScene`].
+//!
+//! The shared core both the desktop's threaded `renderer::gpu::hybrid::cpu_trace_range` and a
+//! browser's per-Worker CPU tracer call.
 //!
 //! No threads, no [`std::time::Instant`], no filesystem access: every function here can
 //! run inside a wasm32 Web Worker as well as a native thread.
@@ -127,9 +128,11 @@ pub fn trace_pixels_interleaved(
 /// own because it is constructed by struct literal in the desktop, worker and web
 /// crates, so the tools ride beside it here instead; the `fluorescence` of the material
 /// rides beside the tools the same way. With empty `tools` and an empty `fluorescence`
-/// the sums are [`trace_pixels_interleaved`]'s, bit for bit. A tool-bearing or
-/// fluorescent frame never reaches the GPU (see `gpu_backend::scene_routes_to_gpu`), so
-/// this CPU path is the one that traces it.
+/// the sums are [`trace_pixels_interleaved`]'s, bit for bit. A fluorescent frame, or a stone
+/// with more tools than the GPU kernels trace, never reaches the GPU (see
+/// `gpu_backend::scene_routes_to_gpu_with_tools`), so this CPU path is the one that traces it;
+/// a concave stone within the limit is also traced by the GPU
+/// (`GpuBackend::try_accumulate_geom`), with this function as its reference.
 #[expect(
     clippy::too_many_arguments,
     reason = "the tools and the fluorescence ride beside the scene, as separate inputs, so \

@@ -81,6 +81,7 @@ fn solid_frame(design: &Design) -> (u64, u64, usize) {
                 planes,
                 tools,
                 placements,
+                frosted: Vec::new(),
             },
             camera: camera(),
             size: (160, 120),

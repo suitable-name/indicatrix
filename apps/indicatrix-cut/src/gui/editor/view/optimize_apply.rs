@@ -26,6 +26,7 @@ use crate::{
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{Design, OptimizeOutcome};
+#[cfg(test)]
 use indicatrix_editor::optimize_view::build_candidate_preview_design;
 use slint::ComponentHandle;
 use std::{
@@ -47,14 +48,28 @@ pub(in crate::gui::editor) use indicatrix_editor::optimize_view::{
 /// is built with its masts and with the tiers that follow a relation moved along
 /// ([`build_candidate_preview_design`]); any other outcome falls back to
 /// [`indicatrix_editor::optimize_view::build_optimize_preview_design`], which moves the
-/// angles only.
+/// complete certified geometry, including mast changes. Uncertified input is refused.
+#[cfg(test)]
 pub(in crate::gui::editor) fn build_optimize_preview_design(
     design: &Design,
     outcome: &OptimizeOutcome,
-) -> Design {
+) -> Result<Design, String> {
     optimize_panel::candidate_for_outcome(outcome).map_or_else(
         || indicatrix_editor::optimize_view::build_optimize_preview_design(design, outcome),
         |candidate| build_candidate_preview_design(design, &candidate),
+    )
+}
+
+/// Fallible production path; failed candidate construction is shown to the cutter.
+pub(in crate::gui::editor) fn try_build_optimize_preview_design(
+    design: &Design,
+    outcome: &OptimizeOutcome,
+) -> Result<Design, String> {
+    optimize_panel::candidate_for_outcome(outcome).map_or_else(
+        || indicatrix_editor::optimize_view::try_build_optimize_preview_design(design, outcome),
+        |candidate| {
+            indicatrix_editor::optimize_view::try_build_candidate_preview_design(design, &candidate)
+        },
     )
 }
 
@@ -200,7 +215,7 @@ pub(super) fn cancel_ghost_preview() {
 /// that does not close.
 ///
 /// Used by both Optimize's own "Preview" toggle (via
-/// [`build_optimize_preview_design`]) and Retarget's live ghost overlay
+/// [`try_build_optimize_preview_design`]) and Retarget's live ghost overlay
 /// (`callbacks::retarget_actions`), so the two features share one implementation of
 /// "show this candidate, without disturbing anything the REAL design's next edit
 /// depends on."

@@ -8,6 +8,25 @@ and what the app's "preview then handoff" behaviour means while you work.
 
 ## Opening the Export Dialog
 
+### Choose The Renderer
+
+The live and Edit viewports offer **Path-Traced** and **Ray-Traced**. Path-Traced is the
+spectral model and accumulates samples. Ray-Traced is a deterministic RGB approximation:
+one d-line refractive index, or three indices with **Fire**, with **Anti-Aliasing** set to
+Off, 4×, 8× or 16×. The first tap is visible before the remaining taps finish. No denoiser
+is used for Ray-Traced.
+
+The export dialog has its own **Renderer** choice. Ray-Traced exports use AA taps and
+Fire in place of the Path-Traced sample count. Local CPU, supported GPU and protocol-29
+remote computation honor that choice; the engine and options are frozen in queued jobs.
+Changing engines starts a new accumulation, so spectral samples never mix with AA taps.
+
+Ray-Traced approximates color and frost, omits polarization, birefringent doubling,
+inclusion haze, zoning and edge rounding, and drops paths beyond the bounce
+cap. A colored stone may change hue with depth differently from Path-Traced. Optical metrics, tilt curves and diagnostics
+keep their own analytic model; choosing Ray-Traced does not change their calculation.
+The sampling, convergence and denoise descriptions below refer to Path-Traced.
+
 From the Live Render viewport (Chapter 2), open **Export High-Resolution
 Render**. The dialog has these sections.
 
@@ -105,7 +124,8 @@ you this is noticeably slower on GPU hardware than on CPU.
 
 ### Sample Count
 
-A slider from 8 up to 32768 samples per pixel. Higher counts mean a
+The **Sample Count (Higher = Slower, Smoother)** slider runs from 8 up to 32768 samples
+per pixel; each step doubles the count (and the time). Higher counts mean a
 smoother, less noisy image at the cost of render time. At the very top of
 the range (16384/32768), the app warns this "can take hours, especially at
 large output sizes."
@@ -116,7 +136,7 @@ If you have saved lighting marked as usable for export (Chapter 2, the Lighting 
 Environment tab's **Saved Lighting**), you can tick any number of them here to render one
 extra image per ticked lighting alongside your current view. Each extra image uses
 that saved lighting's whole look: rig, light direction, exposure, surface glare,
-backdrop, head shadow and HDR map (a lighting saved without a map renders without one).
+backdrop (the lit tray under the stone), head shadow and HDR map (a lighting saved without a map renders without one).
 Export time multiplies with how many you select. A lighting that uses an HDR
 environment map is marked "HDR".
 
@@ -126,7 +146,11 @@ A live thumbnail updates roughly twice a second so you can judge
 composition and how far along the image is — this preview is always shown
 in ordinary sRGB regardless of which color space you chose for the final
 file, so do not judge final color from it. A progress bar and percentage
-track completion; **Cancel Export** stops the job early.
+track completion; **Cancel Export** stops the job early (files already finished are
+kept). **Run in Background** closes the dialog and leaves the export running: the
+header's export indicator shows its progress, and clicking it opens the dialog again.
+When no export is running the footer offers **Close**, **Add to Queue** and
+**Start Export**.
 
 ### Add to Queue
 
@@ -210,7 +234,7 @@ To save it, set the lighting up the way you want in the live view, then open the
 **Lighting & Environment** tab of the Parameters dock and look under **This Design**
 (**Lighting This Design Opens With**). Press **Use This Lighting for This Design**. This
 saves the lighting rig, the light's position and height, the exposure, the surface
-glare, the head shadow, the backdrop and, if one is loaded, the HDR environment map. It
+glare, the head shadow, the backdrop (a lit tray) and, if one is loaded, the HDR environment map. It
 does not save the camera. (Lighting saved by an older version has no head shadow; it
 opens with the default 16° one.) The button is
 greyed out until a design is open (a new design, a file you opened, or a design you
@@ -295,7 +319,10 @@ means the app sent your remote worker something to compute and heard
 nothing back — not even a routine status update — for the stated number of
 seconds. For an ordinary render this limit is 8 seconds; for the very
 first response after starting a fresh job it is more generous, 30 seconds,
-to allow for a slow warm-up on a busy or cold machine.
+to allow for a slow warm-up on a busy or cold machine. While a large finished
+picture is crossing a slow link, the limit is extended by the time that picture
+needs at a slow-link speed of about 4 MiB per second, so a big 4K frame in flight
+is not mistaken for silence.
 
 This is not necessarily a sign of anything broken. With **Local + Remote**
 selected, the app automatically falls back to finishing the work locally
@@ -313,3 +340,32 @@ running — see Chapter 10.
 Continue to Chapter 10 to set up and troubleshoot a remote coordinator, or
 Chapter 11 to understand the app's save formats. Chapter 23 shows how to
 collect exports as render jobs and render them one after another.
+
+
+## Optical diagnostics
+
+In Live Render, choose **Optical Diagnostics**, then **Enable Optical Diagnostics**. This adds a separate camera-aligned analytical layer. It works over local CPU, GPU, combined and remote beauty images. It follows the currently displayed Cut-slider geometry. It is off initially and does not change radiance, beauty sampling, denoising, standard HUD scores or saved catalogue thumbnails.
+
+Start with one layer. Cyan diagonal lines show **Windowing (/)**, magenta crosses show **Extinction (X)**, and green dots show **Brilliance (Dots)**. Select several to mix their hit-ray fractions. Gold stipple is **Fire (Dispersion Potential)**, independent of the three base fractions. Opacity starts at 45%; **Reset to 45%** restores it. **Diagnostic Map on Neutral Stone** replaces unselected stone regions with neutral grey. The interface high-contrast preference also selects brighter diagnostic colors. Patterns and text identify effects without relying on hue.
+
+The legend reports **visible-area diagnostic shares**: count divided by samples that hit the stone. Unknown/entry-blocked observations remain in that denominator. Silhouette alpha follows hit coverage; misses stay transparent. The ordinary metrics HUD samples a girdle-scaled disc with an angular aperture, so its percentages can differ. These are ray counts, not radiance percentages or brightness in nits.
+
+Windowing means a refracted exit at a surface whose outward normal has vertical component below -0.05. It can follow internal reflections. Brilliance means an upward d-line exit that passes the existing illumination threshold and observer-shadow test. Extinction includes shadow, insufficient illumination, side exits, missing subsequent intersections and the ten-bounce budget. Budget exhaustion is an estimate, not proof of physical absorption or permanent darkness.
+
+Fire replays qualifying returns at 486.1 and 656.3 nm, alongside the 589.3 nm d-line. Both companions must leave through the same facet after the same reflection count. The local value is angular separation times Fresnel-transmittance product and exit-cosine weights, divided by all hit samples. The fixed model-1 display range is **0 to 0.1 weighted degrees**. It has no per-image normalization or aggregate metric floor. Zero dispersion remains zero. Uncomputed and rejected Fire paths are distinct from qualifying zero contributions. Fire is dispersion potential, not a measurement of every colored flash in the spectral picture.
+
+Scintillation is a fifth, separate checkbox. Violet diamonds mark pixels where the stone sparkles: the pixel's center ray is traced again at five viewing angles within plus or minus 3 degrees of yaw, and the more often its return flips between them, the higher the flicker; that is blended 60/40 with the local contrast of the brilliance share over a 5 by 5 pixel neighborhood. The result is a fixed 0 to 100 scale (no per-image normalization) drawn as the diamonds' opacity, and it is traced only while the checkbox is on. The summary line then adds **Visible-Area Scintillation (Map)**, which is not the HUD's Scintillation value: the HUD samples a parallel ray fan against the camera axis, this map samples the visible area judged from each pixel's own viewing direction. Hovering a pixel reads its index and how many of the five poses returned light. Exported stills, videos and job files carry the choice, and the companion legend gains a line naming it.
+
+Orbiting and incompatible frames hide the old layer. A 128-pixel-long-edge one-sample draft appears after settling; a 320-pixel, four-sample map refines it. The status records the actual grid and samples. Coarse maps use nearest-neighbor display. Opacity/layer changes reuse compatible data; enabling uncomputed Fire or Scintillation requests its extra traces. **Refresh Diagnostic Map** can recompute a matching paused view without restarting beauty accumulation. A changed scene while paused waits for a matching beauty frame. Solid mode suspends diagnostics; its existing hatching is a critical-angle risk indication. ASET already has a false-color legend, so this additional layer is unavailable there.
+
+Hover a stone region with the panel open to read fractions, Fire qualification, the center-ray entry surface and exit surface, reflection count and termination reason. Border pixels can contain mixed subpixel surfaces. Entry and leakage-exit facets are different roles. Tier labels are shown only when a generation-bound mapping matches the captured geometry; otherwise the surface is explicitly labelled with its numeric ID and unavailable tier label. Concave tool IDs are resolved independently of planar IDs.
+
+These are geometric diagnostics. Persistent notices identify body absorption/zoning, polarization/birefringence, scattering and frosted/rounded interfaces that the analytical model does not reproduce. Studio/HDR use the standard analytical observer cone. Surface glare is outside the internal path classes. Material-resolution errors, unsolved/stale geometry and invalid numerical inputs are unavailable states; no substitute Diamond or valid zero map is produced.
+
+### Diagnostic exports
+
+Still exports stay clean unless **Include Optical Diagnostics (4 Samples/Pixel)** is checked. The selection, opacity, palette and mode freeze with the export scene, including preset fan-out and queued jobs. Each diagnostic still traces four deterministic samples at its actual output dimensions in bounded row tiles, then composites after beauty processing. The tiles are traced on all available processor cores; the picture is identical whatever the number of cores. While it runs, the progress bar fills a second time (the first half is the beauty render) and a note says "Tracing Optical Diagnostics". The PNG's `.optical.txt` companion records model version, pose, material, lighting policy, selected effects, units, sampling and limitations without source/profile paths. It is written after the PNG, so a failed picture leaves no orphan legend. Target RGB profile conversion applies to the palette too. Transparent beauty alpha is preserved.
+
+An export that cannot produce a diagnostic pass is refused before anything renders: ASET lighting without an HDR map, a stone without facets, or no layer (Scintillation counts as one) and no **Diagnostic Map on Neutral Stone** selected. The same check covers every preset of a fan-out, queued jobs and job files run from the command line (which fail as an input problem).
+
+The built-in **Optical Diagnostics at a Viewing Angle** tutorial demonstrates enabling, choosing effects, orbiting, reading a region and explicitly exporting with the legend.

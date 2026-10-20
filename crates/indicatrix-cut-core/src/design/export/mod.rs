@@ -15,7 +15,7 @@ mod concave_tests;
 #[cfg(test)]
 mod tests;
 
-pub use concave::{ConcaveResolveError, FlatAndTools, ToolPlacements};
+pub use concave::{ConcaveResolveError, FlatAndTools, ToolPlacements, resolve_tiers_on_planes};
 pub use schedule::{
     CONCAVE_FOOTNOTE_MARKER, concave_facet_footnote, concave_tool_footnote, meet_name_is_asc_safe,
 };

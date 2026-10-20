@@ -679,3 +679,30 @@ fn custom_materials_survive_a_new_design_and_never_shadow_a_built_in() {
     new_from_template(&mut state, 1).expect("template");
     assert_eq!(state.document.custom_materials.len(), 1);
 }
+
+#[test]
+fn closing_a_design_returns_to_the_empty_start_state() {
+    let (mut state, mock) = brilliant();
+    edit_girdle(&mut state, 6.0);
+    assert!(state.document.has_design(&state.session.design));
+    assert!(state.session.is_dirty());
+    autosave(&mut state).expect("the autosave writes");
+    let note = mock.app_dirs().files.join("autosave").join("current.json");
+    assert!(note.is_file());
+    let generation = state.session.current_generation();
+    state.selected_tier = Some(0);
+
+    close_design(&mut state);
+
+    assert!(!state.document.has_design(&state.session.design));
+    assert_eq!(state.document.origin, DocumentOrigin::Startup);
+    assert_eq!(tier_count(&state), 0);
+    assert!(!state.session.is_dirty());
+    assert!(state.session.history.description_log().is_empty());
+    assert_eq!(state.selected_tier, None);
+    // Jobs in flight see a new generation, and the closed design does not come back.
+    assert!(state.session.current_generation() > generation);
+    assert!(!note.exists());
+    autosave(&mut state).expect("nothing to write");
+    assert!(!note.exists());
+}

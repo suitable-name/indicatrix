@@ -93,6 +93,30 @@ impl Default for RewardConfig {
     }
 }
 
+impl RewardConfig {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        let values = [
+            self.score_improvement_scale,
+            self.invalid_geometry_penalty,
+            self.safety_bound_penalty,
+            self.knife_edge_penalty,
+            self.shape_drift_weight,
+            self.manufacturability_regression_penalty,
+            self.step_cost,
+            self.new_best_bonus,
+            self.reward_clip,
+            self.worse_clip,
+        ];
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err("reward settings must be finite");
+        }
+        if self.reward_clip <= 0.0 {
+            return Err("reward_clip must be positive");
+        }
+        Ok(())
+    }
+}
+
 /// Validity, safety and gate outcomes of one step, as the reward evaluator consumes them.
 #[allow(
     clippy::struct_excessive_bools,
@@ -231,6 +255,35 @@ mod tests {
         assert_eq!(config.new_best_bonus, 0.0);
         assert_eq!(config.reward_clip, 10.0);
         assert_eq!(config.worse_clip, 2.0);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_reward_scales_are_rejected() {
+        assert!(
+            RewardConfig {
+                reward_clip: 0.0,
+                ..RewardConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            RewardConfig {
+                score_improvement_scale: f32::NAN,
+                ..RewardConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            RewardConfig {
+                worse_clip: f32::INFINITY,
+                ..RewardConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

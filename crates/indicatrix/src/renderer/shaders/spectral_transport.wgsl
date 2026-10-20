@@ -36,7 +36,9 @@ fn transport_main(
     // workgroup executes, which WGSL forbids. `plane_count`/the `<=` comparison are
     // uniform across the whole workgroup (see `planes_shared`'s doc comment above), so
     // this is uniform control flow on both sides of the barrier.
-    let plane_count = arrayLength(&planes);
+    // The real planes only: with concave tools `planes` also holds their records, which
+    // are read straight from the storage binding (`scene_tool`), never through the cache.
+    let plane_count = scene_plane_count();
     if (plane_count <= PLANES_SHARED_CAPACITY) {
         var fill_i = local_index;
         loop {

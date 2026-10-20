@@ -47,6 +47,8 @@ impl std::error::Error for SolveMismatch {}
 /// can fail to produce a mast list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesignSolveError {
+    /// A geometric optimization baseline or candidate could not preserve its original meets.
+    Preservation(crate::meet_preservation::PreservationViolation),
     /// See [`MissingAnchor`].
     MissingAnchor(MissingAnchor),
     /// `previous` was not aligned with `self.tiers` -- see [`SolveMismatch`].
@@ -67,6 +69,7 @@ pub enum DesignSolveError {
 impl std::fmt::Display for DesignSolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Preservation(e) => write!(f, "{e}"),
             Self::MissingAnchor(e) => write!(f, "{e}"),
             Self::Mismatch(e) => write!(f, "{e}"),
             Self::Solve(e) => write!(f, "{e}"),

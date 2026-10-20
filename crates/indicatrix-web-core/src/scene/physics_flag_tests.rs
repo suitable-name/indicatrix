@@ -126,6 +126,20 @@ fn a_physics_recipe_fills_the_scenes_fluorescence() {
     assert!(!glowing.fluorescence().is_empty());
     let plain = OwnedScene::build(&ruby, None).expect("builds");
     assert!(plain.fluorescence().is_empty());
+    // The tool-carrying spec fills it the same way and, without recipes, builds as before.
+    let geometry = GeometrySceneSpec {
+        scene: ruby,
+        tools: Vec::new(),
+    };
+    let glowing_geometry = geometry.build_with_customs(None, &customs).expect("builds");
+    assert!(!glowing_geometry.fluorescence().is_empty());
+    assert!(
+        geometry
+            .build(None)
+            .expect("builds")
+            .fluorescence()
+            .is_empty()
+    );
     let diamond = OwnedScene::build_with_customs(
         &scene_spec(MaterialSpec::catalogue("Diamond")),
         None,

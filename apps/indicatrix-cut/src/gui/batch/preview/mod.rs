@@ -63,9 +63,13 @@
 //! a dispatcher started most recently.
 
 mod engine;
+#[cfg(test)]
+mod frosting_tests;
 mod import_choice;
+mod offer_quality;
 mod remote_lane;
 mod scan;
+mod thumbnail_backdrop;
 mod wiring;
 
 pub use engine::{RI_MATCH_TOLERANCE, target_ri_for_design};
@@ -77,7 +81,7 @@ pub use wiring::{offer_regeneration, setup_preview_batch_callbacks};
 
 #[cfg(test)]
 mod tests {
-    use super::engine::{BatchContext, record_planes};
+    use super::engine::{BatchContext, record_planes_with_frosting};
     use crate::gui::batch::test_records::{
         ASC_MAST, ASC_TEXT, ENTRY_ID, angle_table_planes, angle_table_record, assert_gem_geometry,
         gem_record, has_plane_at, record_with,
@@ -96,6 +100,8 @@ mod tests {
         let gpu_retired = AtomicBool::new(false);
         let angle_table_entries = Mutex::new(BTreeSet::new());
         let ctx = BatchContext {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
+            ray_draft: false,
             db: &db,
             material_candidates: &[],
             custom_materials: &[],
@@ -105,7 +111,7 @@ mod tests {
             gpu_retired: &gpu_retired,
             angle_table_entries: &angle_table_entries,
         };
-        let planes = record_planes(&ctx, full).map(|resolved| resolved.planes);
+        let planes = record_planes_with_frosting(&ctx, full).map(|(resolved, _)| resolved.planes);
         let fallbacks = angle_table_entries
             .into_inner()
             .expect("the fallback set is never poisoned in a test");
@@ -148,6 +154,41 @@ mod tests {
         let (planes, fallbacks) = preview_planes(&full);
         assert_eq!(planes, Some(angle_table_planes(&full)));
         assert_eq!(fallbacks, BTreeSet::from([ENTRY_ID]));
+    }
+
+    /// A design with concave tiers is rendered with its tools (the batch hands them to the
+    /// job); a planar design hands none.
+    #[test]
+    fn preview_batch_resolves_the_tools_of_a_concave_design() {
+        let concave = indicatrix_cut_core::Design::concave_fixture();
+        let text = indicatrix_cut_core::native::design_to_string(
+            &concave,
+            None,
+            &indicatrix_cut_core::native::DesignExtras::default(),
+        )
+        .expect("the fixture serializes");
+        let db = Mutex::new(Database::new(Some(":memory:")).expect("in-memory database opens"));
+        let gpu_retired = AtomicBool::new(false);
+        let angle_table_entries = Mutex::new(BTreeSet::new());
+        let ctx = BatchContext {
+            engine: indicatrix::renderer::engine::EngineSpec::default(),
+            ray_draft: false,
+            db: &db,
+            material_candidates: &[],
+            custom_materials: &[],
+            preview_size: 1,
+            preview_spp: 1,
+            solid: false,
+            gpu_retired: &gpu_retired,
+            angle_table_entries: &angle_table_entries,
+        };
+        let tools_of = |full: &FullDiagramRecord| {
+            record_planes_with_frosting(&ctx, full).map(|(resolved, _)| resolved.render_tools)
+        };
+        let carved = tools_of(&record_with("fixture.isdd", text.into_bytes()))
+            .expect("the fixture yields planes");
+        assert_eq!(carved.len(), concave.concave_placement_count());
+        assert_eq!(tools_of(&gem_record()), Some(Vec::new()));
     }
 
     /// A corrupt `.gem` falls back to the angle table without panicking.

@@ -104,6 +104,7 @@ impl AppSettings {
     /// to it are never touched.
     pub fn reset_render_output_tab(&mut self) {
         let d = Self::default();
+        self.ray_trace = d.ray_trace;
         self.target_samples = d.target_samples;
         self.render_width = d.render_width;
         self.render_height = d.render_height;
@@ -115,6 +116,8 @@ impl AppSettings {
         self.contribute_to_final_picture = d.contribute_to_final_picture;
         self.denoise_enabled = d.denoise_enabled;
         self.preview_size = d.preview_size;
+        self.thumbnail_renderer = d.thumbnail_renderer;
+        self.thumbnail_backdrop = d.thumbnail_backdrop;
         self.preview_spp = d.preview_spp;
         self.export_filename_template = d.export_filename_template;
         self.output = OutputSettings::default();

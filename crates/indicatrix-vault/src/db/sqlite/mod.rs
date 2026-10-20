@@ -63,6 +63,7 @@ mod base_schema;
 mod cut_progress;
 mod design_lighting;
 mod entries;
+mod frosting;
 mod materials;
 mod migrations;
 mod mirror_state;
@@ -386,6 +387,8 @@ impl Database {
         db.migrate_diagram_solid_hull_table()?;
         db.migrate_saved_rough_plans_table()?;
         db.migrate_planner_exclusion_table()?;
+        // The frosting of a library design (see `frosting`); it cascades off `diagram_entries`.
+        db.migrate_diagram_frosting_table()?;
         db.migrate_design_variants_table()?;
         db.migrate_design_cut_progress_table()?;
         db.migrate_design_lighting_table()?;
@@ -510,7 +513,7 @@ impl Database {
         // text for these two tables (the tilt-curves one in particular: its 6 generated
         // derived-aggregate columns are not something to safely hand-transcribe twice).
         let diagram_tilt_curves_sql = migrations::diagram_tilt_curves_table_sql();
-        let shared_sections: [&str; 12] = [
+        let shared_sections: [&str; 13] = [
             // Cached preview renders and cached tilt-performance curves -- see
             // migrate_diagram_previews_table/migrate_diagram_tilt_curves_table's own
             // doc comments for why both are side tables keyed by entry_id (surviving a
@@ -528,6 +531,9 @@ impl Database {
             // Designs the Rough Planner leaves out of its candidate set; see
             // migrate_planner_exclusion_table's own doc comment.
             migrations::DIAGRAM_PLANNER_EXCLUSIONS_TABLE_SQL,
+            // The frosted tiers and facets of a library design; see
+            // migrate_diagram_frosting_table's own doc comment.
+            migrations::DIAGRAM_FROSTING_TABLE_SQL,
             // Per-design side data keyed by the design's UUID rather than by entry_id:
             // saved variants, cutting progress and the lighting choice; see
             // migrate_design_variants_table's own doc comment.

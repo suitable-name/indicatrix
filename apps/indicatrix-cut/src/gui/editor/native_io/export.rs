@@ -279,18 +279,25 @@ impl ScheduleFormat {
 
 /// The file text `schedule` is written as in `format`.
 ///
+/// `frosting` is the design's frosted tiers and facets (`Design::gcs_frosting_spec`): a `.gcs`
+/// keeps them, a `.asc` has no notation for them and ignores the list. An empty list writes
+/// the text a design without frosting always got.
+///
 /// # Errors
 ///
 /// A toast-ready message naming the format and the writer's error.
-pub(super) fn schedule_file_text(
+pub(super) fn schedule_file_text_with_frosting(
     schedule: &indicatrix_formats::asc::AscSchedule,
     format: ScheduleFormat,
+    frosting: &[(usize, indicatrix_formats::gcs::GcsTierFrosting)],
 ) -> Result<String, String> {
     match format {
         ScheduleFormat::Asc => indicatrix_formats::asc::to_asc_string(schedule)
             .map_err(|e| format!("Cannot write this schedule as .asc: {e}")),
-        ScheduleFormat::Gcs => indicatrix_formats::gcs::to_gcs_string(schedule)
-            .map_err(|e| format!("Cannot write this schedule as .gcs: {e}")),
+        ScheduleFormat::Gcs => {
+            indicatrix_formats::gcs::to_gcs_string_with_frosting(schedule, frosting)
+                .map_err(|e| format!("Cannot write this schedule as .gcs: {e}"))
+        }
     }
 }
 
@@ -365,7 +372,15 @@ fn export_edited_schedule(
         // means the same "add a Scale Reference tier" problem the validation
         // banner already reports, so it is surfaced the same way (a toast)
         // rather than exporting a schedule with fabricated masts.
-        let (mut schedule, default_file_name, design, used_placeholder, generation, omitted) = {
+        let (
+            mut schedule,
+            default_file_name,
+            design,
+            used_placeholder,
+            generation,
+            omitted,
+            frosting,
+        ) = {
             let st = state.borrow();
             let mut schedule = match st.design.to_asc_schedule_with(&custom_materials) {
                 Ok(schedule) => schedule,
@@ -391,7 +406,8 @@ fn export_edited_schedule(
                 st.design.clone(),
                 st.used_placeholder,
                 st.generation.load(Ordering::Relaxed),
-                concave_export_notice(&st.design),
+                export_notice(&st.design, format),
+                st.design.gcs_frosting_spec(),
             )
         };
         // The same marker Save writes, for the plain-export path --
@@ -428,12 +444,13 @@ fn export_edited_schedule(
                             default_file_name,
                             format,
                             omitted,
+                            frosting,
                         ),
                         StatusDecision::NeedsConfirm(message) => {
                             // One dialog for both questions, so the cutter is never asked twice.
                             let shown = omitted.map_or_else(
                                 || message.clone(),
-                                |notice| format!("{message}\n\n{notice}"),
+                                |(_, notice)| format!("{message}\n\n{notice}"),
                             );
                             let heading_message = format!(
                                 "{shown}\n\nExport anyway? The written file will note this in \
@@ -457,6 +474,7 @@ fn export_edited_schedule(
                                         &schedule,
                                         default_file_name,
                                         format,
+                                        &frosting,
                                     );
                                 },
                             );
@@ -482,47 +500,96 @@ fn concave_export_notice(design: &Design) -> Option<String> {
     })
 }
 
+/// What exporting `design` in `format` loses, as the dialog's title and paragraph: the
+/// concave tiers ([`concave_export_notice`]) and, for `.asc` only, the frosting. `None`
+/// when nothing is lost.
+fn export_notice(design: &Design, format: ScheduleFormat) -> Option<(&'static str, String)> {
+    let concave = concave_export_notice(design);
+    let frosting = (format == ScheduleFormat::Asc)
+        .then(|| design.asc_frosting_note())
+        .flatten();
+    match (concave, frosting) {
+        (None, None) => None,
+        (Some(concave), None) => Some(("Concave Tiers Are Not Part of This Format", concave)),
+        (None, Some(frosting)) => Some(("Frosting Is Not Part of This Format", frosting)),
+        (Some(concave), Some(frosting)) => Some((
+            "Some Content Is Not Part of This Format",
+            format!("{concave}\n{frosting}"),
+        )),
+    }
+}
+
 /// [`export_edited_schedule`]'s tail for a design that raised no write-status question:
-/// finishes straight away for a planar design, and after the cutter accepts the loss
-/// of the concave tiers (`omitted`, see [`concave_export_notice`]) otherwise.
+/// finishes straight away when nothing is lost, and after the cutter accepts the loss
+/// (`omitted`, see [`export_notice`]) otherwise.
 fn finish_export_after_notice(
     ui: &MainWindow,
     schedule: indicatrix_formats::asc::AscSchedule,
     default_file_name: String,
     format: ScheduleFormat,
-    omitted: Option<String>,
+    omitted: Option<(&'static str, String)>,
+    frosting: Vec<(usize, indicatrix_formats::gcs::GcsTierFrosting)>,
 ) {
     match omitted {
-        // A planar design: nothing is lost, so no question is asked.
-        None => finish_export_schedule(ui, &schedule, default_file_name, format),
-        Some(notice) => ask_write_confirm(
+        // Nothing is lost, so no question is asked.
+        None => finish_export_schedule(ui, &schedule, default_file_name, format, &frosting),
+        Some((title, notice)) => ask_write_confirm(
             ui,
-            "Concave Tiers Are Not Part of This Format",
+            title,
             format!("{notice}\n\nExport anyway?"),
             "Export Anyway",
             None,
-            move |ui| finish_export_schedule(ui, &schedule, default_file_name, format),
+            move |ui| finish_export_schedule(ui, &schedule, default_file_name, format, &frosting),
+        ),
+    }
+}
+
+/// The toast sentence on how exactly the written file keeps the schedule's meets: the file
+/// text is read back with the format's own reader and compared with `schedule`. Starts with a
+/// space, to follow the sentence before it. Solves two stones, so call it off the UI thread.
+fn precision_note(
+    schedule: &indicatrix_formats::asc::AscSchedule,
+    text: &str,
+    format: ScheduleFormat,
+) -> String {
+    let reopened = match format {
+        ScheduleFormat::Asc => indicatrix_formats::asc::parse_asc(text).map_err(|e| e.to_string()),
+        ScheduleFormat::Gcs => indicatrix_formats::gcs::parse_gcs(text)
+            .map(|gcs| indicatrix_formats::gcs::gcs_to_asc_schedule(&gcs))
+            .map_err(|e| e.to_string()),
+    };
+    match reopened.and_then(|reopened| {
+        indicatrix_cut_core::meet_preservation::check_schedule_precision(schedule, &reopened)
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(facts) => format!(" {}", facts.summary()),
+        Err(reason) => format!(
+            " Meet precision is not certified: {reason} Keep the native design for exact authoring."
         ),
     }
 }
 
 /// [`export_edited_schedule`]'s tail once the status question is settled
 /// (clean, or confirmed with `schedule.headers` already stamped): builds the file
-/// text ([`schedule_file_text`]), picks a destination ([`pick_file`], background
+/// text ([`schedule_file_text_with_frosting`]), picks a destination ([`pick_file`], background
 /// thread) and writes it (background thread).
 fn finish_export_schedule(
     ui: &MainWindow,
     schedule: &indicatrix_formats::asc::AscSchedule,
     default_file_name: String,
     format: ScheduleFormat,
+    frosting: &[(usize, indicatrix_formats::gcs::GcsTierFrosting)],
 ) {
-    let text = match schedule_file_text(schedule, format) {
+    let text = match schedule_file_text_with_frosting(schedule, format, frosting) {
         Ok(text) => text,
         Err(message) => {
             show_toast(ui, &message, "error");
             return;
         }
     };
+    // The precision check reparses the text and solves two stones: it runs on the write
+    // thread, after the file dialog, so neither the dialog nor the UI waits for it.
+    let schedule = schedule.clone();
     let kind = match format {
         ScheduleFormat::Asc => PickKind::SaveAsc {
             default_name: default_file_name,
@@ -546,6 +613,11 @@ fn finish_export_schedule(
             }
             let result = std::fs::write(&dest_path, &text)
                 .map_err(|e| format!("Failed to write {}: {e}", dest_path.display()));
+            let precision = if result.is_ok() {
+                precision_note(&schedule, &text, format)
+            } else {
+                String::new()
+            };
             let _ = ui_weak.upgrade_in_event_loop(move |ui| match result {
                 Ok(()) => {
                     record_last_saved_path(&ui, &dest_path);
@@ -558,7 +630,10 @@ fn finish_export_schedule(
                     };
                     show_toast(
                         &ui,
-                        &format!("Exported edited schedule to {}{note}", dest_path.display()),
+                        &format!(
+                            "Exported edited schedule to {}{note}{precision}",
+                            dest_path.display()
+                        ),
                         "success",
                     );
                     // A tutorial step may wait for the file to be written.

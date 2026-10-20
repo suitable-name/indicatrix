@@ -6,7 +6,7 @@
 //! edge, a steeper pavilion lifts its own, and the girdle band can shrink to nothing.
 //!
 //! A cutter re-cutting a facet at a new angle does the opposite -- the facet turns about
-//! its girdle-side edge, and that edge stays where it is. [`anchored_candidate`] does the
+//! its girdle corners, and those corners stay where they are. [`anchored_candidate`] does the
 //! same in the model: it reads the pivot of every moving facet from the ORIGINAL solved
 //! stone (`indicatrix_cut_core::design::hinge`) and gives each `ScaleReference` tier the
 //! mast that keeps that pivot on its new plane. Tiers that meet other tiers
@@ -25,7 +25,7 @@
 //! [`apply_with_anchors`] then turns a proposal plus those masts into one `Edit::Batch`,
 //! so the whole retarget is a single undo step.
 
-use super::{RetargetProposal, apply, plan::RetargetPlan, validity::StoneAnalysis};
+use super::{RetargetProposal, plan::RetargetPlan, validity::StoneAnalysis};
 use glam::DVec3;
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{
@@ -354,44 +354,78 @@ pub fn angle_differences(before: &Design, after: &Design) -> Vec<(usize, f64)> {
         .collect()
 }
 
-/// [`apply`], plus the mast changes in `anchors`, as one `Edit::Batch`: the retarget's
-/// angles first, then one `SetConstraint` per anchor.
+/// Turns `proposal`'s angles and `anchors`' masts into ONE atomic `Edit::Batch` (one
+/// `ModifyTier` per tier that changes, relation followers included).
 ///
-/// With no anchors it is exactly [`apply`]'s single `Edit::RetargetAngles`. An anchor
-/// naming a tier the design no longer has is dropped, like a stale proposal row.
+/// It captures the original meet network of `design`, materialises the angles and masts on
+/// a scratch copy, settles the relations, and validates the result under the Retarget
+/// preservation policy. Nothing is written to `design`; the returned edit is what the caller
+/// pushes through `History`, and its inverse restores every angle and mast together, so one
+/// Undo reverts the entire retarget.
 ///
-/// The batch is validated as a whole before anything is written and its inverse restores
-/// every angle and mast together, so one Undo reverts the entire retarget.
-#[must_use]
+/// With no anchors it is the angle-only change [`super::apply`] makes, and a pinned design
+/// refuses it (turning a pinned facet without moving its mast splits its meets).
+///
+/// # Errors
+///
+/// The [`PreservationViolation`](indicatrix_cut_core::meet_preservation::PreservationViolation)
+/// that refuses the change. A row or anchor that no longer matches `design` (a tier that is
+/// gone, an angle or mast that is not the one the proposal started from, relations that
+/// cannot be satisfied) is `StaleCandidate`; nothing is silently dropped. A row for a tier
+/// that follows a relation is `Relation`.
+#[must_use = "an edit that is not applied changes nothing"]
 pub fn apply_with_anchors(
     design: &Design,
     proposal: &RetargetProposal,
     anchors: &[AnchorChange],
-) -> Edit {
-    let angles = apply(design, proposal);
-    let masts: Vec<Edit> = anchors
+) -> Result<Edit, indicatrix_cut_core::meet_preservation::PreservationViolation> {
+    let angles: Vec<_> = proposal
+        .rows
         .iter()
-        .filter(|anchor| anchor.tier_index < design.tiers.len())
-        .map(|anchor| Edit::SetConstraint {
-            index: anchor.tier_index,
-            constraint: MeetConstraint::ScaleReference(anchor.new_mast),
+        .map(|row| indicatrix_cut_core::AngleChange {
+            index: row.tier_index,
+            from_deg: row.old_angle,
+            to_deg: row.new_angle,
         })
         .collect();
-    if masts.is_empty() {
-        return angles;
-    }
-    let mut edits = Vec::with_capacity(masts.len() + 1);
-    edits.push(angles);
-    edits.extend(masts);
-    Edit::Batch(edits)
+    let masts: Vec<_> = anchors
+        .iter()
+        .map(|anchor| indicatrix_cut_core::MastChange {
+            index: anchor.tier_index,
+            from_mast: anchor.old_mast,
+            to_mast: anchor.new_mast,
+        })
+        .collect();
+    let baseline =
+        indicatrix_cut_core::meet_preservation::MeetPreservationBaseline::capture(design)?;
+    indicatrix_cut_core::optimize::materialize_preserved_changes(
+        design,
+        &angles,
+        &masts,
+        Some(&baseline),
+        indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET,
+    )
+    .map(|(_, edit, _)| edit)
+    .map_err(|error| match error {
+        indicatrix_cut_core::optimize::MaterializeError::Preservation(reason) => reason,
+        indicatrix_cut_core::optimize::MaterializeError::Edit(_) => {
+            indicatrix_cut_core::meet_preservation::PreservationViolation::StaleCandidate
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::retarget::{CrownShift, PlanRow, build_plan, validity::analyze};
+    use crate::retarget::{
+        CrownShift, PlanRow, build_plan,
+        check::{CheckInputs, RetargetCheck, check_retarget},
+        validity::analyze,
+    };
+    use indicatrix::optics::LightingPreset;
     use indicatrix_cut_core::{
         BuiltinMaterials, ConstraintTier, History, MaterialSelection, PreformSpec, ScheduleMeta,
+        meet_preservation::{MeetPreservationBaseline, PreservationPolicy, PreservationViolation},
     };
 
     fn selection(name: &str) -> MaterialSelection {
@@ -548,19 +582,66 @@ mod tests {
         );
     }
 
+    fn index_selection(n_d: f64) -> MaterialSelection {
+        MaterialSelection {
+            name: None,
+            specific_gravity_override: None,
+            refractive_index_override: Some(n_d),
+            body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
+        }
+    }
+
+    /// The standard brilliant as a 1.72 stone (every tier pinned, like an imported design),
+    /// its plan to 1.7681 with a third of the shift on the crown, and the check of that plan:
+    /// the case the check's own tests pin as valid by Shift alone.
+    fn checked_sapphire_case() -> (Design, RetargetPlan, RetargetCheck) {
+        let mut design = brilliant();
+        design.material = index_selection(1.72);
+        let target = index_selection(1.7681).resolve(&BuiltinMaterials);
+        let crown = CrownShift {
+            fraction: 0.33,
+            scale_by_ratio: false,
+            follow_pavilion: false,
+        };
+        let plan = build_plan(&design, &target, crown, &[]);
+        let check = check_retarget(&CheckInputs {
+            girdle: None,
+            design: &design,
+            plan: &plan,
+            current_gem: None,
+            lighting: LightingPreset::RingLights,
+        });
+        (design, plan, check)
+    }
+
+    /// The edit a front end that transports the check's angles and masts commits.
+    fn transported_edit(
+        design: &Design,
+        plan: &RetargetPlan,
+        check: &RetargetCheck,
+    ) -> Result<Edit, PreservationViolation> {
+        let candidate = check
+            .candidate
+            .as_ref()
+            .expect("a valid check carries its candidate");
+        let proposal = plan
+            .with_angles(design, &angle_differences(design, candidate))
+            .proposal();
+        apply_with_anchors(design, &proposal, &check.anchors)
+    }
+
     #[test]
     fn apply_with_anchors_is_one_undo_step_and_undoes_exactly() {
-        let mut design = brilliant();
+        let (mut design, plan, check) = checked_sapphire_case();
+        assert!(check.allows_apply(), "{}", check.validity.headline());
         let original_design = design.clone();
-        let original = analyze(&design, true).expect("every tier is pinned");
-        let plan = build_plan(&design, &quartz(), CrownShift::default(), &[]);
-        let (_, anchors) = anchored_candidate(&design, &plan, &original);
+        let anchors = check.anchors.clone();
         assert_ne!(anchors, Vec::new());
 
-        let proposal = plan.proposal();
-        let edit = apply_with_anchors(&design, &proposal, &anchors);
+        let edit = transported_edit(&design, &plan, &check).expect("preserved retarget");
         assert!(matches!(edit, Edit::Batch(_)));
-        assert_eq!(edit.describe(&design), "Retarget angles");
 
         let mut history = History::new();
         history.apply(&mut design, edit).expect("the batch applies");
@@ -581,18 +662,69 @@ mod tests {
     }
 
     #[test]
-    fn apply_with_no_anchors_is_the_plain_angle_edit() {
-        let design = brilliant();
-        let plan = build_plan(&design, &quartz(), CrownShift::default(), &[]);
-        let proposal = plan.proposal();
-        assert_eq!(
-            apply_with_anchors(&design, &proposal, &[]),
-            apply(&design, &proposal)
-        );
+    fn a_retarget_batch_reads_as_a_retarget_in_the_undo_list() {
+        // This assertion used to sit in `apply_with_anchors_is_one_undo_step_and_undoes_exactly`.
+        // `Edit::describe` only recognises a batch of `RetargetAngles` and `SetConstraint`; the
+        // atomic batch of `ModifyTier`s that `apply_with_anchors` now builds reads as "N combined
+        // edits", so it stays red until `describe_anchored_retarget` (indicatrix-cut-core,
+        // edit/edit_type.rs) learns the new shape. Kept as its own test so the undo-step test
+        // above says only what it is named for.
+        let (design, plan, check) = checked_sapphire_case();
+        let edit = transported_edit(&design, &plan, &check).expect("preserved retarget");
+        assert_eq!(edit.describe(&design), "Retarget angles");
     }
 
     #[test]
-    fn an_anchor_for_a_missing_tier_is_dropped() {
+    fn apply_with_anchors_reproduces_the_checked_candidate_and_keeps_the_original_meets() {
+        let (design, plan, check) = checked_sapphire_case();
+        assert!(check.allows_apply(), "{}", check.validity.headline());
+        assert_ne!(
+            check.anchors,
+            Vec::new(),
+            "a pinned design needs its masts moved"
+        );
+        let candidate = check
+            .candidate
+            .as_ref()
+            .expect("a valid check carries its candidate");
+
+        // The check's own edit.
+        let mut direct = design.clone();
+        let checked = check.validated_edit(&design).expect("preserved retarget");
+        History::new()
+            .apply(&mut direct, checked)
+            .expect("the batch applies");
+
+        // The same state rebuilt from what a front end transports: the candidate's angles
+        // as a proposal, plus the masts.
+        let mut transported = design.clone();
+        let edit = transported_edit(&design, &plan, &check)
+            .expect("the transported angles and masts are preserved");
+        History::new()
+            .apply(&mut transported, edit)
+            .expect("the batch applies");
+
+        assert_eq!(transported, direct, "both routes give one state");
+        assert_eq!(&transported, candidate, "and it is the checked candidate");
+        MeetPreservationBaseline::capture(&design)
+            .expect("the original captures")
+            .validate(&transported, PreservationPolicy::RETARGET)
+            .expect("the original meets survive");
+    }
+
+    #[test]
+    fn an_angle_only_proposal_on_a_pinned_design_is_refused() {
+        // Turning pinned facets and leaving their masts alone splits the meets they take part
+        // in (`the_hinge_keeps_the_girdle_where_the_plain_shift_destroys_it` pins the stone
+        // damage); the edit must not be produced.
+        let design = brilliant();
+        let plan = build_plan(&design, &quartz(), CrownShift::default(), &[]);
+        let result = apply_with_anchors(&design, &plan.proposal(), &[]);
+        assert!(result.is_err(), "{result:?}");
+    }
+
+    #[test]
+    fn an_anchor_for_a_missing_tier_is_stale() {
         let design = brilliant();
         let plan = build_plan(&design, &quartz(), CrownShift::default(), &[]);
         let proposal = plan.proposal();
@@ -601,9 +733,10 @@ mod tests {
             old_mast: 1.0,
             new_mast: 1.1,
         }];
-        assert_eq!(
-            apply_with_anchors(&design, &proposal, &stale),
-            apply(&design, &proposal)
+        let result = apply_with_anchors(&design, &proposal, &stale);
+        assert!(
+            matches!(result, Err(PreservationViolation::StaleCandidate)),
+            "{result:?}"
         );
     }
 }

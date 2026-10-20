@@ -27,6 +27,9 @@ pub struct LibraryHandle {
     pub(super) revision: Arc<AtomicU64>,
     /// `<cache>`: thumbnails live in `<cache>/thumbs/`.
     pub(super) cache_dir: PathBuf,
+    /// `<files>`: the folder the app's other private files live in. A deleted design's
+    /// cutting progress is removed from `<files>/cut_progress/`.
+    pub(super) files_dir: PathBuf,
 }
 
 impl fmt::Debug for LibraryHandle {
@@ -53,6 +56,7 @@ impl LibraryHandle {
             db: Arc::new(Mutex::new(database)),
             revision,
             cache_dir: dirs.cache.clone(),
+            files_dir: dirs.files.clone(),
         })
     }
 

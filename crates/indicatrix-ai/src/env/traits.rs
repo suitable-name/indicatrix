@@ -11,8 +11,8 @@
 //!   [`GemstoneRlEnv::step_scaled`]); the first improving candidate is accepted and ONE step
 //!   is counted. [`GemstoneRlEnv::step`] is the single-scale case.
 //! - The score is the optical `ObjectiveWeights::score`, plus the yield term when the weights
-//!   weigh the yield and the yield is measurable. A face-up tone weight is refused at
-//!   construction.
+//!   weigh the yield and the yield is measurable. Both face-up tone goals are measured and
+//!   scored through the shared core scorer.
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +50,8 @@ pub enum StepRejection {
     NoUsableMast,
     /// The tier relations cannot be evaluated, or give a follower an unusable angle.
     RelationsUnsolvable,
+    /// Shared meet-preserving projection could not certify the candidate against the episode baseline.
+    PreservationViolation,
     /// The candidate design does not solve.
     Unsolvable,
     /// The candidate's planes do not bound a closed solid.

@@ -26,7 +26,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use indicatrix::{
-    geometry::meet_solver::{SolveError, SolveStrategy, SolvedTier},
+    geometry::{
+        meet_solver::{SolveError, SolveStrategy, SolvedTier},
+        tool::ToolPrimitive,
+    },
     optics::materials::GemMaterial,
 };
 use indicatrix_cut_core::{
@@ -63,8 +66,9 @@ pub use analysis::{
 };
 pub use body_color::{BodyColorParams, BodyColorResultData, run_body_color};
 pub use optical::{
-    MetricsParams, MetricsResultData, ScoredUnder, TiltAxisData, TiltParams, TiltResultData,
-    run_metrics, run_metrics_with_map, run_tilt, sweep_fraction, sweep_status, tilt_lighting_note,
+    MetricsJob, MetricsParams, MetricsResultData, ScoredUnder, TiltAxisData, TiltJob, TiltParams,
+    TiltResultData, run_metrics, run_metrics_with_geometry, run_metrics_with_map, run_tilt,
+    run_tilt_with_geometry, sweep_fraction, sweep_status, tilt_lighting_note,
 };
 
 /// What the solve Worker is asked to do.
@@ -110,14 +114,62 @@ pub enum SolveRequest {
         /// The typed colour and the reference path.
         params: BodyColorParams,
     },
+    /// [`Self::Metrics`] for a concave stone: the stone is scored with its tools, like the
+    /// desktop (`StoneGeometry`). Build with [`Self::metrics`], which sends the planar
+    /// variant when there are no tools. Wire version 20.
+    MetricsWithTools {
+        /// The stone, material, pose and HDR map.
+        params: MetricsParams,
+        /// The resolved cutting tools in cutting order (never empty on the wire).
+        tools: Vec<ToolPrimitive>,
+    },
+    /// [`Self::Tilt`] for a concave stone (build with [`Self::tilt`]). Wire version 20.
+    TiltWithTools {
+        /// The stone, material and light.
+        params: TiltParams,
+        /// The resolved cutting tools in cutting order (never empty on the wire).
+        tools: Vec<ToolPrimitive>,
+    },
 }
 
 impl SolveRequest {
+    /// The metrics request for `params` and the stone's `tools`: [`Self::Metrics`] when there
+    /// are none (byte-identical to before concave stones reached the metrics), else
+    /// [`Self::MetricsWithTools`].
+    #[must_use]
+    pub fn metrics(params: MetricsParams, tools: &[ToolPrimitive]) -> Self {
+        if tools.is_empty() {
+            Self::Metrics { params }
+        } else {
+            Self::MetricsWithTools {
+                params,
+                tools: tools.to_vec(),
+            }
+        }
+    }
+
+    /// The tilt-sweep request for `params` and the stone's `tools`: [`Self::Tilt`] when there
+    /// are none, else [`Self::TiltWithTools`].
+    #[must_use]
+    pub fn tilt(params: TiltParams, tools: &[ToolPrimitive]) -> Self {
+        if tools.is_empty() {
+            Self::Tilt { params }
+        } else {
+            Self::TiltWithTools {
+                params,
+                tools: tools.to_vec(),
+            }
+        }
+    }
+
     /// Whether a running job of this kind can be asked to stop early with a partial
     /// answer (it polls the page's cancel URL): the searches and the tilt sweep.
     #[must_use]
     pub const fn supports_graceful_cancel(&self) -> bool {
-        !matches!(self, Self::Solve | Self::Metrics { .. })
+        !matches!(
+            self,
+            Self::Solve | Self::Metrics { .. } | Self::MetricsWithTools { .. }
+        )
     }
 
     /// Whether the job reports progress while it runs, so a long one is only "hung"
@@ -126,7 +178,10 @@ impl SolveRequest {
     pub const fn streams_progress(&self) -> bool {
         matches!(
             self,
-            Self::Optimize { .. } | Self::Retarget { .. } | Self::Tilt { .. }
+            Self::Optimize { .. }
+                | Self::Retarget { .. }
+                | Self::Tilt { .. }
+                | Self::TiltWithTools { .. }
         )
     }
 }
@@ -244,6 +299,12 @@ pub struct SolveOutcome {
 /// Later request variants add their response variants at the END (see
 /// [`SolveRequest`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the postcard wire format pins variant order and payload layout (protocol/tests*.rs); \
+              one answer is built per job, and boxing a payload would change every consumer's \
+              pattern (the web page and the mobile core) for no measurable gain"
+)]
 pub enum SolveResponse {
     /// The solve ran; see [`SolveOutcome`].
     Solved(SolveOutcome),
@@ -330,6 +391,12 @@ pub fn handle_solve_with(
         // These three carry their own inputs and never look at the design.
         SolveRequest::Metrics { params } => run_metrics(&mut None, params),
         SolveRequest::Tilt { params } => run_tilt(params, hooks),
+        SolveRequest::MetricsWithTools { params, tools } => {
+            run_metrics_with_geometry(&mut None, params, None, tools)
+        }
+        SolveRequest::TiltWithTools { params, tools } => {
+            run_tilt_with_geometry(params, hooks, tools, None)
+        }
         SolveRequest::BodyColor { params } => run_body_color(params, hooks.cancel),
         SolveRequest::Solve => with_design(&|design| solve_design(design, hooks.cancel)),
         SolveRequest::Optimize {

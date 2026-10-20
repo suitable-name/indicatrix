@@ -58,6 +58,7 @@ pub fn unique_temp_dir(label: &str) -> std::path::PathBuf {
 
 pub(super) fn tiny_scene() -> SceneState {
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 4,
         height: 4,
         yaw: 0.4,
@@ -77,6 +78,7 @@ pub(super) fn tiny_scene() -> SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 
@@ -103,6 +105,7 @@ pub(super) fn tiny_scene_without_dispersion() -> SceneState {
 /// deterministically.
 pub(super) fn heavier_scene() -> SceneState {
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 24,
         height: 24,
         yaw: 0.4,
@@ -122,6 +125,7 @@ pub(super) fn heavier_scene() -> SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 

@@ -2,18 +2,23 @@
 //!
 //! This is the Retarget dialog without the window. `--mode shift` (the default) moves the
 //! crown and pavilion angles by the critical-angle shift (`build_plan`), re-anchors every
-//! pinned facet about its girdle-side edge and refits the table and culet heights
+//! pinned facet about its girdle corners and refits the table and culet heights
 //! (`check_retarget`), and judges the result with the validity gate. `--mode optimize` starts
 //! from that result and searches every crown and pavilion angle inside `--range` degrees
 //! (`run_search`), each result going through the same gate. The angles, the re-anchored masts
 //! and the new material are applied as ONE editor edit, so tiers that follow a relation follow.
+//! The optical figures (before, unchanged in the new material, retargeted) and the search's
+//! scores are those of the stone with its concave tools, as the dialog's are.
 //!
-//! # The gate is stricter than the dialog's
+//! # The gate is the dialog's
 //!
-//! The dialog lets a change through when the verdict is Valid, and also when it is Unchecked (the
-//! current design itself could not be analysed, so nothing could be compared). A command line
-//! has nobody to look at the stone, so `retarget` accepts Valid only: Invalid and Unchecked are
-//! refused with exit code 2, the reasons are printed, and nothing is written.
+//! Only a Valid verdict applies. Invalid and Unchecked are refused with exit code 2, the reasons
+//! are printed (the verdict line is the dialog's own, for example `Could not check this change.
+//! The current design has a problem: ...`), and nothing is written. Unchecked means the current
+//! design itself could not be analysed, so nothing could be compared and no candidate stone
+//! exists to apply; the dialog's Apply refuses it with the same verdict line (an unchecked
+//! change was once let through, before the meet-preserving gate: `RetargetValidity::allows_apply`
+//! is Valid only now), so the command line has no option to accept one.
 //!
 //! The report is always printed (what was asked, the verdict, and for an accepted change the
 //! tiers that moved and the optical figures). `--out FILE` saves the retargeted design as a
@@ -36,7 +41,7 @@ use indicatrix_editor::{
     EditorSession,
     retarget::{
         RetargetPlan, apply_with_anchors, build_plan,
-        check::{CheckInputs, check_retarget},
+        check::{CheckInputs, GirdleAllowance, check_retarget},
         metrics::RetargetMetrics,
         search::{SearchInputs, SearchSettings, run_search},
         validity::{RetargetValidity, ValidityStatus},
@@ -70,8 +75,7 @@ struct Decision {
 /// `Ok` when the gate says the retargeted stone is valid; otherwise the refusal text: the
 /// headline and every further reason.
 ///
-/// Stricter than the dialog, which also lets an Unchecked change through (see the module
-/// documentation).
+/// The same rule as the dialog's Apply: only Valid goes through (see the module documentation).
 fn gate(validity: &RetargetValidity) -> Result<(), String> {
     match validity.status {
         ValidityStatus::Valid => Ok(()),
@@ -94,14 +98,13 @@ fn shift_decision(
     args: &RetargetArgs,
 ) -> Decision {
     let check = check_retarget(&CheckInputs {
-        girdle: None,
+        girdle: args.girdle_allowance.then(GirdleAllowance::standard),
         design,
         plan,
         current_gem: current,
         lighting: args.lighting,
     });
-    let change = gate(&check.validity)
-        .map(|()| apply_with_anchors(design, &plan.proposal(), &check.anchors));
+    let change = gate(&check.validity).and_then(|()| check.validated_edit(design));
     Decision {
         change,
         validity: check.validity,
@@ -131,8 +134,8 @@ fn search_decision(
         seed: args.seed,
         keep: defaults.keep,
         keep_look: args.keep_look,
-        // The CLI keeps the band as it is until its own flag lands (CLI lane).
-        girdle: None,
+        // The band is kept as it is unless `--girdle-allowance` asks for the dialog's allowance.
+        girdle: args.girdle_allowance.then(GirdleAllowance::standard),
     };
     let inputs = SearchInputs {
         design,
@@ -159,8 +162,10 @@ fn search_decision(
         Some(best) => {
             let proposal = plan.with_angles(design, &best.angles).proposal();
             Decision {
-                change: gate(&best.validity)
-                    .map(|()| apply_with_anchors(design, &proposal, &best.anchors)),
+                change: gate(&best.validity).and_then(|()| {
+                    apply_with_anchors(design, &proposal, &best.anchors)
+                        .map_err(|error| error.to_string())
+                }),
                 validity: best.validity.clone(),
                 metrics: best.metrics,
                 anchors: best.anchors.len(),
@@ -188,6 +193,7 @@ fn search_decision(
 ///
 /// The refusal text when the session does not take the edit or the result is not a stone.
 fn apply(design: &Design, edit: Edit, selection: &MaterialSelection) -> Result<Design, String> {
+    let edit = indicatrix_editor::optimize_view::edits_for_relation_session(design, edit);
     let mut edits = match edit {
         Edit::Batch(edits) => edits,
         single => vec![single],
@@ -318,6 +324,7 @@ mod tests {
             budget: None,
             seed: 0,
             keep_look: true,
+            girdle_allowance: false,
             lighting: CANONICAL_LIGHTING_PRESET,
             json: false,
             out: out.map(PathBuf::from),
@@ -353,14 +360,24 @@ mod tests {
             "the further reasons are listed: {invalid}"
         );
         let unchecked = gate(&RetargetValidity::unchecked(&InvalidReason::NotClosed))
-            .expect_err("unchecked is refused, unlike in the dialog");
+            .expect_err("unchecked is refused, as in the dialog");
         assert!(unchecked.starts_with("Could not check"), "{unchecked}");
+        // The words are the dialog's verdict line (the toast its Apply shows), nothing added.
+        assert_eq!(
+            unchecked,
+            RetargetValidity::unchecked(&InvalidReason::NotClosed).headline()
+        );
     }
 
     #[test]
     fn a_sapphire_retarget_is_valid_and_applied() {
+        let source = loaded();
+        let baseline = indicatrix_cut_core::meet_preservation::MeetPreservationBaseline::capture(
+            &source.design,
+        )
+        .expect("the original meets are trustworthy");
         let outcome = execute(
-            &loaded(),
+            &source,
             &Catalogue::default(),
             &args(
                 MaterialArg::Ri(1.7681),
@@ -382,6 +399,12 @@ mod tests {
         );
         let saved = testing::file_text(&outcome, "sapphire.isdd").expect("saved");
         let again = from_bytes("sapphire.isdd", saved.as_bytes()).expect("opens");
+        baseline
+            .validate(
+                &again.design,
+                indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET,
+            )
+            .expect("saved retarget preserves every original meet and facet");
         assert_eq!(
             again.design.material.refractive_index_override,
             Some(1.7681)
@@ -448,6 +471,23 @@ mod tests {
                     outcome.stdout
                 );
             }
+        }
+    }
+
+    /// The dialog's girdle allowance only acts after the unchanged band fails a girdle check, so
+    /// a result that is valid without it stays valid with it.
+    #[test]
+    fn the_girdle_allowance_never_turns_a_valid_retarget_into_a_refusal() {
+        for ri in [1.55, 1.9, 2.4] {
+            let plain = args(MaterialArg::Ri(ri), CrownShift::default(), None);
+            let mut allowed = args(MaterialArg::Ri(ri), CrownShift::default(), None);
+            allowed.girdle_allowance = true;
+            let without = execute(&loaded(), &Catalogue::default(), &plain).expect("an outcome");
+            let with = execute(&loaded(), &Catalogue::default(), &allowed).expect("an outcome");
+            if without.exit == EXIT_OK {
+                assert_eq!(with.exit, EXIT_OK, "ri {ri}: {}", with.stdout);
+            }
+            assert!(with.stdout.contains("Verdict:"), "ri {ri}: {}", with.stdout);
         }
     }
 

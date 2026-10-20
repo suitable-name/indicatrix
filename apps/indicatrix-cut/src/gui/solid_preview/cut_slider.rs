@@ -210,6 +210,9 @@ pub fn cut_geometry(
     let masts = solved.unwrap_or(&own);
     let limit = steps.map_or(CutLimit::Finished, CutLimit::Steps);
     let geometry = display_geometry(design, masts, limit);
+    // Empty at once for a design without frosting; otherwise the frosted planes among the
+    // ones drawn (the Cut slider's partial stones included).
+    let frosted = design.frosted_planes_in(masts, &geometry.planes);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "f32 is the GPU plane precision; offsets are in the normal float range"
@@ -223,6 +226,7 @@ pub fn cut_geometry(
         planes,
         tools: geometry.tools,
         placements: geometry.placements,
+        frosted,
     }
 }
 

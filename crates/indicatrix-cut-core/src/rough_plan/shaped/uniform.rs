@@ -15,6 +15,10 @@
 //! the box value of each cell still to come) falls to that level. A cell's
 //! orientations are tried best bound first, stopping once none can win.
 //!
+//! A stone cap (`PlanSettings::max_stones`) keeps every grid but lets only the scores of at
+//! most that many stones compete for a design's best three counts (see `best_grids`), and
+//! drops a built layout past it.
+//!
 //! Designs are independent, so they can be split over threads; the layouts come back
 //! in design order whatever the thread count.
 
@@ -181,15 +185,22 @@ impl DesignEval<'_> {
         best
     }
 
-    /// The design's score on `geom`; `None` when no cell holds a stone, or when the
-    /// grid cannot score above `floor`.
+    /// The design's score on `geom`; `None` when no cell holds a stone, when the grid cannot
+    /// score above `floor`, or when more than `cap` cells hold a stone.
     ///
     /// After every cell the running bound is the exact value of the cells scored so
     /// far plus the unclipped box value of each open cell still to come (an interior
     /// cell reaches that value exactly, a clipped one at most). Once it is at most
     /// `floor` the grid is dropped without scoring the rest. The total itself is
-    /// summed in cell order.
-    fn score_grid(&mut self, bounds: &BoxBounds, geom: &GridGeom, floor: f64) -> Option<GridScore> {
+    /// summed in cell order. The count of stone cells only grows, so a grid past the
+    /// stone cap `cap` is dropped at the cell that passes it.
+    fn score_grid(
+        &mut self,
+        bounds: &BoxBounds,
+        geom: &GridGeom,
+        floor: f64,
+        cap: usize,
+    ) -> Option<GridScore> {
         let ceiling = bounds[0].0;
         let mut feasible = 0;
         let mut total = 0.0;
@@ -199,6 +210,9 @@ impl DesignEval<'_> {
             open_left -= usize::from(cell.class != CLASS_EXTERIOR);
             if let Some((value, orient)) = self.cell_value(bounds, cell) {
                 feasible += 1;
+                if feasible > cap {
+                    return None;
+                }
                 total += value;
                 orients.push(orient);
             } else {
@@ -231,11 +245,19 @@ fn third_best(best_per_n: &[Option<(GridScore, usize)>]) -> f64 {
 /// The best grid per feasible-cell count for one design, most valuable first,
 /// at most [`PER_DESIGN`] of them: `(score, index into geoms)`.
 ///
+/// Only grids with at most `cap` feasible cells compete (the stone cap): a grid past it is
+/// dropped by `score_grid` BEFORE it can take a slot, so the third-best floor that prunes the
+/// other grids only ever sees admitted scores and stays valid. That is exactly the uncapped
+/// pass restricted to counts of at most `cap` (a grid of more cells can still have few
+/// feasible ones), which dropping layouts from the uncapped pass's output would not be: its
+/// best three counts per design would be spent on larger ones.
+///
 /// `poll` is called before every grid is scored; `None` when it returns `false`.
 fn best_grids(
     eval: &mut DesignEval<'_>,
     geoms: &[GridGeom],
     k: usize,
+    cap: usize,
     poll: &mut dyn FnMut() -> bool,
 ) -> Option<Vec<(GridScore, usize)>> {
     let mut order: Vec<(f64, usize, BoxBounds)> = Vec::with_capacity(geoms.len());
@@ -256,9 +278,13 @@ fn best_grids(
         if !poll() {
             return None;
         }
-        let Some(score) = eval.score_grid(bounds, &geoms[*index], floor) else {
+        let Some(score) = eval.score_grid(bounds, &geoms[*index], floor, cap) else {
             continue;
         };
+        debug_assert!(
+            score.feasible <= cap,
+            "a grid past the stone cap is dropped"
+        );
         let slot = &mut best_per_n[score.feasible.min(k)];
         if slot
             .as_ref()
@@ -319,6 +345,7 @@ impl UniformPass<'_> {
     /// when it returns `false`.
     fn layouts_of(&self, chunk: Range<usize>, report: &mut Report<'_>) -> Option<Vec<RoughLayout>> {
         let k = UNIFORM_MAX_STONES;
+        let cap = self.settings.stone_cap().unwrap_or(usize::MAX);
         let total = self.pool.len();
         let mut layouts = Vec::new();
         for d_idx in chunk {
@@ -333,7 +360,7 @@ impl UniformPass<'_> {
             if !poll() {
                 return None;
             }
-            for (score, index) in best_grids(&mut eval, self.geoms, k, &mut poll)? {
+            for (score, index) in best_grids(&mut eval, self.geoms, k, cap, &mut poll)? {
                 let tree = grid_tree(&self.geoms[index], d_idx, &score.orients);
                 let layout = layout_from_tree_shaped(
                     self.ctx,
@@ -342,7 +369,9 @@ impl UniformPass<'_> {
                     self.pool,
                     self.settings,
                 );
-                if layout.stone_count() > 0 {
+                // The compaction can only lower the count of a grid within the cap; the guard
+                // keeps a fitter that disagrees with the scoring from breaking the cap.
+                if (1..=cap).contains(&layout.stone_count()) {
                     layouts.push(layout);
                 }
             }

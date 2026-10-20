@@ -17,7 +17,7 @@ only ones offered by older versions of the drop-down.
 |---|---|---|---|---|---|
 | Diamond* | Isotropic | 2.417 | — | Abbe V_d ≈ 55.3 | colorless |
 | Sapphire* | Uniaxial (−) | 1.768 | −0.0081 | Abbe V_d ≈ 72.3 | Blue (Fe²⁺–Ti⁴⁺ charge transfer) |
-| Ruby* | Uniaxial (−) | 1.768 | −0.0081 | Abbe V_d ≈ 72.3 | Red (Cr³⁺) |
+| Ruby* | Uniaxial (−) | 1.768 | −0.0081 | Abbe V_d ≈ 72.3 | Red to slightly purplish red (Cr³⁺, GIA cross sections, about 800 ppma·cm); a 7 mm stone is a dark red, the o-ray absorbs more than the e-ray |
 | Emerald* | Uniaxial (−) | 1.579 | −0.0060 | Abbe V_d ≈ 70.9 | Green (Cr³⁺/V³⁺), narrow green transmission window |
 | Zircon* | Uniaxial (+) | 1.925 | +0.0590 | Abbe V_d ≈ 41.0 | Near-colorless with faint tint (trace U⁴⁺ lines) |
 | Alexandrite | Biaxial (+) | 1.743 | +0.0076 | Abbe V_d ≈ 73.9 | color-change: green in daylight, red in incandescent light (Cr³⁺) |
@@ -25,10 +25,10 @@ only ones offered by older versions of the drop-down.
 | Spinel* | Isotropic | 1.716 | — | Abbe V_d ≈ 60.6 | Red (Cr³⁺) |
 | Quartz* | Uniaxial (+) | 1.544 | +0.0091 | Abbe V_d ≈ 69.7 | colorless (rock crystal) |
 | Tourmaline | Uniaxial (−) | 1.639 | −0.0210 | Abbe V_d ≈ 64.6 | Green (elbaite), strongly dichroic — the "dark ray" runs along the c-axis |
-| Tanzanite* | Biaxial (+) | 1.701 | +0.0130 | Abbe V_d ≈ 40.2 | Models unheated, genuinely trichroic zoisite: red / blue / yellow-green (the commercial heat-treated gem is blue-violet) |
+| Tanzanite* | Biaxial (+) | 1.701 | +0.0130 | Abbe V_d ≈ 40.2 | Models the heat-treated commercial stone: violet-blue, trichroic: deepest and most purplish along the alpha axis, blue along beta, lighter blue along gamma (fitted to the Caltech spectra of zoisite GRR 2292, a naturally blue crystal without the band that heating removes) |
 | Synthetic Moissanite* | Uniaxial (+) | 2.647 | +0.0415 | Abbe V_d ≈ 25.9 | colorless |
 | Cubic Zirconia* | Isotropic | 2.158 | — | Abbe V_d ≈ 33.5 | colorless |
-| Aquamarine | Uniaxial (−) | 1.577 | −0.0060 | Abbe V_d ≈ 70.7 | Pale blue-green (Fe²⁺) |
+| Aquamarine | Uniaxial (−) | 1.577 | −0.0060 | Abbe V_d ≈ 70.7 | Light blue (Fe²⁺–Fe³⁺ intervalence band at about 600–680 nm along the c axis, Fe²⁺ at about 830 nm): the e-ray (along c) is a deep violet-blue, the o-ray nearly colorless; fitted to the Caltech spectra of aquamarine GRR 1488. The stone is oriented with the c axis in the table plane (as for Tourmaline), so the face-up view shows the blue ray |
 | Morganite | Uniaxial (−) | 1.577 | −0.0060 | Abbe V_d ≈ 70.7 | Pale pink (Mn³⁺) |
 | Chrysoberyl (Yellow) | Biaxial (+) | 1.746 | +0.0090 | Abbe V_d ≈ 74.2 | Yellow (Fe³⁺) |
 | Amethyst | Uniaxial (+) | 1.544 | +0.0091 | Abbe V_d ≈ 69.7 | Purple/violet (irradiation-induced iron color centre) |
@@ -36,11 +36,11 @@ only ones offered by older versions of the drop-down.
 | Ametrine | Uniaxial (+) | 1.544 | +0.0091 | Abbe V_d ≈ 69.7 | Bicolor quartz: amethyst purple on one side of a plane through the stone's centre, citrine yellow-orange on the other (Chapter 24) |
 | Pyrope Garnet | Isotropic | 1.714 | — | Abbe V_d ≈ 56.1 | Deep red (Cr³⁺/Fe²⁺) |
 | Almandine Garnet | Isotropic | 1.790 | — | Abbe V_d ≈ 56.9 | Red-brown to violet-red (Fe²⁺ triplet) |
-| Spessartine Garnet | Isotropic | 1.800 | — | Abbe V_d ≈ 51.2 | Vivid orange (Mn²⁺ triplet) |
+| Spessartine Garnet | Isotropic | 1.800 | — | Abbe V_d ≈ 51.2 | Light vivid orange (Mn²⁺ lines at 411, 421 and 429 nm plus a charge-transfer edge; fitted to the Caltech spectrum of spessartine GRR 43) |
 | Color-Change Garnet (Pyrope-Spessartine) | Isotropic | 1.760 | — | Abbe V_d ≈ 52.5 | Tanzanian color-change garnet: brownish-mauve in daylight, pink-red to orange-red under incandescent light (Mn²⁺ violet cut-off plus a broad Cr³⁺/V³⁺ band at ~573 nm) |
-| Grossular Garnet (Tsavorite) | Isotropic | 1.734 | — | Abbe V_d ≈ 45.7 | Vivid green (V³⁺/Cr³⁺) |
-| Andradite Garnet (Demantoid) | Isotropic | 1.887 | — | Abbe V_d ≈ 26.9 | Vivid, saturated green — the most dispersive of the garnets here (Cr³⁺) |
-| Peridot | Biaxial (+) | 1.654 | +0.0360 | Abbe V_d ≈ 56.5 | Yellow-green (Fe²⁺ triplet) |
+| Grossular Garnet (Tsavorite) | Isotropic | 1.734 | — | Abbe V_d ≈ 45.7 | Vivid green (V³⁺ at 436 and 606 nm), transmission windows at 520 nm and beyond 700 nm; fitted to the Caltech spectrum of tsavorite GRR 229 |
+| Andradite Garnet (Demantoid) | Isotropic | 1.887 | — | Abbe V_d ≈ 26.9 | Deep green (Fe³⁺ edge, Cr³⁺ at 629 nm), transmission windows at 520–545 nm and beyond 720 nm; fitted to the Caltech spectrum of demantoid GIA 2952 — the most dispersive of the garnets here |
+| Peridot | Biaxial (+) | 1.654 | +0.0360 | Abbe V_d ≈ 56.5 | Yellow-green, trichroic (Fe²⁺, fitted to the Caltech olivine spectra) |
 | YAG | Isotropic | 1.833 | — | Abbe V_d ≈ 52.0 | colorless synthetic |
 | GGG | Isotropic | 1.970 | — | Δn(F–C) ≈ 0.045 | colorless synthetic (historic diamond simulant) |
 | Benitoite | Uniaxial (+) | 1.757 | +0.0470 | Abbe V_d ≈ 29.1 | Strongly dichroic: sapphire-blue one way, near-colorless the other (Ti/Fe) |
@@ -54,15 +54,16 @@ only ones offered by older versions of the drop-down.
 
 - Sapphire and Ruby share the same host-mineral optics (dispersion and
   birefringence), differing only in color. The same is true for
-  Aquamarine and Morganite (both beryl), and for Quartz, Amethyst, Citrine,
-  and Ametrine (all the same silica host).
+  Aquamarine and Morganite (both beryl; Aquamarine additionally carries the
+  c-axis-in-the-table-plane orientation its row describes, Morganite the
+  default orientation), and for Quartz, Amethyst, Citrine, and Ametrine (all
+  the same silica host).
 - Quartz (and, sharing its optics, Amethyst, Citrine and
   Ametrine) is the one
   built-in material with a genuinely wavelength-dependent birefringence
   curve for its extraordinary ray, rather than the constant-offset
-  approximation every other birefringent built-in uses. That genuine curve
-  renders correctly on the CPU only; a GPU-routed render still falls back
-  to the constant-offset approximation for these (Chapter 12).
+  approximation every other birefringent built-in uses. Both the CPU tracer
+  and the GPU kernels evaluate that curve.
 - One further species with real gemological interest, Sphene (titanite),
   is deliberately not included: it needs birefringence and dispersion
   magnitudes well outside the range this renderer's anisotropic optics

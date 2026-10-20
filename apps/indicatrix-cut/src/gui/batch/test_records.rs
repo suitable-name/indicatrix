@@ -1,5 +1,5 @@
 //! Catalogue records and assertions shared by the preview and tilt batch tests of
-//! the design-file-first geometry rule (`super::record_planes_for_batch`) and of the
+//! the design-file-first geometry rule (`super::record_planes_with_frosting_for_batch`) and of the
 //! material and size a design file records (`super::catalogue_material`).
 
 use crate::gui::library::local::test_gem::{SYNTHETIC_GEM_TIERS, encode_gem};
@@ -81,6 +81,7 @@ pub fn angle_table_record() -> FullDiagramRecord {
         shape_category: None,
         angle_settings,
         attached_files: Vec::new(),
+        frosting: Vec::new(),
     }
 }
 

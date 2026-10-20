@@ -99,7 +99,10 @@ fn render_item_remote(
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RemoteShortfall> {
     let job = PreviewJob {
+        engine: ctx.engine,
         planes: &resolved.planes,
+        tools: &resolved.tools,
+        frosted: &resolved.frosted,
         material: &resolved.material,
         size: ctx.preview_size,
         spp: ctx.preview_spp,

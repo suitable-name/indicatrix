@@ -5,7 +5,7 @@
 //! module exports the few private things it needs, and nothing else:
 //!
 //! * a **file-picker answer queue**, the **clipboard** and **opener** captures: one-line
-//!   forwards to the published `slint-harness-hooks` crate (`picker`, `clipboard`, `opener`),
+//!   forwards to the published `uiprobe-hooks` crate (`picker`, `clipboard`, `opener`),
 //!   kept under their old names so no production call site and no scenario changes. With the
 //!   feature on, `gui::pickers::pick` never opens an OS dialog: it takes the next queued answer
 //!   ([`queue_picker_answer`]) instead. A picker call with an empty queue answers "cancelled"
@@ -31,7 +31,7 @@ use std::{
     },
 };
 
-pub use slint_harness_hooks::picker::Answer as PickerAnswer;
+pub use uiprobe_hooks::picker::Answer as PickerAnswer;
 
 /// File name of the design library database, relative to the process working directory.
 ///
@@ -42,13 +42,37 @@ pub const DATABASE_FILE_NAME: &str = "facet_diagrams.sqlite";
 /// Whether the live viewport renders nothing (see [`disable_viewport_rendering`]).
 static VIEWPORT_RENDERING_DISABLED: AtomicBool = AtomicBool::new(false);
 
-/// Makes every later launch skip the live viewport's ray tracing: no GPU adapter is acquired
-/// and no frame is traced, as if the 3D view were an invisible tab (the gemological metrics
-/// still update). A harness relaunches the app hundreds of times per process, in up to 16
-/// processes at once. With the GPU, creating and dropping that many Vulkan devices crashed the
-/// AMD driver (`amdvlk64.dll`, exit 0xc0000409); with the CPU tracer instead, 16 viewports
-/// tracing at once starved the planner and the library loads of CPU. The harness never judges
-/// rendered pixels, so nothing it checks depends on the traced image.
+thread_local! {
+    /// A separate token per launch: an old window's scan cannot complete a newer one's.
+    static STARTUP_PREVIEW_SCAN: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Marks the startup preview scan as pending until its UI result has been delivered.
+/// This observes the real scan; it does not suppress it or dismiss its offer.
+pub(crate) fn begin_startup_preview_scan() -> Arc<AtomicBool> {
+    let pending = Arc::new(AtomicBool::new(true));
+    STARTUP_PREVIEW_SCAN.with_borrow_mut(|slot| *slot = Some(Arc::clone(&pending)));
+    pending
+}
+
+/// Whether the current launch can still deliver its initial preview-generation offer.
+/// Read on the UI thread, after building the main window, while pumping its event loop.
+#[must_use]
+pub fn startup_preview_scan_pending() -> bool {
+    STARTUP_PREVIEW_SCAN.with_borrow(|slot| {
+        slot.as_ref()
+            .is_some_and(|pending| pending.load(Ordering::Acquire))
+    })
+}
+
+/// Makes every later launch skip the live viewport's ray tracing.
+///
+/// No GPU adapter is acquired and no frame is traced, as if the 3D view were an invisible tab
+/// (the gemological metrics still update). A harness relaunches the app hundreds of times per
+/// process, in up to 16 processes at once. With the GPU, creating and dropping that many Vulkan
+/// devices crashed the AMD driver (`amdvlk64.dll`, exit 0xc0000409); with the CPU tracer
+/// instead, 16 viewports tracing at once starved the planner and the library loads of CPU. The
+/// harness never judges rendered pixels, so nothing it checks depends on the traced image.
 pub fn disable_viewport_rendering() {
     VIEWPORT_RENDERING_DISABLED.store(true, Ordering::Relaxed);
 }
@@ -60,66 +84,66 @@ pub(crate) fn viewport_rendering_disabled() -> bool {
 
 /// Queues the answer for the next file dialog the app opens. Answers are consumed in order.
 pub fn queue_picker_answer(answer: PickerAnswer) {
-    slint_harness_hooks::picker::queue(answer);
+    uiprobe_hooks::picker::queue(answer);
 }
 
 /// Queues "the user picked `path`" for the next file dialog.
 pub fn queue_picker_path(path: impl Into<PathBuf>) {
-    slint_harness_hooks::picker::queue_path(path);
+    uiprobe_hooks::picker::queue_path(path);
 }
 
 /// Queues "the user cancelled" for the next file dialog.
 pub fn queue_picker_cancel() {
-    slint_harness_hooks::picker::queue_cancel();
+    uiprobe_hooks::picker::queue_cancel();
 }
 
 /// Number of queued answers no dialog has consumed yet (a scenario can assert it is zero).
 #[must_use]
 pub fn pending_picker_answers() -> usize {
-    slint_harness_hooks::picker::pending()
+    uiprobe_hooks::picker::pending()
 }
 
 /// Drops every queued answer.
 pub fn clear_picker_answers() {
-    slint_harness_hooks::picker::clear();
+    uiprobe_hooks::picker::clear();
 }
 
 /// Removes and returns the "unexpected file dialog: ..." failures recorded so far.
 #[must_use]
 pub fn take_picker_failures() -> Vec<String> {
-    slint_harness_hooks::picker::take_failures()
+    uiprobe_hooks::picker::take_failures()
 }
 
 /// Called by `gui::pickers::pick` (feature `ui-harness` only): the answer for the dialog
 /// described by `detail` (title, kind, suggested name). `None` means cancelled. An empty queue
 /// records a failure and answers cancelled.
 pub(crate) fn next_picker_answer(detail: &str) -> Option<PathBuf> {
-    slint_harness_hooks::picker::next(detail)
+    uiprobe_hooks::picker::next(detail)
 }
 
 /// Called by `gui::library::clipboard::copy_to_clipboard` (feature `ui-harness` only) instead of
 /// piping into the system clipboard tool: remembers the text. Always returns `true` (handled).
 pub(crate) fn capture_clipboard_write(text: &str) -> bool {
-    slint_harness_hooks::clipboard::capture(text)
+    uiprobe_hooks::clipboard::capture(text)
 }
 
 /// Called by `gui::external_links::launch` (feature `ui-harness` only) instead of starting the
 /// OS opener: remembers the (already validated) URL or path. Always returns `true` (handled).
 pub(crate) fn capture_opened(target: &str) -> bool {
-    slint_harness_hooks::opener::capture(target)
+    uiprobe_hooks::opener::capture(target)
 }
 
 /// Removes and returns the texts the app "copied to the clipboard" since the last call.
 #[must_use]
 pub fn take_clipboard_writes() -> Vec<String> {
-    slint_harness_hooks::clipboard::take()
+    uiprobe_hooks::clipboard::take()
 }
 
 /// Removes and returns the URLs, folders and files the app "opened" (browser, file manager)
 /// since the last call.
 #[must_use]
 pub fn take_opened() -> Vec<String> {
-    slint_harness_hooks::opener::take()
+    uiprobe_hooks::opener::take()
 }
 
 /// The settings file the app would read and write right now (follows the `APPDATA` /
@@ -255,6 +279,26 @@ pub fn is_window_open(which: SecondaryWindow) -> bool {
 /// after dropping the `MainWindowHandle`; building the next window does the same first.
 pub fn release_window_state() {
     crate::gui::release_window_state();
+}
+
+/// The current camera pose (yaw, pitch in radians, distance) of the active viewport.
+///
+/// # Panics
+///
+/// Panics if the viewport camera handles have not been registered yet.
+#[must_use]
+pub fn camera_pose() -> (f32, f32, f32) {
+    crate::gui::render::camera_handles::camera_pose().expect("camera not registered")
+}
+
+/// Returns what `set_view(5)` (Fit) would set for the current view and stone size.
+///
+/// # Panics
+///
+/// Panics if the viewport camera handles have not been registered yet.
+#[must_use]
+pub fn fit_distance_now() -> f32 {
+    crate::gui::render::camera_handles::fit_distance_now().expect("camera not registered")
 }
 
 /// What the harness remembers of the main window built last: weak handles, so remembering them

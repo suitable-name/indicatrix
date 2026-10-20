@@ -31,5 +31,10 @@ pub struct AngleSetting {
     /// The formatted second line of this tier's cutting-sheet row (the tool's
     /// placement, ready to display), or `None` for a flat tier. Kept as the display
     /// string, like [`Self::angle`], so the library renders it without resolving tools.
+    ///
+    /// Its `X`, `Y`, `Z` and `D/W` are ratios of the design's finished flat-stone width,
+    /// the one frame this build implements (`concave_frame::CONCAVE_FRAME_VERSION`); a row
+    /// carries no frame of its own. Should the frame ever change, add a `concave_frame`
+    /// column to `diagram_details` then and treat rows without it as this frame.
     pub tool_line: Option<String>,
 }

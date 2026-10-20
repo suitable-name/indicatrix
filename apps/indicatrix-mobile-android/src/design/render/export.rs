@@ -21,6 +21,7 @@ use std::{
 
 use indicatrix_mobile_core::{
     platform::{OutgoingFile, SaveOutcome, mime},
+    remote::jobs::{self, JobInfo},
     render::{self, ExportRequest},
     tasks::join_briefly,
     viewport::render_view::{
@@ -33,13 +34,34 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use super::runtime;
 use crate::{AppWindow, RenderModel, design::Shared, push::toast};
 
+/// What the sheet's run button does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Render here (or live on the remote endpoint) and keep the picture.
+    Picture,
+    /// Hand the scene to the endpoint as a durable server job and return.
+    ServerJob,
+}
+
+/// How a run ended.
+enum Done {
+    Picture(Result<Vec<u8>, String>),
+    Job(Result<JobInfo, String>),
+}
+
 /// What the sheet remembers between its callbacks.
 #[derive(Default)]
 struct ExportState {
+    /// Invalidates every queued callback when the sheet or document is replaced.
+    run: u64,
+    document: Option<u64>,
     /// The measured time of the sheet's probe job, to scale to other options.
     estimate: Option<ExportEstimate>,
     /// The cancel flag of the running job.
     cancel: Option<Arc<AtomicBool>>,
+    /// Whether the running job talks to the remote endpoint (it then holds the pairing
+    /// credentials it loaded when it started).
+    remote: bool,
     /// The running job's thread.
     handle: Option<JoinHandle<()>>,
     /// The finished picture, for Share and Save.
@@ -64,7 +86,14 @@ pub(super) fn wire(window: &AppWindow, state: &Shared) {
     let (weak, shared) = (window.as_weak(), state.clone());
     model.on_export_render(move || {
         if let Some(window) = weak.upgrade() {
-            render_now(&window, &shared);
+            render_now(&window, &shared, Mode::Picture);
+        }
+    });
+
+    let (weak, shared) = (window.as_weak(), state.clone());
+    model.on_export_submit_job(move || {
+        if let Some(window) = weak.upgrade() {
+            render_now(&window, &shared, Mode::ServerJob);
         }
     });
 
@@ -141,6 +170,7 @@ fn show_estimate(window: &AppWindow, shared: &Shared) {
 /// samples, sRGB). A probe job is built once to learn whether the scene can be exported
 /// and how long it takes; the sheet shows the reason when it cannot.
 pub(super) fn open(window: &AppWindow, shared: &Shared) {
+    invalidate();
     let model = window.global::<RenderModel>();
     let (sizes, spps, size_index, spp_index, probe) = {
         let app = shared.borrow();
@@ -164,9 +194,11 @@ pub(super) fn open(window: &AppWindow, shared: &Shared) {
     model.set_export_done(false);
     model.set_export_progress(0.0);
     model.set_export_result(SharedString::new());
+    model.set_export_note(SharedString::new());
     EXPORT.with(|export| {
         let mut export = export.borrow_mut();
         export.file = None;
+        export.document = Some(shared.borrow().operations.document_id());
         export.estimate = probe.as_ref().ok().copied();
     });
     match probe {
@@ -196,11 +228,54 @@ fn labels(values: &[u32], suffix: &str) -> ModelRc<SharedString> {
 
 /// Closes the sheet; a running job is cancelled.
 fn close(window: &AppWindow) {
-    cancel();
+    invalidate();
     let model = window.global::<RenderModel>();
     model.set_export_open(false);
     model.set_export_done(false);
+    model.set_export_running(false);
+    model.set_export_note(SharedString::new());
     EXPORT.with(|export| export.borrow_mut().file = None);
+}
+
+/// Cancel the old snapshot before any new callback can publish into this sheet.
+fn invalidate() {
+    EXPORT.with(|export| {
+        let mut export = export.borrow_mut();
+        export.run = export.run.checked_add(1).expect("export run ID exhausted");
+        if let Some(cancel) = export.cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        export.remote = false;
+        // The cancelled worker exits at its next chunk; its callbacks carry the old ID.
+        drop(export.handle.take());
+        export.file = None;
+        export.document = None;
+    });
+}
+
+pub(super) fn refresh_document(
+    window: &AppWindow,
+    app: &indicatrix_mobile_core::app_state::AppState,
+) {
+    let changed = EXPORT.with(|export| {
+        export
+            .borrow()
+            .document
+            .is_some_and(|id| id != app.operations.document_id())
+    });
+    if changed {
+        close(window);
+    }
+}
+
+fn current(run: u64) -> bool {
+    let Some((_, shared)) = runtime::context() else {
+        return false;
+    };
+    EXPORT.with(|export| {
+        let export = export.borrow();
+        export.run == run && export.document == Some(shared.borrow().operations.document_id())
+    })
 }
 
 /// Asks the running job to stop (the job's thread answers with a cancelled result).
@@ -212,8 +287,25 @@ fn cancel() {
     });
 }
 
-/// Builds the job for the chosen options and renders it on a worker thread.
-fn render_now(window: &AppWindow, shared: &Shared) {
+/// Asks the running job to stop when it talks to the remote endpoint: a picture rendered on
+/// the server or a Send To Server upload. Forget Server calls this so that no connection
+/// keeps using the pairing credentials that are being deleted. A job that renders on this
+/// phone is left alone. The job's thread ends its connection at its next poll (a fraction
+/// of a second) and answers with a cancelled result.
+pub(super) fn cancel_remote() {
+    EXPORT.with(|export| {
+        let export = export.borrow();
+        if export.remote
+            && let Some(cancel) = &export.cancel
+        {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Builds the job for the chosen options and runs it on a worker thread: renders the
+/// picture, or (`Mode::ServerJob`) submits it to the endpoint and returns.
+fn render_now(window: &AppWindow, shared: &Shared, mode: Mode) {
     let model = window.global::<RenderModel>();
     if model.get_export_running() {
         return;
@@ -233,6 +325,21 @@ fn render_now(window: &AppWindow, shared: &Shared) {
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
+    let remote = job.is_remote();
+    let (document, name, title) = {
+        let app = shared.borrow();
+        (
+            app.operations.document_id(),
+            export_file_name(&app.design_title()),
+            jobs::job_label(&app.design_title()),
+        )
+    };
+    invalidate();
+    let run = EXPORT.with(|export| {
+        let mut export = export.borrow_mut();
+        export.document = Some(document);
+        export.run
+    });
     let thread_cancel = Arc::clone(&cancel);
     let (done_weak, progress_weak) = (window.as_weak(), window.as_weak());
     let spawned = std::thread::Builder::new()
@@ -243,23 +350,39 @@ fn render_now(window: &AppWindow, shared: &Shared) {
                 let percent = percent_of(fraction);
                 if last_percent.swap(percent, Ordering::Relaxed) != percent {
                     let _queued = progress_weak.upgrade_in_event_loop(move |window| {
+                        if !current(run) {
+                            return;
+                        }
                         window
                             .global::<RenderModel>()
                             .set_export_progress(percent_to_fraction(percent));
                     });
                 }
             };
-            let result = catch_unwind(AssertUnwindSafe(|| job.run(&report, &thread_cancel)))
-                .unwrap_or_else(|_| Err("The export stopped unexpectedly.".to_owned()));
+            let unexpected = || "The export stopped unexpectedly.".to_owned();
+            let result = match mode {
+                Mode::Picture => Done::Picture(
+                    catch_unwind(AssertUnwindSafe(|| job.run(&report, &thread_cancel)))
+                        .unwrap_or_else(|_| Err(unexpected())),
+                ),
+                Mode::ServerJob => Done::Job(
+                    catch_unwind(AssertUnwindSafe(|| {
+                        job.submit_server_job(&title, &thread_cancel)
+                    }))
+                    .unwrap_or_else(|_| Err(unexpected())),
+                ),
+            };
             let cancelled = thread_cancel.load(Ordering::Relaxed);
-            let _queued =
-                done_weak.upgrade_in_event_loop(move |window| finished(&window, result, cancelled));
+            let _queued = done_weak.upgrade_in_event_loop(move |window| {
+                finished(&window, run, name, result, cancelled);
+            });
         });
     match spawned {
         Ok(handle) => {
             EXPORT.with(|export| {
                 let mut export = export.borrow_mut();
                 export.cancel = Some(cancel);
+                export.remote = remote;
                 export.handle = Some(handle);
                 export.file = None;
             });
@@ -267,6 +390,7 @@ fn render_now(window: &AppWindow, shared: &Shared) {
             model.set_export_done(false);
             model.set_export_progress(0.0);
             model.set_export_problem(SharedString::new());
+            model.set_export_note(SharedString::new());
         }
         Err(error) => {
             tracing::error!(%error, "the export thread could not be started");
@@ -276,7 +400,7 @@ fn render_now(window: &AppWindow, shared: &Shared) {
 }
 
 /// A fraction as a whole percent, `0..=100`.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "the fraction is clamped to 0 to 1 first"
@@ -285,20 +409,32 @@ fn percent_of(fraction: f32) -> u32 {
     (fraction.clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
-/// A whole percent as a fraction.
-#[allow(clippy::cast_precision_loss, reason = "the percent is at most 100")]
+/// A whole percent as a fraction (the percent is at most 100, so the cast is exact).
 fn percent_to_fraction(percent: u32) -> f32 {
     percent as f32 / 100.0
 }
 
 /// The job ended (on the UI thread): show the result, or why there is none, and offer the
 /// picture to other apps.
-fn finished(window: &AppWindow, result: Result<Vec<u8>, String>, cancelled: bool) {
+fn finished(window: &AppWindow, run: u64, name: String, result: Done, cancelled: bool) {
+    if !current(run) {
+        return;
+    }
+    // Cancel may have arrived after the worker queued its completion.
+    let cancelled = cancelled
+        || EXPORT.with(|export| {
+            export
+                .borrow()
+                .cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        });
     let model = window.global::<RenderModel>();
     model.set_export_running(false);
     EXPORT.with(|export| {
         let mut export = export.borrow_mut();
         export.cancel = None;
+        export.remote = false;
         // The thread is done but for this hop; detach it.
         drop(export.handle.take());
     });
@@ -306,6 +442,13 @@ fn finished(window: &AppWindow, result: Result<Vec<u8>, String>, cancelled: bool
         model.set_export_problem("Cancelled.".into());
         return;
     }
+    let result = match result {
+        Done::Picture(result) => result,
+        Done::Job(result) => {
+            submitted(window, result);
+            return;
+        }
+    };
     let bytes = match result {
         Ok(bytes) => bytes,
         Err(message) => {
@@ -317,9 +460,8 @@ fn finished(window: &AppWindow, result: Result<Vec<u8>, String>, cancelled: bool
     let Some((_, shared)) = runtime::context() else {
         return;
     };
-    let title = shared.borrow().design_title();
     let file = OutgoingFile {
-        suggested_name: export_file_name(&title),
+        suggested_name: name,
         mime: mime::PNG.to_owned(),
         bytes,
     };
@@ -335,6 +477,27 @@ fn finished(window: &AppWindow, result: Result<Vec<u8>, String>, cancelled: bool
     model.set_export_done(true);
     EXPORT.with(|export| export.borrow_mut().file = Some(file.clone()));
     share_file(window, &shared, file);
+}
+
+/// A server job was submitted (on the UI thread): say where to follow it, or why it was
+/// refused.
+fn submitted(window: &AppWindow, result: Result<JobInfo, String>) {
+    let model = window.global::<RenderModel>();
+    match result {
+        Ok(info) => {
+            let note = format!(
+                "Sent to the server: {}. It keeps rendering without this phone; open More > Remote > Server Jobs to follow it and download the picture.",
+                jobs::describe(&info)
+            );
+            model.set_export_problem(SharedString::new());
+            model.set_export_note(note.as_str().into());
+            toast::show(window, "Sent to the server.");
+        }
+        Err(message) => {
+            model.set_export_problem(message.as_str().into());
+            toast::show(window, &message);
+        }
+    }
 }
 
 /// Offers `file` to other apps.

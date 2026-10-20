@@ -6,6 +6,7 @@ use indicatrix::{
 
 fn tiny_scene() -> SceneState {
     SceneState {
+        engine: indicatrix::renderer::engine::EngineSpec::default(),
         width: 8,
         height: 8,
         yaw: 0.4,
@@ -25,6 +26,7 @@ fn tiny_scene() -> SceneState {
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
+        frosted_planes: Vec::new(),
     }
 }
 
@@ -346,6 +348,7 @@ fn calibrate_cached_never_caches_a_gpu_decline() {
         gpu_id: 0xDEAD_0001,
         threads: 1,
         resolution_bucket: 6,
+        tool_bucket: 0,
     };
     let mut out = vec![Vec3::ZERO; 64];
     for _ in 0..2 {
@@ -379,6 +382,7 @@ fn calibrate_cached_hits_without_reprobing() {
         gpu_id: 0xDEAD_0002,
         threads: 2,
         resolution_bucket: 8,
+        tool_bucket: 0,
     };
     CALIBRATION_CACHE
         .lock()
@@ -420,6 +424,7 @@ fn calibrate_cached_hits_gpu_only_the_same_way() {
         gpu_id: 0xDEAD_0003,
         threads: 4,
         resolution_bucket: 10,
+        tool_bucket: 0,
     };
     CALIBRATION_CACHE
         .lock()
@@ -450,6 +455,7 @@ fn finalize_split_cache_overwrites_on_some_and_evicts_on_none() {
         gpu_id: 0xDEAD_0004,
         threads: 1,
         resolution_bucket: 12,
+        tool_bucket: 0,
     };
     CALIBRATION_CACHE
         .lock()
@@ -504,6 +510,86 @@ fn job_key_distinguishes_compute_modes_and_resolutions() {
     assert_ne!(
         hybrid_key, bigger_key,
         "a far larger resolution must land in a different bucket"
+    );
+}
+
+/// The tool-count tag: none is `0` (so a plain stone's key is what it was before concave
+/// stones ran on the GPU), then one step per power of two up to the GPU limit.
+#[test]
+fn tool_bucket_is_zero_for_no_tools_and_steps_by_powers_of_two() {
+    assert_eq!(tool_bucket(0), 0);
+    let expected = [
+        (1, 1),
+        (2, 2),
+        (3, 2),
+        (4, 3),
+        (7, 3),
+        (8, 4),
+        (64, 7),
+        (128, 8),
+    ];
+    for (count, bucket) in expected {
+        assert_eq!(tool_bucket(count), bucket, "{count} tools");
+    }
+    let mut last = 0;
+    for count in 0..=indicatrix::geometry::tool::MAX_TOOL_PRIMITIVES {
+        let bucket = tool_bucket(count);
+        assert!(bucket >= last, "the bucket never decreases ({count} tools)");
+        last = bucket;
+    }
+}
+
+/// A tool-heavy stone must not reuse a GPU/CPU split measured on a plain one, while two
+/// stones with a tool count of the same order, and a plain stone twice, share an entry.
+#[test]
+fn job_key_separates_a_tool_heavy_stone_from_a_plain_one() {
+    let gpu = GpuBackend::disabled();
+    let plain = tiny_scene();
+    let with_tools = |count: usize| SceneState {
+        tools: vec![indicatrix::geometry::tool::ToolPrimitive::ball(Vec3::ZERO, 0.1); count],
+        ..tiny_scene()
+    };
+    let key = |scene: &SceneState| job_key(&gpu, scene, 4, ComputeMode::Hybrid);
+
+    assert_eq!(
+        key(&plain),
+        key(&tiny_scene()),
+        "a plain stone keeps one entry"
+    );
+    assert_ne!(
+        key(&plain),
+        key(&with_tools(1)),
+        "one tool is not a plain stone"
+    );
+    assert_ne!(
+        key(&with_tools(1)),
+        key(&with_tools(8)),
+        "8 tools cost more than 1"
+    );
+    assert_eq!(
+        key(&with_tools(4)),
+        key(&with_tools(7)),
+        "tool counts of the same order share a calibration"
+    );
+}
+
+/// The key of a tool-free scene is exactly what it was before the tool bucket existed:
+/// bucket `0`, every other field as before (`job_key_distinguishes_compute_modes_and_resolutions`
+/// and the sizing cache tests pin the rest).
+#[test]
+fn job_key_of_a_tool_free_scene_has_tool_bucket_zero() {
+    let gpu = GpuBackend::disabled();
+    let scene = tiny_scene();
+    let key = job_key(&gpu, &scene, 3, ComputeMode::Hybrid);
+    assert_eq!(
+        key,
+        JobKey {
+            compute_mode: compute_mode_tag(ComputeMode::Hybrid),
+            gpu_id: std::ptr::from_ref(&gpu) as usize,
+            threads: super::super::effective_thread_count(3),
+            resolution_bucket: 6,
+            tool_bucket: 0,
+        }
     );
 }
 

@@ -274,4 +274,34 @@ impl GemMaterial {
         materials.push(Self::built_in_material_rutile());
         materials
     }
+
+    /// The built-in table of [`Self::all_materials`], built once per process. Callers
+    /// that only look a material up by name (the live overlay does so every capture)
+    /// borrow this instead of constructing about seventy spectral materials each time.
+    #[must_use]
+    pub fn built_in() -> &'static [Self] {
+        static TABLE: std::sync::LazyLock<Vec<GemMaterial>> =
+            std::sync::LazyLock::new(GemMaterial::all_materials);
+        &TABLE
+    }
+}
+
+#[cfg(test)]
+mod built_in_table_tests {
+    use super::GemMaterial;
+
+    #[test]
+    fn the_shared_built_in_table_equals_a_freshly_built_one() {
+        let shared = GemMaterial::built_in();
+        let fresh = GemMaterial::all_materials();
+        assert_eq!(shared.len(), fresh.len());
+        assert!(
+            shared
+                .iter()
+                .zip(&fresh)
+                .all(|(a, b)| a.name == b.name && a == b),
+            "the shared table is the same table, in the same order"
+        );
+        assert!(std::ptr::eq(shared, GemMaterial::built_in()));
+    }
 }

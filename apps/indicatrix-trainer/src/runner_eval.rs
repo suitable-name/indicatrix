@@ -8,17 +8,19 @@
 //!   bound a trained model must beat);
 //! - the **oracle** pass: per step the finite-difference slopes of the current design, the same
 //!   direction rule the model composes from its sensitivities, projected and stepped like the
-//!   model's action (the upper bound of what this policy class does per step).
+//!   model's action (a reference direction, not a guaranteed upper bound).
 //!
 //! All three score the same stone against the same target under the same objective weights, so
 //! `model / oracle` is the figure to watch. The end-of-run test evaluation and every in-training
-//! validation pass used to play their designs one after another on one core (the 570 test
-//! designs took minutes at `Fast` and hours at `Full`). Designs are independent, so they are
-//! handed to a pool of scoped threads one at a time (a design with many free tiers costs many
-//! times a small one) and every outcome is written into the slot of its entry; the report is
-//! then reduced serially in entry order. Nothing is shared but immutable data (the network, the
+//! validation pass previously played designs one after another on one core. Designs are
+//! independent, so they are handed to the persistent bounded CPU pool (a design with many free
+//! tiers costs many times a small one) and every outcome is written into the slot of its entry;
+//! the report is then reduced serially in entry order. Nothing is shared but immutable data (the network, the
 //! data set, the configuration), so the result is identical for any thread count.
 
+use std::time::Instant;
+
+use indicatrix_ai::inference::score_design_at_fidelity;
 use indicatrix_ai::{
     env::{
         ContinuousTierAction, EnvError, GemstoneObservation, action_from_direction,
@@ -26,12 +28,17 @@ use indicatrix_ai::{
     },
     model::{GaussianPolicy, GemstoneSetAttentionNetwork, InferenceScratch, Prng, TrainingMode},
 };
-use indicatrix_cut_core::{Design, ObjectiveWeights, optimize::ObjectiveFidelity};
+use indicatrix_cut_core::{
+    Design, ObjectiveWeights,
+    optimize::{
+        ObjectiveFidelity, OptimizeConfig, OptimizeOptions, SearchHooks, optimize_design_with,
+    },
+};
 
 use super::{
-    Algorithm, EvalFidelity, EvalPasses, EvalReport, ObjectiveSampling, Optics, RunConfig,
-    RunnerError, build_env, draw_weights,
-    envs::{EnvKind, Target},
+    Algorithm, EvalCase, EvalFidelity, EvalPasses, EvalReport, ObjectiveSampling, Optics,
+    RunConfig, RunnerError, build_env, draw_weights,
+    envs::{EnvKind, Target, sampled_context, sampled_source_material},
     imitation::explore_raw,
     pick_target, pool,
 };
@@ -70,6 +77,9 @@ pub(super) struct OracleKey {
     label_h_deg: Option<f64>,
     objectives: ObjectiveSampling,
     same_material_frac: f32,
+    train_fidelity: ObjectiveFidelity,
+    validation_fidelity: EvalFidelity,
+    objective_sweep: bool,
 }
 
 impl OracleKey {
@@ -87,6 +97,9 @@ impl OracleKey {
             label_h_deg: cfg.label_h_deg,
             objectives: cfg.objectives,
             same_material_frac: cfg.same_material_frac,
+            train_fidelity: cfg.train_fidelity,
+            validation_fidelity: cfg.validation_fidelity,
+            objective_sweep: cfg.objective_sweep,
         }
     }
 }
@@ -100,8 +113,9 @@ pub(super) struct OracleCache {
 }
 
 /// Figures of one evaluated design.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DesignFigures {
+    case: EvalCase,
     /// Score before the episode.
     base_score: f32,
     /// Score after the model's episode.
@@ -123,7 +137,7 @@ struct DesignFigures {
 /// What one design came to: figures, or the reason it could not be evaluated.
 enum DesignResult {
     Figures(DesignFigures),
-    Failed(String),
+    Failed(EvalCase),
 }
 
 /// A design's outcome: its result, or the error that stops the evaluation.
@@ -155,6 +169,7 @@ struct Played {
 struct DesignContext {
     target: Option<Target>,
     weights: ObjectiveWeights,
+    context_seed: u64,
 }
 
 impl EvalJob<'_> {
@@ -257,9 +272,11 @@ impl EvalJob<'_> {
     ) -> Result<Result<f32, EnvError>, RunnerError> {
         let obs = env.reset(self.seed);
         self.play(env, obs, pilot, scratch)?;
-        Ok(match self.fidelity {
-            EvalFidelity::Fast => Ok(env.current_score()),
-            EvalFidelity::Full => full_final_score(self.cfg, env.current_design(), ctx),
+        Ok(match (self.fidelity, self.cfg.train_fidelity) {
+            (EvalFidelity::Fast, ObjectiveFidelity::Fast) => Ok(env.current_score()),
+            (fidelity, _) => {
+                rescore_final_score(env.current_design(), ctx, objective_fidelity(fidelity))
+            }
         })
     }
 
@@ -267,32 +284,61 @@ impl EvalJob<'_> {
     /// re-score at full fidelity, then the requested extra passes. A design whose environment
     /// (or full-fidelity re-score) cannot be built is a [`DesignResult::Failed`], not an error;
     /// a material or network failure is an error.
-    fn evaluate_design(&self, entry: usize) -> DesignOutcome {
+    fn evaluate_design(
+        &self,
+        entry: usize,
+        objective_override: Option<ObjectiveWeights>,
+    ) -> DesignOutcome {
+        let started = Instant::now();
         let item = &self.split.entries[entry];
         let salted = self.seed ^ (entry as u64).wrapping_mul(0x9E37_79B9);
         let target = pick_target(self.cfg, salted, &item.design)?;
-        let weights = draw_weights(self.cfg.objectives, salted);
-        let mut env = match build_env(self.cfg, &item.design, target.as_ref(), weights, None) {
+        let weights =
+            objective_override.unwrap_or_else(|| draw_weights(self.cfg.objectives, salted));
+        let mut case = new_case(item, target.as_ref(), weights, salted)?;
+        let mut env = match build_env(
+            self.cfg,
+            &item.design,
+            target.as_ref(),
+            weights,
+            None,
+            salted,
+        ) {
             Ok(env) => env,
-            Err(e) => return Ok(DesignResult::Failed(format!("'{}': {e}", item.title))),
+            Err(e) => {
+                case.failure = Some(format!("'{}': {e}", item.title));
+                return Ok(DesignResult::Failed(case));
+            }
         };
-        let ctx = DesignContext { target, weights };
+        let ctx = DesignContext {
+            target,
+            weights,
+            context_seed: salted,
+        };
         let mut scratch = InferenceScratch::default();
 
         let obs = env.reset(self.seed);
         let base_fast = Optics::from_global(&obs.global);
+        let model_started = Instant::now();
         let model = self.play(&mut env, obs, Pilot::Model, &mut scratch)?;
         let final_fast = Optics::from_global(&model.obs.global);
-        let (base_score, final_score, base, fin) = match self.fidelity {
-            EvalFidelity::Fast => (env.base_score(), env.current_score(), base_fast, final_fast),
-            EvalFidelity::Full => {
-                match full_figures(self.cfg, &item.design, env.current_design(), &ctx) {
-                    Ok(figures) => figures,
-                    Err(e) => return Ok(DesignResult::Failed(full_failure(item, &e))),
-                }
+        let (base_score, final_score, base, fin) = if self.fidelity == EvalFidelity::Fast
+            && self.cfg.train_fidelity == ObjectiveFidelity::Fast
+        {
+            (env.base_score(), env.current_score(), base_fast, final_fast)
+        } else {
+            match rescore_figures(
+                &item.design,
+                env.current_design(),
+                &ctx,
+                objective_fidelity(self.fidelity),
+            ) {
+                Ok(figures) => figures,
+                Err(e) => return Ok(full_failed(case, item, &e)),
             }
         };
         let mut figures = DesignFigures {
+            case: case.clone(),
             base_score,
             final_score,
             base,
@@ -302,6 +348,7 @@ impl EvalJob<'_> {
             model_evaluations: model.evaluations,
             model_steps: model.steps,
         };
+        figures.case.model_seconds = Some(model_started.elapsed().as_secs_f32());
 
         // The same environment, back at the base design: every extra pass starts from the very
         // stone, target and weights the model's episode did.
@@ -312,17 +359,155 @@ impl EvalJob<'_> {
             };
             match self.replay(&mut env, &ctx, pilot, &mut scratch)? {
                 Ok(score) => figures.sampled_final_score = Some(score),
-                Err(e) => return Ok(DesignResult::Failed(full_failure(item, &e))),
+                Err(e) => return Ok(full_failed(case, item, &e)),
             }
         }
         if self.passes.oracle {
             match self.replay(&mut env, &ctx, Pilot::Oracle, &mut scratch)? {
                 Ok(score) => figures.oracle_final_score = Some(score),
-                Err(e) => return Ok(DesignResult::Failed(full_failure(item, &e))),
+                Err(e) => return Ok(full_failed(case, item, &e)),
             }
+        }
+        figures.case.base_score = Some(figures.base_score);
+        figures.case.final_score = Some(figures.final_score);
+        figures.case.score_drop = Some(figures.base_score - figures.final_score);
+        figures.case.accepted = Some(figures.final_score < figures.base_score);
+        figures.case.evaluations = figures.model_evaluations;
+        figures.case.steps = figures.model_steps;
+        // Keep model throughput separate from the optional comparator's CPU time.
+        figures.case.elapsed_seconds = Some(started.elapsed().as_secs_f32());
+        if let Some(budget) = self.cfg.classical_budget {
+            self.classical_comparison(item, &ctx, budget, &mut figures.case)?;
         }
         Ok(DesignResult::Figures(figures))
     }
+
+    /// Runs the classical optimizer on `item` with the same weights, lighting and shape target as
+    /// the model's episode and records its figures in `case`.
+    fn classical_comparison(
+        &self,
+        item: &DesignEntry,
+        ctx: &DesignContext,
+        budget: usize,
+        case: &mut EvalCase,
+    ) -> Result<(), RunnerError> {
+        let salted = ctx.context_seed;
+        let weights = ctx.weights;
+        let (shape_target, lighting) = sampled_context(salted);
+        let started = Instant::now();
+        let material = if let Some(target) = &ctx.target {
+            target.material.clone()
+        } else {
+            sampled_source_material(salted)?.1
+        };
+        let optimizer_config = OptimizeConfig {
+            weights,
+            seed: salted,
+            max_evaluations: budget,
+            polish_start_step_deg: None,
+            lighting,
+            ..OptimizeConfig::default()
+        };
+        let mut options = OptimizeOptions {
+            shape_target,
+            ..OptimizeOptions::default()
+        };
+        if self.cfg.mode == TrainingMode::Retarget {
+            options.preservation_policy =
+                indicatrix_cut_core::meet_preservation::PreservationPolicy::RETARGET;
+            options.min_girdle_fraction = Some(0.5);
+            options.min_girdle_thinnest_fraction = Some(0.5);
+        }
+        match optimize_design_with(
+            &item.design,
+            &material.gem,
+            &optimizer_config,
+            &options,
+            &SearchHooks::default(),
+        ) {
+            Ok(result) => {
+                let report_fidelity = match self.fidelity {
+                    EvalFidelity::Fast => ObjectiveFidelity::Fast,
+                    EvalFidelity::Full => ObjectiveFidelity::Full,
+                };
+                let baseline = score_design_at_fidelity(
+                    &item.design,
+                    &material.gem,
+                    &weights,
+                    report_fidelity,
+                    lighting,
+                    shape_target,
+                )
+                .map_err(|error| error.to_string());
+                let candidate = if result.outcome.changes.is_empty() {
+                    Ok(item.design.clone())
+                } else {
+                    indicatrix_cut_core::optimize::materialize_outcome(
+                        &item.design,
+                        &result.outcome,
+                    )
+                    .map(|(design, _, _)| design)
+                    .map_err(|error| error.to_string())
+                };
+                match (baseline, candidate) {
+                    (Ok(baseline), Ok(design)) => match score_design_at_fidelity(
+                        &design,
+                        &material.gem,
+                        &weights,
+                        report_fidelity,
+                        lighting,
+                        shape_target,
+                    ) {
+                        Ok(final_score) => {
+                            case.classical_base_score = Some(baseline.score);
+                            case.classical_final_score = Some(final_score.score);
+                        }
+                        Err(error) => case.classical_failure = Some(error.to_string()),
+                    },
+                    (Err(error), _) | (_, Err(error)) => case.classical_failure = Some(error),
+                }
+                case.classical_evaluations = result.outcome.evaluations;
+            }
+            Err(error) => case.classical_failure = Some(error.to_string()),
+        }
+        case.classical_seconds = Some(started.elapsed().as_secs_f32());
+
+        Ok(())
+    }
+}
+
+/// The report row of `item` before it is played: which material, objective and context it
+/// draws.
+fn new_case(
+    item: &DesignEntry,
+    target: Option<&Target>,
+    weights: ObjectiveWeights,
+    salted: u64,
+) -> Result<EvalCase, RunnerError> {
+    let (shape_target, lighting) = sampled_context(salted);
+    let (source_name, _, augmentation) = sampled_source_material(salted)?;
+    Ok(EvalCase {
+        design_id: item.id,
+        design_title: item.title.clone(),
+        objective: objective_name(weights),
+        target_material: target.map_or_else(|| source_name.clone(), |target| target.name.clone()),
+        source_material: source_name,
+        seed: salted,
+        material_augmentation: augmentation,
+        target_augmentation: target
+            .map_or_else(|| "none".to_owned(), |target| target.augmentation.clone()),
+        lighting: format!("{lighting:?}"),
+        shape_target: shape_target.map_or_else(
+            || "none".to_owned(),
+            |shape| {
+                format!(
+                    "table={:?}, crown/pavilion={:?}, weight={:.2}",
+                    shape.table_percent, shape.crown_to_pavilion, shape.weight
+                )
+            },
+        ),
+        ..EvalCase::default()
+    })
 }
 
 /// The failure text of a design whose full-fidelity re-score could not be built.
@@ -330,38 +515,87 @@ fn full_failure(item: &DesignEntry, error: &EnvError) -> String {
     format!("'{}' (full fidelity): {error}", item.title)
 }
 
+/// `case` marked as failed because its full-fidelity re-score could not be built.
+fn full_failed(mut case: EvalCase, item: &DesignEntry, error: &EnvError) -> DesignResult {
+    case.failure = Some(full_failure(item, error));
+    DesignResult::Failed(case)
+}
+
+fn objective_name(weights: ObjectiveWeights) -> String {
+    indicatrix_cut_core::ObjectivePreset::ALL
+        .into_iter()
+        .find(|preset| preset.weights() == weights)
+        .map_or_else(|| "weighted".to_owned(), |preset| format!("{preset:?}"))
+}
+
 /// Full-sweep scores and optics of `before` and `after` (each about 1.3 s of tracing).
-fn full_figures(
-    cfg: &RunConfig,
+fn rescore_figures(
     before: &Design,
     after: &Design,
     ctx: &DesignContext,
+    fidelity: ObjectiveFidelity,
 ) -> Result<(f32, f32, Optics, Optics), EnvError> {
-    let full = Some(ObjectiveFidelity::Full);
-    let b = build_env(cfg, before, ctx.target.as_ref(), ctx.weights, full)?;
-    let a = build_env(cfg, after, ctx.target.as_ref(), ctx.weights, full)?;
-    Ok((
-        b.base_score(),
-        a.base_score(),
-        Optics::from_global(&b.build_observation().global),
-        Optics::from_global(&a.build_observation().global),
-    ))
+    let material = if let Some(target) = &ctx.target {
+        target.material.clone()
+    } else {
+        sampled_source_material(ctx.context_seed)
+            .map_err(|_| EnvError::InvalidConfig("trainer source material could not be resolved"))?
+            .1
+    };
+    let (shape, lighting) = sampled_context(ctx.context_seed);
+    let score = |design: &Design| {
+        score_design_at_fidelity(
+            design,
+            &material.gem,
+            &ctx.weights,
+            fidelity,
+            lighting,
+            shape,
+        )
+        .map_err(|_| EnvError::InvalidConfig("full-fidelity endpoint could not be scored"))
+    };
+    let b = score(before)?;
+    let a = score(after)?;
+    let optics = |readout: &indicatrix_ai::inference::ScoreReadout| Optics {
+        brilliance: readout.components.tilt_brilliance_pct,
+        windowing: readout.components.windowing_pct,
+        extinction: readout.components.extinction_pct,
+        yield_pct: readout.yield_pct.unwrap_or(0.0),
+    };
+    Ok((b.score, a.score, optics(&b), optics(&a)))
 }
 
 /// Full-sweep score of `design`.
-fn full_final_score(
-    cfg: &RunConfig,
+fn rescore_final_score(
     design: &Design,
     ctx: &DesignContext,
+    fidelity: ObjectiveFidelity,
 ) -> Result<f32, EnvError> {
-    build_env(
-        cfg,
+    let (shape, lighting) = sampled_context(ctx.context_seed);
+    let material = if let Some(target) = &ctx.target {
+        target.material.clone()
+    } else {
+        sampled_source_material(ctx.context_seed)
+            .map_err(|_| EnvError::InvalidConfig("trainer source material could not be resolved"))?
+            .1
+    };
+    score_design_at_fidelity(
         design,
-        ctx.target.as_ref(),
-        ctx.weights,
-        Some(ObjectiveFidelity::Full),
+        &material.gem,
+        &ctx.weights,
+        fidelity,
+        lighting,
+        shape,
     )
-    .map(|env| env.base_score())
+    .map(|readout| readout.score)
+    .map_err(|_| EnvError::InvalidConfig("full-fidelity endpoint could not be scored"))
+}
+
+const fn objective_fidelity(fidelity: EvalFidelity) -> ObjectiveFidelity {
+    match fidelity {
+        EvalFidelity::Fast => ObjectiveFidelity::Fast,
+        EvalFidelity::Full => ObjectiveFidelity::Full,
+    }
 }
 
 /// Adds the readings of `v` to the running sums in `acc`.
@@ -388,8 +622,21 @@ pub(super) fn evaluate_designs(
     job: EvalJob<'_>,
     entries: &[usize],
 ) -> Result<EvalReport, RunnerError> {
-    let results = pool::run_indexed(entries.len(), pool::pass_threads(entries.len()), |i| {
-        job.evaluate_design(entries[i])
+    let tasks: Vec<_> = if job.cfg.objective_sweep {
+        entries
+            .iter()
+            .flat_map(|&entry| {
+                indicatrix_cut_core::ObjectivePreset::ALL
+                    .into_iter()
+                    .map(move |preset| (entry, Some(preset.weights())))
+            })
+            .collect()
+    } else {
+        entries.iter().map(|&entry| (entry, None)).collect()
+    };
+    let results = pool::run_indexed(tasks.len(), pool::pass_threads(tasks.len()), |i| {
+        let (entry, weights) = tasks[i];
+        job.evaluate_design(entry, weights)
     });
     reduce(job.fidelity, job.passes, results)
 }
@@ -412,9 +659,12 @@ fn reduce(
     let (mut base, mut fin) = (Optics::default(), Optics::default());
     for result in results {
         match result? {
-            DesignResult::Failed(text) => {
+            DesignResult::Failed(case) => {
                 report.failed += 1;
-                report.first_failure.get_or_insert(text);
+                report
+                    .first_failure
+                    .get_or_insert_with(|| case.failure.clone().unwrap_or_default());
+                report.cases.push(case);
             }
             DesignResult::Figures(f) => {
                 report.designs += 1;
@@ -426,6 +676,7 @@ fn reduce(
                 model_steps += f.model_steps;
                 add_optics(&mut base, f.base);
                 add_optics(&mut fin, f.fin);
+                report.cases.push(f.case);
             }
         }
     }
@@ -448,199 +699,5 @@ fn reduce(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn optics(brilliance: f32) -> Optics {
-        Optics {
-            brilliance,
-            ..Optics::default()
-        }
-    }
-
-    /// Scores of a finished design.
-    struct Scores {
-        base: f32,
-        fin: f32,
-        sampled: Option<f32>,
-        oracle: Option<f32>,
-    }
-
-    /// A finished design: its scores, the brilliance before (it gains 10 points in the model's
-    /// episode) and the model's (evaluations, steps).
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "builds the Ok entries of the DesignOutcome list that reduce consumes"
-    )]
-    fn done(scores: &Scores, brilliance: f32, model: (usize, usize)) -> DesignOutcome {
-        Ok(DesignResult::Figures(DesignFigures {
-            base_score: scores.base,
-            final_score: scores.fin,
-            base: optics(brilliance),
-            fin: optics(brilliance + 10.0),
-            sampled_final_score: scores.sampled,
-            oracle_final_score: scores.oracle,
-            model_evaluations: model.0,
-            model_steps: model.1,
-        }))
-    }
-
-    fn scores(base: f32, fin: f32, sampled: Option<f32>, oracle: Option<f32>) -> Scores {
-        Scores {
-            base,
-            fin,
-            sampled,
-            oracle,
-        }
-    }
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "builds the Ok entries of the DesignOutcome list that reduce consumes"
-    )]
-    fn failed(text: &str) -> DesignOutcome {
-        Ok(DesignResult::Failed(text.to_owned()))
-    }
-
-    const ALL_PASSES: EvalPasses = EvalPasses {
-        sampled: true,
-        oracle: true,
-    };
-
-    #[test]
-    fn the_reduction_averages_the_designs_and_keeps_the_first_failure_in_entry_order() {
-        let results = vec![
-            failed("'a': no light"),
-            done(&scores(10.0, 6.0, Some(8.0), Some(2.0)), 40.0, (90, 60)),
-            failed("'c': unsolvable"),
-            done(&scores(20.0, 12.0, Some(18.0), Some(8.0)), 60.0, (60, 60)),
-        ];
-        let report = reduce(EvalFidelity::Fast, ALL_PASSES, results).unwrap();
-        assert_eq!((report.designs, report.failed), (2, 2));
-        assert_eq!(report.first_failure.as_deref(), Some("'a': no light"));
-        // Scores: base (10 + 20) / 2 = 15, final (6 + 12) / 2 = 9, drop 6.
-        assert!((report.mean_base_score - 15.0).abs() < 1e-6);
-        assert!((report.mean_final_score - 9.0).abs() < 1e-6);
-        assert!((report.mean_improvement - 6.0).abs() < 1e-6);
-        // Sampled drops 10 - 8 = 2 and 20 - 18 = 2.
-        let sampled = report.mean_improvement_sampled.unwrap();
-        assert!((sampled - 2.0).abs() < 1e-6);
-        // Oracle drops 10 - 2 = 8 and 20 - 8 = 12.
-        let oracle = report.mean_improvement_oracle.unwrap();
-        assert!((oracle - 10.0).abs() < 1e-6);
-        // Brilliance before (40 + 60) / 2 = 50, after 10 more.
-        assert!((report.base_optics.brilliance - 50.0).abs() < 1e-4);
-        assert!((report.final_optics.brilliance - 60.0).abs() < 1e-4);
-        assert!(!report.full_fidelity);
-        // The oracle is never marked as cached by the reduction: that is the runner's call.
-        assert!(!report.oracle_cached);
-    }
-
-    #[test]
-    fn without_the_oracle_figures_there_is_no_oracle_mean() {
-        let results = vec![
-            done(&scores(10.0, 6.0, Some(8.0), None), 40.0, (60, 60)),
-            done(&scores(20.0, 12.0, Some(18.0), None), 60.0, (60, 60)),
-        ];
-        let report = reduce(
-            EvalFidelity::Fast,
-            EvalPasses {
-                sampled: true,
-                oracle: false,
-            },
-            results,
-        )
-        .unwrap();
-        assert!(report.mean_improvement_oracle.is_none());
-        assert!(report.mean_improvement_sampled.is_some());
-        assert_eq!(report.designs, 2);
-    }
-
-    #[test]
-    fn without_a_sampled_pass_there_is_no_sampled_mean() {
-        let results = vec![done(&scores(10.0, 6.0, None, None), 40.0, (60, 60))];
-        let report = reduce(EvalFidelity::Full, EvalPasses::default(), results).unwrap();
-        assert!(report.mean_improvement_sampled.is_none());
-        assert!(report.mean_improvement_oracle.is_none());
-        assert!(report.full_fidelity);
-        assert!((report.mean_improvement - 4.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn the_evaluations_per_step_are_the_totals_over_the_designs() {
-        // 120 evaluations over 70 steps, not the mean of the per-design ratios (1.5 and 3.0
-        // would give 2.25).
-        let results = vec![
-            done(&scores(10.0, 6.0, None, None), 40.0, (90, 60)),
-            done(&scores(20.0, 12.0, None, None), 60.0, (30, 10)),
-        ];
-        let report = reduce(EvalFidelity::Fast, EvalPasses::default(), results).unwrap();
-        assert!((report.mean_evaluations_per_step - 120.0 / 70.0).abs() < 1e-6);
-        // No steps, no ratio.
-        let none = vec![done(&scores(1.0, 1.0, None, None), 0.0, (0, 0))];
-        let report = reduce(EvalFidelity::Fast, EvalPasses::default(), none).unwrap();
-        assert_eq!(report.mean_evaluations_per_step, 0.0);
-    }
-
-    #[test]
-    fn nothing_evaluated_leaves_the_means_empty() {
-        let report = reduce(EvalFidelity::Fast, ALL_PASSES, vec![failed("'x': dead")]).unwrap();
-        assert_eq!((report.designs, report.failed), (0, 1));
-        assert!(report.mean_improvement_sampled.is_none());
-        assert!(report.mean_improvement_oracle.is_none());
-        assert!(
-            reduce(EvalFidelity::Fast, ALL_PASSES, Vec::new())
-                .unwrap()
-                .first_failure
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn a_hard_error_is_the_first_one_in_entry_order() {
-        let results = vec![
-            done(&scores(10.0, 6.0, None, None), 40.0, (60, 60)),
-            Err(RunnerError::Data("first".into())),
-            Err(RunnerError::Data("second".into())),
-        ];
-        let error = reduce(EvalFidelity::Fast, EvalPasses::default(), results).unwrap_err();
-        assert_eq!(error.to_string(), "first");
-    }
-
-    #[test]
-    fn the_oracle_key_changes_with_everything_the_oracle_depends_on() {
-        let cfg = RunConfig::new(
-            TrainingMode::Retarget,
-            indicatrix_ai::model::ModelTier::Small,
-        );
-        let key = OracleKey::new(&cfg, &[0, 1], 7, 0.5);
-        assert_eq!(key, OracleKey::new(&cfg, &[0, 1], 7, 0.5));
-        assert_ne!(key, OracleKey::new(&cfg, &[0], 7, 0.5), "entries");
-        assert_ne!(key, OracleKey::new(&cfg, &[0, 1], 8, 0.5), "seed");
-        assert_ne!(key, OracleKey::new(&cfg, &[0, 1], 7, 0.25), "step limit");
-        let changed = |edit: &dyn Fn(&mut RunConfig)| {
-            let mut other = cfg.clone();
-            edit(&mut other);
-            OracleKey::new(&other, &[0, 1], 7, 0.5)
-        };
-        assert_ne!(key, changed(&|c| c.mode = TrainingMode::Optimizer), "mode");
-        assert_ne!(key, changed(&|c| c.universal_spectrum = false), "spectrum");
-        assert_ne!(key, changed(&|c| c.fixed_target = "Ruby".into()), "target");
-        assert_ne!(key, changed(&|c| c.line_search = vec![1.0]), "line search");
-        assert_ne!(key, changed(&|c| c.label_h_deg = Some(1.0)), "probe size");
-        assert_ne!(
-            key,
-            changed(&|c| c.objectives = ObjectiveSampling::Balanced),
-            "objectives"
-        );
-        assert_ne!(
-            key,
-            changed(&|c| c.same_material_frac = 0.0),
-            "same material"
-        );
-        // Settings the oracle does not depend on leave the key alone.
-        assert_eq!(key, changed(&|c| c.workers += 1));
-        assert_eq!(key, changed(&|c| c.explore_std += 0.1));
-        assert_eq!(key, changed(&|c| c.corpus_mode = !c.corpus_mode));
-    }
-}
+#[path = "runner_eval_tests.rs"]
+mod tests;

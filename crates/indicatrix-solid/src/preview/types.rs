@@ -132,6 +132,10 @@ pub struct StoneGeometryBuf {
     /// `tools` -- what `FacetMap` and the hover text read. It is bookkeeping, not
     /// geometry, so it is not part of [`Self::cache_key`].
     pub placements: Vec<(usize, usize)>,
+    /// Indices into `planes` of the facets the design authors as frosted (ascending); empty
+    /// for every design without frosting. Bookkeeping for the path tracer's finishes, not
+    /// geometry, so it is not part of [`Self::cache_key`] and the raster ignores it.
+    pub frosted: Vec<u32>,
 }
 
 impl StoneGeometryBuf {
@@ -142,6 +146,7 @@ impl StoneGeometryBuf {
             planes,
             tools: Vec::new(),
             placements: Vec::new(),
+            frosted: Vec::new(),
         }
     }
 

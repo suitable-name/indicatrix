@@ -22,6 +22,8 @@
 //!   keyed by the design's UUID rather than by a catalogue entry.
 //! - [`design_side_migrations`]: those three tables on a fresh database, on one that
 //!   lacks them, and across repeated opens.
+//! - [`frosting`]: the frosting of a library design (`diagram_frosting`) -- round trip,
+//!   replacing, cascade, migration of an old database and the read-only reader.
 //! - [`provenance_migration`]: the `diagram_previews` material size and source columns,
 //!   and the one-off marking of design-file designs' cached results as outdated.
 
@@ -31,6 +33,7 @@ mod design_side_migrations;
 mod detail;
 mod entries;
 mod fixtures;
+mod frosting;
 mod materials;
 mod migrations;
 mod migrations_blob_order;

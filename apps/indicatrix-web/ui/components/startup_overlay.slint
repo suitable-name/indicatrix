@@ -1,0 +1,73 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { RenderModel } from "render_model.slint";
+
+// The GPU start-up run's progress card (`src/render/gpu_gate/startup.rs`): shown over the
+// whole window while the page tests the GPU (adapter request, limits check, kernel compile,
+// test render), with a bar that follows the real steps. The CPU workers render meanwhile;
+// "Hide" only hides the card, the run goes on and its result is said in the Render panel and
+// the status strip. A full-window dim layer, so a click outside the card does nothing.
+export component StartupOverlay inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // Swallows clicks so the design underneath is not edited while the card is up.
+    TouchArea {}
+
+    card := Rectangle {
+        width: min(420px, root.width - 32px);
+        height: content.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.toast-shadow;
+
+        TouchArea {}
+
+        content := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: "Preparing the GPU";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: RenderModel.startup-step;
+                font-size: 12px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+            Rectangle {
+                height: 8px;
+                background: Theme.bg-input;
+                border-radius: 4px;
+                clip: true;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * Math.max(0, Math.min(1, RenderModel.startup-progress));
+                    background: Theme.accent-cyan;
+                    border-radius: 4px;
+                }
+            }
+            Text {
+                text: "The test runs once per graphics card and browser version; the result is remembered. Rendering continues on the CPU meanwhile.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Hide";
+                    clicked => { RenderModel.startup-hidden = true; }
+                }
+            }
+        }
+    }
+}

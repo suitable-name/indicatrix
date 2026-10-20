@@ -21,8 +21,8 @@ use indicatrix_cut::{
     EditorModel, LibraryModel, MainWindow, RoughPlanModel, RoughPlannerWindow, harness_support,
 };
 use slint::{ComponentHandle, Model};
-use slint_harness::backend::wait_until_labeled;
 use std::{fs, time::Duration};
+use uiprobe::backend::wait_until_labeled;
 
 use harness_support::{
     ROUGH_PLAN_EXPORT_SUFFIX as EXPORT_SUFFIX,
@@ -49,6 +49,12 @@ pub fn pieces() -> Vec<Piece> {
             name: "planner_block_and_plan",
             seed: existing_install,
             run: planner_block_and_plan,
+        }
+        .into(),
+        Scenario {
+            name: "planner_stone_cap",
+            seed: existing_install,
+            run: planner_stone_cap,
         }
         .into(),
         Scenario {
@@ -115,16 +121,30 @@ fn open_planner(ctx: &mut Ctx<'_>) -> Option<RoughPlannerWindow> {
     window
 }
 
-/// Types a 40 x 30 x 25 mm block, asks all of the library, plans, and waits (real time, up to
-/// 60 s) for the layouts, each of at most `max_designs` different designs (the stones are
-/// not capped). `Err` carries what the window said.
-fn plan_block_raw(window: &RoughPlannerWindow, max_designs: i32) -> Result<(), String> {
+/// The block most scenarios plan: 40 x 30 x 25 mm (x, y, z as typed into the size fields).
+const BLOCK_MM: [&str; 3] = ["40", "30", "25"];
+
+/// The block of [`planner_stone_cap`]: 60 x 8 x 8 mm, a long thin rough that holds several
+/// stones in a row, so a cap of two stones binds.
+const STONE_CAP_BLOCK_MM: [&str; 3] = ["60", "8", "8"];
+
+/// Types a block of `size_mm` (x, y, z, in mm), asks all of the library, sets "Designs (Up To)"
+/// to `max_designs` and "Stones (Up To)" to `max_stones` (0: no limit), plans, and waits (real
+/// time, up to 60 s) for the layouts, each of at most that many different designs and stones.
+/// `Err` carries what the window said.
+fn plan_block_raw(
+    window: &RoughPlannerWindow,
+    size_mm: [&str; 3],
+    max_designs: i32,
+    max_stones: i32,
+) -> Result<(), String> {
     let model = window.global::<RoughPlanModel>();
     model.invoke_set_base(0);
-    model.set_rough_x("40".into());
-    model.set_rough_y("30".into());
-    model.set_rough_z("25".into());
+    model.set_rough_x(size_mm[0].into());
+    model.set_rough_y(size_mm[1].into());
+    model.set_rough_z(size_mm[2].into());
     model.set_max_designs(max_designs);
+    model.set_max_stones(max_stones);
     model.set_use_filter(false);
     model.invoke_base_field_committed();
     pump(250);
@@ -146,9 +166,21 @@ fn plan_block_raw(window: &RoughPlannerWindow, max_designs: i32) -> Result<(), S
     Ok(())
 }
 
-/// [`plan_block_raw`] with a finding when it fails.
+/// [`plan_block_raw`] on the standard block, with at most three designs per layout and no stone
+/// limit, with a finding when it fails.
 fn plan_block(ctx: &mut Ctx<'_>, window: &RoughPlannerWindow) -> bool {
-    match plan_block_raw(window, 3) {
+    plan_with_finding(ctx, window, BLOCK_MM, 0)
+}
+
+/// [`plan_block_raw`] on `size_mm` with three designs and `max_stones` stones at most, with a
+/// finding when it fails.
+fn plan_with_finding(
+    ctx: &mut Ctx<'_>,
+    window: &RoughPlannerWindow,
+    size_mm: [&str; 3],
+    max_stones: i32,
+) -> bool {
+    match plan_block_raw(window, size_mm, 3, max_stones) {
         Ok(()) => true,
         Err(message) => {
             ctx.expect(
@@ -321,6 +353,76 @@ fn planner_block_and_plan(ctx: &mut Ctx<'_>) {
     );
     ctx.sweep_secondary(SecondaryWindow::RoughPlanner, "plan result");
     ctx.check_health("planner block and plan");
+}
+
+/// The most stones the layouts of [`planner_stone_cap`] may hold.
+const STONE_CAP: i32 = 2;
+
+/// A 60 x 8 x 8 mm block planned with Designs (Up To) 3 and Stones (Up To) 2: every layout in
+/// the list holds one or two stones, the best holds two (the cap binds, since the block has room
+/// for more), and a saved plan brings both limits back when it is opened again.
+fn planner_stone_cap(ctx: &mut Ctx<'_>) {
+    if !ctx.relaunch_with_library(&sample_designs()) {
+        return;
+    }
+    let Some(window) = open_planner(ctx) else {
+        return;
+    };
+    if !plan_with_finding(ctx, &window, STONE_CAP_BLOCK_MM, STONE_CAP) {
+        return;
+    }
+    let model = window.global::<RoughPlanModel>();
+    let results = model.get_results();
+    let counts: Vec<i32> = (0..results.row_count())
+        .filter_map(|at| results.row_data(at))
+        .map(|layout| layout.stone_count)
+        .collect();
+    ctx.expect(
+        counts.iter().all(|stones| (1..=STONE_CAP).contains(stones)),
+        "stone-cap-respected",
+        format!("a layout holds no stone or more than {STONE_CAP}: stones per layout {counts:?}"),
+    );
+    ctx.expect(
+        counts.first() == Some(&STONE_CAP),
+        "stone-cap-binds",
+        format!("the best layout should hold {STONE_CAP} stones: stones per layout {counts:?}"),
+    );
+    ctx.sweep_secondary(SecondaryWindow::RoughPlanner, "stone cap result");
+
+    if !save_all(ctx, &window) {
+        return;
+    }
+    let Some(id) = first_saved_id(&window) else {
+        return;
+    };
+    // Change both limits first, so that opening the plan has to bring them back.
+    model.set_max_designs(1);
+    model.set_max_stones(0);
+    model.invoke_open_saved(id);
+    let opened = ctx.wait_for("the saved plan opens", Duration::from_secs(15), || {
+        !model.get_loaded_banner().is_empty()
+    });
+    if opened {
+        coverage::record_callback("RoughPlanModel.open_saved");
+    }
+    ctx.expect(
+        model.get_max_stones() == STONE_CAP,
+        "stone-cap-reopened",
+        format!(
+            "the reopened plan shows Stones (Up To) {}, saved {STONE_CAP}",
+            model.get_max_stones()
+        ),
+    );
+    ctx.expect(
+        model.get_max_designs() == 3,
+        "design-cap-reopened",
+        format!(
+            "the reopened plan shows Designs (Up To) {}, saved 3",
+            model.get_max_designs()
+        ),
+    );
+    ctx.sweep_secondary(SecondaryWindow::RoughPlanner, "stone cap plan reopened");
+    ctx.check_health("planner stone cap");
 }
 
 /// Plan again over results that were not saved asks to replace them (Keep leaves them
@@ -620,7 +722,7 @@ fn planner_click_everything(ctx: &mut Ctx<'_>) {
         }
         let ui = app.ui().clone_strong();
         if let Some(window) = open_planner_raw(&ui) {
-            let _ = plan_block_raw(&window, 2);
+            let _ = plan_block_raw(&window, BLOCK_MM, 2, 0);
         }
     };
     // `reload_with_library` shuts down, seeds and launches by itself.

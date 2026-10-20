@@ -82,6 +82,29 @@ pub fn render_image_rgba(
     cancel: &AtomicBool,
     mut report_progress: impl FnMut(ExportProgress),
 ) -> RenderedImage {
+    let selected_scene;
+    let scene = if scene.engine == params.engine {
+        scene
+    } else {
+        selected_scene = {
+            let mut selected = scene.clone();
+            selected.engine = params.engine;
+            selected
+        };
+        &selected_scene
+    };
+    let params = ExportParams {
+        samples_per_pixel: params.engine.target_samples(params.samples_per_pixel),
+        ..params
+    };
+    if params.engine.is_ray() && scene.optical_diagnostics.is_some() {
+        return RenderedImage::Failed(
+            "Optical Diagnostics require Path-Traced rendering.".to_string(),
+        );
+    }
+    if let Some(reason) = super::export_ray::refusal(scene) {
+        return RenderedImage::Failed(reason);
+    }
     let worker = remote.worker.as_ref();
     let plan = plan_export_transfer(
         remote.transfer,

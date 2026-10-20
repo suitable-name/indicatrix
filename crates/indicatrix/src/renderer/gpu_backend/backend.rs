@@ -17,12 +17,14 @@ use super::{
     recovery::{COOL_DOWN, RecoveryPolicy},
     turnstile::{CHUNKS_PER_TURN, Turnstile},
 };
+use crate::geometry::tool::{GPU_MAX_TOOL_PRIMITIVES, ToolPrimitive};
 use crate::renderer::gpu::{
     GpuFrameError, GpuFrameRenderer,
-    frame::{
-        BatchEvent, BatchState, ChunkCursor, ChunkTurnOutcome, TurnRequest, classify_material,
-    },
+    frame::{BatchState, ChunkCursor, ChunkTurnOutcome, TurnRequest, classify_material},
 };
+
+mod batch_output;
+use batch_output::BatchOutput;
 
 /// The most scratch buffers [`GpuBackend`] keeps between requests. Each is as large as
 /// the biggest frame it served (12 bytes a pixel), so the pool is kept small; requests
@@ -31,6 +33,7 @@ const MAX_POOLED_SCRATCH: usize = 2;
 
 /// Gpu backend.
 pub struct GpuBackend {
+    pub(super) limits: Mutex<Option<super::GpuWorkLimits>>,
     /// `pub(super)`: `super::tests` reaches this private field directly to poison the
     /// mutex from a test thread -- see that module's own comment on why it lives outside
     /// `renderer::gpu::frame`'s hardware test module.
@@ -83,26 +86,6 @@ pub struct GpuBackend {
 }
 
 impl GpuBackend {
-    /// Acquires an adapter and compiles the megakernel.
-    ///
-    /// Do this once, off the frame or request path: both steps are slow enough to
-    /// matter. A machine with no usable GPU is an expected outcome, logged at `info`,
-    /// after which every call declines.
-    #[must_use]
-    pub fn acquire() -> Self {
-        let renderer = match GpuFrameRenderer::new() {
-            Ok(r) => {
-                tracing::info!(adapter = r.adapter_label(), "GPU render backend active");
-                Some(Mutex::new(r))
-            }
-            Err(e) => {
-                tracing::info!("GPU render backend unavailable, using CPU tracer: {e}");
-                None
-            }
-        };
-        Self::with_renderer(renderer)
-    }
-
     /// Never acquires an adapter -- every call declines, regardless of what hardware is
     /// present.
     ///
@@ -115,8 +98,9 @@ impl GpuBackend {
     }
 
     /// The one place a backend's fields are initialised.
-    const fn with_renderer(renderer: Option<Mutex<GpuFrameRenderer>>) -> Self {
+    pub(super) const fn with_renderer(renderer: Option<Mutex<GpuFrameRenderer>>) -> Self {
         Self {
+            limits: Mutex::new(None),
             renderer,
             turnstile: Turnstile::new(),
             lost: AtomicBool::new(false),
@@ -247,6 +231,60 @@ impl GpuBackend {
         accum: &mut [Vec3],
         cancel: &AtomicBool,
     ) -> GpuAccumulate {
+        self.try_accumulate_geom_cancellable(scene, &[], sample_offset, spp, accum, cancel)
+    }
+
+    /// [`Self::try_accumulate`] for a concave stone: `scene.planes` minus `tools`.
+    ///
+    /// `tools` empty is exactly [`Self::try_accumulate`]. Tool `k` has facet id
+    /// `scene.planes.len() + k` (`scene.facet_finishes` is indexed by facet id). Declines a
+    /// stone with more than `GPU_MAX_TOOL_PRIMITIVES` tools; callers route first with
+    /// [`super::scene_routes_to_gpu_with_tools`].
+    pub fn try_accumulate_geom(
+        &self,
+        scene: &GpuSceneRef<'_>,
+        tools: &[ToolPrimitive],
+        sample_offset: u32,
+        spp: u32,
+        accum: &mut [Vec3],
+    ) -> bool {
+        let never_cancel = AtomicBool::new(false);
+        matches!(
+            self.try_accumulate_geom_cancellable(
+                scene,
+                tools,
+                sample_offset,
+                spp,
+                accum,
+                &never_cancel
+            ),
+            GpuAccumulate::Done
+        )
+    }
+
+    /// [`Self::try_accumulate_cancellable`] for a concave stone -- see
+    /// [`Self::try_accumulate_geom`]. The tool records are packed after the planes in the
+    /// `planes` storage binding for the whole request, across every turn.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `accum.len()` is not `scene.width * scene.height`.
+    pub fn try_accumulate_geom_cancellable(
+        &self,
+        scene: &GpuSceneRef<'_>,
+        tools: &[ToolPrimitive],
+        sample_offset: u32,
+        spp: u32,
+        accum: &mut [Vec3],
+        cancel: &AtomicBool,
+    ) -> GpuAccumulate {
+        if tools.len() > GPU_MAX_TOOL_PRIMITIVES {
+            tracing::debug!(tools = tools.len(), "GPU declined: too many concave tools");
+            return GpuAccumulate::Declined;
+        }
+        if !self.work_admits(scene, spp) {
+            return GpuAccumulate::Declined;
+        }
         if self.lost.load(Ordering::Acquire) && !self.try_recover() {
             return GpuAccumulate::Declined;
         }
@@ -274,11 +312,14 @@ impl GpuBackend {
         // own doc comment.
         let request = TurnRequest {
             scene: &gpu_scene,
+            tools,
             pipeline_class,
             sample_offset,
             spp,
             cancel: Some(cancel),
-            max_chunks: CHUNKS_PER_TURN,
+            max_chunks: self
+                .configured_limits()
+                .map_or(CHUNKS_PER_TURN, |limits| limits.chunks_per_turn),
         };
 
         let mut scratch = self.take_scratch(accum.len());
@@ -342,6 +383,9 @@ impl GpuBackend {
                     return GpuAccumulate::Declined;
                 }
             };
+            if let Some(limits) = self.configured_limits() {
+                renderer.set_chunk_budget_bytes(limits.chunk_budget_bytes);
+            }
             let outcome = renderer.accumulate_turn(request, scratch, &mut cursor);
             // Released before `_turn` (below, at end of scope) so a woken waiter's own
             // `mutex.lock()` never has to contend with a guard this turn is done with.
@@ -410,6 +454,12 @@ impl GpuBackend {
         cancel: &AtomicBool,
         on_done: &mut dyn FnMut(usize, GpuAccumulate),
     ) {
+        if self.configured_limits().is_some() {
+            for index in 0..items.len() {
+                on_done(index, GpuAccumulate::Declined);
+            }
+            return;
+        }
         for item in items.iter() {
             assert_eq!(
                 item.out.len(),
@@ -418,6 +468,17 @@ impl GpuBackend {
             );
         }
         let count = items.len();
+        // Defence in depth (callers route each picture first): a picture beyond the tool
+        // limit declines the whole batch before any dispatch.
+        if items
+            .iter()
+            .any(|item| item.tools.len() > GPU_MAX_TOOL_PRIMITIVES)
+        {
+            for index in 0..count {
+                on_done(index, GpuAccumulate::Declined);
+            }
+            return;
+        }
         let usable = (!self.lost.load(Ordering::Acquire) || self.try_recover())
             .then_some(self.renderer.as_ref())
             .flatten();
@@ -446,6 +507,7 @@ impl GpuBackend {
             .zip(items.iter())
             .map(|(scene, item)| TurnRequest {
                 scene,
+                tools: item.tools,
                 pipeline_class: classify_material(scene.material),
                 sample_offset: item.first_sample,
                 spp: item.samples,
@@ -730,58 +792,5 @@ impl GpuBackend {
             .compare_exchange(turn, 0, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
             .then(|| GpuFrameError::DeviceLost("injected failure (test seam)".to_string()))
-    }
-}
-
-/// The caller-facing half of one batch run: the output buffers, the per-picture scratch
-/// buffers and the `on_done` sink, with the bookkeeping that every picture is reported
-/// exactly once and in input order.
-struct BatchOutput<'b, 'a> {
-    items: &'b mut [GpuBatchItem<'a>],
-    /// One scratch per picture: empty until the picture starts, taken back when it is
-    /// reported.
-    scratches: Vec<Vec<Vec3>>,
-    on_done: &'b mut dyn FnMut(usize, GpuAccumulate),
-    /// Number of pictures already reported (the next one to report has this index).
-    reported: usize,
-}
-
-impl BatchOutput<'_, '_> {
-    /// Reports picture `index`: on `Done` its scratch is added into the caller's buffer
-    /// first (the single path's final `+=`), then the scratch goes back to the pool.
-    fn report(&mut self, backend: &GpuBackend, index: usize, outcome: GpuAccumulate) {
-        debug_assert_eq!(
-            index, self.reported,
-            "batch outcomes must be reported in input order"
-        );
-        let scratch = std::mem::take(&mut self.scratches[index]);
-        if outcome == GpuAccumulate::Done {
-            for (total, traced) in self.items[index].out.iter_mut().zip(&scratch) {
-                *total += *traced;
-            }
-        }
-        backend.return_scratch(scratch);
-        self.reported = index + 1;
-        (self.on_done)(index, outcome);
-    }
-
-    /// Reports what the renderer's stepper concluded.
-    fn deliver(&mut self, backend: &GpuBackend, event: BatchEvent) {
-        match event {
-            BatchEvent::Done(index) => self.report(backend, index, GpuAccumulate::Done),
-            BatchEvent::Declined(index) => self.report(backend, index, GpuAccumulate::Declined),
-            BatchEvent::Cancelled(first) => {
-                for index in first..self.items.len() {
-                    self.report(backend, index, GpuAccumulate::Cancelled);
-                }
-            }
-        }
-    }
-
-    /// Reports every picture not reported yet with `outcome`.
-    fn finish_rest(&mut self, backend: &GpuBackend, outcome: GpuAccumulate) {
-        for index in self.reported..self.items.len() {
-            self.report(backend, index, outcome);
-        }
     }
 }

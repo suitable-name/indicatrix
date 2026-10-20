@@ -233,7 +233,7 @@ pub enum Perform {
         /// The girdle diameter in millimetres.
         girdle_diameter_mm: f64,
     },
-    /// The Solid viewport's view mode pill (0 Solid, 1 Path-traced, 2 Both, 3 Diagram).
+    /// The Solid viewport's view mode pill (0 Solid, 1 Path-Traced, 2 Both, 3 Diagram, 4 Ray-Traced).
     ViewMode(i32),
     /// The inspector's tab (0 Tier, 1 Preform, 2 Optimize, 3 Schedule, 4 History).
     InspectorTab(i32),
@@ -341,7 +341,7 @@ impl Perform {
                 || *girdle_diameter_mm <= 0.0)
                 .then(|| "a girdle diameter must be a positive number".to_owned()),
             Self::ViewMode(mode) => {
-                (!(0..=3).contains(mode)).then(|| format!("view mode {mode} does not exist"))
+                (!(0..=4).contains(mode)).then(|| format!("view mode {mode} does not exist"))
             }
             Self::InspectorTab(tab) => {
                 (!(0..=4).contains(tab)).then(|| format!("inspector tab {tab} does not exist"))

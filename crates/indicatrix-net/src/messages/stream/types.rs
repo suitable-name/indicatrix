@@ -363,6 +363,12 @@ pub enum ClientMessage {
     /// peer without the extension. Boxed like the requests.
     #[cfg(feature = "render")]
     ZoningPayload(Box<crate::messages::zoning::ZoningPayload>),
+    /// `-> JOB` (v25): a durable server job request -- submit, status, fetch, cancel,
+    /// delete, list, or the upload of a job's HDR asset (see [`crate::messages::job`]). The
+    /// reply is one [`crate::messages::JobResponse`], never a [`StreamEvent`]. Boxed like
+    /// the requests. `render`-feature only (index 10).
+    #[cfg(feature = "render")]
+    Job(Box<crate::messages::job::JobRequest>),
 }
 
 /// Delivery statistics reported on [`Done`].

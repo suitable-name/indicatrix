@@ -137,8 +137,8 @@ of the row.
 - **Edit:** Undo, Redo, Edit Instructions as Text... (Chapter 11), Preferences..., Use the
   Simple Interface, Use the Advanced Interface.
 - **View:** Go to 3D Spectral Preview, Go to Cutting Instructions, Go to Files &
-  Downloads, Show Live Render, Show Edit Tab, the four Solid viewport modes (Solid,
-  Path-Traced, Solid and Path-Traced, Diagram), the two Live Render modes, the
+  Downloads, Show Live Render, Show Edit Tab, the five Solid viewport modes (Solid,
+  Path-Traced, Solid and Path-Traced, Diagram, Ray-Traced), the three Live Render modes, the
   inspector tabs (Tier, Preform, Optimize, Schedule, History) and the History tab's
   Variants view (Chapter 18), Show or Hide the Library Panel,
   Toggle Slice Mode, Toggle Snap to Gear Steps.
@@ -158,6 +158,10 @@ of the row.
 Every command that has a key of its own shows that key at the right-hand end of its
 row, so the palette also teaches you the shortcuts: look at what you ran, and use the
 key next time.
+
+**Ray-Traced View** selects the Edit viewport's deterministic renderer (key **5**).
+**Live Render: Ray-Traced Mode** selects it on the Live Render tab. Keys **1–4** keep
+their existing Solid, Path-Traced, Both and Diagram meanings.
 
 Where a command is a pair of states (Simple and Advanced interface, Slice mode, Snap,
 the Library panel), the palette flips the same setting the matching button flips, so

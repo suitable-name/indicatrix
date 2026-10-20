@@ -141,6 +141,7 @@ pub(super) struct SearchSpace {
     bounds: BTreeMap<usize, (f64, f64)>,
     /// Anchor of every free tier that is varied as an anchored tier.
     anchors: BTreeMap<usize, Anchor>,
+    pub(super) feasible: Option<super::constrained::FeasibleSpace>,
 }
 
 impl SearchSpace {
@@ -153,7 +154,11 @@ impl SearchSpace {
             .filter(|(_, (low, high))| low.is_finite() && high.is_finite())
             .map(|(&tier, &(low, high))| (tier, (low.min(high), low.max(high))))
             .collect();
-        Self { bounds, anchors }
+        Self {
+            bounds,
+            anchors,
+            feasible: None,
+        }
     }
 
     /// Whether `angle_deg` is inside tier `tier_index`'s bounds (always, without any).

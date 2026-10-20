@@ -83,8 +83,8 @@ pub struct LightingPreset {
         deserialize_with = "deserialize_surface_glare"
     )]
     pub surface_glare: f32,
-    /// What the camera sees behind the stone. A preset saved before this field existed
-    /// reads the default backdrop.
+    /// The lit tray the stone lies on. A preset saved before this field existed reads the
+    /// default backdrop (White since 2026-10-20); a preset that stored a choice keeps it.
     #[serde(default)]
     pub backdrop: Backdrop,
     /// Head-shadow radius in degrees, `0.0..=30.0` (see `AppSettings::head_shadow_deg`). A
@@ -151,8 +151,9 @@ impl LightingPreset {
     }
 }
 
-/// The 2-3 built-in presets shipped with the app, kept to a small set that cannot be
-/// deleted. Names double as their stable identity -- `SettingsFile::ensure_built_in_presets`
+/// The built-in presets shipped with the app, kept to a small set that cannot be
+/// deleted. Two carry their own tray: "Studio Softbox" a grey card and "Dramatic Spotlight"
+/// black velvet (Fable decision 2026-10-20); the others use the default White. Names double as their stable identity -- `SettingsFile::ensure_built_in_presets`
 /// matches on `name` to decide whether a loaded file already has one.
 ///
 /// `env_map_path` is `None` and `export_usable` is `false` for every built-in, and
@@ -180,7 +181,8 @@ pub fn built_in_presets() -> Vec<LightingPreset> {
             env_map_path: None,
             export_usable: false,
             surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
-            backdrop: crate::settings::model::Backdrop::default(),
+            // Ring lights on white paper clip; a ring-light product shot sits on a grey card.
+            backdrop: crate::settings::model::Backdrop::Grey,
             head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         },
         LightingPreset {
@@ -214,7 +216,8 @@ pub fn built_in_presets() -> Vec<LightingPreset> {
             env_map_path: None,
             export_usable: false,
             surface_glare: crate::settings::model::DEFAULT_SURFACE_GLARE,
-            backdrop: crate::settings::model::Backdrop::default(),
+            // The dark look needs black velvet; the user can still pick another pill.
+            backdrop: crate::settings::model::Backdrop::Black,
             head_shadow_deg: crate::settings::model::DEFAULT_HEAD_SHADOW_DEG,
         },
         LightingPreset {
@@ -468,6 +471,12 @@ mod tests {
                 "{}: built-ins must default out of the export fan-out list",
                 preset.name
             );
+            let tray = match preset.name.as_str() {
+                "Studio Softbox" => Backdrop::Grey,
+                "Dramatic Spotlight" => Backdrop::Black,
+                _ => Backdrop::White,
+            };
+            assert_eq!(preset.backdrop, tray, "{}: built-in tray", preset.name);
         }
     }
 }

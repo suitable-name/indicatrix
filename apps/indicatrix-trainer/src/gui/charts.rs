@@ -208,21 +208,24 @@ pub fn ratio_of(point: &IterationMetricPoint) -> Option<f32> {
         .and_then(|model| drop_ratio(model, point.val_improvement_oracle))
 }
 
-/// Seconds the iteration took (rollout plus update); `None` when no time was recorded.
+/// Seconds the iteration took on the main thread (rollout plus the wait for the update; see
+/// [`IterationMetricPoint::main_thread_secs`]); `None` when no time was recorded.
 fn iteration_secs(point: &IterationMetricPoint) -> Option<f32> {
-    let secs = point.rollout_secs + point.update_secs;
+    let secs = point.main_thread_secs();
     (secs.is_finite() && secs > 0.0).then_some(secs)
 }
 
 /// The sentence under the seconds chart: where the latest iteration's time went.
 fn phase_help(latest: Option<&IterationMetricPoint>) -> String {
-    let base = "Wall time of one iteration (rollout plus update); lower is faster.";
+    let base =
+        "Wall time of one iteration (rollout plus the wait for the update); lower is faster.";
     latest.map_or_else(
         || base.to_owned(),
         |p| {
             format!(
-                "{base} Latest: rollout {:.1} s (of which labels {:.1} s), update {:.1} s.",
-                p.rollout_secs, p.label_secs, p.update_secs
+                "{base} Latest: rollout {:.1} s (of which labels {:.1} s), update {:.1} s \
+                 (waited {:.1} s).",
+                p.rollout_secs, p.label_secs, p.update_secs, p.update_wait_secs
             )
         },
     )
@@ -544,6 +547,14 @@ mod tests {
         point.update_secs = 1.0;
         let text = phase_help(Some(&point));
         assert!(text.contains("rollout 2.0 s") && text.contains("update 1.0 s"));
+        // No update_of_iteration: a file from before the wait field, the old sum.
         assert_eq!(iteration_secs(&point), Some(3.0));
+        // An overlapping update: only the wait adds to the rollout.
+        point.update_secs = 6.0;
+        point.update_wait_secs = 0.5;
+        point.update_of_iteration = Some(0);
+        let text = phase_help(Some(&point));
+        assert!(text.contains("update 6.0 s (waited 0.5 s)"), "{text}");
+        assert_eq!(iteration_secs(&point), Some(2.5));
     }
 }

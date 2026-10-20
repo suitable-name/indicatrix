@@ -152,7 +152,7 @@ export component TiltBatchDialog inherits Rectangle {
                 // `root.height` so the card can never exceed the window it sits in.
                 height: root.confirming
                     ? Math.min(root.height - 96px, 430px)
-                    : Math.min(root.height - 96px, 340px);
+                    : Math.min(root.height - 96px, root.done ? 240px : 340px);
                 background: Theme.surface-dialog;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
@@ -264,6 +264,7 @@ export component TiltBatchDialog inherits Rectangle {
                         spacing: 12px;
 
                         Text {
+                            vertical-stretch: 0;
                             text: root.done
                                 ? "Tilt-curve computation finished"
                                 : (root.single ? "Computing tilt curves for this design..." : "Computing tilt-performance curves...");
@@ -274,6 +275,7 @@ export component TiltBatchDialog inherits Rectangle {
                         }
 
                         if !root.done: VerticalLayout {
+                            vertical-stretch: 0;
                             spacing: 10px;
 
                             // Local runs `local_lane_total` lanes concurrently (Task:
@@ -384,13 +386,19 @@ export component TiltBatchDialog inherits Rectangle {
                         }
 
                         if root.done: Text {
+                            vertical-stretch: 0;
                             text: root.summary;
                             font-size: 12px;
                             color: Theme.text-secondary;
                             wrap: word-wrap;
                         }
 
+                        // The card's height is fixed (see its comment); the spare height goes
+                        // here, so the rows keep their own height and the buttons sit at the bottom.
+                        Rectangle { vertical-stretch: 1; }
+
                         HorizontalLayout {
+                            vertical-stretch: 0;
                             spacing: 8px;
                             alignment: end;
 

@@ -1,6 +1,8 @@
 //! The native design file: the self-contained `.isdd` file ([`design`], Indicatrix Suite
-//! Design Document) that carries a whole design. Files saved as `.indicatrix` before the
-//! rename are read exactly like `.isdd`; nothing writes `.indicatrix` any more.
+//! Design Document) that carries a whole design.
+//!
+//! Files saved as `.indicatrix` before the rename are read exactly like `.isdd`; nothing
+//! writes `.indicatrix` any more.
 //!
 //! # The gap this closes
 //!

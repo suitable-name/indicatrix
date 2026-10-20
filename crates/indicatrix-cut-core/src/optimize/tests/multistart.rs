@@ -22,7 +22,7 @@ use indicatrix::optics::materials::GemMaterial;
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 // --- Halton points ---
@@ -163,6 +163,7 @@ impl StartEngine for TwoBasins {
             }
         }
         StartState {
+            design: None,
             angles: point,
             score,
             evaluations,
@@ -259,6 +260,70 @@ fn the_driver_gives_the_same_outcome_for_any_lane_count() {
         );
         assert!(reports.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     }
+}
+
+/// [`TwoBasins`] that counts its polish calls.
+struct CountingBasins {
+    polishes: AtomicUsize,
+}
+
+impl StartEngine for CountingBasins {
+    fn score(&self, angles: &[f64]) -> Option<f32> {
+        TwoBasins.score(angles)
+    }
+
+    fn descend(&self, run: &DescentRun<'_>, progress: &dyn Fn(usize, SearchStage)) -> StartState {
+        TwoBasins.descend(run, progress)
+    }
+
+    fn polish(&self, state: &StartState, progress: &dyn Fn(usize, SearchStage)) -> StartState {
+        self.polishes.fetch_add(1, Ordering::Relaxed);
+        TwoBasins.polish(state, progress)
+    }
+
+    fn new_pool(&self) -> CandidatePool {
+        TwoBasins.new_pool()
+    }
+}
+
+/// The run's evaluation figure pays for `min(effective starts, keep)` polishes. Descents
+/// that stop early leave budget for extra waves, so there can be more states than starts;
+/// never more than the effective start count are polished (which ones is decided by rank).
+#[test]
+fn no_more_starts_are_polished_than_the_run_has_effective_starts() {
+    let engine = CountingBasins {
+        polishes: AtomicUsize::new(0),
+    };
+    let spec = MultiSpec {
+        starts: 4,
+        max_lanes: 1,
+        budget: 400,
+        polish_keep: 10,
+        seed: 11,
+        separation_deg: 0.5,
+        cancel: None,
+    };
+    let incumbent = StartPoint {
+        angles: vec![-6.0, -6.0],
+        score: TwoBasins::value(&[-6.0, -6.0]),
+    };
+    let outcome = run_multistart(
+        &engine,
+        &spec,
+        &incumbent,
+        &[(-9.0, 9.0), (-9.0, 9.0)],
+        &DriverHooks {
+            report: None,
+            on_start: None,
+        },
+    );
+    let polishes = engine.polishes.load(Ordering::Relaxed);
+    assert!(
+        polishes <= spec.starts,
+        "{polishes} polishes for {} effective starts",
+        spec.starts
+    );
+    assert!((1..=outcome.starts_run).contains(&polishes));
 }
 
 // --- The real search on the anchored fixture ---

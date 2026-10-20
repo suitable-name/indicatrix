@@ -158,6 +158,8 @@ pub fn resolve_after_edit(
         | Edit::SetCheaterOffset { .. }
         | Edit::SetTierNote { .. }
         | Edit::SetTierTarget { .. }
+        // Frosting is a finish on a plane, not geometry: no mast reads it.
+        | Edit::SetTierFrosting { .. }
         // Pure `TierId` bookkeeping (see that variant's own doc comment) --
         // never constructed directly, only ever replayed as part of a
         // `RemoveTier` undo's own `Batch` -- touches no tier's angle/indices/
@@ -257,6 +259,7 @@ fn batch_needs_full_resolve(
             | Edit::SetCheaterOffset { .. }
             | Edit::SetTierNote { .. }
             | Edit::SetTierTarget { .. }
+            | Edit::SetTierFrosting { .. }
             | Edit::RestoreTierId { .. }
             | Edit::AddConcaveTier { .. }
             | Edit::RemoveConcaveTier { .. }

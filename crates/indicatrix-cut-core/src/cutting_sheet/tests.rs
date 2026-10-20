@@ -505,6 +505,7 @@ fn flat_row(sequence: usize) -> CutSheetRow {
         angle_of_elevation_deg: 42.0,
         depth_mm: None,
         concave: None,
+        frosting: None,
     }
 }
 

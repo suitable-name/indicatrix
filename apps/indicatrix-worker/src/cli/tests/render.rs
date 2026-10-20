@@ -25,6 +25,7 @@ fn parses_a_well_formed_render_command() {
     assert_eq!(
         cmd,
         Command::Render(RenderArgs {
+            engine: None,
             scene: PathBuf::from("scene.json"),
             out: PathBuf::from("out.png"),
             width: 3840,
@@ -187,5 +188,33 @@ fn render_rejects_a_non_numeric_samples_value() {
         "lots",
     ]
     .map(String::from);
+    assert!(parse(&argv).is_err());
+}
+
+#[test]
+fn engine_override_is_validated_without_loading_the_renderer() {
+    let base = [
+        "render",
+        "--scene",
+        "s.json",
+        "--out",
+        "o.png",
+        "--width",
+        "16",
+        "--height",
+        "16",
+        "--samples",
+        "4",
+    ];
+    for name in ["path", "ray"] {
+        let mut argv: Vec<String> = base.iter().map(|s| (*s).to_owned()).collect();
+        argv.extend(["--engine".to_owned(), name.to_owned()]);
+        let Command::Render(parsed) = parse(&argv).unwrap() else {
+            panic!("render command");
+        };
+        assert_eq!(parsed.engine.as_deref(), Some(name));
+    }
+    let mut argv: Vec<String> = base.iter().map(|s| (*s).to_owned()).collect();
+    argv.extend(["--engine".to_owned(), "unknown".to_owned()]);
     assert!(parse(&argv).is_err());
 }

@@ -58,9 +58,13 @@ pub struct SceneState {
     /// field still deserializes, defaulting to `false` (all-polished).
     #[serde(default)]
     pub girdle_frosted: bool,
-    /// Radiance of the backdrop card the camera sees where it misses the stone, `0.0`
-    /// for none -- `EnvironmentSource::Studio::backdrop`. `#[serde(default)]` for the
-    /// same on-disk `scene.json` reason as `girdle_frosted`.
+    /// Tray radiance at exposure 1 of the surface below the girdle plane, seen by every
+    /// escape (a primary miss and an exit at any bounce), resolved by the sender with
+    /// `indicatrix::render_setup::Backdrop::resolve` from this scene's own preset and
+    /// light pose; `0.0` = the preset's own ground (As Lit) --
+    /// `EnvironmentSource::Studio::backdrop`. Before protocol v29 this was a card only
+    /// the camera ray saw. `#[serde(default)]` for the same on-disk `scene.json` reason
+    /// as `girdle_frosted`.
     #[serde(default)]
     pub backdrop: f32,
     /// What lights the stone where a ray misses it (v14): the analytic studio rig
@@ -105,6 +109,22 @@ pub struct SceneState {
     /// `scene.json` reason.
     #[serde(default = "default_head_shadow_deg")]
     pub head_shadow_deg: f32,
+    /// The planes a design authors as frosted (v26): ascending indices into
+    /// [`Self::planes`], a whole frosted tier's planes and single frosted facets alike. The
+    /// worker marks exactly these `FacetFinish::Frosted`
+    /// (`indicatrix::geometry::facet_finishes_with_frosted`), on top of the girdle band when
+    /// [`Self::girdle_frosted`] is set. Empty for a design without frosting, which then
+    /// costs one zero length byte on the wire and renders bit-identically to a build
+    /// without the field; an index past `planes` is ignored.
+    ///
+    /// Appended last for the postcard reason of [`Self::tools`], and `#[serde(default)]` for
+    /// the `scene.json` reason (an old job file reads as unfrosted).
+    #[serde(default)]
+    pub frosted_planes: Vec<u32>,
+    /// Image renderer (v28), appended for postcard compatibility. JSON scenes
+    /// predating it retain Path-Traced. Every wire scene always writes all three bytes.
+    #[serde(default)]
+    pub engine: indicatrix::renderer::engine::EngineSpec,
 }
 
 /// The default head-shadow radius (`16.0` degrees), the serde default of

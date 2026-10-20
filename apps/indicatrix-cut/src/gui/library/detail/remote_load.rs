@@ -2,7 +2,9 @@
 //! worker's library.
 
 use super::{
-    planes::{DesignFileMaterial, ReconstructedPlanesInput, apply_reconstructed_planes},
+    planes::{
+        ConcaveRow, DesignFileMaterial, ReconstructedPlanesInput, apply_reconstructed_planes,
+    },
     shared::{
         catalogue_material_guess, format_optional_proportion, sides_from_rows, standard_codes,
     },
@@ -124,14 +126,10 @@ fn reply_is_current(
     seq_is_current && request_source == current_source
 }
 
-fn apply_design_record_to_ui(
-    ui: &MainWindow,
-    render_ctx: &Arc<Mutex<RenderContext>>,
-    record: &DesignRecord,
-    preview_state: &Arc<SolidPreviewState>,
-) {
+/// The detail header's data for `record`, as the remote route shows it.
+fn diagram_detail_data(record: &DesignRecord) -> DiagramDetailData {
     let is_local = record.url.starts_with("local://");
-    let detail_data = DiagramDetailData {
+    DiagramDetailData {
         id: i32::try_from(record.entry_id).unwrap_or(i32::MAX),
         title: record.title.clone().into(),
         url: record.url.clone().into(),
@@ -163,8 +161,17 @@ fn apply_design_record_to_ui(
         pw_ratio: format_optional_proportion(record.pw_ratio.as_deref()).into(),
         symmetry_order: record.symmetry_order.clone().unwrap_or_default().into(),
         mirror_symmetry: record.mirror_symmetry.unwrap_or(false),
-    };
-    ui.global::<LibraryModel>().set_current_detail(detail_data);
+    }
+}
+
+fn apply_design_record_to_ui(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    record: &DesignRecord,
+    preview_state: &Arc<SolidPreviewState>,
+) {
+    ui.global::<LibraryModel>()
+        .set_current_detail(diagram_detail_data(record));
     // The remote counterpart of `load_diagram_detail`'s own cached-material read, via
     // `DesignRecord::preview_material` (added in `PROTOCOL_VERSION` v5). An absent
     // value means "nothing generated yet, nothing to be stale against" -- the same
@@ -249,10 +256,25 @@ fn apply_design_record_to_ui(
             // (`indicatrix-net`/`indicatrix-worker`), out of scope for this crate
             // alone.
             real_design: None,
+            // No real planes here, so no frosting to name them with.
+            frosted: Vec::new(),
             // No design file here either, so no material or girdle diameter of its own:
             // the persisted material and the refractive-index rules apply, at the default
             // width.
             design_material: DesignFileMaterial::default(),
+            // The rows are all this route knows of a concave tier: the tools are placed on
+            // the rebuilt flat stone from them (`planes::remote_tools`).
+            tools: Vec::new(),
+            tool_placements: Vec::new(),
+            concave_rows: ConcaveRow::from_wire(record.angle_settings.iter().map(|a| {
+                (
+                    a.facet.as_str(),
+                    a.angle.as_str(),
+                    a.index.as_str(),
+                    a.notes.as_str(),
+                    a.tool_line.as_deref(),
+                )
+            })),
         },
     );
 

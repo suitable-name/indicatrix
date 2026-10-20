@@ -93,4 +93,6 @@ pub use filter::{
     PerformanceMetricWire, RangeFilterWire, SortOrderWire,
 };
 pub use protocol::{LibraryRequest, LibraryResponse};
-pub use record::{AngleSettingWire, AttachedFileMeta, DesignRecord, DesignSummary};
+pub use record::{
+    AngleSettingWire, AttachedFileMeta, DesignRecord, DesignSummary, FrostedTierWire,
+};

@@ -1,7 +1,7 @@
 // The full-screen New Design page: the Empty Design card (which expands into a short
 // form) and a grid of template cards. Tapping a template creates the design; creating
 // either way closes the page (Rust sets `DocumentModel.gallery-open` to false). The back
-// arrow closes it too, and so does Back through `DocumentModel.handle-back`.
+// arrow closes it too, and so does Back (the Android navigation owner, `navigation.slint`).
 //
 // Show it while `DocumentModel.gallery-open` is true, as the last child of the area it
 // should cover (it fills its parent and swallows touches).

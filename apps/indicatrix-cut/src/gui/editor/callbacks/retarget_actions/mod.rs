@@ -82,6 +82,8 @@ mod proposal_view;
 mod snapshot;
 
 #[cfg(test)]
+mod apply_tests;
+#[cfg(test)]
 mod tests;
 
 pub(in crate::gui::editor) use apply::{
@@ -202,23 +204,24 @@ fn apply_ghost_preview_or_revert(
     if !ui.global::<RetargetModel>().get_preview_enabled() {
         return false;
     }
-    let Some(proposal) = proposal else {
+    if proposal.is_none() {
         return false;
-    };
-    let anchors = check_run::latest_anchors();
-    let Some(candidate) = build_retarget_candidate(design, proposal, &anchors) else {
+    }
+    let Some(candidate) = build_retarget_candidate(design) else {
         return false;
     };
     view::submit_design_ghost_preview(ui, render_ctx, preview_state, &candidate)
 }
 
-/// `design` with `proposal`'s angle retarget and the re-anchored `anchors` applied, on a
+/// `design` with the held proposal's angle retarget and its re-anchored masts applied, on a
 /// clone -- the candidate geometry both the viewport ghost
 /// ([`apply_ghost_preview_or_revert`]) and the visual compare window's "after" side
 /// (`gui::editor::compare`, via [`compare_hooks::retarget_compare_inputs`]) show. `None`
-/// when the retarget edit no longer applies to `design` (a stale tier index).
+/// when the retarget edit no longer applies to `design` (a stale tier index) or no
+/// finished check holds one.
 ///
-/// The exact edit Apply commits ([`retarget::apply_with_anchors`]), so what the cutter
+/// The edit is the one the finished check validated ([`check_run::validated_candidate_edit`]),
+/// which carries the proposal and its masts, so what the cutter
 /// compares is what they would keep. [`Design::apply_edit`] on a clone, never
 /// [`super::super::state::EditorState::apply`]: see [`apply_ghost_preview_or_revert`]'s
 /// own doc comment for why a preview must never touch `History`. The target MATERIAL is
@@ -229,14 +232,10 @@ fn apply_ghost_preview_or_revert(
 /// when Apply commits the edit; a relation that cannot be satisfied leaves them where the
 /// edit put them (the verdict says so).
 #[must_use]
-pub(in crate::gui::editor) fn build_retarget_candidate(
-    design: &Design,
-    proposal: &RetargetProposal,
-    anchors: &[retarget::AnchorChange],
-) -> Option<Design> {
+pub(in crate::gui::editor) fn build_retarget_candidate(design: &Design) -> Option<Design> {
     let mut candidate = design.clone();
-    let edit = retarget::apply_with_anchors(design, proposal, anchors);
+    let edit = check_run::validated_candidate_edit(design).ok()?;
     candidate.apply_edit(edit).ok()?;
-    let _ = retarget::anchors::fold_relations(&mut candidate);
+    retarget::anchors::fold_relations(&mut candidate).ok()?;
     Some(candidate)
 }

@@ -1,14 +1,18 @@
 //! The last step of [`optimize_design_with`](super::optimize_design_with): measuring the
 //! ending point(s) at full fidelity and turning them into ranked candidates
 //! ([`build_result`]). Split from the parent module so the file stays readable; the
-//! functions are unchanged.
+//! functions were moved here, not rewritten. Every scored state is re-validated against the
+//! captured meet network first (`score_state`), and `provenance::stamp_result` re-checks it
+//! when it stamps the candidates.
 
 use super::{AngleChange, Baseline, OptimizeOutcome, SearchHooks, SearchRunSummary, SearchStage};
 use crate::{
     design::Design,
     optimize::{
-        candidate::{SearchContext, measure_with_tone, shape_penalty_for_planes, yield_loss_pct},
-        objective::{ObjectiveComponents, ObjectiveFidelity, ToneGoal, to_gpu_planes},
+        candidate::{
+            ScoredStone, SearchContext, measure_with_tone, shape_penalty_for_planes, yield_loss_pct,
+        },
+        objective::{ObjectiveComponents, ObjectiveFidelity, ToneGoal},
         options::{MastChange, OptimizeCandidate, OptimizeResult},
     },
 };
@@ -45,20 +49,61 @@ fn score_state(
     evaluations: usize,
 ) -> Option<ScoredState> {
     hooks.report(evaluations, SearchStage::FinalFull);
-    let solved = state.solve().ok()?;
+    let feasible = ctx.space.feasible.as_ref()?;
+    // Finish the one accepted incumbent even after cancellation, preserving the
+    // existing best-so-far contract. The caller skips remaining rivals on Cancel.
+    let final_check = feasible.baseline.telemetry.phase(6);
+    feasible.baseline.validate(state, feasible.policy).ok()?;
+    let solved = {
+        let _solve = feasible.baseline.telemetry.phase(2);
+        state
+            .solve_with(&indicatrix::geometry::meet_solver::SolveControl::default())
+            .ok()?
+    };
     let planes = state.planes_from_solved(&solved);
+    let indicatrix::geometry::stone_metrics::SolidStatus::Closed(mesh) =
+        indicatrix::geometry::stone_metrics::build_solid_mesh(&planes)
+    else {
+        return None;
+    };
+    let metrics = measure_solid(&planes);
+    if ctx
+        .guard
+        .is_some_and(|guard| !guard.admits(state, &solved, &planes, &mesh, metrics.as_ref()))
+    {
+        return None;
+    }
+    let warnings = crate::manufacturability::check_manufacturability_with_geometry(
+        state,
+        &solved,
+        Some(&mesh),
+        metrics.as_ref(),
+        crate::manufacturability::DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+    );
+    if crate::optimize::candidate::manufacturability_regressed(ctx.baseline_warnings, &warnings) {
+        return None;
+    }
+    drop(final_check);
+    let stone = ScoredStone::of(state, &planes);
+    let optics = feasible.baseline.telemetry.phase(5);
     let (after, tone, tone_loss) = measure_with_tone(
-        &to_gpu_planes(&planes),
+        stone.geometry(),
         ctx.material,
         ctx.weights,
         ObjectiveFidelity::Full,
         ctx.lighting,
     );
-    let metrics = measure_solid(&planes);
-    let loss = yield_loss_pct(state, metrics.as_ref());
+    drop(optics);
+    let loss = yield_loss_pct(
+        state,
+        stone.yield_metrics(&planes, metrics.as_ref()).as_ref(),
+    );
     let mut score = ctx.weights.score_with_tone(&after, loss, tone_loss);
     if ctx.shape_target.is_some() {
         score += shape_penalty_for_planes(ctx.shape_target, metrics.as_ref(), &planes);
+    }
+    if !score.is_finite() {
+        return None;
     }
     Some(ScoredState {
         after,
@@ -129,6 +174,7 @@ fn candidate_from(
     original: &Design,
     state: &Design,
     scored: &ScoredState,
+    ctx: &SearchContext,
 ) -> Option<OptimizeCandidate> {
     let changes = angle_changes(original, state);
     let masts = mast_changes(original, state);
@@ -136,6 +182,8 @@ fn candidate_from(
         return None;
     }
     Some(OptimizeCandidate {
+        provenance: None,
+        preservation_baseline: ctx.space.feasible.as_ref().map(|f| f.baseline.clone()),
         changes,
         mast_changes: masts,
         after: scored.after,
@@ -183,10 +231,10 @@ pub(super) fn build_result(
     hooks: &SearchHooks<'_>,
     summary: &SearchRunSummary,
 ) -> OptimizeResult {
-    let end_point = score_state(current, ctx, hooks, summary.evaluations)
-        .expect("current was only ever advanced via evaluate_candidate-accepted, solvable states");
     let mut scored: Vec<(&Design, ScoredState)> = Vec::with_capacity(1 + rivals.len());
-    scored.push((current, end_point));
+    if let Some(end_point) = score_state(current, ctx, hooks, summary.evaluations) {
+        scored.push((current, end_point));
+    }
     let mut cancelled = summary.cancelled;
     if !cancelled {
         for rival in rivals {
@@ -205,7 +253,7 @@ pub(super) fn build_result(
         .into_iter()
         .filter(|(_, state)| state.score <= baseline.before_score)
         .filter(|(_, state)| tone_gate_passes(tone_gate, baseline.tone_before, state.tone))
-        .filter_map(|(state_design, state)| candidate_from(design, state_design, &state))
+        .filter_map(|(state_design, state)| candidate_from(design, state_design, &state, ctx))
         .collect();
     candidates.sort_by(|a, b| a.score.total_cmp(&b.score));
 
@@ -213,6 +261,7 @@ pub(super) fn build_result(
     let Some(best) = candidates.first() else {
         let mut unchanged = OptimizeResult::unchanged(
             OptimizeOutcome {
+                provenance: None,
                 before: baseline.before,
                 before_score: baseline.before_score,
                 before_yield_loss_pct: baseline.before_yield_loss_pct,
@@ -234,6 +283,7 @@ pub(super) fn build_result(
         return unchanged;
     };
     let outcome = OptimizeOutcome {
+        provenance: None,
         before: baseline.before,
         before_score: baseline.before_score,
         before_yield_loss_pct: baseline.before_yield_loss_pct,

@@ -2,9 +2,9 @@
 //! gradient clipping and the PPO updates. The model alone is tested in `burn_model_tests.rs`.
 
 use super::*;
-use crate::env::GLOBAL_DIM;
+use crate::env::{GLOBAL_DIM, MOBILITY_INDEX, TIER_DIM};
 
-const DT: usize = 10;
+const DT: usize = TIER_DIM;
 const DG: usize = GLOBAL_DIM;
 
 #[allow(
@@ -60,6 +60,9 @@ impl Data {
                 });
             }
         }
+        for tier in 0..nt {
+            row[DG + tier * DT + MOBILITY_INDEX] = 1.0;
+        }
         self.states.push(row);
         self.actions
             .push((0..nt).map(|t| val(i * 5 + t) * 0.9).collect());
@@ -99,6 +102,37 @@ fn current_log_probs(tr: &BurnTrainer, d: &Data) -> Vec<f32> {
     let out = tr.model.forward(p.tiers, p.globals, p.mask);
     let (lp, _) = masked_log_prob_and_entropy(p.actions, out.mean, out.log_std, p.action_mask);
     host_vec(lp).unwrap()
+}
+
+#[cfg(feature = "cuda")]
+fn assert_export_parity(tr: &BurnTrainer, data: &Data) {
+    let exported = tr.model.export_to_set_attention().unwrap();
+    let rollout = tr
+        .rollout_model()
+        .forward_host(&data.states, &data.n_tiers)
+        .unwrap();
+    for (index, (state, &n_tiers)) in data.states.iter().zip(&data.n_tiers).enumerate() {
+        let tokens: Vec<Vec<f32>> = state[DG..]
+            .chunks_exact(DT)
+            .take(n_tiers)
+            .map(<[f32]>::to_vec)
+            .collect();
+        let (policy, value) = exported.forward(&tokens, &state[..DG]).unwrap();
+        for tier in 0..n_tiers {
+            assert!(
+                (policy.mean[tier] - rollout.means[index][tier]).abs() < 1e-4,
+                "mean {index}/{tier}"
+            );
+            assert!(
+                (policy.log_std[tier] - rollout.log_stds[index][tier]).abs() < 1e-4,
+                "log std {index}/{tier}"
+            );
+        }
+        assert!(
+            (value - rollout.values[index]).abs() < 1e-4,
+            "value {index}"
+        );
+    }
 }
 
 /// Weights of the sensitivity and gain heads of the trainer's model, read back to the host.
@@ -453,10 +487,13 @@ fn train_batch_runs_on_a_tiny_batch_and_reports_finite_metrics() {
         ("approx_kl", m.approx_kl),
         ("clip_fraction", m.clip_fraction),
         ("grad_norm", m.grad_norm),
+        ("packing_ms", m.packing_ms),
+        ("update_ms", m.update_ms),
     ] {
         assert!(v.is_finite(), "{name} = {v}");
     }
     assert!(m.grad_norm > 0.0);
+    assert!(m.packing_ms >= 0.0 && m.update_ms >= 0.0);
     assert!((0.0..=1.0).contains(&m.clip_fraction));
     assert!(!m.early_stopped);
     assert_eq!(tr.update_count(), 1);
@@ -592,6 +629,70 @@ fn invalid_trainer_arguments_are_rejected() {
         BurnTrainer::new_cpu(narrow, PpoConfig::default()),
         Err(TrainError::InvalidConfig(_))
     ));
+}
+
+#[test]
+fn explicit_cuda_preserves_invalid_configuration_errors_before_backend_access() {
+    let invalid = PpoConfig {
+        mini_batch_size: 0,
+        ..PpoConfig::default()
+    };
+    assert!(matches!(
+        BurnTrainer::new_cuda(shape(6), invalid),
+        Err(TrainError::InvalidConfig(_))
+    ));
+    assert!(matches!(
+        BurnTrainer::new_cuda(shape(0), PpoConfig::default()),
+        Err(TrainError::InvalidConfig(_))
+    ));
+    let invalid_model = ModelShape {
+        d_tier: MOBILITY_INDEX,
+        ..shape(6)
+    };
+    assert!(matches!(
+        BurnTrainer::new_cuda(invalid_model, PpoConfig::default()),
+        Err(TrainError::InvalidConfig(_))
+    ));
+}
+
+#[cfg(not(feature = "cuda"))]
+#[test]
+fn explicit_cuda_without_feature_returns_an_actionable_error() {
+    let error = match BurnTrainer::new_cuda(shape(6), PpoConfig::default()) {
+        Err(error) => error,
+        Ok(_) => panic!("CUDA was unexpectedly available without its feature"),
+    };
+    let TrainError::DeviceUnavailable(message) = error else {
+        panic!("expected DeviceUnavailable, got {error:?}");
+    };
+    assert!(message.contains("--features cuda"), "{message}");
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires an NVIDIA CUDA device at hardware index 0"]
+fn cuda_ppo_update_and_packed_export_match_pure_inference() {
+    let mut trainer = BurnTrainer::new_cuda(shape(6), PpoConfig::default()).unwrap();
+    let data = synthetic(4, 6, |index| if index % 2 == 0 { 1.0 } else { -1.0 });
+    let old_log_probs = current_log_probs(&trainer, &data);
+    let before = trainer.model.export_to_set_attention().unwrap();
+    let metrics = trainer.train_batch(&data.batch(&old_log_probs)).unwrap();
+    assert_eq!(trainer.update_count(), 1);
+    assert!(
+        [
+            metrics.policy_loss,
+            metrics.value_loss,
+            metrics.entropy,
+            metrics.approx_kl,
+            metrics.clip_fraction,
+            metrics.grad_norm,
+        ]
+        .into_iter()
+        .all(f32::is_finite),
+        "non-finite PPO metrics: {metrics:?}"
+    );
+    assert_ne!(trainer.model.export_to_set_attention().unwrap(), before);
+    assert_export_parity(&trainer, &data);
 }
 
 #[test]

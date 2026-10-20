@@ -2,7 +2,9 @@
 //! [`Edit::ReplaceSchedule`], which swaps a design's whole flat tier list in one step.
 
 use super::edit_type::{Edit, EditError};
-use crate::design::{ConstraintTier, Design, ScheduleMeta, TierId, TierRelation, TierTarget};
+use crate::design::{
+    ConstraintTier, Design, ScheduleMeta, TierFrosting, TierId, TierRelation, TierTarget,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Everything about a design's flat tier list that [`Edit::ReplaceSchedule`] swaps.
@@ -35,6 +37,8 @@ pub struct ScheduleState {
     pub tier_targets: BTreeMap<TierId, TierTarget>,
     /// Relations by the driven tier's id ([`Design::tier_relations`]).
     pub tier_relations: BTreeMap<TierId, TierRelation>,
+    /// Frosting by tier id ([`Design::tier_frosting`]).
+    pub tier_frosting: BTreeMap<TierId, TierFrosting>,
 }
 
 impl ScheduleState {
@@ -50,6 +54,7 @@ impl ScheduleState {
             tier_notes: design.tier_notes.clone(),
             tier_targets: design.tier_targets.clone(),
             tier_relations: design.tier_relations.clone(),
+            tier_frosting: design.tier_frosting.clone(),
         }
     }
 }
@@ -94,7 +99,12 @@ impl Design {
         {
             return Err(refuse(key));
         }
-        if state.tier_targets.keys().any(|id| !ids.contains(id)) {
+        if state
+            .tier_targets
+            .keys()
+            .chain(state.tier_frosting.keys())
+            .any(|id| !ids.contains(id))
+        {
             return Err(refuse(new_count));
         }
         let relations_are_whole = state.tier_relations.iter().all(|(id, relation)| {
@@ -121,6 +131,7 @@ impl Design {
         self.tier_notes = state.tier_notes;
         self.tier_targets = state.tier_targets;
         self.tier_relations = state.tier_relations;
+        self.tier_frosting = state.tier_frosting;
         Ok(Edit::ReplaceSchedule(Box::new(previous)))
     }
 }
